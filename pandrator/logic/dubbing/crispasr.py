@@ -184,11 +184,32 @@ def _run_tool(
     return run_func(command, check=True, capture_output=True)
 
 
+def normalize_model_quantization_alias(value: str | None) -> str:
+    """Canonicalize a quantization spelling without applying an engine default."""
+
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    return MODEL_QUANTIZATION_ALIASES.get(normalized, normalized)
+
+
+def validate_model_quantization(value: str | None, engine: str | None = None) -> str:
+    """Validate an explicitly selected quantization for one concrete engine."""
+
+    normalized_engine = normalize_engine(engine)
+    model = MODELS[normalized_engine]
+    normalized = normalize_model_quantization_alias(value)
+    if normalized not in model.filenames:
+        choices = ", ".join(model.filenames)
+        raise ValueError(
+            f"Unsupported model quantization {value!r} for {normalized_engine}; "
+            f"valid choices are: {choices}."
+        )
+    return normalized
+
+
 def normalize_model_quantization(value: str | None, engine: str | None = None) -> str:
     normalized_engine = normalize_engine(engine)
     model = MODELS[normalized_engine]
-    normalized = str(value or model.default_quantization).strip().lower().replace("-", "_")
-    normalized = MODEL_QUANTIZATION_ALIASES.get(normalized, normalized)
+    normalized = normalize_model_quantization_alias(value or model.default_quantization)
     return normalized if normalized in model.filenames else model.default_quantization
 
 

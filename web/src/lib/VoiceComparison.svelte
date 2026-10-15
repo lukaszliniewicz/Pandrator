@@ -34,6 +34,8 @@
   let service = $state(untrack(() => initialService));
   let model = $state(untrack(() => initialModel));
   let language = $state('en');
+  let inheritDirections = $state(true);
+  let directionNotice = $state('');
   let passage = $state(
     'The fire was burning low, but there was still time to tell the story.'
   );
@@ -51,7 +53,7 @@
   let checkError = $state('');
   const renderer = $derived(services.find((item) => item.id === service));
   const context = $derived(
-    JSON.stringify({ service, model, language, passage })
+    JSON.stringify({ service, model, language, passage, inheritDirections })
   );
   const keys = $derived(voices.map((voice) => voice.key).join('|'));
   const ready = $derived(voices.filter((voice) => bindingFor(voice)?.ready));
@@ -135,6 +137,7 @@
       model,
       language,
       text: passage.trim(),
+      inheritDirections,
       context
     };
     for (const voice of [...ready]) {
@@ -146,8 +149,14 @@
           model: snapshot.model,
           language: snapshot.language,
           text: snapshot.text,
-          voice: binding!.voice!
+          voice: binding!.voice!,
+          generation_prompt: snapshot.inheritDirections ? undefined : ''
         });
+        directionNotice = queued.preview
+          ? queued.preview.directions.present
+            ? 'Saved directions are included in this audition.'
+            : 'This audition has no style directions.'
+          : '';
         jobId = queued.id;
         if (stop || !alive) {
           await jobApi.cancel(jobId);
@@ -265,6 +274,17 @@
             ></label
           >
         </div>
+        <label class="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            bind:checked={inheritDirections}
+            disabled={busy}
+          />
+          Use saved style directions
+        </label>
+        {#if directionNotice}<p class="muted text-xs" role="status">
+            {directionNotice}
+          </p>{/if}
         <label class="block text-sm font-semibold"
           >Shared passage<textarea
             class="input mt-1 w-full"

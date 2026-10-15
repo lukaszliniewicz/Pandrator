@@ -622,6 +622,19 @@ def register_service_routes(
             return error_response("validation_error", str(error), 422)
         if settings is None:
             return error_response("not_found", "TTS service not found.", 404)
+        preview_context = {
+            "directions": {
+                "source": (
+                    "inherited" if payload.generation_prompt is None
+                    else "custom" if payload.generation_prompt.strip()
+                    else "cleared"
+                ),
+                "present": bool(
+                    str(settings.get("generation_prompt") or "").strip()
+                    or str(settings.get("openai_audio_instructions") or "").strip()
+                ),
+            },
+        }
         resource_keys = [
             f"service:tts:{normalize_service_id(settings.get('preview_service_id') or service_id)}"
         ]
@@ -653,6 +666,7 @@ def register_service_routes(
                         resource_keys=resource_keys,
                     )
                     result = _job_payload(job)
+                    result["preview"] = preview_context
                     services.idempotency.complete(
                         db_session,
                         reservation,
@@ -674,4 +688,6 @@ def register_service_routes(
             max_attempts=2,
             resource_keys=resource_keys,
         )
-        return jsonify(_job_payload(job)), 202
+        result = _job_payload(job)
+        result["preview"] = preview_context
+        return jsonify(result), 202

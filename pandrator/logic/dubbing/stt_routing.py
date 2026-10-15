@@ -8,7 +8,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .crispasr import MODELS, normalize_model_quantization
+from .crispasr import (
+    MODELS,
+    normalize_model_quantization,
+    validate_model_quantization,
+)
 from .stt_backends import normalize_stt_backend
 from .stt_languages import (
     PARAKEET_V3_LANGUAGE_CODES,
@@ -127,11 +131,29 @@ def resolve_stt_route(
     if engine == "qwen3":
         from .qwen_asr import normalize_qwen_asr_model, timing_plan_for_language
 
+        if settings.get("_strict_stt_model_quantization"):
+            try:
+                validate_model_quantization(
+                    settings.get("stt_model_quantization"), engine
+                )
+            except ValueError as error:
+                raise STTRoutingError(str(error)) from error
         model = normalize_qwen_asr_model(settings.get("qwen_asr_model"))
         alignment = timing_plan_for_language(language) if require_word_timestamps else "none"
         requirements = ("crispasr>=0.8.36", model) + ((alignment,) if require_word_timestamps else ())
     elif engine in MODELS:
-        model = MODELS[engine].filename_for(normalize_model_quantization(settings.get("stt_model_quantization"), engine))
+        if settings.get("_strict_stt_model_quantization"):
+            try:
+                quantization = validate_model_quantization(
+                    settings.get("stt_model_quantization"), engine
+                )
+            except ValueError as error:
+                raise STTRoutingError(str(error)) from error
+        else:
+            quantization = normalize_model_quantization(
+                settings.get("stt_model_quantization"), engine
+            )
+        model = MODELS[engine].filename_for(quantization)
         alignment = MODELS[engine].word_timing if require_word_timestamps else "none"
         requirements = ("crispasr", model)
     else:

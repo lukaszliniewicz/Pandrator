@@ -920,7 +920,11 @@ class TtsVoicePreviewRequest(StrictModel):
     model: str = Field(default="", max_length=300)
     voice: str = Field(default="", max_length=300)
     language: str = Field(default="", max_length=40)
-    generation_prompt: str | None = Field(default=None, max_length=4000)
+    generation_prompt: str | None = Field(
+        default=None,
+        max_length=4000,
+        description="Omit or use null to inherit saved directions; an empty string clears them for this audition.",
+    )
     seed: int | None = Field(default=None, ge=0, le=4_294_967_295)
 
 

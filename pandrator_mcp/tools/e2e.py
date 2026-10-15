@@ -520,6 +520,7 @@ def _safe_tts_service(
         "online",
         "availability_reason",
         "health_checked_at",
+        "catalogue",
         "credential_origin",
         "credential_configured",
         "vertex_project",
@@ -598,6 +599,7 @@ def _safe_tts_service(
                         "model_voice_modes",
                         "voice_catalogues",
                         "defaults_by_model",
+                        "default_voices",
                         "default_voices_by_language",
                     } and isinstance(value, dict):
                         value = {
@@ -605,16 +607,44 @@ def _safe_tts_service(
                             for name, item in value.items()
                             if str(name).casefold() in retained
                         }
+                    elif key == "voice_metadata" and isinstance(value, dict):
+                        # Retain shared voices and exact model-prefix metadata.
+                        # Provider voice IDs themselves may contain colons.
+                        known_voices = {
+                            str(voice) for voice in service.get("voices") or []
+                        }
+                        filtered_metadata = {}
+                        known_models = {str(model).casefold() for model in service.get("models") or []}
+                        for name, item in value.items():
+                            raw_key = str(name)
+                            identity = (item.get("voice_id") or item.get("id")) if isinstance(item, dict) else None
+                            if isinstance(identity, str) and identity:
+                                if raw_key == identity:
+                                    filtered_metadata[name] = item
+                                    continue
+                                suffix = f":{identity}"
+                                if raw_key.endswith(suffix):
+                                    if raw_key[:-len(suffix)].casefold() in retained:
+                                        filtered_metadata[name] = item
+                                    continue
+                            if raw_key in known_voices or any(
+                                raw_key.casefold().startswith(f"{model}:")
+                                for model in known_models & retained
+                            ):
+                                filtered_metadata[name] = item
+                        value = filtered_metadata
                 result[key] = value
     elif voices:
         result["voices_preview"] = voices[:20]
     return result
 
 
-def tts_catalog(runtime: McpRuntime, arguments: TtsCatalogInput) -> dict[str, Any]:
+def tts_catalog(
+    runtime: McpRuntime, arguments: TtsCatalogInput, *, _for_configuration: bool = False,
+) -> dict[str, Any]:
     application = runtime.require_application()
-    payload = application.tts_catalog(refresh=arguments.refresh)
     requested_service = _normalized_id(arguments.service_id) if arguments.service_id else None
+    payload = application.tts_catalog(refresh=arguments.refresh, service_id=requested_service)
     requested_model = str(arguments.model or "").casefold().strip()
     query = str(arguments.query or "").casefold().strip()
     services: list[dict[str, Any]] = []
@@ -636,7 +666,8 @@ def tts_catalog(runtime: McpRuntime, arguments: TtsCatalogInput) -> dict[str, An
         if arguments.available_only and item.get("available") is not True:
             continue
         models = [str(value) for value in item.get("models") or []]
-        if requested_model and not any(value.casefold() == requested_model for value in models):
+        if (requested_model and not _for_configuration
+            and not any(value.casefold() == requested_model for value in models)):
             continue
         retained_models = models
         restrict_models = bool(requested_model)
@@ -658,13 +689,20 @@ def tts_catalog(runtime: McpRuntime, arguments: TtsCatalogInput) -> dict[str, An
                 for model_value in retained_models
                 if model_value.casefold() == requested_model
             ]
-        services.append(
-            _safe_tts_service(
-                item,
-                detail=arguments.detail,
-                model_ids=retained_models if restrict_models else None,
-            )
+        if _for_configuration and requested_model and not retained_models:
+            # A default-only model still needs its mode and voice metadata for
+            # reference validation; its advertised IDs remain independent.
+            retained_models = [str(arguments.model)]
+        projected = _safe_tts_service(
+            item,
+            detail=arguments.detail,
+            model_ids=retained_models if restrict_models else None,
         )
+        if _for_configuration:
+            # Configuration validates actual advertised IDs even when the
+            # requested model is absent; only heavy model detail is restricted.
+            projected["models"] = models
+        services.append(projected)
     voices = []
     if arguments.include_managed_voices:
         raw_voices = application.list_voices().get("items")
@@ -744,7 +782,8 @@ def _audio_cpp_catalog_model(service: dict[str, Any], requested: str) -> str | N
 def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutcome:
     catalog = tts_catalog(
         runtime,
-        TtsCatalogInput(service_id=arguments.service_id, detail="full"),
+        TtsCatalogInput(service_id=arguments.service_id, model=arguments.model, detail="full"),
+        _for_configuration=True,
     )
     if not catalog["services"]:
         raise PandratorMcpError("not_found", "The requested TTS service is not configured.")
@@ -760,9 +799,11 @@ def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutc
             runtime,
             TtsCatalogInput(
                 service_id=arguments.service_id,
+                model=arguments.model,
                 detail="full",
                 refresh=True,
             ),
+            _for_configuration=True,
         )
         if not catalog["services"]:
             raise PandratorMcpError(

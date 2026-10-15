@@ -1,5 +1,6 @@
 import { apiJson } from './api';
 import { dedupeInflight } from './inflight-dedupe';
+import type { TtsCatalogueObservation } from './api-models';
 
 type TraitEvidence = {
   source: 'user' | 'provider' | 'design_request' | 'audition_review';
@@ -29,6 +30,7 @@ export type VoiceReference =
   | { kind: 'managed'; voice_id: string }
   | { kind: 'provider'; service_id: string; model: string; voice: string };
 export type VoiceCompatibility = {
+  catalogue?: TtsCatalogueObservation | null;
   service_id: string;
   model: string;
   status: string;

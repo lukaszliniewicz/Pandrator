@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import shutil
 import threading
 import time
@@ -16,6 +17,13 @@ from typing import Any
 from sqlalchemy import select
 
 from pandrator.logic.cancellable_process import ProcessCancelled, run_cancellable
+from pandrator.logic.dubbing.crispasr import (
+    MODELS,
+    normalize_compute_backend,
+    normalize_model_quantization,
+    normalize_model_quantization_alias,
+    validate_model_quantization,
+)
 from pandrator.logic.dubbing.stt_backends import normalize_stt_backend
 from pandrator.logic.dubbing.stt_languages import validate_stt_language
 from pandrator.logic.dubbing.stt_provider_profiles import CLOUD_STT_ENGINE_IDS
@@ -31,7 +39,11 @@ from .jobs import JobQueue
 from .maintenance_threads import MaintenanceThread
 from .media_process import resolve_ffmpeg_executable
 from .models import AppSetting, Job, QuickTranscription, new_id, utcnow
-from .quick_transcription_schemas import CHUNK_SIZE, INLINE_BYTES, TranscriptionCreate
+from .quick_transcription_schemas import (
+    CHUNK_SIZE,
+    INLINE_BYTES,
+    TranscriptionCreate,
+)
 from .stt_resources import stt_resource_keys
 
 TERMINAL = {"succeeded", "failed", "canceled", "interrupted"}
@@ -40,6 +52,237 @@ MIME_TYPES = {
     "srt": "application/x-subrip",
     "json": "application/json",
 }
+_SELECTION_KEY = "_quick_transcription_selection"
+_STRICT_QUANTIZATION_KEY = "_strict_stt_model_quantization"
+_SAFE_PROVENANCE_TOKEN = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
+_SAFE_LANGUAGE_TOKEN = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_SUPPORTED_MODEL_QUANTIZATIONS = frozenset(
+    choice for model in MODELS.values() for choice in model.filenames
+)
+
+
+def _empty_selection() -> dict[str, Any]:
+    return {
+        "requested": {
+            "engine": None,
+            "language": None,
+            "model_quantization": None,
+            "compute_backend": None,
+        },
+        "resolved": {
+            "engine": None,
+            "language": None,
+            "model": None,
+            "model_quantization": None,
+            "compute_backend": None,
+        },
+        "runtime": {
+            "engine": None,
+            "model": None,
+            "model_quantization": None,
+            "compute_backend": None,
+            "language": None,
+        },
+        "normalization": {},
+    }
+
+
+def _safe_provenance_token(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if _SAFE_PROVENANCE_TOKEN.fullmatch(candidate) else None
+
+
+def _safe_language_token(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if _SAFE_LANGUAGE_TOKEN.fullmatch(candidate) else None
+
+
+def _quantization_normalization(raw_value: Any, canonical: str) -> dict[str, Any]:
+    if raw_value == canonical:
+        return {}
+    original = _safe_provenance_token(raw_value)
+    return {
+        "model_quantization": {"from": original, "to": canonical},
+    }
+
+
+def _resolved_compute_backend(settings: dict[str, Any], engine: str) -> str:
+    if engine in CLOUD_STT_ENGINE_IDS:
+        return "remote"
+    if engine == "qwen3":
+        from pandrator.logic.dubbing.qwen_asr import _normalize_backend
+
+        return _normalize_backend(settings)
+    return normalize_compute_backend(settings.get("stt_compute_backend"))
+
+
+def _validate_requested_quantization(value: str | None, engine: str) -> None:
+    if value is None:
+        return
+    if engine in MODELS:
+        try:
+            validate_model_quantization(value, engine)
+        except ValueError as error:
+            raise TranscriptionError("validation_error", str(error), 400) from error
+    elif engine == "auto":
+        normalized = normalize_model_quantization_alias(value)
+        if normalized not in _SUPPORTED_MODEL_QUANTIZATIONS:
+            choices = ", ".join(sorted(_SUPPORTED_MODEL_QUANTIZATIONS))
+            raise TranscriptionError(
+                "validation_error",
+                f"Unsupported model quantization {value!r} for auto; "
+                f"valid choices are: {choices}.",
+                400,
+            )
+
+
+def _selection_for_request(
+    payload: TranscriptionCreate,
+    settings: dict[str, Any],
+    engine: str,
+    *,
+    legacy_quantization: Any,
+    explicit_quantization: bool,
+) -> dict[str, Any]:
+    selection = _empty_selection()
+    selection["requested"] = {
+        "engine": payload.engine,
+        "language": payload.language,
+        "model_quantization": payload.model_quantization,
+        "compute_backend": payload.compute_backend,
+    }
+    resolved = selection["resolved"]
+    resolved["engine"] = engine
+    resolved["language"] = _safe_language_token(
+        settings.get("stt_language") or settings.get("whisper_language")
+    ) or "auto"
+    if engine in MODELS:
+        quantization = (
+            MODELS[engine].default_quantization
+            if engine == "qwen3"
+            else normalize_model_quantization(
+                settings.get("stt_model_quantization"), engine
+            )
+        )
+        if engine == "qwen3":
+            resolved["model"] = _safe_provenance_token(
+                settings.get("qwen_asr_model") or "qwen3_asr_0_6b"
+            )
+        else:
+            resolved["model"] = MODELS[engine].filename_for(quantization)
+        resolved["model_quantization"] = quantization
+        if (
+            not explicit_quantization
+            and engine != "qwen3"
+            and legacy_quantization is not None
+        ):
+            selection["normalization"] = _quantization_normalization(
+                legacy_quantization, quantization
+            )
+    resolved["compute_backend"] = _resolved_compute_backend(settings, engine)
+    return selection
+
+
+def _selection_after_transcription(
+    initial: dict[str, Any], settings: dict[str, Any], output: Any, native_payload: Any
+) -> dict[str, Any]:
+    selection = copy.deepcopy(initial) if isinstance(initial, dict) else _empty_selection()
+    route = getattr(output, "routing", None)
+    route = route if isinstance(route, dict) else {}
+    engine_value = route.get("engine") or getattr(output, "engine", None)
+    engine = _safe_provenance_token(engine_value)
+    if engine:
+        selection["resolved"]["engine"] = engine
+    language_value = (
+        route.get("resolved_language")
+        or getattr(output, "resolved_language", None)
+        or settings.get("stt_language")
+        or settings.get("whisper_language")
+    )
+    language = _safe_language_token(language_value) or "auto"
+    selection["resolved"]["language"] = language
+
+    native_metadata = (
+        native_payload.get("metadata") if isinstance(native_payload, dict) else None
+    )
+    native_metadata = native_metadata if isinstance(native_metadata, dict) else {}
+    if engine in CLOUD_STT_ENGINE_IDS:
+        model = _safe_provenance_token(native_metadata.get("model"))
+    else:
+        model = _safe_provenance_token(route.get("model"))
+    selected_quantization = None
+    if engine in MODELS:
+        if engine == "qwen3":
+            selected_quantization = MODELS[engine].default_quantization
+        elif settings.get(_STRICT_QUANTIZATION_KEY):
+            selected_quantization = validate_model_quantization(
+                settings.get("stt_model_quantization"), engine
+            )
+        else:
+            selected_quantization = normalize_model_quantization(
+                settings.get("stt_model_quantization"), engine
+            )
+        if not model and engine == "qwen3":
+            model = _safe_provenance_token(
+                settings.get("qwen_asr_model") or "qwen3_asr_0_6b"
+            )
+        elif not model:
+            model = MODELS[engine].filename_for(selected_quantization)
+        selection["resolved"]["model_quantization"] = selected_quantization
+        legacy_quantization = settings.get("stt_model_quantization")
+        if (
+            engine != "qwen3"
+            and selection["requested"].get("model_quantization") is None
+            and legacy_quantization is not None
+        ):
+            selection["normalization"] = _quantization_normalization(
+                legacy_quantization, selected_quantization
+            )
+    selection["resolved"]["model"] = model
+
+    if engine:
+        selection["resolved"]["compute_backend"] = _resolved_compute_backend(
+            settings, engine
+        )
+
+    runtime = selection["runtime"]
+    header = native_payload.get("crispasr") if isinstance(native_payload, dict) else None
+    header = header if isinstance(header, dict) else {}
+    runtime["engine"] = _safe_provenance_token(
+        getattr(output, "engine", None) or header.get("backend")
+    )
+    runtime["model"] = _safe_provenance_token(
+        getattr(output, "model", None) or header.get("model")
+    )
+    runtime_quantization = getattr(output, "model_quantization", None) or header.get(
+        "model_quantization"
+    )
+    runtime["model_quantization"] = (
+        normalize_model_quantization_alias(runtime_quantization)
+        if isinstance(runtime_quantization, str)
+        and normalize_model_quantization_alias(runtime_quantization)
+        in {choice for model_config in MODELS.values() for choice in model_config.filenames}
+        else None
+    )
+    backend = _safe_provenance_token(getattr(output, "compute_backend", None))
+    runtime["compute_backend"] = (
+        backend if backend in {*("auto", "cpu", "cuda", "vulkan", "metal", "remote")} else None
+    )
+    native_language = None
+    if isinstance(native_payload, dict):
+        native_language = (
+            native_payload.get("language")
+            or header.get("language_detected")
+            or header.get("language")
+        )
+    runtime["language"] = _safe_language_token(
+        getattr(output, "resolved_language", None) or native_language
+    )
+    return selection
 
 
 class TranscriptionError(ValueError):
@@ -136,18 +379,6 @@ class QuickTranscriptionService:
                 identifier = reservation.response[0]["id"]
                 record = self._owned(session, identifier, principal.subject)
                 return self._snapshot(session, record, include_result=False)
-            active = session.scalars(
-                select(QuickTranscription).where(
-                    QuickTranscription.owner_subject == principal.subject,
-                    QuickTranscription.state.not_in(["deleted", "expired"]),
-                )
-            ).all()
-            if len(active) >= 20:
-                raise TranscriptionError(
-                    "transcription_limit",
-                    "Delete an earlier temporary transcription before starting another.",
-                    429,
-                )
             # Snapshot ordinary non-secret configured defaults, then resolve credentials only in the worker.
             from .settings_policy import BUILTIN_DEFAULTS
 
@@ -155,6 +386,8 @@ class QuickTranscriptionService:
             defaults = session.get(AppSetting, "defaults.stt")
             if defaults and isinstance(defaults.value_json, dict):
                 settings.update(copy.deepcopy(defaults.value_json))
+            legacy_quantization = settings.get("stt_model_quantization")
+            explicit_quantization = payload.model_quantization is not None
             for field, setting in {
                 "language": "stt_language",
                 "engine": "stt_engine",
@@ -169,6 +402,11 @@ class QuickTranscriptionService:
             canonical_engine = normalize_stt_backend(
                 settings.get("stt_engine") or settings.get("stt_backend")
             )
+            _validate_requested_quantization(
+                payload.model_quantization, canonical_engine
+            )
+            if explicit_quantization and canonical_engine in {*MODELS, "auto"}:
+                settings[_STRICT_QUANTIZATION_KEY] = True
             if canonical_engine == "qwen3":
                 if payload.compute_backend is not None:
                     settings["qwen_asr_backend"] = payload.compute_backend
@@ -205,7 +443,28 @@ class QuickTranscriptionService:
                     raise TranscriptionError(
                         "unsupported_language", str(error), 400
                     ) from error
+            selection = _selection_for_request(
+                payload,
+                settings,
+                canonical_engine,
+                legacy_quantization=legacy_quantization,
+                explicit_quantization=explicit_quantization,
+            )
             settings = self.idempotency.redactor.redact_value(settings)
+            settings[_SELECTION_KEY] = selection
+
+            active = session.scalars(
+                select(QuickTranscription).where(
+                    QuickTranscription.owner_subject == principal.subject,
+                    QuickTranscription.state.not_in(["deleted", "expired"]),
+                )
+            ).all()
+            if len(active) >= 20:
+                raise TranscriptionError(
+                    "transcription_limit",
+                    "Delete an earlier temporary transcription before starting another.",
+                    429,
+                )
             record = QuickTranscription(
                 id=new_id(),
                 owner_subject=principal.subject,
@@ -228,7 +487,7 @@ class QuickTranscriptionService:
                 resource_kind="quick_transcription",
                 resource_id=record.id,
             )
-            return result
+        return result
 
     def upload_chunk(self, identifier: str, subject: str, index: int, data: bytes):
         if index < 0 or not data or len(data) > CHUNK_SIZE:
@@ -346,6 +605,12 @@ class QuickTranscriptionService:
             "next_chunk_index": record.next_chunk_index,
             "uploaded_bytes": record.uploaded_bytes,
             "size_bytes": record.size_bytes,
+            "selection": copy.deepcopy(
+                record.settings_json.get(_SELECTION_KEY)
+                if isinstance(record.settings_json, dict)
+                and isinstance(record.settings_json.get(_SELECTION_KEY), dict)
+                else _empty_selection()
+            ),
             "result_available": status == "succeeded"
             and (self._directory(record.id) / f"result.{selected}").is_file(),
             "inline_result": False,
@@ -525,6 +790,7 @@ class QuickTranscriptionService:
             ):
                 raise ProcessCancelled("This transcription is no longer active.")
             settings = copy.deepcopy(record.settings_json)
+            initial_selection = settings.pop(_SELECTION_KEY, None)
             source_suffix = record.source_suffix
             transcript_format = record.format
             require_word_timestamps = transcript_format != "txt"
@@ -604,6 +870,10 @@ class QuickTranscriptionService:
             )
             if isinstance(source_metadata, dict):
                 canonical.setdefault("metadata", {}).update(source_metadata)
+            selection = _selection_after_transcription(
+                initial_selection, settings, output, native_payload
+            )
+            canonical["selection"] = selection
             (scratch / "result.json").write_text(
                 json.dumps(canonical, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -627,6 +897,9 @@ class QuickTranscriptionService:
                     (scratch / f"result.{format}").replace(
                         directory / f"result.{format}"
                     )
+                saved_settings = copy.deepcopy(record.settings_json or {})
+                saved_settings[_SELECTION_KEY] = selection
+                record.settings_json = saved_settings
                 record.expires_at = utcnow() + timedelta(hours=1)
                 record.state = "finished"
             progress(1, "Transcript ready")

@@ -31,7 +31,7 @@ def _safe_model_ids(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     result: list[str] = []
-    for model_id in value[:32]:
+    for model_id in value:
         if (
             isinstance(model_id, str)
             and _MODEL_ID.fullmatch(model_id) is not None
@@ -59,7 +59,7 @@ def _model_inventory_projection(payload: object) -> list[dict[str, Any]]:
         known_models: list[dict[str, Any]] = []
         source_models = definition.get("models")
         if isinstance(source_models, list):
-            for model in source_models[:32]:
+            for model in source_models:
                 if not isinstance(model, dict):
                     continue
                 model_id = model.get("id")

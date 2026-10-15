@@ -3419,6 +3419,7 @@ def build_openapi_document() -> dict:
             "post",
         ),
         ("/api/v1/generation-segments/{segmentId}", "patch"),
+        ("/api/v1/sessions/{sessionId}/generation-segments", "patch"),
         ("/api/v1/generation-segments/{segmentId}/takes/{takeId}/select", "post"),
         ("/api/v1/sessions/{sessionId}/generation-runs", "post"),
         ("/api/v1/sessions/{sessionId}/output-assemblies", "post"),
@@ -3897,6 +3898,36 @@ def build_openapi_document() -> dict:
                            ("cursor", "integer"), ("limit", "integer"), ("end_ordinal", "integer"),
                            ("around_ordinal", "integer"), ("source_cue_id", "string"), ("radius", "integer"))
     ])
+    paths["/api/v1/sessions/{sessionId}/generation-segments"]["patch"]["responses"]["200"]["headers"] = {
+        "Idempotency-Replayed": {
+            "description": "True when returning the retained response for this request key.",
+            "schema": {"type": "string", "enum": ["true"]},
+        },
+    }
+    paths["/api/v1/services/tts/{serviceId}/preview"]["post"]["responses"]["202"]["content"] = {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "additionalProperties": True,
+                "properties": {
+                    "preview": {
+                        "type": "object",
+                        "required": ["directions"],
+                        "properties": {
+                            "directions": {
+                                "type": "object",
+                                "required": ["source", "present"],
+                                "properties": {
+                                    "source": {"type": "string", "enum": ["inherited", "custom", "cleared"]},
+                                    "present": {"type": "boolean"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
     # Every templated route must expose its parameters to generated clients.
     # Most operations use the same UUID-like string identifiers, while chunk
     # indices are the one numeric route component.

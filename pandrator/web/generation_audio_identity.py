@@ -120,7 +120,9 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
     }
     if audio_cpp_selected and isinstance(raw_model_settings, dict):
         raw_selected_options = raw_model_settings.get(selected_model)
-        if isinstance(raw_selected_options, dict):
+        if selected_model in raw_model_settings and (
+            raw_selected_options is None or isinstance(raw_selected_options, dict)
+        ):
             metadata = tts_handler._audio_cpp_model_metadata(
                 selected_model,
                 provider if isinstance(provider, dict) else {},
@@ -128,7 +130,7 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
             family = str(metadata.get("family") or "").strip()
             normalized_options = validate_audio_cpp_model_options(
                 family,
-                raw_selected_options,
+                raw_selected_options or {},
             )
             if normalized_options is not None:
                 selected_model_options = (family, normalized_options)

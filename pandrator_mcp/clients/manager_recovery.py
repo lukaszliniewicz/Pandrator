@@ -20,6 +20,54 @@ from ..transport import PinnedAddressAdapter
 _IDEMPOTENCY_KEY = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
 )
+_ERROR_DETAIL_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,119}$")
+_SENSITIVE_ERROR_KEYS = frozenset(
+    {"api_key", "authorization", "credential", "password", "secret", "token"}
+)
+
+
+def _safe_validation_message(error: dict[str, Any]) -> str:
+    message = error.get("message")
+    if not isinstance(message, str):
+        return "Pandrator Manager rejected one or more request fields."
+    return " ".join(message.split())[:2_000] or (
+        "Pandrator Manager rejected one or more request fields."
+    )
+
+
+def _safe_validation_details(
+    error: dict[str, Any],
+    *,
+    status: int,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {"status": status}
+    code = error.get("code")
+    if isinstance(code, str) and code.strip():
+        details["downstream_code"] = " ".join(code.split())[:160]
+    supplied = error.get("details")
+    if not isinstance(supplied, dict):
+        return details
+    for key, value in list(supplied.items())[:20]:
+        name = str(key)
+        if (
+            _ERROR_DETAIL_KEY.fullmatch(name) is None
+            or any(
+                sensitive in name.casefold()
+                for sensitive in _SENSITIVE_ERROR_KEYS
+            )
+        ):
+            continue
+        if isinstance(value, str):
+            details[name[:120]] = " ".join(value.split())[:500]
+        elif value is None or type(value) in {bool, int}:
+            details[name[:120]] = value
+        elif isinstance(value, list) and all(
+            isinstance(item, str) for item in value[:20]
+        ):
+            details[name[:120]] = [
+                " ".join(item.split())[:200] for item in value[:20]
+            ]
+    return details
 
 
 class RecoveryManagerGateway:
@@ -258,10 +306,12 @@ class RecoveryManagerGateway:
                 },
             )
         if status_code == 400:
+            supplied_error = payload.get("error")
+            error = supplied_error if isinstance(supplied_error, dict) else {}
             raise PandratorMcpError(
                 "validation_error",
-                "Pandrator Manager rejected one or more request fields.",
-                details={"status": status_code},
+                _safe_validation_message(error),
+                details=_safe_validation_details(error, status=status_code),
             )
         if status_code >= 400:
             raise PandratorMcpError(

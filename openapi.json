@@ -6711,6 +6711,130 @@
         "title": "RepairBatchUndoRequest",
         "type": "object"
       },
+      "RequestedTranscriptionSelection": {
+        "properties": {
+          "compute_backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compute Backend"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model_quantization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Quantization"
+          }
+        },
+        "required": [
+          "engine",
+          "language",
+          "model_quantization",
+          "compute_backend"
+        ],
+        "title": "RequestedTranscriptionSelection",
+        "type": "object"
+      },
+      "ResolvedTranscriptionSelection": {
+        "properties": {
+          "compute_backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compute Backend"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "model_quantization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Quantization"
+          }
+        },
+        "required": [
+          "engine",
+          "language",
+          "model",
+          "model_quantization",
+          "compute_backend"
+        ],
+        "title": "ResolvedTranscriptionSelection",
+        "type": "object"
+      },
       "ReviewSplitInspection": {
         "additionalProperties": false,
         "properties": {
@@ -6751,6 +6875,74 @@
           "expected_revision"
         ],
         "title": "ReviewSplitInspection",
+        "type": "object"
+      },
+      "RuntimeTranscriptionSelection": {
+        "properties": {
+          "compute_backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compute Backend"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "model_quantization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Quantization"
+          }
+        },
+        "required": [
+          "engine",
+          "model",
+          "model_quantization",
+          "compute_backend",
+          "language"
+        ],
+        "title": "RuntimeTranscriptionSelection",
         "type": "object"
       },
       "RvcConvertRequest": {
@@ -11314,6 +11506,31 @@
         "title": "TranscriptionResultPage",
         "type": "object"
       },
+      "TranscriptionSelection": {
+        "properties": {
+          "normalization": {
+            "additionalProperties": true,
+            "title": "Normalization",
+            "type": "object"
+          },
+          "requested": {
+            "$ref": "#/components/schemas/RequestedTranscriptionSelection"
+          },
+          "resolved": {
+            "$ref": "#/components/schemas/ResolvedTranscriptionSelection"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeTranscriptionSelection"
+          }
+        },
+        "required": [
+          "requested",
+          "resolved",
+          "runtime"
+        ],
+        "title": "TranscriptionSelection",
+        "type": "object"
+      },
       "TranscriptionSnapshot": {
         "properties": {
           "available_formats": {
@@ -11417,6 +11634,9 @@
             "title": "Result Url",
             "type": "string"
           },
+          "selection": {
+            "$ref": "#/components/schemas/TranscriptionSelection"
+          },
           "size_bytes": {
             "title": "Size Bytes",
             "type": "integer"
@@ -11444,7 +11664,8 @@
           "size_bytes",
           "result_available",
           "inline_result",
-          "result_url"
+          "result_url",
+          "selection"
         ],
         "title": "TranscriptionSnapshot",
         "type": "object"
@@ -11655,6 +11876,7 @@
               }
             ],
             "default": null,
+            "description": "Omit or use null to inherit saved directions; an empty string clears them for this audition.",
             "title": "Generation Prompt"
           },
           "language": {
@@ -12081,6 +12303,19 @@
             ],
             "default": null,
             "title": "Availability Reason"
+          },
+          "catalogue": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalogue"
           },
           "health_checked_at": {
             "anyOf": [
@@ -17325,6 +17560,44 @@
         },
         "responses": {
           "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "preview": {
+                      "properties": {
+                        "directions": {
+                          "properties": {
+                            "present": {
+                              "type": "boolean"
+                            },
+                            "source": {
+                              "enum": [
+                                "inherited",
+                                "custom",
+                                "cleared"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "source",
+                            "present"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "directions"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
             "description": "Voice preview queued"
           }
         },
@@ -19577,6 +19850,17 @@
         "operationId": "updateGenerationSegments",
         "parameters": [
           {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -19597,7 +19881,18 @@
         },
         "responses": {
           "200": {
-            "description": "Generation segments updated atomically"
+            "description": "Generation segments updated atomically",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "True when returning the retained response for this request key.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       }

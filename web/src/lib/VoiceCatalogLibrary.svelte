@@ -793,6 +793,22 @@
                         ? ` · ${binding.availability_reason}`
                         : ''}
                     </p>{/if}
+                  {#if binding.catalogue}<p class="muted mt-1 text-xs">
+                      {#if binding.catalogue.checked_at}
+                        Model list checked {new Date(
+                          binding.catalogue.checked_at
+                        ).toLocaleTimeString()}{binding.catalogue.source ===
+                        'cache'
+                          ? ' · cached'
+                          : ''}.
+                      {:else}
+                        Using the saved model list.
+                      {/if}
+                      {#if !binding.catalogue.complete}Refresh this service to
+                        check current models.{/if}
+                      {#if binding.catalogue.error}
+                        {binding.catalogue.error}{/if}
+                    </p>{/if}
                 </div>
                 {#if binding.status === 'needs_reference' || binding.status === 'needs_link'}<button
                     class="btn btn-sm"

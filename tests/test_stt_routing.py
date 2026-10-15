@@ -69,6 +69,44 @@ def test_explicit_choice_ignores_other_engines_availability(engine):
     assert route.fallback_reason == ""
 
 
+def test_explicit_quantization_is_strict_only_for_marked_requests():
+    legacy = resolve_stt_route(
+        {
+            "stt_engine": "whisper",
+            "stt_language": "en",
+            "stt_model_quantization": "q8_0",
+        },
+        runtime_statuses={},
+    )
+    assert legacy.model == "ggml-large-v3.bin"
+
+    valid = resolve_stt_route(
+        {
+            "stt_engine": "whisper",
+            "stt_language": "en",
+            "stt_model_quantization": "q5",
+            "_strict_stt_model_quantization": True,
+        },
+        runtime_statuses={},
+    )
+    assert valid.model == "ggml-large-v3-q5_0.bin"
+
+    with pytest.raises(STTRoutingError, match="whisper.*f16, q5_0"):
+        resolve_stt_route(
+            {
+                "stt_engine": "auto",
+                "stt_language": "en",
+                "stt_model_quantization": "q8_0",
+                "_strict_stt_model_quantization": True,
+            },
+            runtime_statuses={
+                "whisper": {"installed": True, "version": "0.8.40"},
+                "parakeet": {"installed": False},
+                "qwen3": {"installed": False, "version": "0.8.40"},
+            },
+        )
+
+
 def test_regional_tag_preserved_in_route_and_copy_is_detached():
     settings = {"stt_engine": "automatic", "stt_language": "pt-BR"}
     route = resolve_stt_route(settings, runtime_statuses=READY)

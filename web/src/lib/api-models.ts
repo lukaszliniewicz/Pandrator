@@ -1058,7 +1058,17 @@ type TtsModel = {
   [key: string]: unknown;
 };
 
+export type TtsCatalogueObservation = {
+  source: 'configured' | 'runtime' | 'cache';
+  scope: 'service';
+  service_id: string;
+  checked_at: string | null;
+  complete: boolean;
+  error: string | null;
+};
+
 export type TtsService = {
+  catalogue?: TtsCatalogueObservation;
   catalogue_role?: 'primary' | 'compatibility' | 'external';
   replacement_service_id?: string | null;
   replacement_model_family?: string | null;

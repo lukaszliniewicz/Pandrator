@@ -54,13 +54,13 @@ def register_transcription_tools(
         ],
         format: Literal["txt", "srt", "json"] = "txt",
         language: Annotated[
-            str,
+            NativeNullableString,
             Field(
                 min_length=1,
                 max_length=40,
                 pattern=r"^[A-Za-z0-9_-]+$",
             ),
-        ] = "auto",
+        ] = None,
         engine: Annotated[
             NativeNullableString,
             Field(max_length=80, pattern=r"^[A-Za-z0-9_-]+$"),

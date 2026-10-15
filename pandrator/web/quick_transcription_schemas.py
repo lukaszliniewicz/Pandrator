@@ -71,6 +71,36 @@ class TranscriptionResult(BaseModel):
     size_bytes: int
 
 
+class RequestedTranscriptionSelection(BaseModel):
+    engine: str | None
+    language: str | None
+    model_quantization: str | None
+    compute_backend: str | None
+
+
+class ResolvedTranscriptionSelection(BaseModel):
+    engine: str | None
+    language: str | None
+    model: str | None
+    model_quantization: str | None
+    compute_backend: str | None
+
+
+class RuntimeTranscriptionSelection(BaseModel):
+    engine: str | None
+    model: str | None
+    model_quantization: str | None
+    compute_backend: str | None
+    language: str | None
+
+
+class TranscriptionSelection(BaseModel):
+    requested: RequestedTranscriptionSelection
+    resolved: ResolvedTranscriptionSelection
+    runtime: RuntimeTranscriptionSelection
+    normalization: dict[str, Any] = Field(default_factory=dict)
+
+
 class TranscriptionSnapshot(BaseModel):
     id: str
     job_id: str | None
@@ -86,6 +116,7 @@ class TranscriptionSnapshot(BaseModel):
     result_available: bool
     inline_result: bool
     result_url: str
+    selection: TranscriptionSelection
     available_formats: list[TranscriptFormat] = Field(default_factory=list)
     result: TranscriptionResult | None = None
     error: dict[str, str] | None = None

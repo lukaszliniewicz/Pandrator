@@ -336,18 +336,48 @@ def register_generation_routes(
                     "changes": changes,
                 }
             )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
         try:
-            result = generation.update_segments(session_id, updates)
+            if idempotency_key is None:
+                result = generation.update_segments(session_id, updates)
+            else:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=idempotency.principal(),
+                        operation_id="updateGenerationSegments",
+                        idempotency_key=idempotency_key,
+                        payload={"session_id": session_id, "updates": updates},
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+                    result = generation.update_segments_in_session(
+                        db_session, session_id, updates
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=200,
+                        resource_kind="generation_segment_batch",
+                        resource_id=session_id,
+                    )
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            if isinstance(error, WorkspaceRevisionConflict):
+                return error_response("revision_conflict", str(error), 409)
+            return idempotency_failure(error)
         except KeyError:
             return error_response(
                 "not_found",
                 "Session or generation segment not found.",
                 404,
             )
-        except WorkspaceRevisionConflict as error:
-            return error_response("revision_conflict", str(error), 409)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
         return jsonify(result)
 
     @app.patch("/api/v1/generation-segments/<segment_id>")

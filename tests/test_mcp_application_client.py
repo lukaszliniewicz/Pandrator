@@ -201,6 +201,40 @@ def create_test_ca(directory: Path) -> tuple[Path, Path, Path]:
 
 
 class ApplicationClientTests(unittest.TestCase):
+    def test_http_400_validation_error_uses_known_code_passthrough(self):
+        response = FakeResponse(
+            400,
+            {
+                "error": {
+                    "code": "validation_error",
+                    "message": "audio.cpp model selection is invalid.",
+                    "details": {
+                        "field": "desired.audio_cpp.options.models",
+                    },
+                }
+            },
+        )
+        client = ApplicationClient(
+            local_registry("http://127.0.0.1:8097").bind("local"),
+            CredentialResolver(()),
+            session=FakeSession([response]),
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        with self.assertRaises(PandratorMcpError) as caught:
+            client.health()
+
+        self.assertEqual("validation_error", caught.exception.code)
+        self.assertEqual(
+            "audio.cpp model selection is invalid.",
+            str(caught.exception),
+        )
+        self.assertEqual(
+            "desired.audio_cpp.options.models",
+            caught.exception.details["field"],
+        )
+        self.assertEqual(400, caught.exception.details["status"])
+
     def test_generation_history_limit_and_grouping_reach_the_http_request(self):
         session = FakeSession([FakeResponse(200, {"items": []}) for _ in range(3)])
         client = ApplicationClient(
@@ -248,7 +282,7 @@ class ApplicationClientTests(unittest.TestCase):
         )
         client.upload_chunk("upload-1", 0, b"data", sha256="b" * 64)
         client.complete_upload("upload-1")
-        client.tts_catalog(refresh=True)
+        client.tts_catalog(refresh=True, service_id="audio_cpp")
         client.list_generation_runs("session-1")
 
         initialized, chunk, completed, catalog, runs = session.calls
@@ -259,7 +293,7 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertEqual(120.0, chunk["timeout"])
         self.assertEqual("b" * 64, chunk["headers"]["X-Chunk-SHA256"])
         self.assertTrue(completed["url"].endswith("/api/v1/uploads/upload-1/complete"))
-        self.assertEqual({"refresh": "true"}, catalog["params"])
+        self.assertEqual({"refresh": "true", "service_id": "audio_cpp"}, catalog["params"])
         self.assertTrue(
             runs["url"].endswith("/api/v1/sessions/session-1/generation-runs")
         )
@@ -1691,6 +1725,53 @@ class RecoveryManagerGatewayTests(unittest.TestCase):
             caught.exception.code,
         )
 
+    def test_recovery_preserves_manager_plan_validation_error(self):
+        session = FakeSession(
+            [
+                FakeResponse(
+                    400,
+                    {
+                        "error": {
+                            "code": "validation_error",
+                            "message": "Unknown audio.cpp model package ID.",
+                            "details": {
+                                "field": "desired.audio_cpp.options.models",
+                                "authorization": "Bearer private-value",
+                            },
+                        }
+                    },
+                )
+            ]
+        )
+        gateway = RecoveryManagerGateway(
+            self.binding(),
+            CredentialResolver(
+                (MemoryCredentialBackend({"manager/recovery": "recovery-secret"}),)
+            ),
+            session=session,
+        )
+
+        with self.assertRaises(PandratorMcpError) as caught:
+            gateway.create_plan(
+                kind="install",
+                desired={"audio_cpp": {"options": {"models": ["unknown"]}}},
+                expected_revision=0,
+                idempotency_key="model-validation-400",
+            )
+
+        self.assertEqual("validation_error", caught.exception.code)
+        self.assertEqual(
+            "Unknown audio.cpp model package ID.",
+            str(caught.exception),
+        )
+        self.assertEqual(
+            "desired.audio_cpp.options.models",
+            caught.exception.details["field"],
+        )
+        self.assertEqual(400, caught.exception.details["status"])
+        self.assertNotIn("authorization", caught.exception.details)
+        self.assertEqual(1, len(session.calls))
+
     def test_fallback_never_turns_authorization_failure_into_recovery(self):
         class Gateway:
             def __init__(self, outcome):
@@ -1722,6 +1803,16 @@ class RecoveryManagerGatewayTests(unittest.TestCase):
         )
         self.assertEqual({"available": True}, gateway.status())
         self.assertEqual(1, recovery.calls)
+
+        primary.outcome = PandratorMcpError(
+            "validation_error",
+            "The selected model IDs are invalid.",
+        )
+        recovery_calls = recovery.calls
+        with self.assertRaises(PandratorMcpError) as caught:
+            gateway.status()
+        self.assertEqual("validation_error", caught.exception.code)
+        self.assertEqual(recovery_calls, recovery.calls)
 
 
 if __name__ == "__main__":

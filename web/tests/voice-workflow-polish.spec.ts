@@ -61,6 +61,14 @@ function catalogVoice(id: string, name: string) {
         status: 'ready',
         ready: true,
         voice: id,
+        catalogue: {
+          source: 'configured',
+          scope: 'service',
+          service_id: 'audio_cpp',
+          checked_at: null,
+          complete: false,
+          error: null
+        },
         supported_languages: ['en'],
         modes: {
           cloning: true,
@@ -336,6 +344,19 @@ test('comparison has its own renderer, reference playback, and per-voice results
 }) => {
   await mockVoices(page);
   await login(page);
+  await page.getByRole('button', { name: 'Scrooge', exact: true }).click();
+  await page.locator('summary').filter({ hasText: 'Renderers' }).click();
+  await expect(
+    page.getByText('Using the saved model list.', { exact: false })
+  ).toBeVisible();
+  await expect(
+    page.getByText('Refresh this service to check current models.', {
+      exact: false
+    })
+  ).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Back to voices', exact: true })
+    .click();
   await page
     .getByRole('checkbox', { name: 'Compare Scrooge', exact: true })
     .check();
@@ -358,11 +379,15 @@ test('comparison has its own renderer, reference playback, and per-voice results
     comparison.getByRole('button', { name: 'Generate 2 auditions' })
   ).toBeEnabled();
   let calls = 0;
+  let inheritDirections = true;
   await page.route(
     '**/api/v1/services/tts/audio_cpp/preview',
     async (route) => {
       const body = route.request().postDataJSON();
       expect(body.model).toBe('clone-model');
+      if (inheritDirections)
+        expect(body).not.toHaveProperty('generation_prompt');
+      else expect(body.generation_prompt).toBe('');
       calls++;
       if (body.voice === 'scrooge')
         return route.fulfill({
@@ -375,7 +400,16 @@ test('comparison has its own renderer, reference playback, and per-voice results
           }
         });
       return route.fulfill({
-        json: { id: 'audition-success', status: 'queued' }
+        json: {
+          id: 'audition-success',
+          status: 'queued',
+          preview: {
+            directions: {
+              source: inheritDirections ? 'inherited' : 'cleared',
+              present: inheritDirections
+            }
+          }
+        }
       });
     }
   );
@@ -398,6 +432,27 @@ test('comparison has its own renderer, reference playback, and per-voice results
     comparison.getByText('Shared passage audition', { exact: true })
   ).toBeVisible();
   expect(calls).toBe(2);
+  await expect(
+    comparison.getByText('Saved directions are included in this audition.', {
+      exact: true
+    })
+  ).toBeVisible();
+  inheritDirections = false;
+  await comparison
+    .getByRole('checkbox', { name: 'Use saved style directions', exact: true })
+    .uncheck();
+  await comparison
+    .getByRole('button', { name: 'Generate 2 auditions' })
+    .click();
+  await expect(
+    comparison.getByText('This audition has no style directions.', {
+      exact: true
+    })
+  ).toBeVisible();
+  await expect(
+    comparison.getByText('Shared passage audition', { exact: true })
+  ).toBeVisible();
+  expect(calls).toBe(4);
   await comparison
     .getByRole('button', { name: 'Close comparison', exact: true })
     .click();

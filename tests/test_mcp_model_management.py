@@ -7,6 +7,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from pandrator_manager.application import create_application
+from pandrator_manager.components.audiocpp import SUPPORTED_MODEL_IDS
 from pandrator_manager.models import (
     ComponentInspection,
     ComponentState,
@@ -14,6 +15,7 @@ from pandrator_manager.models import (
     DesiredComponentState,
     OperationKind,
 )
+from pandrator_manager.planning import Planner, PlannerValidationError
 from pandrator_mcp.schemas.manager import (
     ManagerDesiredComponentInput,
     PlanComponentChangeInput,
@@ -22,18 +24,16 @@ from pandrator_mcp.tools.manager import manager_plan_projection, manager_status
 
 
 class ManagerModelSelectionTests(unittest.TestCase):
-    def test_schema_allows_bounded_audio_cpp_model_lists_only(self):
+    def test_schema_allows_large_audio_cpp_model_lists_only(self):
+        model_ids = [f"model_{index}" for index in range(33)]
         selection = ManagerDesiredComponentInput(
             component_id="audio_cpp",
-            options={"models": ["Qwen.Base", "voxcpm2_q8_0"]},
+            options={"models": model_ids},
         )
-        self.assertEqual(
-            ["Qwen.Base", "voxcpm2_q8_0"], selection.options["models"]
-        )
+        self.assertEqual(model_ids, selection.options["models"])
 
         invalid_options = (
             {"models": []},
-            {"models": ["model"] * 33},
             {"models": ["model", "model"]},
             {"models": ["../model"]},
             {"models": "model"},
@@ -52,6 +52,96 @@ class ManagerModelSelectionTests(unittest.TestCase):
                 component_id="silero",
                 options={"models": ["model"]},
             )
+
+    def test_planner_accepts_full_registry_and_additive_unions_over_32(self):
+        supported = list(SUPPORTED_MODEL_IDS)
+        self.assertGreater(len(supported), 35)
+
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            planner = application.planner
+            self.assertEqual(
+                supported,
+                ManagerDesiredComponentInput(
+                    component_id="audio_cpp",
+                    options={"models": supported},
+                ).options["models"],
+            )
+            self.assertEqual(
+                supported,
+                planner._validated_model_ids(
+                    supported,
+                    option="models",
+                    supported=set(supported),
+                ),
+            )
+
+            installed = supported[:31]
+            added = supported[31:33]
+            with patch.object(
+                planner,
+                "inspect",
+                return_value=ComponentInspection(
+                    component_id="audio_cpp",
+                    state=ComponentState.PRESENT,
+                    installed_model_ids=tuple(installed),
+                ),
+            ):
+                normalized = planner._normalize_audio_cpp_model_options(
+                    {
+                        "audio_cpp": DesiredComponentState(
+                            options={"add_models": added}
+                        )
+                    }
+                )
+            self.assertEqual(
+                [*installed, *added],
+                normalized["audio_cpp"].options["models"],
+            )
+
+            installed_over_limit = supported[:33]
+            persisted = DesiredComponentState(
+                options={"models": supported[30:65]}
+            )
+            with patch.object(
+                planner,
+                "inspect",
+                return_value=ComponentInspection(
+                    component_id="audio_cpp",
+                    state=ComponentState.PRESENT,
+                    installed_model_ids=tuple(installed_over_limit),
+                ),
+            ):
+                normalized = planner._normalize_audio_cpp_model_options(
+                    {
+                        "audio_cpp": DesiredComponentState(
+                            options={"add_models": supported[64:67]}
+                        )
+                    },
+                    persisted_desired={"audio_cpp": persisted},
+                )
+            self.assertEqual(
+                supported[:67],
+                normalized["audio_cpp"].options["models"],
+            )
+
+    def test_planner_rejects_empty_duplicate_invalid_and_unsupported_ids(self):
+        supported = set(SUPPORTED_MODEL_IDS)
+        invalid_selections = (
+            [],
+            ["../model"],
+            ["voxcpm2_q8_0", "voxcpm2_q8_0"],
+            ["unsupported-model"],
+        )
+        for selection in invalid_selections:
+            with self.subTest(selection=selection), self.assertRaises(
+                PlannerValidationError
+            ):
+                Planner._validated_model_ids(
+                    selection,
+                    option="models",
+                    supported=supported,
+                )
 
     def test_plan_canonicalizes_additive_models_before_digest_and_projection(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -203,6 +293,18 @@ class ManagerModelSelectionTests(unittest.TestCase):
         )
 
     def test_status_inventory_is_bounded_and_metadata_only(self):
+        model_ids = [f"model_{index}" for index in range(40)]
+        models = [
+            {
+                "id": model_id,
+                "label": f"Model {index}",
+                "license_name": "MIT",
+                "license_url": "https://example.test/license",
+                "estimated_download_bytes": 10,
+            }
+            for index, model_id in enumerate(model_ids)
+        ]
+
         class Manager:
             @staticmethod
             def status():
@@ -214,29 +316,24 @@ class ManagerModelSelectionTests(unittest.TestCase):
                     {
                         "definition": {
                             "id": "audio_cpp",
-                            "models": [
-                                {
-                                    "id": "model_a",
-                                    "label": "Model A",
-                                    "license_name": "MIT",
-                                    "license_url": "https://example.test/license",
-                                    "estimated_download_bytes": 10,
-                                }
-                            ],
+                            "models": models,
                         },
                         "inspection": {
-                            "installed_model_ids": ["model_a"],
+                            "installed_model_ids": model_ids,
                         },
                         "desired": {
-                            "options": {"models": ["model_a"]},
+                            "options": {"models": model_ids},
                         },
                     }
                 ]}
 
         status = manager_status(type("Runtime", (), {"manager": Manager()})())
         inventory = status["model_inventory"]
-        self.assertEqual(["model_a"], inventory[0]["installed_model_ids"])
-        self.assertEqual(["model_a"], inventory[0]["desired_model_ids"])
+        self.assertEqual(model_ids, inventory[0]["installed_model_ids"])
+        self.assertEqual(model_ids, inventory[0]["desired_model_ids"])
+        self.assertEqual(model_ids, [model["id"] for model in inventory[0]["known_models"]])
+        self.assertEqual(40, inventory[0]["known_model_count"])
+        self.assertFalse(inventory[0]["known_models_truncated"])
         self.assertEqual(
             10,
             inventory[0]["known_models"][0]["estimated_download_bytes"],

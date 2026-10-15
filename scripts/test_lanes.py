@@ -304,6 +304,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_web_dispatch_context.py",
         "tests/test_web_source_cleaning_dispatch.py",
         "tests/test_web_parity_workspace.py",
+        "tests/test_generation_batch_idempotency.py",
     ),
     "web-02-serial": (
         "tests/test_web_foundation.py",
@@ -410,6 +411,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_tts_expressive_projection.py",
         "tests/test_tts_catalogue_service.py",
         "tests/test_web_settings_api.py",
+        "tests/test_tts_framework_settings.py",
         "tests/test_web_parameter_definitions.py",
         "tests/test_web_parameter_definitions_api.py",
         "tests/test_web_provider_api.py",

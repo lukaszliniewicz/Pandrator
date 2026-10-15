@@ -843,6 +843,15 @@ class GenerationService(GenerationHistoryReader):
     def update_segments(
         self, session_id: str, updates: list[dict[str, Any]]
     ) -> dict[str, Any]:
+        with self.database.immediate_session() as session:
+            return self.update_segments_in_session(session, session_id, updates)
+
+    def update_segments_in_session(
+        self,
+        session: Session,
+        session_id: str,
+        updates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         if not updates:
             raise ValueError("At least one generation segment update is required.")
         segment_ids = [str(item.get("id") or "").strip() for item in updates]
@@ -857,106 +866,105 @@ class GenerationService(GenerationHistoryReader):
                 "Every generation segment update requires at least one change."
             )
 
-        with self.database.immediate_session() as session:
-            if session.get(SessionRecord, session_id) is None:
-                raise KeyError(session_id)
-            segments = {
-                segment.id: segment
-                for segment in session.scalars(
-                    select(GenerationSegment).where(
-                        GenerationSegment.id.in_(segment_ids)
-                    )
-                ).all()
-            }
-            if len(segments) != len(segment_ids):
-                missing = next(
-                    segment_id
-                    for segment_id in segment_ids
-                    if segment_id not in segments
+        if session.get(SessionRecord, session_id) is None:
+            raise KeyError(session_id)
+        segments = {
+            segment.id: segment
+            for segment in session.scalars(
+                select(GenerationSegment).where(
+                    GenerationSegment.id.in_(segment_ids)
                 )
-                raise KeyError(missing)
+            ).all()
+        }
+        if len(segments) != len(segment_ids):
+            missing = next(
+                segment_id
+                for segment_id in segment_ids
+                if segment_id not in segments
+            )
+            raise KeyError(missing)
 
-            revision_ids = {segment.plan_revision_id for segment in segments.values()}
-            plan_revisions = {
-                revision.id: revision
-                for revision in session.scalars(
-                    select(GenerationPlanRevision).where(
-                        GenerationPlanRevision.id.in_(revision_ids)
-                    )
-                ).all()
-            }
-            plan_ids = {revision.plan_id for revision in plan_revisions.values()}
-            plans = {
-                plan.id: plan
-                for plan in session.scalars(
-                    select(GenerationPlan).where(GenerationPlan.id.in_(plan_ids))
-                ).all()
-            }
-            for segment_id in segment_ids:
-                segment = segments[segment_id]
-                revision = plan_revisions.get(segment.plan_revision_id)
-                plan = plans.get(revision.plan_id) if revision is not None else None
-                if plan is None or plan.session_id != session_id:
-                    raise KeyError(segment_id)
-
-            for item in updates:
-                segment = segments[str(item["id"])]
-                if segment.revision != int(item["revision"]):
-                    raise RevisionConflict(
-                        "One or more generation segments changed in another client; no replacements were applied."
-                    )
-
-            from .speech_plan_workspace import prepare_segment_edit_targets
-
-            segments = prepare_segment_edit_targets(self, session, segments, updates)
-            segment_ids = [segment.id for segment in segments.values()]
-            completed_takes_by_segment: dict[str, list[AudioTake]] = {}
-            for take in session.scalars(
-                select(AudioTake).where(
-                    AudioTake.generation_segment_id.in_(segment_ids),
-                    AudioTake.status == "completed",
+        revision_ids = {segment.plan_revision_id for segment in segments.values()}
+        plan_revisions = {
+            revision.id: revision
+            for revision in session.scalars(
+                select(GenerationPlanRevision).where(
+                    GenerationPlanRevision.id.in_(revision_ids)
                 )
-            ).all():
-                completed_takes_by_segment.setdefault(
-                    take.generation_segment_id, []
-                ).append(take)
+            ).all()
+        }
+        plan_ids = {revision.plan_id for revision in plan_revisions.values()}
+        plans = {
+            plan.id: plan
+            for plan in session.scalars(
+                select(GenerationPlan).where(GenerationPlan.id.in_(plan_ids))
+            ).all()
+        }
+        for segment_id in segment_ids:
+            segment = segments[segment_id]
+            revision = plan_revisions.get(segment.plan_revision_id)
+            plan = plans.get(revision.plan_id) if revision is not None else None
+            if plan is None or plan.session_id != session_id:
+                raise KeyError(segment_id)
 
-            assembly_keys = {
-                "text",
-                "optimized_text",
-                "speech_plan",
-                "node_kind",
-                "paragraph_break_after",
-                "voice_id",
-                "voice",
-                "language",
-                "silence_after_ms",
-                "removed",
-            }
-            assembly_changed = False
-            results = []
-            for item in updates:
-                segment = segments[str(item["id"])]
-                changes = dict(item["changes"])
-                assembly_changed = assembly_changed or bool(
-                    assembly_keys.intersection(changes)
+        for item in updates:
+            segment = segments[str(item["id"])]
+            if segment.revision != int(item["revision"]):
+                raise RevisionConflict(
+                    "One or more generation segments changed in another client; no replacements were applied."
                 )
-                results.append(
-                    self._apply_segment_changes(
-                        session,
-                        segment,
-                        changes,
-                        completed_takes=completed_takes_by_segment.get(segment.id, []),
-                        mark_assemblies=False,
-                    )
+
+        from .speech_plan_workspace import prepare_segment_edit_targets
+
+        segments = prepare_segment_edit_targets(self, session, segments, updates)
+        segment_ids = [segment.id for segment in segments.values()]
+        completed_takes_by_segment: dict[str, list[AudioTake]] = {}
+        for take in session.scalars(
+            select(AudioTake).where(
+                AudioTake.generation_segment_id.in_(segment_ids),
+                AudioTake.status == "completed",
+            )
+        ).all():
+            completed_takes_by_segment.setdefault(
+                take.generation_segment_id, []
+            ).append(take)
+
+        assembly_keys = {
+            "text",
+            "optimized_text",
+            "speech_plan",
+            "node_kind",
+            "paragraph_break_after",
+            "voice_id",
+            "voice",
+            "language",
+            "silence_after_ms",
+            "removed",
+        }
+        assembly_changed = False
+        results = []
+        for item in updates:
+            segment = segments[str(item["id"])]
+            changes = dict(item["changes"])
+            assembly_changed = assembly_changed or bool(
+                assembly_keys.intersection(changes)
+            )
+            results.append(
+                self._apply_segment_changes(
+                    session,
+                    segment,
+                    changes,
+                    completed_takes=completed_takes_by_segment.get(segment.id, []),
+                    mark_assemblies=False,
                 )
-            for request_item, result in zip(updates, results, strict=True):
-                if result["id"] != str(request_item["id"]):
-                    result["previous_segment_id"] = str(request_item["id"])
-            if assembly_changed:
-                mark_output_assemblies_stale(session, session_id)
-            session.flush()
-            return {"items": results}
+            )
+        for request_item, result in zip(updates, results, strict=True):
+            if result["id"] != str(request_item["id"]):
+                result["previous_segment_id"] = str(request_item["id"])
+        if assembly_changed:
+            mark_output_assemblies_stale(session, session_id)
+        session.flush()
+        return {"items": results}
 
     _segment_copy_values = staticmethod(GenerationTopologyService._segment_copy_values)
     _provenance_source_refs = staticmethod(GenerationTopologyService._provenance_source_refs)

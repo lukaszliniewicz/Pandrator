@@ -7525,6 +7525,30 @@ export interface components {
             /** Expected State Hash */
             expected_state_hash: string;
         };
+        /** RequestedTranscriptionSelection */
+        RequestedTranscriptionSelection: {
+            /** Compute Backend */
+            compute_backend: string | null;
+            /** Engine */
+            engine: string | null;
+            /** Language */
+            language: string | null;
+            /** Model Quantization */
+            model_quantization: string | null;
+        };
+        /** ResolvedTranscriptionSelection */
+        ResolvedTranscriptionSelection: {
+            /** Compute Backend */
+            compute_backend: string | null;
+            /** Engine */
+            engine: string | null;
+            /** Language */
+            language: string | null;
+            /** Model */
+            model: string | null;
+            /** Model Quantization */
+            model_quantization: string | null;
+        };
         /** ReviewSplitInspection */
         ReviewSplitInspection: {
             /** Expected Revision */
@@ -7543,6 +7567,19 @@ export interface components {
             segment_id: string;
             /** Source Artifact Id */
             source_artifact_id: string;
+        };
+        /** RuntimeTranscriptionSelection */
+        RuntimeTranscriptionSelection: {
+            /** Compute Backend */
+            compute_backend: string | null;
+            /** Engine */
+            engine: string | null;
+            /** Language */
+            language: string | null;
+            /** Model */
+            model: string | null;
+            /** Model Quantization */
+            model_quantization: string | null;
         };
         /** RvcConvertRequest */
         RvcConvertRequest: {
@@ -9328,6 +9365,16 @@ export interface components {
             /** Total Chars */
             total_chars: number;
         };
+        /** TranscriptionSelection */
+        TranscriptionSelection: {
+            /** Normalization */
+            normalization?: {
+                [key: string]: unknown;
+            };
+            requested: components["schemas"]["RequestedTranscriptionSelection"];
+            resolved: components["schemas"]["ResolvedTranscriptionSelection"];
+            runtime: components["schemas"]["RuntimeTranscriptionSelection"];
+        };
         /** TranscriptionSnapshot */
         TranscriptionSnapshot: {
             /** Available Formats */
@@ -9366,6 +9413,7 @@ export interface components {
             result_available: boolean;
             /** Result Url */
             result_url: string;
+            selection: components["schemas"]["TranscriptionSelection"];
             /** Size Bytes */
             size_bytes: number;
             /** Status */
@@ -9455,6 +9503,7 @@ export interface components {
         TtsVoicePreviewRequest: {
             /**
              * Generation Prompt
+             * @description Omit or use null to inherit saved directions; an empty string clears them for this audition.
              * @default null
              */
             generation_prompt?: string | null;
@@ -9680,6 +9729,13 @@ export interface components {
              * @default null
              */
             availability_reason?: string | null;
+            /**
+             * Catalogue
+             * @default null
+             */
+            catalogue?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Health Checked At
              * @default null
@@ -13170,7 +13226,19 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        preview?: {
+                            directions: {
+                                present: boolean;
+                                /** @enum {string} */
+                                source: "inherited" | "custom" | "cleared";
+                            };
+                        };
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
             };
         };
     };
@@ -14689,7 +14757,10 @@ export interface operations {
     updateGenerationSegments: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 sessionId: string;
             };
@@ -14704,6 +14775,8 @@ export interface operations {
             /** @description Generation segments updated atomically */
             200: {
                 headers: {
+                    /** @description True when returning the retained response for this request key. */
+                    "Idempotency-Replayed"?: "true";
                     [name: string]: unknown;
                 };
                 content?: never;

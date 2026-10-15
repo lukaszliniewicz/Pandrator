@@ -23,6 +23,10 @@
   } from './voice-catalog';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import AudioCppModelSettings from './AudioCppModelSettings.svelte';
+  import {
+    mergeModelTuningMaps,
+    modelTuningMap
+  } from './audio-cpp-model-settings';
   import ElevenLabsModelSettings from './ElevenLabsModelSettings.svelte';
   import { elevenLabsVoiceSettingsError } from './elevenlabs-settings';
   import AudioCppModelDetails from './AudioCppModelDetails.svelte';
@@ -266,7 +270,14 @@
     (override = { ...override, [key]: next });
   let ttsServices = $state<TtsService[]>([]);
   let localVoices = $state<VoiceRecord[]>([]);
-  const effectiveTts = $derived({ ...payload?.effective, ...override });
+  const effectiveTts: Record<string, unknown> = $derived({
+    ...payload?.effective,
+    ...override,
+    audio_cpp_model_settings: mergeModelTuningMaps(
+      payload?.global?.audio_cpp_model_settings,
+      override.audio_cpp_model_settings
+    )
+  });
   const selectedTts = $derived(
     ttsServices.find((service) => serviceMatches(service, effectiveTts.service))
   );
@@ -1138,6 +1149,7 @@
           model={selectedModel}
           parameters={modelMetadata.request_parameters}
           settings={effectiveTts}
+          overrides={modelTuningMap(override.audio_cpp_model_settings)}
           onchange={(map) => set('audio_cpp_model_settings', map)}
         />
       {/if}
@@ -1283,6 +1295,7 @@
           model={selectedModel}
           parameters={modelMetadata.request_parameters}
           settings={effectiveTts}
+          overrides={modelTuningMap(override.audio_cpp_model_settings)}
           onchange={(map) => set('audio_cpp_model_settings', map)}
         />
       {/if}

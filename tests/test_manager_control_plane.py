@@ -930,6 +930,104 @@ class ApiContractTests(unittest.TestCase):
             operation_repeat.get_json()["id"],
         )
 
+    def test_plan_validation_errors_are_400_and_unexpected_errors_stay_500(self):
+        invalid_model_selections = (
+            [],
+            ["../model"],
+            ["qwen3_tts_1_7b_base_q8_0"] * 2,
+            ["unsupported-model"],
+        )
+        for index, model_ids in enumerate(invalid_model_selections):
+            with self.subTest(model_ids=model_ids):
+                response = self.client.post(
+                    "/v1/plans",
+                    headers={
+                        **self.auth,
+                        "Idempotency-Key": f"plan-validation-{index}",
+                    },
+                    json={
+                        "kind": "install",
+                        "desired": {
+                            "audio_cpp": {
+                                "compute": "cpu",
+                                "options": {"models": model_ids},
+                            }
+                        },
+                    },
+                )
+                self.assertEqual(400, response.status_code)
+                error = response.get_json()["error"]
+                self.assertEqual("validation_error", error["code"])
+                self.assertIn("audio.cpp", error["message"])
+
+        invalid_compute = self.client.post(
+            "/v1/plans",
+            headers={
+                **self.auth,
+                "Idempotency-Key": "plan-validation-compute",
+            },
+            json={
+                "kind": "install",
+                "desired": {"silero": {"compute": "unsupported"}},
+            },
+        )
+        self.assertEqual(400, invalid_compute.status_code)
+        self.assertEqual(
+            "validation_error",
+            invalid_compute.get_json()["error"]["code"],
+        )
+        self.assertIn("desired.silero.compute", invalid_compute.get_json()["error"]["message"])
+
+        with mock.patch.object(
+            self.application,
+            "plan",
+            side_effect=RuntimeError("unexpected plan failure"),
+        ):
+            response = self.client.post(
+                "/v1/plans",
+                headers={
+                    **self.auth,
+                    "Idempotency-Key": "plan-unexpected-failure",
+                },
+                json={
+                    "kind": "install",
+                    "desired": {
+                        "silero": DesiredComponentState().model_dump(
+                            mode="json"
+                        )
+                    },
+                },
+            )
+        self.assertEqual(500, response.status_code)
+        self.assertEqual("internal_error", response.get_json()["error"]["code"])
+
+        audio_cpp_driver = self.application.planner.registry.driver("audio_cpp")
+        with mock.patch.object(
+            audio_cpp_driver,
+            "plan_install",
+            side_effect=ValueError("unexpected driver failure"),
+        ):
+            response = self.client.post(
+                "/v1/plans",
+                headers={
+                    **self.auth,
+                    "Idempotency-Key": "plan-driver-unexpected-value-error",
+                },
+                json={
+                    "kind": "install",
+                    "desired": {
+                        "audio_cpp": {
+                            "compute": "cpu",
+                            "options": {
+                                "models": ["qwen3_tts_1_7b_base_q8_0"]
+                            },
+                        }
+                    },
+                },
+            )
+        self.assertEqual(500, response.status_code)
+        self.assertEqual("internal_error", response.get_json()["error"]["code"])
+
     def test_runtime_action_rejects_during_maintenance_without_supervisor_call(self):
         self.application.lifecycle_lock = threading.Lock()
         self.application.lifecycle_lock.acquire()

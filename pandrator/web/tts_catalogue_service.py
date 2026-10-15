@@ -213,7 +213,46 @@ class TtsCatalogueService:
                 del self._native_discovery[key]
                 return None
             self._native_discovery.move_to_end(key)
-            return deepcopy(cached[1])
+            discovery = deepcopy(cached[1])
+            if isinstance(discovery.get("catalogue"), dict):
+                discovery["catalogue"]["source"] = "cache"
+            return discovery
+
+    @staticmethod
+    def _catalogue_metadata(
+        service: dict[str, Any], *, source: str = "configured",
+        checked_at: str | None = None, complete: bool = False, error: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "source": source,
+            "scope": "service",
+            "service_id": normalize_service_id(service.get("id") or service.get("name")),
+            "checked_at": checked_at,
+            "complete": complete,
+            "error": error,
+        }
+
+    def _mark_discovery_failure(
+        self, service: dict[str, Any], key: str | None, error: object, api_key: str,
+    ) -> None:
+        values = (api_key, str(service.get("credential_reference") or ""))
+        safe_error = redact_secret_text(error, values)
+        for value in values:
+            if value:
+                safe_error = safe_error.replace(value, "[REDACTED]")
+        if service.get("voice_catalogue_warning"):
+            service["voice_catalogue_warning"] = safe_error[:500]
+        previous = service.get("catalogue") or {}
+        service["catalogue"] = self._catalogue_metadata(
+            service, source=previous.get("source", "configured"),
+            checked_at=previous.get("checked_at"), error=safe_error[:500],
+        )
+        # Keep prior inventory and its original TTL, but never hide a failed
+        # refresh behind the previous complete observation on the next read.
+        with self._native_discovery_guard:
+            cached = self._native_discovery.get(key) if key else None
+            if cached is not None:
+                cached[1]["catalogue"] = deepcopy(service["catalogue"])
 
     def _retain_native_discovery(self, key: str | None, catalogue: dict[str, Any]) -> None:
         if key is None or catalogue.get("voice_catalogue_warning"):
@@ -502,24 +541,33 @@ class TtsCatalogueService:
             return
         with ThreadPoolExecutor(max_workers=min(12, len(online_services))) as executor:
             enrichments = list(executor.map(enrich, online_services))
-        for (_index, service, _api_key), (catalogue, error) in zip(
+        for (_index, service, api_key), (catalogue, error) in zip(
             online_services,
             enrichments,
             strict=True,
         ):
+            key = discovery_keys[_index] if _index < len(discovery_keys) else None
             if error is not None:
-                service.update(
-                    {
-                        "available": False,
-                        "availability_reason": str(error),
-                    }
-                )
+                self._mark_discovery_failure(service, key, error, api_key)
             elif catalogue is not None:
-                service.update(catalogue)
-                self._retain_native_discovery(
-                    discovery_keys[_index] if _index < len(discovery_keys) else None,
-                    catalogue,
-                )
+                # Inventory must not replace the independent health observation.
+                discovery = {
+                    name: value for name, value in catalogue.items()
+                    if name not in {
+                        "available", "online", "availability_reason", "health_checked_at",
+                    }
+                }
+                service.update(discovery)
+                warning = catalogue.get("voice_catalogue_warning")
+                if warning:
+                    self._mark_discovery_failure(service, key, warning, api_key)
+                else:
+                    service["catalogue"] = self._catalogue_metadata(
+                        service, source="runtime",
+                        checked_at=datetime.now(timezone.utc).isoformat(), complete=True,
+                    )
+                    discovery["catalogue"] = deepcopy(service["catalogue"])
+                    self._retain_native_discovery(key, discovery)
 
     def _project_manager(
         self,
@@ -926,6 +974,8 @@ class TtsCatalogueService:
             discovery_keys,
             strict=True,
         ):
+            # Configured rows cannot assert a successful runtime discovery.
+            service["catalogue"] = self._catalogue_metadata(service)
             if normalize_service_id(service.get("adapter")) == "audio_cpp":
                 if not compact:
                     service["model_catalog"] = _audio_cpp_static_model_catalog(service)
@@ -1051,20 +1101,6 @@ class TtsCatalogueService:
             )
             or ""
         ).strip().lower()
-        if is_audio_cpp and model_voice_mode == "design":
-            # Use the same validation as generation, including inferred model
-            # metadata for custom audio.cpp model IDs. This constructs a payload
-            # only; no provider request or inference is started.
-            tts_handler._build_audio_cpp_audio_payload(
-                "",
-                {
-                    "model": resolved_model,
-                    "language": language or str(default_value.get("language") or "en"),
-                    "generation_prompt": generation_prompt,
-                    "audio_cpp_seed": seed,
-                },
-                service,
-            )
         raw_default_voices = service.get("default_voices")
         default_voices = raw_default_voices if isinstance(raw_default_voices, dict) else {}
         if (
@@ -1103,13 +1139,20 @@ class TtsCatalogueService:
             "preview_adapter": resolved_adapter,
             "preview_api_base": str(service.get("api_base") or ""),
         }
-        normalized_generation_prompt = str(generation_prompt or "").strip()
-        if normalized_generation_prompt:
-            settings["generation_prompt"] = normalized_generation_prompt
+        if generation_prompt is not None:
+            # A supplied direction is authoritative for this preview. Empty
+            # explicitly clears both aliases; omission keeps saved directions.
+            settings["generation_prompt"] = generation_prompt.strip()
+            settings["openai_audio_instructions"] = ""
         if seed is not None:
             settings["seed"] = int(seed)
             if is_audio_cpp:
                 settings["audio_cpp_seed"] = int(seed)
+                settings["_preview_seed_explicit"] = True
         if service.get("is_custom"):
             settings["openai_audio_endpoint"] = str(service.get("id") or service_id).strip()
+        if is_audio_cpp and model_voice_mode == "design":
+            # Validate the effective directions, including inherited settings.
+            # This compiles a payload only; no provider request is started.
+            tts_handler._build_audio_cpp_audio_payload("", settings, service)
         return settings

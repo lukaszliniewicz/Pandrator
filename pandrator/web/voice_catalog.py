@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from pandrator.logic.tts_service_identity import normalize_service_id
+
 from .voice_catalog_schemas import (
     VoiceCompatibility,
     VoiceCompatibilityStatus,
@@ -244,6 +246,7 @@ def _compatibility_payload(
         supported_languages=languages,
         service_available=available if has_observation and type(available) is bool else None,
         health_checked_at=checked_at if has_observation else None,
+        catalogue=service.get("catalogue") if isinstance(service.get("catalogue"), dict) else None,
         availability_reason=reason if has_observation and isinstance(reason, str) else None,
     ).model_dump()
 
@@ -384,7 +387,19 @@ def catalog_entries(
                     else "unknown"
                 )
                 if status == "ready" and model["id"] not in listed_models(service):
-                    status = "model_unavailable"
+                    provenance = service.get("catalogue")
+                    complete = (
+                        isinstance(provenance, dict)
+                        and provenance.get("complete") is True
+                        and not provenance.get("error")
+                        and provenance.get("source") in {"runtime", "cache"}
+                        and provenance.get("scope") == "service"
+                        and normalize_service_id(provenance.get("service_id"))
+                        == normalize_service_id(service.get("id"))
+                        and isinstance(provenance.get("checked_at"), str)
+                        and bool(provenance["checked_at"].strip())
+                    )
+                    status = "model_unavailable" if complete else "unknown"
                 compatibility.append(
                     _compatibility_payload(
                         service,

@@ -310,14 +310,21 @@ export const speechServiceApi = {
       { body }
     ),
   preview: (serviceId: string, body: ApiSchema<'TtsVoicePreviewRequest'>) =>
-    typedApiJson<'/api/v1/services/tts/{serviceId}/preview', 'post', JobRecord>(
+    typedApiJson<
       '/api/v1/services/tts/{serviceId}/preview',
       'post',
-      {
-        path: { serviceId },
-        body
+      JobRecord & {
+        preview?: {
+          directions: {
+            source: 'inherited' | 'custom' | 'cleared';
+            present: boolean;
+          };
+        };
       }
-    )
+    >('/api/v1/services/tts/{serviceId}/preview', 'post', {
+      path: { serviceId },
+      body
+    })
 };
 
 export const speechRecognitionApi = {

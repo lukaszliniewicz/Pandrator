@@ -1,16 +1,23 @@
 <script lang="ts">
   import { ChevronDown, RotateCcw } from '@lucide/svelte';
   import type { TtsRequestParameter } from './api-models';
+  import {
+    modelTuningMap,
+    updateModelTuning,
+    type ModelTuningMap
+  } from './audio-cpp-model-settings';
   let {
     model,
     parameters,
     settings,
+    overrides = {},
     onchange
   }: {
     model: string;
     parameters: Record<string, TtsRequestParameter>;
     settings: Record<string, unknown>;
-    onchange: (map: Record<string, Record<string, unknown>>) => void;
+    overrides?: ModelTuningMap;
+    onchange: (map: ModelTuningMap) => void;
   } = $props();
   const labels: Record<string, string> = {
     seed: 'Random seed',
@@ -56,14 +63,17 @@
     stop_threshold: 'Stop threshold',
     depth_temperature: 'Depth temperature'
   };
-  const map = $derived(
-    (settings.audio_cpp_model_settings ?? {}) as Record<
-      string,
-      Record<string, unknown>
-    >
-  );
+  const map = $derived(modelTuningMap(settings.audio_cpp_model_settings));
   const modelValues = $derived(map[model]);
+  const tuningSource = $derived(
+    Object.prototype.hasOwnProperty.call(overrides, model)
+      ? overrides[model] === null
+        ? 'Model defaults'
+        : 'Project tuning'
+      : 'Inherited tuning'
+  );
   function current(key: string) {
+    if (modelValues === null) return undefined;
     if (modelValues && typeof modelValues === 'object') return modelValues[key];
     const raw = (settings.audio_cpp_options ??
       settings.options ??
@@ -75,16 +85,19 @@
     );
   }
   function change(key: string, next: unknown) {
-    const values = modelValues
-      ? { ...modelValues }
-      : Object.fromEntries(
-          Object.keys(parameters)
-            .map((key) => [key, current(key)])
-            .filter(([, value]) => value != null && value !== '')
-        );
-    // Explicit null masks inherited tuning values when workspace settings merge.
-    values[key] = next == null || next === '' ? null : next;
-    onchange({ ...map, [model]: values });
+    const values =
+      modelValues === null
+        ? Object.fromEntries(Object.keys(parameters).map((key) => [key, null]))
+        : modelValues
+          ? {}
+          : Object.fromEntries(
+              Object.keys(parameters)
+                .map((key) => [key, current(key)])
+                .filter(([, value]) => value != null && value !== '')
+            );
+    onchange(
+      updateModelTuning(overrides, model, { key, value: next ?? null }, values)
+    );
   }
   const mainKeys = new Set([
     'seed',
@@ -214,10 +227,27 @@
   aria-label="Model tuning"
 >
   <h3 class="text-sm font-semibold">Model tuning</h3>
+  <p class="mt-1 text-xs font-semibold" role="status">{tuningSource}</p>
   <p class="muted mt-1 text-xs">
-    Values are saved separately for each model. Leave a control blank to use its
-    default.
+    Values are saved separately for each model. A blank control uses the model's
+    default. Reset all controls to ignore saved tuning for this model.
   </p>
+  <div class="mt-3 flex flex-wrap gap-2">
+    <button
+      class="btn btn-sm"
+      onclick={() => onchange(updateModelTuning(overrides, model, 'defaults'))}
+    >
+      Use model defaults
+    </button>
+    {#if Object.prototype.hasOwnProperty.call(overrides, model)}
+      <button
+        class="btn btn-sm"
+        onclick={() => onchange(updateModelTuning(overrides, model, 'inherit'))}
+      >
+        Inherit saved tuning
+      </button>
+    {/if}
+  </div>
   <div class="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
     {#each common as [key, parameter]}{@render control(key, parameter)}{/each}
   </div>

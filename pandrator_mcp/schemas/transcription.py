@@ -81,8 +81,8 @@ TranscriptionSource = Annotated[
 class TranscribeInput(ToolInput):
     source: TranscriptionSource
     format: Literal["txt", "srt", "json"] = "txt"
-    language: str = Field(
-        default="auto",
+    language: str | None = Field(
+        default=None,
         min_length=1,
         max_length=40,
         pattern=r"^[A-Za-z0-9_-]+$",

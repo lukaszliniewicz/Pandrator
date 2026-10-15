@@ -46,7 +46,9 @@ Use the existing component plan tool with `component_id=audio_cpp` and
 `options={"add_models":["fish_audio_s2_pro_q8_0"]}` to retain installed/desired
 models and add a package. Alternatively, `options.models` declares the complete
 replacement set and may remove omitted models. These options are mutually
-exclusive, accept 1–32 unique supported IDs, and cannot contain URLs or paths.
+exclusive, accept nonempty lists of unique supported IDs, and cannot contain
+URLs or paths. There is no model-count cap; normal request-size limits apply.
+Status readbacks include the complete installed and desired model ID lists.
 Review the resolved model set, add/remove/retain lists, download/disk estimates,
 service restart and confirmations before executing the immutable plan digest.
 

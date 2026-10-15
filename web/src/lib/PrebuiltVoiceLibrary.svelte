@@ -49,6 +49,7 @@
   let model = $state('');
   let language = $state('');
   let previewText = $state('The quick brown fox jumps over the lazy dog.');
+  let inheritDirections = $state(true);
   let previews = $state<
     Record<
       string,
@@ -431,10 +432,15 @@
     try {
       const queued = await speechServiceApi.preview(service.id, {
         text: previewText.trim(),
+        generation_prompt: inheritDirections ? undefined : '',
         model: service.id === 'kobold_qwen' ? qwenPrebuiltModel : model,
         voice: voice.id,
         language
       });
+      if (queued.preview)
+        notice = queued.preview.directions.present
+          ? 'Saved style directions are included in this audition.'
+          : 'This audition has no style directions.';
       const complete = await waitJob(queued.id, key);
       const artifactId = String(complete.result_json?.artifact_id ?? '');
       if (!artifactId)
@@ -576,6 +582,10 @@
         maxlength="1000"
         class="field resize-y"></textarea></label
     >
+    <label class="mt-3 flex items-center gap-2 text-sm">
+      <input type="checkbox" bind:checked={inheritDirections} />
+      Use saved style directions
+    </label>
     {#if service?.available === false}<p
         class="mt-3 text-xs text-[var(--warning)]"
       >

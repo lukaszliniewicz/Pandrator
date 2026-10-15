@@ -46,7 +46,7 @@ _FORBIDDEN_OPTION_KEYS = frozenset(
 )
 ManagerModelIds = Annotated[
     list[Annotated[str, Field(pattern=_MODEL_ID_PATTERN)]],
-    Field(min_length=1, max_length=32),
+    Field(min_length=1),
 ]
 ManagerOptionValue = str | int | float | bool | None | ManagerModelIds
 
@@ -121,9 +121,9 @@ class ManagerDesiredComponentInput(ToolInput):
                         "Manager component options accept lists only for "
                         "models and add_models."
                     )
-                if not item or len(item) > 32:
+                if not item:
                     raise ValueError(
-                        "Manager model selections must contain 1 to 32 IDs."
+                        "Manager model selections must contain at least one ID."
                     )
                 if len(item) != len(set(item)):
                     raise ValueError("Manager model IDs must be unique.")

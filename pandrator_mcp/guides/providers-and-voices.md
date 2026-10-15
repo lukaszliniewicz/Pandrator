@@ -23,6 +23,24 @@ Before planning generation:
 7. call `pandrator_configure_tts` with exact advertised IDs; and
 8. review the generation plan's provider disclosures.
 
+Supply `service_id` to scope catalogue discovery and refreshes to that service.
+Each service's `catalogue` observation identifies its source, service scope,
+discovery time, completeness, and any discovery error. This is separate from
+the service-health observation. Absence from an incomplete model list does not
+establish that a model is unavailable.
+
+Project `audio_cpp_model_settings` entries inherit global keys when they are
+objects. An exact model entry of `null` explicitly selects model defaults and
+suppresses all inherited model tuning and legacy tuning fields. Remove that
+model entry from the stored project override to resume inheritance. An empty
+object still inherits global keys; it is not a reset.
+
+Voice auditions accept at most 1000 characters. Omit `generation_prompt` or use
+`null` to inherit saved directions; supply `""` to clear both direction aliases
+for that audition. The admission response's `preview.directions` reports the
+effective direction source and whether directions are present. No saved
+settings are changed by an audition.
+
 Names in a user's request may be examples, display labels, or stale catalog
 values. Match case-insensitively only after the catalog has supplied a unique
 canonical service/model/voice value. A managed voice is usable only when its

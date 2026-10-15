@@ -433,10 +433,15 @@ class ApplicationVoiceMethods(ApplicationRequests):
             maximum_body_bytes=64 * 1024,
         )
 
-    def tts_catalog(self, *, refresh: bool = False) -> dict[str, Any]:
+    def tts_catalog(
+        self, *, refresh: bool = False, service_id: str | None = None,
+    ) -> dict[str, Any]:
+        parameters = {"refresh": "true"} if refresh else {}
+        if service_id:
+            parameters["service_id"] = service_id
         return self._request_json(
             "/api/v1/services/tts",
-            parameters={"refresh": "true"} if refresh else None,
+            parameters=parameters or None,
         )
 
     def audio_cpp_catalogue(

@@ -12,6 +12,7 @@ import pytest
 from mcp import Client
 from mcp.types import TextContent
 
+from pandrator_mcp.catalog import ACTION_CATALOG
 from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.network_policy import TargetMode
 from pandrator_mcp.request_context import _REQUEST_ID, _TRACE_ID, correlation_headers
@@ -92,7 +93,7 @@ def test_native_transcription_options_forwarded(
         "size_bytes": len(CONTENT),
         "sha256": hashlib.sha256(CONTENT).hexdigest(),
         "format": "txt",
-        "language": "auto",
+        "language": None,
         "engine": "qwen3",
         "model_quantization": None,
         "compute_backend": None,
@@ -141,7 +142,9 @@ def test_discovered_transcription_options_are_canonical_and_optional(tmp_path: P
             return await client.list_tools()
 
     tools = asyncio.run(inventory()).tools
-    assert len(tools) == 185
+    assert {tool.name for tool in tools} == {
+        action.name for action in ACTION_CATALOG.list() if action.enabled
+    }
     schema = next(tool.input_schema for tool in tools if tool.name == "pandrator_transcribe")
     for field, expected in {
         "qwen_asr_model": {"qwen3_asr_0_6b", "qwen3_asr_1_7b"},
@@ -153,4 +156,6 @@ def test_discovered_transcription_options_are_canonical_and_optional(tmp_path: P
         assert field not in schema["required"]
         choices = property_schema.get("anyOf", [property_schema])
         assert {value for choice in choices for value in choice.get("enum", [])} == expected
+    assert schema["properties"]["language"]["default"] is None
+    assert "language" not in schema["required"]
     assert calls == application.mock_calls == []

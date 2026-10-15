@@ -159,6 +159,55 @@ def _client_with_response(response: _Response) -> ApplicationClient:
         local_bootstrap=lambda _target, _session: "csrf",
     )
 class QuickTranscriptionToolTests(unittest.TestCase):
+    def test_language_is_omitted_by_default_but_explicit_auto_is_preserved(self):
+        source = Base64TranscriptionSource(
+            data=base64.b64encode(b"audio").decode("ascii"),
+            filename="clip.wav",
+        )
+        omitted = TranscribeInput(source=source, idempotency_key="transcribe:omit")
+        self.assertIsNone(omitted.language)
+        explicit = TranscribeInput(
+            source=source,
+            language="auto",
+            idempotency_key="transcribe:auto",
+        )
+        self.assertEqual("auto", explicit.language)
+
+    def test_status_and_result_selection_metadata_are_passed_through(self):
+        selection = {
+            "requested": {"engine": None},
+            "resolved": {"engine": "whisper"},
+            "runtime": {"engine": "whisper"},
+            "normalization": {},
+        }
+
+        class _SelectedApplication(_Application):
+            def get_transcription(self, transcription_id, *, format, wait_seconds):
+                del format, wait_seconds
+                return {"id": transcription_id, "selection": selection}
+
+            def get_transcription_result(
+                self, transcription_id, *, format, offset, limit
+            ):
+                del transcription_id, format, offset, limit
+                return {"content": {"selection": selection}, "selection": selection}
+
+        application = _SelectedApplication()
+        runtime = _runtime(Path("/tmp"), application)
+
+        status = get_transcription(
+            runtime,
+            GetTranscriptionInput(id="transcription-1"),
+        )
+        result = get_transcription_result(
+            runtime,
+            GetTranscriptionResultInput(id="transcription-1"),
+        )
+
+        self.assertEqual(selection, status.result["selection"])
+        self.assertEqual(selection, result.result["selection"])
+        self.assertEqual(selection, result.result["content"]["selection"])
+
     def test_waiting_routes_extend_transport_timeout_without_mutating_default(self):
         profile = TargetProfile(
             name="local",
@@ -285,6 +334,7 @@ class QuickTranscriptionToolTests(unittest.TestCase):
             transcription_vocal_isolation="htdemucs",
         )
         body = json.loads(with_options.session.calls[0]["data"])
+        self.assertEqual("auto", body["language"])
         self.assertEqual("qwen3_asr_1_7b", body["qwen_asr_model"])
         self.assertEqual("htdemucs", body["transcription_vocal_isolation"])
 
@@ -294,13 +344,14 @@ class QuickTranscriptionToolTests(unittest.TestCase):
             size_bytes=5,
             sha256="a" * 64,
             format="txt",
-            language="auto",
+            language=None,
             engine=None,
             model_quantization=None,
             compute_backend=None,
             idempotency_key="transcribe:legacy",
         )
         legacy_body = json.loads(legacy.session.calls[0]["data"])
+        self.assertNotIn("language", legacy_body)
         self.assertNotIn("qwen_asr_model", legacy_body)
         self.assertNotIn("transcription_vocal_isolation", legacy_body)
 

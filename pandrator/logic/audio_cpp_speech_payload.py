@@ -104,8 +104,8 @@ def _require_auk_duration_without_reference(
         if isinstance(model_settings, dict)
         else None
     )
-    if isinstance(selected, dict):
-        duration_value = selected.get("duration_sec")
+    if isinstance(model_settings, dict) and model in model_settings:
+        duration_value = selected.get("duration_sec") if isinstance(selected, dict) else None
     else:
         raw_options = tts_settings.get("audio_cpp_options")
         if raw_options is None:
@@ -282,14 +282,20 @@ def _audio_cpp_selected_model_options(
     *,
     validate_options: ModelOptionsValidator,
 ) -> dict[str, Any] | None:
-    """Return validated options only when the exact model has an option map."""
+    """Resolve an exact model override; null explicitly selects model defaults.
+
+    An absent model inherits normally. A null entry replaces the whole inherited
+    map during settings resolution and remains authoritative over legacy tuning.
+    """
 
     model_settings = tts_settings.get("audio_cpp_model_settings")
-    if not isinstance(model_settings, dict):
+    if not isinstance(model_settings, dict) or model not in model_settings:
         return None
     selected = model_settings.get(model)
+    if selected is None:
+        return {}
     if not isinstance(selected, dict):
-        return None
+        raise ValueError("audio.cpp model settings must be an object or null for model defaults.")
     model_parameters = request_parameters_for_model(family, model)
     for key in selected:
         if key not in model_parameters:
@@ -334,9 +340,7 @@ def _build_audio_cpp_audio_payload(
     if family == "index_tts2" and not _has_managed_wav_reference(raw_voice_ref):
         raise ValueError("IndexTTS2 requires a linked WAV reference audio file.")
     model_settings = tts_settings.get("audio_cpp_model_settings")
-    has_selected_options = isinstance(model_settings, dict) and isinstance(
-        model_settings.get(model), dict
-    )
+    has_selected_options = isinstance(model_settings, dict) and model in model_settings
     raw_options_value = tts_settings.get("audio_cpp_options")
     if raw_options_value is None:
         raw_options_value = tts_settings.get("options")
@@ -459,6 +463,7 @@ def _build_audio_cpp_audio_payload(
         # keep this one-shot request control authoritative for the audition.
         if (
             tts_settings.get("preview_service_id")
+            and tts_settings.get("_preview_seed_explicit")
             and "audio_cpp_seed" in tts_settings
             and tts_settings.get("audio_cpp_seed") not in (None, "")
         ):

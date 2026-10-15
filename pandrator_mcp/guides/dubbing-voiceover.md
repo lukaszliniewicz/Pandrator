@@ -30,6 +30,16 @@ Plan transcription and execute only the exact reviewed plan. Poll the returned
 work handle with `pandrator_get_work` until terminal before creating a passive
 correction or translation run from its artifact.
 
+For sessionless quick transcription, omitted settings inherit saved defaults,
+including language; explicit `language="auto"` requests detection. Unsupported
+explicit quantizations are rejected for the selected engine before upload. An
+automatic engine choice remains unresolved until routing and is then validated
+before inference; an explicit quantization is never silently substituted.
+Create/status responses and JSON results expose `selection.requested`,
+`selection.resolved`, adapter-reported `selection.runtime`, and any legacy
+quantization normalization. Unknown runtime checkpoint or quantization stays
+null. Per-request choices do not change global defaults.
+
 ## Dispatch before dubbing
 
 When subtitles need external correction or translation before speech

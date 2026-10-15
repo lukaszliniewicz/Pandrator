@@ -50,6 +50,7 @@ from ..network import (
     private_network_candidates,
     save_network_configuration,
 )
+from ..planning import PlannerValidationError
 from ..processes import CommandRunner, CommandSpec
 from ..runtime_specs import (
     PANDRATOR_API_SERVICE,
@@ -1640,12 +1641,42 @@ def create_api(
     @api.post("/v1/plans")
     @idempotent
     def plans():
-        payload = PlanRequest.model_validate(request.get_json(silent=False) or {})
-        plan = application.plan(
-            kind=payload.kind,
-            desired=payload.desired,
-            expected_revision=payload.expected_revision,
-        )
+        try:
+            payload = PlanRequest.model_validate(
+                request.get_json(silent=False) or {}
+            )
+        except ValidationError as error:
+            issues = error.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            )
+            issue = issues[0] if issues else {}
+            location = ".".join(
+                str(part) for part in issue.get("loc", ())
+            )
+            message = " ".join(
+                str(issue.get("msg") or "Request validation failed.").split()
+            )[:800]
+            if location:
+                message = f"{location}: {message}"
+            raise ManagerError(
+                "validation_error",
+                message[:1_000],
+                http_status=400,
+            ) from error
+        try:
+            plan = application.plan(
+                kind=payload.kind,
+                desired=payload.desired,
+                expected_revision=payload.expected_revision,
+            )
+        except PlannerValidationError as error:
+            raise ManagerError(
+                "validation_error",
+                str(error)[:2_000],
+                http_status=400,
+            ) from error
         return jsonify(plan.model_dump(mode="json")), 201
 
     @api.route("/v1/releases", methods=["GET"])

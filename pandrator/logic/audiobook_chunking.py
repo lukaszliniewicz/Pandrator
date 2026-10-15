@@ -126,9 +126,7 @@ def _audio_cpp_max_tokens(
     """Read max_tokens with the same model-map/scalar precedence as runtime."""
 
     model_settings = settings.get("audio_cpp_model_settings")
-    if isinstance(model_settings, Mapping) and isinstance(
-        model_settings.get(model), Mapping
-    ):
+    if isinstance(model_settings, Mapping) and model in model_settings:
         selected = _audio_cpp_selected_model_options(dict(settings), model, family)
         if selected is not None:
             value = selected.get("max_tokens")

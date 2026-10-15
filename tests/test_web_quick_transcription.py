@@ -21,6 +21,8 @@ from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.jobs import Worker
 from pandrator.web.models import (
+    ApiIdempotency,
+    AppSetting,
     Artifact,
     DocumentRevision,
     Job,
@@ -30,6 +32,7 @@ from pandrator.web.models import (
     SourceAsset,
     utcnow,
 )
+from pandrator.web.quick_transcription import _empty_selection, _selection_after_transcription
 from pandrator.web.quick_transcription_schemas import CHUNK_SIZE
 from pandrator.web.stt_resources import stt_resource_keys
 from tests.web_test_support import prepare_web_test_data_root
@@ -56,7 +59,7 @@ class _FakeQuickTranscriber:
             output.writeframes(b"\0\0" * 160)
         return SimpleNamespace(returncode=0)
 
-    def transcribe(self, scratch, _normalized, _settings, **kwargs):
+    def transcribe(self, scratch, _normalized, settings, **kwargs):
         self.asr_calls += 1
         self.last_require_word_timestamps = kwargs.get("require_word_timestamps")
         logging.getLogger("fake_asr").warning(self.text)
@@ -100,11 +103,42 @@ class _FakeQuickTranscriber:
             f"1\n00:00:00,000 --> 00:00:01,000\n{self.text}\n",
             encoding="utf-8",
         )
+        engine = settings.get("stt_engine") or "whisper"
+        if engine == "auto":
+            engine = "whisper"
+        if engine not in {"whisper", "parakeet", "moss", "qwen3"}:
+            engine = "whisper"
+        if engine == "qwen3":
+            model = settings.get("qwen_asr_model") or "qwen3_asr_0_6b"
+            quantization = "q8_0"
+        else:
+            quantization = settings.get("stt_model_quantization") or "f16"
+            quantization = {
+                "q5": "q5_0",
+                "q4": "q4_k",
+                "q8": "q8_0",
+            }.get(quantization, quantization)
+            model = {
+                "whisper": "ggml-large-v3-q5_0.bin"
+                if quantization == "q5_0"
+                else "ggml-large-v3.bin",
+                "parakeet": "parakeet-tdt-0.6b-v3-q5_0.gguf"
+                if quantization == "q5_0"
+                else "parakeet-tdt-0.6b-v3.gguf",
+                "moss": "moss-transcribe-diarize-0.9b-q8_0.gguf",
+            }[engine]
+        language = settings.get("stt_language") or "en"
         return SimpleNamespace(
             word_timestamps_path=str(word_timestamps),
             srt_path=str(srt),
-            engine="fake-asr",
+            engine=engine,
             compute_backend="cpu",
+            resolved_language=language,
+            routing={
+                "engine": engine,
+                "model": model,
+                "resolved_language": language,
+            },
         )
 
 
@@ -447,6 +481,124 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         self.assertEqual(409, conflict.status_code, conflict.get_json())
         self.assertEqual("idempotency_conflict", conflict.get_json()["error"]["code"])
 
+    def test_create_replay_uses_original_inherited_engine_before_current_validation(self):
+        defaults = {
+            "stt_engine": "parakeet",
+            "stt_language": "en",
+            "stt_model_quantization": "q8_0",
+            "stt_compute_backend": "cpu",
+        }
+        with self.extension["database"].immediate_session() as session:
+            session.add(
+                AppSetting(
+                    key="defaults.stt",
+                    value_json=dict(defaults),
+                    revision=1,
+                )
+            )
+
+        content = b"inherited Parakeet defaults"
+        payload = self._payload(content, model_quantization="q8_0")
+        headers = {**self.headers, "Idempotency-Key": "quick-inherited-replay"}
+        first = self.client.post(
+            "/api/v1/transcriptions", json=payload, headers=headers
+        )
+        self.assertEqual(201, first.status_code, first.get_json())
+        original = first.get_json()
+        self.assertIsNone(original["selection"]["requested"]["engine"])
+        self.assertEqual("parakeet", original["selection"]["resolved"]["engine"])
+        self.assertEqual(
+            "q8_0", original["selection"]["resolved"]["model_quantization"]
+        )
+
+        changed_defaults = {**defaults, "stt_engine": "whisper"}
+        with self.extension["database"].immediate_session() as session:
+            setting = session.get(AppSetting, "defaults.stt")
+            setting.value_json = changed_defaults
+            setting.revision += 1
+
+        replay = self.client.post(
+            "/api/v1/transcriptions", json=payload, headers=headers
+        )
+        self.assertEqual(201, replay.status_code, replay.get_json())
+        self.assertEqual(original["id"], replay.get_json()["id"])
+        self.assertEqual(original["selection"], replay.get_json()["selection"])
+
+        invalid_reuse = self.client.post(
+            "/api/v1/transcriptions",
+            json={**payload, "engine": "whisper"},
+            headers=headers,
+        )
+        self.assertEqual(409, invalid_reuse.status_code, invalid_reuse.get_json())
+        self.assertEqual(
+            "idempotency_conflict", invalid_reuse.get_json()["error"]["code"]
+        )
+        with self.extension["database"].session() as session:
+            self.assertEqual(
+                1, session.scalar(select(func.count()).select_from(QuickTranscription))
+            )
+            self.assertEqual(
+                1, session.scalar(select(func.count()).select_from(ApiIdempotency))
+            )
+            self.assertEqual(0, session.scalar(select(func.count()).select_from(Job)))
+            self.assertEqual(
+                changed_defaults,
+                session.get(AppSetting, "defaults.stt").value_json,
+            )
+
+    def test_create_cleans_expired_uploads_before_quota_check(self):
+        first = self._create(b"expired quota seed", key="quick-expired-quota-seed")
+        owner = self._record(first["id"]).owner_subject
+        expiry = utcnow() - timedelta(seconds=1)
+        with self.extension["database"].immediate_session() as session:
+            session.get(QuickTranscription, first["id"]).expires_at = expiry
+            for index in range(19):
+                session.add(
+                    QuickTranscription(
+                        owner_subject=owner,
+                        source_suffix=".wav",
+                        size_bytes=1,
+                        sha256=hashlib.sha256(f"expired-{index}".encode()).hexdigest(),
+                        format="txt",
+                        settings_json={},
+                        state="uploading",
+                        expires_at=expiry,
+                    )
+                )
+
+        with self.extension["database"].session() as session:
+            self.assertEqual(
+                20,
+                session.scalar(
+                    select(func.count()).select_from(QuickTranscription).where(
+                        QuickTranscription.owner_subject == owner,
+                        QuickTranscription.state.not_in(["deleted", "expired"]),
+                    )
+                ),
+            )
+
+        admitted = self._create(b"fresh after expiry", key="quick-after-expiry")
+        self.assertEqual("uploading", admitted["status"])
+        with self.extension["database"].session() as session:
+            self.assertEqual(
+                20,
+                session.scalar(
+                    select(func.count()).select_from(QuickTranscription).where(
+                        QuickTranscription.owner_subject == owner,
+                        QuickTranscription.state == "expired",
+                    )
+                ),
+            )
+            self.assertEqual(
+                1,
+                session.scalar(
+                    select(func.count()).select_from(QuickTranscription).where(
+                        QuickTranscription.owner_subject == owner,
+                        QuickTranscription.state.not_in(["deleted", "expired"]),
+                    )
+                ),
+            )
+
     def test_multipart_shortcut_real_ffmpeg_and_raw_replay(self):
         if not shutil.which("ffmpeg"):
             self.skipTest("FFmpeg is not installed")
@@ -695,6 +847,58 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         self.assertIn("gpu:cuda", job.resource_keys_json)
         self.assertIn("service:tts:audio_cpp", job.resource_keys_json)
 
+    def test_qwen_resolved_backend_uses_saved_qwen_backend_precedence(self):
+        settings = {
+            "stt_engine": "qwen3",
+            "stt_language": "en",
+            "stt_compute_backend": "auto",
+            "qwen_asr_backend": "cuda",
+        }
+        with self.extension["database"].immediate_session() as session:
+            session.add(
+                AppSetting(
+                    key="defaults.stt",
+                    value_json=settings,
+                    revision=1,
+                )
+            )
+
+        created = self._create(b"saved Qwen backend", key="quick-qwen-saved-backend")
+        self.assertEqual("qwen3", created["selection"]["resolved"]["engine"])
+        self.assertEqual("cuda", created["selection"]["resolved"]["compute_backend"])
+
+    def test_cloud_route_engine_sentinel_does_not_become_model(self):
+        engine = "azure_mai_transcribe_2"
+        initial = _empty_selection()
+        initial["resolved"]["engine"] = engine
+        output = SimpleNamespace(
+            routing={"engine": engine, "model": engine},
+            engine=engine,
+            resolved_language="en",
+            compute_backend="remote",
+        )
+
+        selection = _selection_after_transcription(
+            initial,
+            {
+                "stt_engine": engine,
+                "stt_language": "en",
+                "stt_compute_backend": "auto",
+            },
+            output,
+            {
+                "metadata": {
+                    "engine": engine,
+                    "model": "MAI-Transcribe-2",
+                    "remote": True,
+                }
+            },
+        )
+
+        self.assertEqual("MAI-Transcribe-2", selection["resolved"]["model"])
+        self.assertIsNone(selection["runtime"]["model"])
+        self.assertEqual("remote", selection["resolved"]["compute_backend"])
+
     def test_qwen_preflight_uses_format_timing_and_defers_auto_language(self):
         accepted = (
             ("auto", "txt"),
@@ -781,6 +985,152 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
             )
         self.assertEqual(
             [], list(self.extension["quick_transcriptions"].root.iterdir())
+        )
+
+    def test_explicit_quantization_validation_and_selection_provenance(self):
+        saved_defaults = {
+            "stt_engine": "whisper",
+            "stt_language": "pl",
+            "stt_model_quantization": "q8_0",
+            "stt_compute_backend": "cpu",
+        }
+        with self.extension["database"].immediate_session() as session:
+            session.add(
+                AppSetting(
+                    key="defaults.stt",
+                    value_json=dict(saved_defaults),
+                    revision=1,
+                )
+            )
+
+        invalid = self.client.post(
+            "/api/v1/transcriptions",
+            json=self._payload(
+                b"invalid whisper quantization",
+                engine="whisper",
+                model_quantization="q8_0",
+            ),
+            headers={**self.headers, "Idempotency-Key": "quick-whisper-q8"},
+        )
+        self.assertEqual(400, invalid.status_code, invalid.get_json())
+        error = invalid.get_json()["error"]
+        self.assertEqual("validation_error", error["code"])
+        self.assertIn("whisper", error["message"])
+        self.assertIn("f16, q5_0", error["message"])
+        with self.extension["database"].session() as session:
+            self.assertEqual(
+                0, session.scalar(select(func.count()).select_from(QuickTranscription))
+            )
+            self.assertEqual(0, session.scalar(select(func.count()).select_from(Job)))
+            self.assertEqual(
+                0, session.scalar(select(func.count()).select_from(ApiIdempotency))
+            )
+            self.assertEqual(
+                saved_defaults,
+                session.get(AppSetting, "defaults.stt").value_json,
+            )
+        self.assertEqual(
+            [], list(self.extension["quick_transcriptions"].root.iterdir())
+        )
+
+        legacy = self._create(b"legacy saved quantization", key="quick-legacy-q")
+        self.assertEqual(
+            {
+                "model_quantization": {"from": "q8_0", "to": "f16"}
+            },
+            legacy["selection"]["normalization"],
+        )
+        self.assertEqual("pl", legacy["selection"]["resolved"]["language"])
+        self.assertIsNone(legacy["selection"]["requested"]["language"])
+        with self.extension["database"].session() as session:
+            self.assertEqual(
+                saved_defaults,
+                session.get(AppSetting, "defaults.stt").value_json,
+            )
+
+        content = b"valid whisper q5"
+        created = self._create(
+            content,
+            key="quick-whisper-q5",
+            model_quantization="q5_0",
+            format="json",
+        )
+        selection = created["selection"]
+        self.assertIsNone(selection["requested"]["engine"])
+        self.assertIsNone(selection["requested"]["language"])
+        self.assertEqual("q5_0", selection["requested"]["model_quantization"])
+        self.assertEqual("whisper", selection["resolved"]["engine"])
+        self.assertEqual("pl", selection["resolved"]["language"])
+        self.assertEqual("q5_0", selection["resolved"]["model_quantization"])
+        self.assertEqual("ggml-large-v3-q5_0.bin", selection["resolved"]["model"])
+        self.assertEqual({}, selection["normalization"])
+        self.assertEqual(selection, self.client.get(
+            f"/api/v1/transcriptions/{created['id']}"
+        ).get_json()["selection"])
+
+        self.assertEqual(200, self._upload(created["id"], 0, content).status_code)
+        started = self._start(created["id"])
+        self.assertEqual(202, started.status_code, started.get_json())
+        fake = _FakeQuickTranscriber()
+        with self._fake_backend(fake):
+            self.assertTrue(self._worker().run_once())
+
+        status = self.client.get(
+            f"/api/v1/transcriptions/{created['id']}?format=json"
+        ).get_json()
+        raw_result = self.client.get(
+            f"/api/v1/transcriptions/{created['id']}/result?format=json"
+        ).get_json()
+        final_selection = status["selection"]
+        self.assertEqual(final_selection, raw_result["selection"])
+        self.assertEqual(final_selection, status["result"]["content"]["selection"])
+        self.assertEqual("q5_0", final_selection["resolved"]["model_quantization"])
+        self.assertEqual("whisper", final_selection["runtime"]["engine"])
+        self.assertEqual("cpu", final_selection["runtime"]["compute_backend"])
+        self.assertEqual("pl", final_selection["runtime"]["language"])
+        self.assertIsNone(final_selection["runtime"]["model"])
+        self.assertIsNone(final_selection["runtime"]["model_quantization"])
+        self.assertEqual("q5_0", self._record(created["id"]).settings_json["stt_model_quantization"])
+
+    def test_auto_quantization_is_checked_after_pure_route_before_provider(self):
+        content = b"auto whisper q8"
+        fake = _FakeQuickTranscriber()
+        with patch(
+            "pandrator.logic.dubbing.stt_backends.detect_stt_backend_statuses",
+            side_effect=AssertionError("runtime discovery must not happen at admission"),
+        ):
+            created = self._create(
+                content,
+                key="quick-auto-q8",
+                engine="auto",
+                language="en",
+                model_quantization="q8_0",
+            )
+        self.assertEqual("auto", created["selection"]["resolved"]["engine"])
+        self.assertIsNone(created["selection"]["resolved"]["model"])
+        self.assertEqual(200, self._upload(created["id"], 0, content).status_code)
+        started = self._start(created["id"])
+        self.assertEqual(202, started.status_code, started.get_json())
+
+        with (
+            patch(
+                "pandrator.web.quick_transcription.run_cancellable",
+                side_effect=fake.normalize,
+            ),
+            patch(
+                "pandrator.logic.dubbing.stt_backends.detect_stt_backend_statuses",
+                return_value={
+                    "whisper": {"installed": True, "version": "0.8.40"},
+                    "parakeet": {"installed": False},
+                    "qwen3": {"installed": False, "version": "0.8.40"},
+                },
+            ),
+            patch("pandrator.logic.dubbing.transcription.transcribe") as provider,
+        ):
+            self.assertTrue(self._worker().run_once())
+        provider.assert_not_called()
+        self.assertEqual(
+            "failed", self.extension["jobs"].get(started.get_json()["job_id"]).status
         )
 
     def test_non_qwen_quick_transcription_skips_qwen_preflight(self):

@@ -816,8 +816,10 @@ class SettingsApiTests(unittest.TestCase):
             seen_keys,
         )
         self.assertEqual(["key-one"], services[0]["models"])
-        self.assertFalse(services[1]["available"])
-        self.assertEqual("catalog failed", services[1]["availability_reason"])
+        self.assertTrue(services[1]["online"])
+        self.assertTrue(services[1]["available"])
+        self.assertFalse(services[1]["catalogue"]["complete"])
+        self.assertEqual("catalog failed", services[1]["catalogue"]["error"])
         self.assertEqual(["key-three"], services[2]["models"])
 
     def test_tts_api_key_is_extracted_from_settings_and_never_returned(self):

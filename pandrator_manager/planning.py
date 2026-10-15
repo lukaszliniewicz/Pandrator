@@ -27,6 +27,14 @@ from .models import (
 from .preflight import HostPreflight
 
 
+class PlannerValidationError(ValueError):
+    """Expected request or selection errors raised while preparing a plan."""
+
+    def __init__(self, message: str) -> None:
+        bounded_message = " ".join(str(message).split())[:2_000]
+        super().__init__(bounded_message or "The requested plan is invalid.")
+
+
 class Planner:
     def __init__(
         self,
@@ -70,6 +78,13 @@ class Planner:
         desired: dict[str, DesiredComponentState],
     ) -> dict[str, DesiredComponentState]:
         normalized = dict(desired)
+        for component_id in normalized:
+            try:
+                self.registry.definition(component_id)
+            except KeyError:
+                raise PlannerValidationError(
+                    f"Unknown component: {component_id}."
+                ) from None
         requested_present = [
             component_id
             for component_id, state in normalized.items()
@@ -77,7 +92,10 @@ class Planner:
         ]
         for component_id in self.registry.resolve_dependencies(requested_present):
             normalized.setdefault(component_id, DesiredComponentState())
-        self.registry.validate_selection(normalized)
+        try:
+            self.registry.validate_selection(normalized)
+        except ValueError as error:
+            raise PlannerValidationError(str(error)) from error
         return normalized
 
     @staticmethod
@@ -87,9 +105,9 @@ class Planner:
         option: str,
         supported: set[str],
     ) -> list[str]:
-        if not isinstance(value, list) or not value or len(value) > 32:
-            raise ValueError(
-                f"audio.cpp option '{option}' must be a nonempty list of at most 32 model IDs."
+        if not isinstance(value, list) or not value:
+            raise PlannerValidationError(
+                f"audio.cpp option '{option}' must be a nonempty list of model IDs."
             )
         invalid_format = [
             item
@@ -99,15 +117,17 @@ class Planner:
             is None
         ]
         if invalid_format:
-            raise ValueError(
+            raise PlannerValidationError(
                 f"audio.cpp model package IDs are invalid: {invalid_format!r}."
             )
         if len(value) != len(set(value)):
-            raise ValueError("audio.cpp model package IDs must be unique.")
+            raise PlannerValidationError(
+                "audio.cpp model package IDs must be unique."
+            )
         unsupported = [item for item in value if item not in supported]
         if unsupported:
             supported_values = ", ".join(sorted(supported))
-            raise ValueError(
+            raise PlannerValidationError(
                 "audio.cpp only supports these model package IDs: "
                 f"{supported_values}; unsupported selection: {unsupported!r}."
             )
@@ -125,9 +145,9 @@ class Planner:
             return []
         if not isinstance(value, (list, tuple)) or (
             not value and not allow_empty
-        ) or len(value) > 32:
-            raise ValueError(
-                f"audio.cpp {source} model IDs must be a nonempty list of at most 32 IDs."
+        ):
+            raise PlannerValidationError(
+                f"audio.cpp {source} model IDs must be a nonempty list of supported IDs."
             )
         invalid = [
             item
@@ -138,11 +158,13 @@ class Planner:
             or item not in supported
         ]
         if invalid:
-            raise ValueError(
+            raise PlannerValidationError(
                 f"audio.cpp {source} contains unsupported model package IDs: {invalid!r}."
             )
         if len(value) != len(set(value)):
-            raise ValueError(f"audio.cpp {source} model package IDs must be unique.")
+            raise PlannerValidationError(
+                f"audio.cpp {source} model package IDs must be unique."
+            )
         return list(value)
 
     def _normalize_audio_cpp_model_options(
@@ -168,11 +190,13 @@ class Planner:
             if not model_keys:
                 continue
             if component_id != "audio_cpp":
-                raise ValueError(
+                raise PlannerValidationError(
                     "Manager model selections are supported only for audio_cpp."
                 )
             if model_keys == {"models", "add_models"}:
-                raise ValueError("Specify either models or add_models, not both.")
+                raise PlannerValidationError(
+                    "Specify either models or add_models, not both."
+                )
             self._validated_model_ids(
                 options[next(iter(model_keys))],
                 option=next(iter(model_keys)),
@@ -183,7 +207,9 @@ class Planner:
         if state is None or "add_models" not in state.options:
             return normalized
         if not state.present:
-            raise ValueError("audio.cpp add_models requires present=true.")
+            raise PlannerValidationError(
+                "audio.cpp add_models requires present=true."
+            )
 
         requested = self._validated_model_ids(
             state.options["add_models"],
@@ -213,9 +239,9 @@ class Planner:
         for model_id in (*actual_ids, *persisted_ids, *requested):
             if model_id not in combined:
                 combined.append(model_id)
-        if not combined or len(combined) > 32:
-            raise ValueError(
-                "audio.cpp additive model selection must resolve to 1 to 32 IDs."
+        if not combined:
+            raise PlannerValidationError(
+                "audio.cpp additive model selection must resolve to at least one ID."
             )
         options = {
             key: value
@@ -271,18 +297,24 @@ class Planner:
             driver = self.registry.driver(component_id)
             inspection = inspections[component_id]
             if inspection.state == ComponentState.UNSUPPORTED and desired_state.present:
-                raise ValueError(inspection.problems[0])
+                raise PlannerValidationError(inspection.problems[0])
 
             if desired_state.present:
                 if kind == OperationKind.UPDATE and inspection.state == ComponentState.PRESENT:
                     self._require_action(definition, "update")
                     tasks = driver.plan_update(
-                        self.context, definition, desired_state, inspection
+                        self.context,
+                        definition,
+                        desired_state,
+                        inspection,
                     )
                 elif kind == OperationKind.REPAIR or inspection.state == ComponentState.DEGRADED:
                     self._require_action(definition, "repair")
                     tasks = driver.plan_repair(
-                        self.context, definition, desired_state, inspection
+                        self.context,
+                        definition,
+                        desired_state,
+                        inspection,
                     )
                 elif inspection.state in {
                     ComponentState.ABSENT,
@@ -290,7 +322,10 @@ class Planner:
                 }:
                     self._require_action(definition, "install")
                     tasks = driver.plan_install(
-                        self.context, definition, desired_state, inspection
+                        self.context,
+                        definition,
+                        desired_state,
+                        inspection,
                     )
                 else:
                     tasks = ()
@@ -299,7 +334,11 @@ class Planner:
                 ComponentState.DEGRADED,
             }:
                 self._require_action(definition, "remove")
-                tasks = driver.plan_remove(self.context, definition, inspection)
+                tasks = driver.plan_remove(
+                    self.context,
+                    definition,
+                    inspection,
+                )
                 confirmations.append(
                     ConfirmationRequirement(
                         kind="destructive",
@@ -489,7 +528,7 @@ class Planner:
     @staticmethod
     def _require_action(definition, action: str) -> None:
         if action not in definition.supported_actions:
-            raise ValueError(
+            raise PlannerValidationError(
                 f"{definition.label} does not yet support the '{action}' "
                 "operation in Pandrator Manager."
             )

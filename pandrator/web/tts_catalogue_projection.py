@@ -61,6 +61,7 @@ COMPACT_TTS_SERVICE_FIELDS = frozenset({
     "available",
     "availability_reason",
     "health_checked_at",
+    "catalogue",
     "models",
     "default_model",
     "voices",

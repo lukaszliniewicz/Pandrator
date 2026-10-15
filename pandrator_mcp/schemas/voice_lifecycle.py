@@ -253,12 +253,16 @@ class PublishVoiceInput(_RevisionWriteInput):
 
 
 class AuditionVoiceInput(_RevisionWriteInput):
-    text: str = Field(min_length=1, max_length=4_000)
+    text: str = Field(min_length=1, max_length=1_000)
     service_id: str = Field(min_length=1, max_length=160)
     model: str = Field(min_length=1, max_length=200)
     voice: str = Field(default="", max_length=255)
     language: str = Field(default="en", min_length=1, max_length=40)
-    generation_prompt: str | None = Field(default=None, max_length=4_000)
+    generation_prompt: str | None = Field(
+        default=None,
+        max_length=4_000,
+        description="Omit or use null to inherit saved directions; an empty string clears them for this audition.",
+    )
     seed: int | None = Field(default=None, ge=0, le=4_294_967_295)
 
 

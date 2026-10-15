@@ -224,6 +224,7 @@ class VoiceCompatibility(_StrictModel):
     modes: dict[str, Any]
     supported_languages: list[str]
     service_available: bool | None = None
+    catalogue: dict[str, Any] | None = None
     health_checked_at: str | None = None
     availability_reason: str | None = None
 

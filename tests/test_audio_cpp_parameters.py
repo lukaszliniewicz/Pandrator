@@ -200,6 +200,7 @@ class AudioCppParameterTests(unittest.TestCase):
                 "model": model,
                 "audio_cpp_model_settings": {model: {"seed": 3}},
                 "preview_service_id": "audio_cpp",
+                "_preview_seed_explicit": True,
                 "audio_cpp_seed": 2**53 - 1,
             },
             {},

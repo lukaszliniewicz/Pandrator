@@ -70,9 +70,18 @@ def test_native_discovery_survives_read_failure_expiry_and_config_changes(app_ca
 
     initial, _ = catalogue.snapshot(service_ids=["audio_cpp"], include_profiles=False)
     assert BREEZE not in initial["services"][0]["models"]
+    assert initial["services"][0]["catalogue"] == {
+        "source": "configured", "scope": "service", "service_id": "audio_cpp",
+        "checked_at": None, "complete": False, "error": None,
+    }
     refreshed, _ = catalogue.snapshot(refresh=True, service_ids=["audio_cpp"], include_profiles=False)
     native = refreshed["services"][0]
     assert native["models"] == [BREEZE]
+    provenance = native["catalogue"]
+    assert provenance["source"] == "runtime"
+    assert provenance["complete"] is True
+    assert provenance["error"] is None
+    assert datetime.fromisoformat(provenance["checked_at"]).utcoffset() == timedelta(0)
     assert native["model_catalog"][0]["loaded"] is False
     native_mode = model_modes(native, native["model_catalog"][0])
 
@@ -86,6 +95,7 @@ def test_native_discovery_survives_read_failure_expiry_and_config_changes(app_ca
     assert client.get("/api/v1/voice-catalog/capabilities?model=unknown").get_json()["models"] == []
     compact, _ = catalogue.snapshot(view="compact", service_ids=["audio_cpp"])
     assert compact["services"][0]["models"] == [BREEZE]
+    assert compact["services"][0]["catalogue"] == {**provenance, "source": "cache"}
     assert "loaded" not in compact["services"][0]["model_catalog"][0]
 
     def fail(_service, **_kwargs):
@@ -95,11 +105,15 @@ def test_native_discovery_survives_read_failure_expiry_and_config_changes(app_ca
     clock[0] = 150.0
     failed, _ = catalogue.snapshot(refresh=True, service_ids=["audio_cpp"], include_profiles=False)
     assert failed["services"][0]["models"] == [BREEZE]
-    assert failed["services"][0]["available"] is False
-    assert "Native catalogue failed" in failed["services"][0]["availability_reason"]
+    assert failed["services"][0]["available"] is True
+    assert "Native catalogue failed" in failed["services"][0]["catalogue"]["error"]
+    assert failed["services"][0]["catalogue"]["complete"] is False
     assert len(catalogue._native_discovery) == 1
     read, _ = catalogue.snapshot(service_ids=["audio_cpp"], include_profiles=False)
     assert read["services"][0]["model_catalog"][0]["loaded"] is False
+    assert read["services"][0]["catalogue"]["complete"] is False
+    assert "Native catalogue failed" in read["services"][0]["catalogue"]["error"]
+    assert read["services"][0]["catalogue"]["checked_at"] == provenance["checked_at"]
     monkeypatch.setattr(catalogue.providers, "health", lambda _service: TtsHealth(False, False, "offline"))
     offline, _ = catalogue.snapshot(refresh=True, service_ids=["audio_cpp"], include_profiles=False)
     assert offline["services"][0]["models"] == [BREEZE]
@@ -109,6 +123,9 @@ def test_native_discovery_survives_read_failure_expiry_and_config_changes(app_ca
     clock[0] = 400.0
     expired, _ = catalogue.snapshot(service_ids=["audio_cpp"], include_profiles=False)
     assert expired["services"][0]["models"] == ["old_model"]
+    assert expired["services"][0]["catalogue"]["source"] == "configured"
+    assert expired["services"][0]["catalogue"]["checked_at"] is None
+    assert expired["services"][0]["catalogue"]["complete"] is False
     assert not catalogue._native_discovery
 
     monkeypatch.setattr(catalogue.providers, "enrich_catalog", lambda _service, **_kwargs: {
@@ -208,3 +225,131 @@ def test_preview_projection_retains_latest_file_and_catalog_cursor_semantics(app
     other = query_catalog(catalog_entries([], old_shape, []), VoiceCatalogQuery(limit=1, cursor=page["next_cursor"]))
     assert other["catalog_revision"] == page["catalog_revision"]
     assert other["facets"] == page["facets"]
+
+
+@pytest.mark.parametrize("warning", [False, True])
+def test_discovery_failure_preserves_health_and_redacts_catalogue_error(app_case, monkeypatch, warning):
+    _client, _headers, services = app_case
+    config = configure_old_native(services)
+    config["provider_configs"][0]["api_key_env"] = "PANDRATOR_TEST_CATALOGUE_KEY"
+    monkeypatch.setenv("PANDRATOR_TEST_CATALOGUE_KEY", "catalogue-secret-value")
+    with services["database"].session() as session:
+        session.get(AppSetting, "services.tts").value_json = config
+    catalogue = services["tts_catalogue"]
+    health = Mock(return_value=TtsHealth(True, True))
+    message = "catalogue-secret-value api_key=another-secret " + "x" * 600
+
+    def enrich(service, *, api_key):
+        assert service["id"] == "audio_cpp"
+        assert api_key == "catalogue-secret-value"
+        if warning:
+            return {"voice_catalogue_warning": message}
+        raise TtsProviderError("audio_cpp", "catalogue", message, retryable=True)
+
+    discovery = Mock(side_effect=enrich)
+    monkeypatch.setattr(catalogue.providers, "health", health)
+    monkeypatch.setattr(catalogue.providers, "enrich_catalog", discovery)
+    # Passive reads must not contact health or discovery.
+    passive, _ = catalogue.snapshot(service_ids=["audio_cpp"], include_profiles=False)
+    assert passive["services"][0]["catalogue"]["complete"] is False
+    health.assert_not_called()
+    discovery.assert_not_called()
+    fresh, _ = catalogue.snapshot(refresh=True, service_ids=["audio_cpp"], include_profiles=False)
+    row = fresh["services"][0]
+    assert row["available"] is row["online"] is True
+    assert not row["availability_reason"]
+    assert row["health_checked_at"]
+    assert row["catalogue"]["complete"] is False
+    assert len(row["catalogue"]["error"]) <= 500
+    assert "catalogue-secret-value" not in row["catalogue"]["error"]
+    assert "another-secret" not in row["catalogue"]["error"]
+    assert "catalogue-secret-value" not in str(row)
+    assert "another-secret" not in str(row)
+    assert health.call_count == discovery.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("provenance", "available", "expected"),
+    [
+        (None, True, "unknown"),
+        ({"complete": False, "error": None}, True, "unknown"),
+        ({"complete": True, "error": "Discovery failed"}, True, "unknown"),
+        ({"complete": True, "error": None}, True, "unknown"),
+        ({"source": "runtime", "scope": "service", "service_id": "audio_cpp", "checked_at": "2026-10-15T00:00:00+00:00", "complete": True, "error": None}, True, "model_unavailable"),
+        ({"source": "cache", "scope": "service", "service_id": "audio_cpp", "checked_at": "2026-10-15T00:00:00+00:00", "complete": True, "error": None}, True, "model_unavailable"),
+        ({"source": "runtime", "scope": "model", "service_id": "audio_cpp", "checked_at": "2026-10-15T00:00:00+00:00", "complete": True, "error": None}, True, "unknown"),
+        ({"source": "runtime", "scope": "service", "service_id": "gemini", "checked_at": "2026-10-15T00:00:00+00:00", "complete": True, "error": None}, True, "unknown"),
+        ({"complete": False, "error": "Discovery failed"}, False, "unavailable"),
+    ],
+)
+def test_managed_absent_model_requires_complete_discovery(provenance, available, expected):
+    service = {
+        "id": "audio_cpp", "models": ["listed"],
+        "model_catalog": [{"id": "missing", "voice_mode": "cloning"}],
+        "available": available, "catalogue": provenance,
+    }
+    voice = {
+        "id": "voice", "name": "Voice", "revision": 1, "available_sample_count": 1,
+        "metadata_json": {"providers": {"audio_cpp": {"status": "ready", "voice_id": "linked"}}},
+    }
+    entry = catalog_entries([voice], {"services": [service]}, [])[0]
+    compatibility = next(item for item in entry["compatibility"] if item["model"] == "missing")
+    assert compatibility["status"] == expected
+    assert compatibility["catalogue"] == provenance
+
+
+def test_scoped_mcp_configuration_reaches_backend_without_unrelated_discovery(app_case, monkeypatch):
+    from pandrator_mcp.clients.application_voices import ApplicationVoiceMethods
+    from pandrator_mcp.schemas.e2e import ConfigureTtsInput
+    from pandrator_mcp.tools.e2e import configure_tts
+
+    client, _headers, services = app_case
+    configure_old_native(services)
+    catalogue = services["tts_catalogue"]
+    requests = []
+
+    class Application(ApplicationVoiceMethods):
+        def _request_json(self, path, *, parameters=None, **kwargs):
+            requests.append(parameters)
+            response = client.get(path, query_string=parameters)
+            assert response.status_code == 200, response.get_json()
+            return response.get_json()
+
+        def _request_binary_json(self, *args, **kwargs):
+            raise AssertionError("Configuration must not request binary data")
+
+        list_voices = Mock(return_value={"items": []})
+        get_session_settings = Mock(return_value={"revision": 4, "override": {"speed": 0.9}})
+        update_session_settings = Mock(return_value={"revision": 5})
+
+    def health(service):
+        assert service["id"] == "audio_cpp", "An unrelated provider was probed"
+        return TtsHealth(True, True)
+
+    def enrich(service, **kwargs):
+        assert service["id"] == "audio_cpp", "An unrelated provider was discovered"
+        return {
+            "models": [BREEZE], "default_model": BREEZE,
+            "model_catalog": [{"id": BREEZE, "voice_mode": "prebuilt"}],
+            "model_voice_modes": {BREEZE: "prebuilt"},
+            "voices": ["native"], "voice_catalogues": {BREEZE: ["native"]},
+        }
+
+    health_probe = Mock(side_effect=health)
+    discover = Mock(side_effect=enrich)
+    monkeypatch.setattr(catalogue.providers, "health", health_probe)
+    monkeypatch.setattr(catalogue.providers, "enrich_catalog", discover)
+    application = Application()
+    runtime = SimpleNamespace(require_application=lambda: application)
+    result = configure_tts(runtime, ConfigureTtsInput(
+        session_id="session-1", service_id="AUDIO-CPP", model=BREEZE, voice="native",
+        expected_revision=4, idempotency_key="scoped-configuration",
+    ))
+    assert requests == [{"service_id": "audio_cpp"}, {"refresh": "true", "service_id": "audio_cpp"}]
+    assert health_probe.call_count == discover.call_count == 1
+    assert result.result["selection"]["model"] == BREEZE
+    saved = application.update_session_settings.call_args.kwargs
+    assert saved["expected_revision"] == 4
+    assert saved["idempotency_key"] == "scoped-configuration"
+    assert saved["value"]["speed"] == 0.9
+    assert saved["value"]["provider_switch_reviewed"] is True
