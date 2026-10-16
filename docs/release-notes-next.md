@@ -10,8 +10,8 @@ English, Polish, French, Dutch, Japanese and German, plus conservative quotation
 rules for other languages. Compatible turns can share a narration block with one
 narrator. Oversized sentences split at balanced natural boundaries. Optional AI
 dialogue annotation is available independently of casting and delivery analysis.
-English quoted passages require exchange evidence so unrelated quoted maxims,
-instructions and first-person survey answers retain their paragraph pauses.
+English quoted passages require a question, explicit reply or reporting tag;
+personal pronouns alone do not join quoted examples, advertisements or survey answers.
 Polish lowercase and numeric dash lists also retain paragraph pauses.
 
 New raw takes contain no app-added silence. Assembly applies audiobook pauses,

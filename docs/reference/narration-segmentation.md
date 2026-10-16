@@ -30,11 +30,11 @@ quotation mark; lowercase and numeric dash lists retain paragraph pauses. French
 accepts unspaced em dashes and a
 guillemet that opens a short, explicitly closed exchange across paragraphs.
 English quotation runs also need evidence of an exchange: a question, a speaker
-tag, an explicit reply, or personal wording with direct address across multiple
-paragraphs. First-person statements alone do not establish a conversation.
+tag or an explicit reply. Personal pronouns and direct address alone do not
+establish a conversation: they also occur in quoted examples and advertisements.
 Quoted instructions, survey answers and collections of maxims keep their paragraph
-pauses when that evidence is absent. Ambiguous passages can still need review or
-AI annotation.
+pauses when exchange evidence is absent. Ambiguous passages can still need review
+or AI annotation.
 Other languages use conservative, balanced
 quotation rules. Unknown passages retain their paragraph boundaries. This pass
 uses local punctuation rules and makes no LLM requests or speaker assignments.
