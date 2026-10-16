@@ -89,6 +89,7 @@
   import type { TextReplacement, TextSearchMatch } from './search-replace';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import {
+    defaultVoiceForLanguage,
     describeVoice,
     languagesForService,
     voiceSupportsLanguage,
@@ -842,13 +843,10 @@
     const configured = catalogue.length
       ? catalogue
       : Array.from(service.voices ?? []).map(String);
-    const defaultVoice = String(
-      service.default_voices_by_language?.[selectedTtsModel]?.[
-        inheritedLanguage
-      ] ??
-        service.default_voices?.[selectedTtsModel] ??
-        service.default_voice ??
-        ''
+    const defaultVoice = defaultVoiceForLanguage(
+      service,
+      selectedTtsModel,
+      inheritedLanguage
     );
     return Array.from(
       new Set(
@@ -889,11 +887,11 @@
     String(
       inheritedTtsSettings.voice ||
         inheritedTtsSettings.speaker ||
-        selectedTtsService?.default_voices_by_language?.[selectedTtsModel]?.[
+        defaultVoiceForLanguage(
+          selectedTtsService,
+          selectedTtsModel,
           inheritedLanguage
-        ] ||
-        selectedTtsService?.default_voices?.[selectedTtsModel] ||
-        selectedTtsService?.default_voice ||
+        ) ||
         ''
     )
   );

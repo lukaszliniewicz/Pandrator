@@ -25,6 +25,7 @@
   import { jobApi } from './domain-api';
   import { jobProgressDetail } from './job-progress';
   import {
+    defaultVoiceForLanguage,
     describeVoice,
     languagesForService,
     voiceSupportsLanguage,
@@ -126,12 +127,7 @@
     descriptors.filter((voice) => voiceSupportsLanguage(voice, language))
   );
   const languageDefault = $derived(
-    String(
-      service?.default_voices_by_language?.[model]?.[language] ??
-        service?.default_voices?.[model] ??
-        service?.default_voice ??
-        ''
-    )
+    defaultVoiceForLanguage(service, model, language)
   );
   const modelInfo = $derived(
     (service?.model_catalog ?? []).find((item) => item.id === model)

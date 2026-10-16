@@ -554,6 +554,7 @@ def assemble_generation_output(
                 int(alignment_diagnostics.get("final_drift_ms") or 0),
             )
         else:
+            from .assembly_silences import render_part_silences, silence_manifest
             from .speech_boundaries import assembly_pause
 
             planned_parts: list[AudioAssemblyPart] = []
@@ -578,6 +579,8 @@ def assemble_generation_output(
                         fade_in_ms=fade_in_ms,
                         fade_out_ms=fade_out_ms,
                         label=segment.id,
+                        internal_silences=render_part_silences(_artifact.metadata_json, audio_settings)
+                        if session_record.workflow_kind == "audiobook" else (),
                     )
                 )
                 if segment.node_kind == "chapter_marker":
@@ -637,6 +640,8 @@ def assemble_generation_output(
                         "start_frame": assembly_result.part_start_frames[index],
                         "end_frame": assembly_result.part_end_frames[index],
                         "silence_after_ms": planned_parts[index].silence_after_ms,
+                        "silence_policy": "assembly-v1",
+                        "internal_silences": silence_manifest(planned_parts[index].internal_silences),
                     }
                 )
 

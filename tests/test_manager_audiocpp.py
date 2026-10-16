@@ -196,12 +196,12 @@ class AudioCppManagerTests(unittest.TestCase):
         self.assertEqual(ComputeVariant.CUDA, effective)
         self.assertEqual(1, len(assets))
         self.assertEqual("cuda_binary", assets[0].kind)
-        self.assertEqual("audio-v0.9.1-bin-ubuntu-x64-cuda12.8-colab.tar.gz", assets[0].name)
+        self.assertEqual("audio-v0.9.2-bin-ubuntu-x64-cuda12.8-colab.tar.gz", assets[0].name)
         self.assertEqual(
-            "de068e8a22eb8f9c229c8ecaf77e12b6340be4d7d91606604fae7ccc48c174b6",
+            "d1ffb5b314bd9905425e9122831fcda015b2e82fb339b1c0812794ba4ebbf3b8",
             assets[0].sha256,
         )
-        self.assertEqual("0.9.1", assets[0].version)
+        self.assertEqual("0.9.2", assets[0].version)
         self.assertEqual(AUDIO_CPP_RELEASE_BASE, assets[0].release_base)
         self.assertEqual(
             f"{assets[0].release_base}/{assets[0].name}", assets[0].url

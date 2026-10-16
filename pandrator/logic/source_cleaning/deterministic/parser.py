@@ -168,6 +168,12 @@ class EPUBHTMLParser(HTMLParser):
             self.anchor_stack.append(anchor_info)
 
     def handle_data(self, data):
+        if any(
+            tag_name.lower() in {"rt", "rp", "rtc"}
+            for tag_name, _, _, _, _, _ in self.tag_stack
+        ):
+            return
+
         # Suppress an inline page label, but retain prose inside a pagebreak
         # wrapper. Some commercial EPUBs put a complete chapter inside
         # ``<div class="pagebreak">…</div>``; treating every descendant as a

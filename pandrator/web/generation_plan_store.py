@@ -113,7 +113,7 @@ def store_generation_plan(
 
         from .generation_cast_runtime import remap_markup
         from .generation_controls import get_generation_controls
-        from .speech_boundaries import record_pause_metadata
+        from .speech_boundaries import effective_speech_boundary, record_pause_metadata
 
         characters = get_generation_controls(session, session_id)["characters"]
         for ordinal, record in enumerate(clean):
@@ -135,11 +135,12 @@ def store_generation_plan(
                     expected_text=spoken,
                     characters=characters,
                 )
-                record["speech_boundary_after"] = structure.boundary_after or (
-                    "dialogue_turn" if structure.spans and structure.spans[-1].dialogue else None
-                )
-                if record["speech_boundary_after"] in {"continuation", "dialogue_turn"}:
+                boundary = effective_speech_boundary(structure)
+                if boundary is not None:
+                    record["speech_boundary_after"] = boundary
+                if record.get("speech_boundary_after") in {"continuation", "dialogue_turn"}:
                     record["paragraph_break_after"] = False
+                    record["paragraph"] = False
             is_subtitle = context._is_subtitle_generation_record(record)
             explicit_language = context._usable_language(record.get("language")) or None
             explicit_voice = str(record.get("voice") or "").strip() or None

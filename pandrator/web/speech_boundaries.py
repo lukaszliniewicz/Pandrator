@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 from sqlalchemy import select
 
-from pandrator.logic.speech_markup import parse_speech_markup
+from pandrator.logic.speech_markup import ParsedSpeechMarkup, parse_speech_markup
 from pandrator.logic.speech_performance import content_hash
 
 from . import models as m
 from .generation_cast_runtime import remap_markup
 from .generation_controls import get_generation_controls
+
+
+def effective_speech_boundary(parsed: ParsedSpeechMarkup) -> str | None:
+    """Return the explicit boundary, or infer a dialogue turn from final speech."""
+    if parsed.boundary_after is not None:
+        return parsed.boundary_after
+    if parsed.spans and parsed.spans[-1].dialogue:
+        return "dialogue_turn"
+    return None
 
 
 def record_continues_sentence(record: dict) -> bool:
@@ -36,15 +46,22 @@ def record_pause_metadata(record: dict, *, is_subtitle: bool = False) -> dict:
         return {"silence_override_ms": max(0, int(record["silence_after_ms"]))}
     if is_subtitle:
         return {}
-    paragraph = (
-        bool(record.get("paragraph_break_after"))
-        or str(record.get("paragraph") or "").lower() == "yes"
-    )
-    kind = (
-        "paragraph"
-        if paragraph
-        else ("clause" if record_continues_sentence(record) else "sentence")
-    )
+    boundary = str(record.get("speech_boundary_after") or "").strip().lower()
+    if boundary == "continuation":
+        kind = "clause"
+    elif boundary == "dialogue_turn":
+        kind = "sentence"
+    else:
+        paragraph = (
+            bool(record.get("paragraph_break_after"))
+            or str(record.get("paragraph") or "").lower() == "yes"
+            or boundary in {"paragraph", "scene", "chapter"}
+        )
+        kind = (
+            "paragraph"
+            if paragraph
+            else ("clause" if record_continues_sentence(record) else "sentence")
+        )
     return {"pause_kind": kind}
 
 
@@ -98,29 +115,40 @@ def boundary_pause(boundary: str | None, stored_ms: int, audio: dict) -> int:
     return max(0, int(stored_ms or 0))
 
 
-def freeze_boundaries(session, revision_id: str, snapshot: dict) -> None:
+def freeze_boundaries(
+    session,
+    revision_id: str,
+    snapshot: dict,
+    *,
+    segments: Iterable[m.GenerationSegment] | None = None,
+) -> None:
     revision = session.get(m.GenerationPlanRevision, revision_id)
     plan = session.get(m.GenerationPlan, revision.plan_id) if revision else None
     record = session.get(m.SessionRecord, plan.session_id) if plan else None
     if record is None or record.workflow_kind != "audiobook":
         return
     frozen = snapshot.get("performance_snapshot") or {}
-    characters = frozen.get(
-        "character_dictionary",
-        get_generation_controls(session, record.id)["characters"],
+    characters = (
+        frozen["character_dictionary"]
+        if "character_dictionary" in frozen
+        else get_generation_controls(session, record.id)["characters"]
     )
     annotations = frozen.get("annotations") or {}
     result = {}
     voices = {}
     voice_gap = int((snapshot.get("audio") or {}).get("voice_change_silence_ms") or 0)
-    rows = list(
-        session.scalars(
-            select(m.GenerationSegment)
-            .where(
-                m.GenerationSegment.plan_revision_id == revision_id,
-                m.GenerationSegment.removed.is_(False),
+    rows = (
+        list(segments)
+        if segments is not None
+        else list(
+            session.scalars(
+                select(m.GenerationSegment)
+                .where(
+                    m.GenerationSegment.plan_revision_id == revision_id,
+                    m.GenerationSegment.removed.is_(False),
+                )
+                .order_by(m.GenerationSegment.ordinal)
             )
-            .order_by(m.GenerationSegment.ordinal)
         )
     )
     for row in rows:
@@ -132,12 +160,13 @@ def freeze_boundaries(session, revision_id: str, snapshot: dict) -> None:
         boundary = None
         if xml:
             xml = remap_markup(xml, row.id, text, characters)
-            boundary = parse_speech_markup(
+            parsed = parse_speech_markup(
                 xml,
                 expected_segment_id=row.id,
                 expected_text=text,
                 characters=characters,
-            ).boundary_after
+            )
+            boundary = effective_speech_boundary(parsed)
         speech_plan = row.speech_plan_json or {}
         explicit = speech_plan.get("silence_override_ms")
         pause = boundary_pause(boundary, row.silence_after_ms, snapshot.get("audio") or {})

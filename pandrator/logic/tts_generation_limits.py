@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from .audio_cpp_segmentation import (
+    NATIVE_SPLIT_ONLY_FAMILIES,
+    REVIEWED_RUNTIME,
+    native_character_chunk_default,
+)
+
 _CHECKED_AT = "2026-10-09"
 _OPENAI_SPEECH = "https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create"
 _OPENAI_MINI = "https://developers.openai.com/api/docs/models/gpt-4o-mini-tts"
@@ -18,19 +24,13 @@ _GEMINI_MODELS = {
     "gemini-2.5-flash-lite-preview-tts": "https://docs.cloud.google.com/text-to-speech/docs/gemini-tts",
     "gemini-2.5-pro-tts": "https://docs.cloud.google.com/text-to-speech/docs/gemini-tts",
 }
-_RUNTIME_CHUNKS = {
-    "qwen3_tts": 8192, "voxcpm2": 2048, "breeze_tts": 600,
-    "fish_audio": 200, "fish_audio_s2": 200, "fireredtts3": 600,
-    "cosyvoice3": 600, "chatterbox": 128, "chatterbox_turbo": 128,
-    "neutts": 600, "magpie_tts": 300, "kokoro_tts": 240,
-    "moss_tts_local": 2048, "moss_tts_nano": 256,
-    "outetts": 256, "dots_tts": 320, "lfm2_audio": 200,
-}
 _RUNTIME_OUTPUT_BUDGETS = {
     "breeze_tts": (1500, "acoustic_frames"),
+    "chatterbox": (384, "speech_tokens"),
     "fish_audio": (1024, "semantic_tokens_per_chunk"),
     "fish_audio_s2": (1024, "semantic_tokens_per_chunk"),
     "voxcpm2": (4096, "audio_tokens"),
+    "voxtral_tts": (2048, "audio_frames"),
 }
 
 
@@ -112,20 +112,39 @@ def generation_limit_metadata(
 
     audio_cpp = _normalised(service) in {"audio_cpp", "audio.cpp", "audiocpp"} or _normalised(adapter) == "audio_cpp"
     runtime_family = family.strip().casefold() or profile
-    if audio_cpp and runtime_family in _RUNTIME_CHUNKS:
-        result["runtime_chunk_characters"] = _RUNTIME_CHUNKS[runtime_family]
+    if audio_cpp:
+        result["checked_at"] = "2026-10-16"
+        result["segmentation_owner"] = "pandrator"
+        result["single_segment_supported"] = runtime_family not in NATIVE_SPLIT_ONLY_FAMILIES
+        native_chunk = native_character_chunk_default(runtime_family)
+        if native_chunk is not None:
+            result["runtime_chunk_characters"] = native_chunk
+        if "target_words" in budget:
+            result["default_segment_words"] = budget["target_words"]
         sources.append(
-            "https://github.com/0xShug0/audio.cpp/blob/v0.9.1/"
-            f"src/models/{runtime_family}/session.cpp"
+            f"https://github.com/0xShug0/audio.cpp/blob/v{REVIEWED_RUNTIME}/"
+            f"model_specs/{'fish_audio' if runtime_family == 'fish_audio_s2' else runtime_family}.json"
         )
         if runtime_family in _RUNTIME_OUTPUT_BUDGETS:
             value, unit = _RUNTIME_OUTPUT_BUDGETS[runtime_family]
             result["runtime_output_budget"] = {"value": value, "unit": unit}
         if runtime_family == "qwen3_tts":
             result["runtime_output_budget"] = {"fallback_value": 2048, "unit": "codec_frames", "source": "checkpoint_generation_config"}
+        if runtime_family == "chatterbox":
+            result["runtime_output_budget"]["multilingual_token_duration_ms"] = 40
+        if runtime_family == "voxtral_tts":
+            result["runtime_output_budget"]["frame_duration_ms"] = 80
+            sources.append("https://docs.mistral.ai/studio/audio/text_to_speech/speech")
+        if runtime_family == "pocket_tts":
+            result["runtime_chunk_text_tokens"] = 50
+        if runtime_family == "confucius4_tts":
+            result["runtime_chunk_text_tokens"] = 80
+        if runtime_family == "irodori_tts":
+            result["input_tokens"] = 256
+            result["input_limit_note"] = "The normalized text and BOS must fit the 256-token checkpoint window. Pandrator applies a conservative UTF-8 byte bound to prevent native truncation."
         if runtime_family in {"fish_audio", "fish_audio_s2"}:
             result["application_runtime_chunk_characters"] = 300
-            result["runtime_chunk_note"] = "Pandrator supplies 300 when unset; audio.cpp's native default is 200. Compiled cues count toward chunk size."
+            result["runtime_chunk_note"] = "Pandrator supplies at least 300 when unset; audio.cpp's native default is 200. The request budget expands to keep the compiled Pandrator segment whole."
     result["source_urls"] = sources
     return result
 

@@ -16,6 +16,7 @@ from typing import Any, Protocol
 from sqlalchemy import select
 
 from pandrator.logic import tts_handler
+from pandrator.logic.preset_voice_metadata import decorate_preset_voices
 from pandrator.logic.tts_provider_policy import DEFAULT_TTS_SERVICE_ID, provider_policy
 from pandrator.logic.tts_provider_profiles import (
     AUDIO_CPP_VOICE_DESIGN_MODELS,
@@ -1032,6 +1033,7 @@ class TtsCatalogueService:
                 )
             )
             _decorate_model_language_support(service)
+            decorate_preset_voices(service)
         if compact:
             # Slim after refresh so live discovered records feed the chooser
             # with the same record-over-builtin precedence as the full view.

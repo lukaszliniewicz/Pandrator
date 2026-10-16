@@ -140,6 +140,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "enable_sentence_splitting": "Splits narration sentences that exceed max_sentence_length at suitable linguistic boundaries before speech-block creation.",
         "max_sentence_length": "Sets the custom character limit when audiobook chunking is manual. Automatic audiobook preparation uses the selected model's narration budget; structural boundaries may keep blocks shorter.",
         "audiobook_chunking": "Chooses model-aware narration length with headroom, or a custom character limit. Applies to new audiobook preparation, preserving paragraph and chapter breaks and existing reviewed plans.",
+        "audiobook_dialogue_flow": "Recognizes short dialogue exchanges using language-specific quotation and dash rules for English, Polish, French, Dutch, Japanese and German, with conservative quotation rules for other languages. Uses sentence pauses between detected turns and groups compatible turns within the narration budget. Applies only to newly prepared audiobooks; voiceover timing is independent.",
         "enable_sentence_appending": "Combines adjacent short narration sentences when their combined text stays within max_sentence_length.",
         "remove_diacritics": "Transliterates narration text to remove diacritics before segmentation; this can change spelling and pronunciation and should be used only when the TTS voice requires it.",
         "remove_quotation_marks": "Removes quotation-mark characters from narration text before segmentation and synthesis.",
@@ -453,6 +454,11 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "audiobook_chunking": {
             "choices": ["model", "manual"],
             "label": "Audiobook segment length",
+            "applicability": "Audiobook narration preparation only.",
+        },
+        "audiobook_dialogue_flow": {
+            "choices": ["auto", "off"],
+            "label": "Dialogue flow",
             "applicability": "Audiobook narration preparation only.",
         },
         "remove_diacritics": {

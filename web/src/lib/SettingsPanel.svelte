@@ -65,6 +65,7 @@
       'enable_sentence_splitting',
       'max_sentence_length',
       'enable_sentence_appending',
+      'audiobook_dialogue_flow',
       'enable_nemo_normalization',
       'normalize_all_caps',
       'llm_tts_document_optimization',

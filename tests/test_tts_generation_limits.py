@@ -30,7 +30,7 @@ def test_metadata_has_only_evidenced_caps_and_shared_default_policy(service, mod
     policy = audiobook_chunk_budget({}, {"service": service, "model": model, "adapter": adapter})
     assert metadata["default_segment_characters"] == policy["target_chars"]
     assert metadata["policy_max_segment_characters"] == 8192
-    assert metadata["checked_at"] == "2026-10-09"
+    assert metadata["checked_at"] == ("2026-10-16" if service == "audio_cpp" else "2026-10-09")
     if caps:
         assert metadata["source_urls"]
 
@@ -48,7 +48,7 @@ def test_runtime_defaults_are_separate_from_model_caps(model, family, chunk, out
     assert metadata["runtime_chunk_characters"] == chunk
     assert metadata.get("runtime_output_budget") == output
     assert not (_CAP_KEYS & metadata.keys())
-    assert "/v0.9.1/" in metadata["source_urls"][0]
+    assert "/v0.9.2/" in metadata["source_urls"][0]
 
 
 def test_explicit_family_selects_shared_policy_for_unfamiliar_package_id():

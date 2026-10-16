@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from .artifacts import ArtifactService
 from .database import Database
@@ -95,10 +95,11 @@ class AutomaticAudioOutput:
     role: str
     destination: Path
     settings: dict[str, Any]
-    assembly_inputs: list[tuple[Path, int, int]]
+    assembly_inputs: list[tuple[Path, int, int] | tuple[Path, int, int, dict[str, Any]]]
     take_artifact_ids: list[str]
     segment_count: int
     plan_revision_id: str
+    allow_internal_silences: bool = True
 
 
 def assemble_automatic_output(
@@ -108,6 +109,7 @@ def assemble_automatic_output(
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
     """Assemble and register the automatic route's final WAV output."""
+    from .assembly_silences import render_part_silences, silence_manifest
     from .audio_assembly import (
         AudioAssemblyPart,
         assemble_audio_plan,
@@ -144,19 +146,36 @@ def assemble_automatic_output(
         assembly_inputs[0][0],
         cancel_event=cancel_event,
     )
+    planned_parts = []
+    take_rows = []
+    for index, item in enumerate(assembly_inputs):
+        path, duration_ms, silence_after_ms = item[:3]
+        if len(item) == 4:
+            metadata = item[3]
+        else:
+            retained, _ = artifacts.resolve(take_artifact_ids[index])
+            metadata = retained.metadata_json or {}
+        with artifacts.database.session() as session:
+            row = session.execute(select(AudioTake, GenerationSegment).join(
+                GenerationSegment, GenerationSegment.id == AudioTake.generation_segment_id
+            ).where(AudioTake.artifact_id == take_artifact_ids[index])).first()
+            take_rows.append({
+                "artifact_id": take_artifact_ids[index],
+                **({"take_id": row[0].id, "take_revision": row[0].revision,
+                    "segment_id": row[1].id, "segment_revision": row[1].revision,
+                    "kind": row[0].kind, "node_kind": row[1].node_kind,
+                    "speaker": row[1].speaker} if row is not None else {}),
+            })
+        planned_parts.append(AudioAssemblyPart(
+            path=path,
+            expected_duration_ms=duration_ms,
+            silence_after_ms=max(0, int(silence_after_ms or 0)) if index < len(assembly_inputs) - 1 else 0,
+            fade_in_ms=fade_in_ms,
+            fade_out_ms=fade_out_ms,
+            internal_silences=render_part_silences(metadata, settings) if output.allow_internal_silences else (),
+        ))
     plan = build_audio_assembly_plan(
-        [
-            AudioAssemblyPart(
-                path=path,
-                expected_duration_ms=duration_ms,
-                silence_after_ms=(
-                    max(0, int(silence_after_ms or 0)) if index < len(assembly_inputs) - 1 else 0
-                ),
-                fade_in_ms=fade_in_ms,
-                fade_out_ms=fade_out_ms,
-            )
-            for index, (path, duration_ms, silence_after_ms) in enumerate(assembly_inputs)
-        ],
+        planned_parts,
         output_format="wav",
         sample_rate_hz=sample_rate_hz,
         channels=channels,
@@ -181,6 +200,18 @@ def assemble_automatic_output(
             "service": settings.get("service") or settings.get("tts_service") or "XTTS",
             "duration_ms": assembly_result.duration_ms,
             "assembly_backend": assembly_result.backend,
+            "audio_timeline": {"version": 1, "sample_rate_hz": assembly_result.sample_rate_hz,
+                               "total_frames": assembly_result.total_frames},
+            "takes": [
+                {**take_rows[index],
+                 "duration_ms": assembly_result.part_duration_ms[index],
+                 "start_frame": assembly_result.part_start_frames[index],
+                 "end_frame": assembly_result.part_end_frames[index],
+                 "silence_after_ms": part.silence_after_ms,
+                 "silence_policy": "assembly-v1",
+                 "internal_silences": silence_manifest(part.internal_silences)}
+                for index, part in enumerate(plan.parts)
+            ],
         },
     )
     progress(1.0, "Audio ready")

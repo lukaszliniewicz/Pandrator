@@ -8,8 +8,15 @@ from .audio_cpp_model_metadata import ModelCatalog as ModelCatalog
 from .audio_cpp_model_metadata import _audio_cpp_model_metadata as _audio_cpp_model_metadata
 from .audio_cpp_parameters import (
     FISH_AUDIO_TTS_TEXT_CHUNK_SIZE_DEFAULT,
+    _normalize_option_aliases,
     request_parameters_for_family,
     request_parameters_for_model,
+)
+from .audio_cpp_segmentation import single_segment_options, validate_segment_text_window
+from .preset_voice_metadata import (
+    kokoro_voice_language,
+    language_default_voice,
+    preferred_preset_voice,
 )
 
 ModelMetadataReader: TypeAlias = Callable[[str, dict], dict[str, object]]
@@ -21,12 +28,14 @@ _TTS_FORBIDDEN_LEGACY_OPTIONS = {
     "lfm2_audio": {
         "audio_chunk_mode",
         "audio_chunk_seconds",
+        "audio_chunk_duration_sec",
         "text_temperature",
         "text_top_k",
         "stream_frames_per_event",
     },
     "dots_tts": {"use_xvector", "vocoder_merge_steps"},
     "higgs_audio_tts": {"repetition_penalty"},
+    "voxtral_tts": {"instruction", "instruct", "instructions", "reference_text"},
 }
 # These runtimes reject even a neutral global speed as a style condition.
 # Keep this scoped to verified contracts; other families can consume speed.
@@ -34,6 +43,7 @@ _UNSUPPORTED_SPEED_FAMILIES = {
     "breeze_tts": "Breeze",
     "voxcpm2": "VoxCPM2",
     "pocket_tts": "PocketTTS",
+    "voxtral_tts": "Voxtral",
 }
 _MANAGED_REFERENCE_PATH_OPTIONS = {
     "voice_samples",
@@ -272,6 +282,8 @@ def _audio_cpp_language(
         if result:
             return result
         return str(native_language)
+    if family == "kokoro_tts":
+        return str(canonical)
     return iso
 
 
@@ -296,11 +308,12 @@ def _audio_cpp_selected_model_options(
         return {}
     if not isinstance(selected, dict):
         raise ValueError("audio.cpp model settings must be an object or null for model defaults.")
+    normalized_selected = _normalize_option_aliases(family, selected)
     model_parameters = request_parameters_for_model(family, model)
-    for key in selected:
+    for key in normalized_selected:
         if key not in model_parameters:
             raise ValueError(f"Unknown audio.cpp option '{key}' for family '{family}'.")
-    return validate_options(family, selected)
+    return validate_options(family, normalized_selected)
 
 
 def _build_audio_cpp_audio_payload(
@@ -411,6 +424,9 @@ def _build_audio_cpp_audio_payload(
     )
     if language:
         payload["language"] = language
+    if family == "voxtral_tts":
+        # Voxtral infers pronunciation from text; the preset selects the voice.
+        payload.pop("language", None)
 
     compile_for_provider = get_performance_compiler()
 
@@ -489,7 +505,9 @@ def _build_audio_cpp_audio_payload(
         raw_options = tts_settings.get("audio_cpp_options")
         if raw_options is None:
             raw_options = tts_settings.get("options")
-        options = dict(raw_options) if isinstance(raw_options, dict) else {}
+        options = (
+            _normalize_option_aliases(family, raw_options) if isinstance(raw_options, dict) else {}
+        )
         _reject_known_unsupported_options(family, model, options)
         for key in (
             "speed",
@@ -633,6 +651,34 @@ def _build_audio_cpp_audio_payload(
                     f"{_UNSUPPORTED_SPEED_FAMILIES[family]} speed is unsupported; "
                     "only the neutral value 1 is allowed."
                 )
+    if (
+        family == "pocket_tts"
+        and model.startswith("pocket_tts_french_")
+        and "temperature" not in payload
+    ):
+        # Kyutai v3.3.0 uses .3; audio.cpp's sidecar-free French fallback is .7.
+        options.setdefault("temperature", 0.3)
+    if family == "kokoro_tts":
+        configured = (endpoint.get("default_voices_by_language") or {}).get(model) or {}
+        selected = (
+            voice or str(options.get("voice_id") or "")
+            or language_default_voice(configured, raw_language)
+            or (endpoint.get("default_voices") or {}).get(model)
+            or (endpoint.get("default_voice") if endpoint.get("default_model") == model else "")
+            or preferred_preset_voice(family, raw_language) or "af_heart"
+        )
+        native_language = kokoro_voice_language(str(selected))
+        if native_language:
+            if language and language.split("-", 1)[0] != native_language.split("-", 1)[0]:
+                raise ValueError("Choose a Kokoro voice matching the speech language.")
+            # Generic English includes both accents; native `en` means only
+            # American and fails for British voices. Use the selected accent.
+            payload["language"] = native_language
+        payload["voice"] = selected
+        if "voice_id" in options:
+            options["voice_id"] = selected
+    validate_segment_text_window(model, payload["input"])
+    options = single_segment_options(family, payload["input"], options)
     if options:
         payload["options"] = options
     return payload

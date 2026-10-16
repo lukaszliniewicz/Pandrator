@@ -1428,6 +1428,7 @@ export type AudioTake = {
     speaker_labels?: string[];
     source: string | null;
   }[];
+  assembly_silences?: { at_ms: number; duration_ms: number }[];
   is_reused?: boolean;
 };
 
@@ -1504,6 +1505,7 @@ export type GenerationSegment = {
   voice?: string | null;
   language?: string | null;
   silence_after_ms?: number;
+  assembly_silence_after_ms?: number;
   marked: boolean;
   removed: boolean;
   status: string;

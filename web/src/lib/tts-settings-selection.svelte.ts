@@ -9,6 +9,7 @@ import { type TtsCatalogueState } from './tts-catalogue-state.svelte';
 import type { TtsService, XttsModel } from './api-models';
 import { LANGUAGE_OPTIONS } from './settings-fields';
 import {
+  defaultVoiceForLanguage,
   describeVoice,
   languagesForService,
   voiceSupportsLanguage
@@ -82,14 +83,12 @@ export class TtsSettingsSelection {
       this.draft.targetLanguage
     )
   );
-  selectedTtsDefaultVoice = $derived.by(
-    () =>
-      this.selectedTtsService?.default_voices_by_language?.[
-        this.draft.ttsModel
-      ]?.[this.draft.targetLanguage] ??
-      this.selectedTtsService?.default_voices?.[this.draft.ttsModel] ??
-      this.selectedTtsService?.default_voice ??
-      ''
+  selectedTtsDefaultVoice = $derived.by(() =>
+    defaultVoiceForLanguage(
+      this.selectedTtsService,
+      this.draft.ttsModel,
+      this.draft.targetLanguage
+    )
   );
   selectedTtsServiceId = $derived.by(() =>
     String(this.selectedTtsService?.id ?? this.draft.ttsService)

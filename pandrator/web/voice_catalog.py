@@ -490,6 +490,15 @@ def catalog_entries(
                 category, description, profile = _provider_profile(
                     service, model, voice, metadata
                 )
+                languages = supported_languages(service, model)
+                if metadata.get("pandrator_preset") and metadata.get("supported_languages"):
+                    languages = [
+                        language for language in metadata["supported_languages"]
+                        if isinstance(language, str) and any(
+                            _language_matches(language, supported) or _language_matches(supported, language)
+                            for supported in languages
+                        )
+                    ]
                 override = (overrides or {}).get(key) or {}
                 if override.get("profile") is not None:
                     profile = normalized_profile(override["profile"])
@@ -530,7 +539,7 @@ def catalog_entries(
                                 prepared=True,
                                 voice=voice,
                                 modes=modes,
-                                languages=supported_languages(service, model),
+                                languages=languages,
                             )
                         ],
                         "preview_artifact_id": preview,

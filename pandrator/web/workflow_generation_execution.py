@@ -14,6 +14,7 @@ from sqlalchemy import select, update
 
 from pandrator.logic.tts_retry import DEFAULT_TTS_MAX_ATTEMPTS
 
+from .assembly_silences import remap_render_parts_after_rvc
 from .jobs import JobQueue
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, new_id, utcnow
 from .tts_provider_contracts import TtsSynthesisResult, synthesize_with_optional_timing
@@ -140,12 +141,13 @@ def run_generation(
         raise ValueError("The selected speech plan changed after generation was queued. Review and submit it again.")
     if audio_identity_changed:
         raise ValueError("A voice reference changed after generation was queued. Start a new run to use the current voice consistently.")
+    workflow_kind = context._session_record(session_id).workflow_kind
     completion_progress = progress
     second_pass = None if is_audio_version else context._voiceover_second_pass(
         settings_snapshot,
         operation=operation,
         has_selected_ids=bool(selected_ids),
-        workflow_kind=context._session_record(session_id).workflow_kind,
+        workflow_kind=workflow_kind,
     )
     # Passage-first planning never runs the old early split repair: a
     # split pass followed by a regroup pass could undo each other in a
@@ -647,6 +649,7 @@ def run_generation(
             segment.status = "running"
             segment.updated_at = utcnow()
             text = segment.text
+            preserve_assembly_boundaries = workflow_kind == "audiobook" and segment.node_kind != "subtitle_cue"
             segment_speaker = segment.speaker
             segment_language = context._usable_language(segment.language)
             segment_voice = str(segment.voice or "").strip() or None
@@ -713,6 +716,14 @@ def run_generation(
                 source_path = context.paths.managed_path(source_artifact.relative_path)
                 source_audio = AudioSegment.from_file(source_path)
                 audio = rvc_handler.process_with_rvc(source_audio, rvc_settings)
+                render_manifest = remap_render_parts_after_rvc(
+                    (source_artifact.metadata_json or {}).get("render_parts") or [],
+                    source_frames=int(source_audio.frame_count()), source_rate=source_audio.frame_rate,
+                    target_frames=int(audio.frame_count()), target_rate=audio.frame_rate,
+                    preserve_assembly_boundaries=preserve_assembly_boundaries,
+                )
+                if any(part.get("silence_policy") == "assembly-v1" for part in render_manifest):
+                    synthesized_text = str((source_artifact.metadata_json or {}).get("synthesized_text") or synthesized_text)
                 take_kind = "rvc"
                 parent_take_id = source_take_id
                 take_settings = rvc_settings
@@ -902,11 +913,14 @@ def run_generation(
                         raise ValueError(
                             "Choose an RVC model before generating an alternate RVC take."
                         )
+                    source_frames, source_rate = int(audio.frame_count()), audio.frame_rate
                     audio = rvc_handler.process_with_rvc(audio, rvc_settings)
+                    render_manifest = remap_render_parts_after_rvc(
+                        render_manifest, source_frames=source_frames, source_rate=source_rate,
+                        target_frames=int(audio.frame_count()), target_rate=audio.frame_rate,
+                        preserve_assembly_boundaries=preserve_assembly_boundaries,
+                    )
                     speech_timing = None
-                    for part in render_manifest:
-                        for key in ("speech_timing", "start_frame", "end_frame", "sample_rate_hz"):
-                            part.pop(key, None)
                     take_kind = "tts_rvc"
                     take_settings = {**segment_tts_settings, "rvc": rvc_settings}
             verification = context._verification_metadata(

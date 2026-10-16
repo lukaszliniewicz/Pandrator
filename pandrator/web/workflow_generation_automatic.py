@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from .generation_plan_store import DefaultSilenceProtocol
-from .models import Artifact, GenerationPlan, GenerationSegment, new_id, utcnow
+from .models import Artifact, GenerationPlan, GenerationSegment, SessionRecord, new_id, utcnow
 from .tts_provider_contracts import synthesize_with_optional_timing
 from .workflow_generation_automatic_output import (
     AutomaticAudioOutput,
@@ -111,8 +111,11 @@ def generate_audio(
     ]
     if not records:
         raise ValueError("No non-empty narration segments were found.")
-    assembly_inputs: list[tuple[Path, int, int]] = []
+    assembly_inputs: list[tuple[Path, int, int] | tuple[Path, int, int, dict[str, Any]]] = []
     take_artifact_ids: list[str] = []
+    with context.database.session() as session:
+        session_record = session.get(SessionRecord, session_id)
+        allow_internal_silences = bool(session_record and session_record.workflow_kind == "audiobook")
     revision_id = ""
     generation_segment_ids: list[str] = []
     if source_artifact.role == "prepared_text":
@@ -531,7 +534,7 @@ def generate_audio(
             from .speech_boundaries import assembly_pause
 
             silence_after = assembly_pause(segment, performance_snapshot)
-        assembly_inputs.append((sentence_path, len(audio), silence_after))
+        assembly_inputs.append((sentence_path, len(audio), silence_after, dict(take_artifact.metadata_json or {})))
         progress(
             optimization_share + (index / len(records)) * synthesis_share,
             f"Generated segment {index} of {len(records)}",
@@ -557,6 +560,8 @@ def generate_audio(
             take_artifact_ids=take_artifact_ids,
             segment_count=len(records),
             plan_revision_id=revision_id,
+            allow_internal_silences=allow_internal_silences and source_artifact.role != "speech_blocks"
+            and not any(context._is_subtitle_generation_record(record) for record in records),
         ),
         progress,
         cancel_event,

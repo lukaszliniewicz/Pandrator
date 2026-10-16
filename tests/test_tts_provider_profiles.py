@@ -94,10 +94,10 @@ class TTSProviderProfileTests(unittest.TestCase):
             if item["id"].startswith("qwen3_tts_")
         }
         self.assertEqual(
-            300, qwen_models["qwen3_tts_1_7b_base_q8_0"]["recommended_chunk_characters"]
+            1800, qwen_models["qwen3_tts_1_7b_base_q8_0"]["recommended_chunk_characters"]
         )
         self.assertEqual(
-            300,
+            1800,
             qwen_models["qwen3_tts_1_7b_customvoice_q8_0"][
                 "recommended_chunk_characters"
             ],
@@ -121,7 +121,7 @@ class TTSProviderProfileTests(unittest.TestCase):
 
         self.assertEqual("qwen3_tts", model["family"])
         self.assertEqual("design", model["voice_mode"])
-        self.assertEqual(300, model["recommended_chunk_characters"])
+        self.assertEqual(1800, model["recommended_chunk_characters"])
         self.assertEqual(
             ["de", "en", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh"],
             model["supported_languages"],

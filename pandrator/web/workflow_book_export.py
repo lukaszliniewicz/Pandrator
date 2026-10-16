@@ -22,6 +22,8 @@ from pandrator.logic.book_timing import (
 )
 
 from .artifacts import sha256_file
+from .assembly_silences import frozen_silences
+from .audio_assembly import silence_frame_offsets
 from .export_inputs import ExportInputs
 from .export_publication import publish_video_export
 from .models import (
@@ -191,7 +193,9 @@ def _load(
                 continue
         path = _verified_path(context, artifact)
         take_frames, take_rate = _pcm(path)
-        if abs((base_end - base_start) * 1000 / rate - take_frames * 1000 / take_rate) > 1:
+        insertions = frozen_silences(row)
+        offsets = silence_frame_offsets(insertions, rate, round(take_frames * rate / take_rate))
+        if abs((base_end - base_start - sum(added for _, added in offsets)) * 1000 / rate - take_frames * 1000 / take_rate) > 1:
             raise ValueError("Book take PCM duration does not match its assembled frame bounds.")
         original = (artifact.metadata_json or {}).get("source_text")
         spoken = (artifact.metadata_json or {}).get("synthesized_text")
@@ -290,6 +294,33 @@ def _native(take: _FrozenTake) -> tuple[AlignedBookText, str] | None:
         return combined, _digest(parts)
     except (ValueError, TypeError, KeyError):
         return None
+
+
+def _assembled_timing(take: _FrozenTake, aligned: AlignedBookText, rate: int) -> AlignedBookText:
+    """Map raw cached timing once, before the existing take/sound-mix rebase."""
+    insertions = frozen_silences(take.manifest)
+    if not insertions:
+        return aligned
+    raw_frames = round(take.frames * rate / take.rate)
+    offsets = silence_frame_offsets(insertions, rate, raw_frames)
+    # Native and cached word times already use rounded source milliseconds.
+    # Reconstructing their frames can place a word before its own boundary.
+    millisecond_offsets = tuple(
+        (round(insertion.offset_frames * 1000 / insertion.sample_rate_hz), length)
+        for insertion, (_, length) in zip(insertions, offsets, strict=True)
+    )
+
+    def mapped(ms: int, *, after: bool) -> int:
+        added = sum(length for offset_ms, length in millisecond_offsets
+                    if offset_ms < ms or (after and offset_ms == ms))
+        return round(ms + added * 1000 / rate)
+
+    return replace(aligned, words=tuple(
+        BookWord(word.text, mapped(word.start_ms, after=True), mapped(word.end_ms, after=False),
+                 word.start_char, word.end_char)
+        for word in aligned.words
+    ), diagnostics={**aligned.diagnostics,
+                    "duration_ms": round((raw_frames + sum(length for _, length in offsets)) * 1000 / rate)})
 
 
 def _write_json(
@@ -512,7 +543,7 @@ def export_book(
             offset = take.manifest["start_frame"] * 1000 / rate
             bound = take.manifest["end_frame"] * 1000 / rate
             words = rebase_book_words(
-                aligned,
+                _assembled_timing(take, aligned, rate),
                 take.manifest,
                 audio.metadata_json or {},
                 cue_mode=cue_mode,

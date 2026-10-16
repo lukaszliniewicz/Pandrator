@@ -10,6 +10,7 @@ from sentence_splitter import SentenceSplitter
 from unidecode import unidecode
 
 from . import nemo_normalizer, sentence_segmenter
+from .dialogue_flow import classify_dialogue_paragraphs
 from .dubbing.languages import normalize_language_code
 from .dubbing.natural_boundaries import natural_split_candidates
 from .dubbing.text_units import (
@@ -22,6 +23,7 @@ from .dubbing.text_units import (
 CHUNK_SIZE = 20000
 CHAPTER_MARKER = "[[Chapter]]"
 CHAPTER_LINE_RE = re.compile(rf"(?m)^[ \t]*{re.escape(CHAPTER_MARKER)}[^\n]*$")
+SCENE_GAP_MARKER = "\uE000PANDRATOR_SCENE_GAP\uE001"
 
 DOUBLE_QUOTATION_MARKS = (
     "\""
@@ -93,6 +95,28 @@ def _protect_chapter_marker_lines(text: str) -> str:
 
     protected = CHAPTER_LINE_RE.sub(replace_marker, text)
     return re.sub(r"\n{3,}", "\n\n", protected)
+
+
+def _mark_scene_gaps(text: str) -> tuple[str, str]:
+    """Preserve three-or-more source newlines as an in-memory hard barrier."""
+    marker = SCENE_GAP_MARKER
+    while marker in text:
+        marker += "_"
+    marked = re.sub(
+        r"\n(?:[ \t]*\n){2,}",
+        f"\n\n{marker}\n\n",
+        text,
+    )
+    return marked, marker
+
+
+def _isolate_scene_gap_markers(text: str, marker: str) -> str:
+    """Restore paragraph isolation if a format normalizer flattened newlines."""
+    return re.sub(
+        rf"[ \t\r\n]*{re.escape(marker)}[ \t\r\n]*",
+        f"\n\n{marker}\n\n",
+        text,
+    )
 
 
 def _split_structural_text_blocks(text: str) -> list[dict]:
@@ -362,7 +386,15 @@ def preprocess_text(text: str, settings: dict, progress_callback=None) -> list[d
     if progress_callback:
         progress_callback(0.2, "Splitting narration into processing chunks")
 
-    if len(text) > CHUNK_SIZE and not sentence_segmenter.is_available():
+    preserve_dialogue_context = (
+        settings.get("audiobook_preparation") is True
+        and settings.get("audiobook_dialogue_flow") == "auto"
+    )
+    if (
+        len(text) > CHUNK_SIZE
+        and not sentence_segmenter.is_available()
+        and not preserve_dialogue_context
+    ):
         processed_sentences = _parallel_preprocess_text(
             text,
             settings,
@@ -419,9 +451,13 @@ def _sequential_preprocess_text(text: str, settings: dict) -> list[dict]:
     return processed
 
 def _process_chunk(chunk: str, settings: dict) -> list[dict]:
-    """
-    Processes a single chunk of text. This is the core logic.
-    """
+    if settings.get("audiobook_preparation") is True:
+        return _process_audiobook_chunk(chunk, settings)
+    return _process_chunk_legacy(chunk, settings)
+
+
+def _process_chunk_legacy(chunk: str, settings: dict) -> list[dict]:
+    """Retain the existing segmentation policy for non-audiobook callers."""
     pdf_preprocessed = settings.get('pdf_preprocessed', False)
     source_file = settings.get('source_file', '')
     disable_paragraph_detection = settings.get('disable_paragraph_detection', False)
@@ -434,12 +470,7 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
     normalize_all_caps = settings.get('normalize_all_caps', False)
     tts_service = settings.get('tts_service', 'XTTS')
 
-
-
     chunk = re.sub(r'\r\n?', '\n', chunk)
-    # Prepared text is also reader-facing. Preserve its typography unless an
-    # explicit processing option below requests a change; provider-specific
-    # pronunciation changes belong at the speech boundary.
     chunk = _protect_chapter_marker_lines(chunk)
 
     if not disable_paragraph_detection:
@@ -486,9 +517,6 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
             )
             continue
 
-        # Segment each source paragraph independently.  A sentence segmenter
-        # can return a single list for text spanning blank lines, which makes
-        # the boundary impossible to recover reliably after sentence appending.
         for paragraph_text in re.split(r"\n{2,}", block["text"]):
             body_text = _ensure_line_terminal_punctuation(paragraph_text.strip())
             if not body_text:
@@ -510,21 +538,282 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
                 }
 
                 if enable_sentence_splitting:
-                    processed_sentences.extend(split_long_sentences(sentence_dict, max_sentence_length, language))
+                    processed_sentences.extend(
+                        split_long_sentences(sentence_dict, max_sentence_length, language)
+                    )
                 else:
                     processed_sentences.append(sentence_dict)
 
     if enable_sentence_appending:
-        processed_sentences = append_short_sentences(processed_sentences, max_sentence_length)
+        processed_sentences = append_short_sentences(
+            processed_sentences, max_sentence_length
+        )
 
     split_sentences = []
     for sentence_dict in processed_sentences:
         if sentence_dict.get("chapter") == "yes":
             split_sentences.append(sentence_dict)
         else:
-            split_sentences.extend(split_long_sentences_2(sentence_dict, max_sentence_length, language))
+            split_sentences.extend(
+                split_long_sentences_2(sentence_dict, max_sentence_length, language)
+            )
 
+    max_words = settings.get("max_segment_words")
+    if isinstance(max_words, int) and not isinstance(max_words, bool) and max_words > 0:
+        split_sentences = [
+            part
+            for segment in split_sentences
+            for part in _limit_segment_words(segment, max_words, language)
+        ]
+    byte_budget = settings.get("max_segment_tokenizer_bytes")
+    if isinstance(byte_budget, int) and not isinstance(byte_budget, bool) and byte_budget > 0:
+        split_sentences = [
+            part
+            for segment in split_sentences
+            for part in _limit_segment_tokenizer_bytes(segment, byte_budget, language)
+        ]
     return split_sentences
+
+
+def _process_audiobook_chunk(chunk: str, settings: dict) -> list[dict]:
+    """
+    Processes a single chunk of text. This is the core logic.
+    """
+    pdf_preprocessed = settings.get('pdf_preprocessed', False)
+    source_file = settings.get('source_file', '')
+    disable_paragraph_detection = settings.get('disable_paragraph_detection', False)
+    language = normalize_language_code(settings.get('language', 'en'))
+    max_sentence_length = settings.get('max_sentence_length', 160)
+    enable_sentence_appending = settings.get('enable_sentence_appending', True)
+    remove_diacritics = settings.get('remove_diacritics', False)
+    remove_quotation_marks = settings.get('remove_quotation_marks', False)
+    normalize_all_caps = settings.get('normalize_all_caps', False)
+    tts_service = settings.get('tts_service', 'XTTS')
+
+
+
+    chunk = re.sub(r'\r\n?', '\n', chunk)
+    chunk, scene_gap_marker = _mark_scene_gaps(chunk)
+    # Prepared text is also reader-facing. Preserve its typography unless an
+    # explicit processing option below requests a change; provider-specific
+    # pronunciation changes belong at the speech boundary.
+    chunk = _protect_chapter_marker_lines(chunk)
+
+    if not disable_paragraph_detection:
+        if pdf_preprocessed or source_file.endswith("_edited.txt"):
+            pass
+        elif source_file.endswith(".pdf"):
+            chunk = preprocess_text_pdf(chunk)
+        else:
+            chunk = '\n\n'.join(clean_text(paragraph) for paragraph in re.split(r'\n{2,}', chunk))
+
+    chunk = re.sub(r'\t', ' ', chunk)
+    if source_file.endswith(".pdf") and not pdf_preprocessed:
+        chunk = _isolate_scene_gap_markers(chunk, scene_gap_marker)
+
+    chunk_contains_cjk = contains_cjk(chunk)
+
+    processed_sentences = []
+
+    for block in _split_structural_text_blocks(chunk):
+        if block["type"] == "chapter":
+            if processed_sentences and processed_sentences[-1].get("chapter") != "yes":
+                processed_sentences[-1]["paragraph"] = "yes"
+
+            title = block["text"].strip()
+            if not title:
+                continue
+            if remove_diacritics:
+                if chunk_contains_cjk:
+                    title = strip_latin_diacritics(title)
+                else:
+                    title = ''.join(char for char in title if not unicodedata.combining(char))
+                    title = unidecode(title)
+            if remove_quotation_marks:
+                title = strip_quotation_marks(title)
+            if normalize_all_caps:
+                title = normalize_all_caps_words(title)
+            processed_sentences.append(
+                {
+                    "original_sentence": title,
+                    "paragraph": "yes",
+                    "chapter": "yes",
+                    "split_part": None,
+                    "sentence_continues_after": False,
+                }
+            )
+            continue
+
+        # Classify the authored paragraph before optional quote stripping and
+        # sentence splitting.  A three-newline scene marker and chapter block
+        # both interrupt adjacency.
+        paragraph_texts = re.split(r"\n{2,}", block["text"])
+        dialogue_annotations = (
+            classify_dialogue_paragraphs(paragraph_texts, language)
+            if settings.get("audiobook_dialogue_flow") == "auto"
+            else [None] * len(paragraph_texts)
+        )
+
+        # Segment each source paragraph independently.  A sentence segmenter
+        # can return a single list for text spanning blank lines, which makes
+        # the boundary impossible to recover reliably after sentence appending.
+        for paragraph_index, paragraph_text in enumerate(paragraph_texts):
+            if paragraph_text.strip() == scene_gap_marker:
+                continue
+
+            if remove_diacritics:
+                if chunk_contains_cjk:
+                    paragraph_text = strip_latin_diacritics(paragraph_text)
+                else:
+                    paragraph_text = ''.join(
+                        char for char in paragraph_text if not unicodedata.combining(char)
+                    )
+                    paragraph_text = unidecode(paragraph_text)
+            if remove_quotation_marks:
+                paragraph_text = strip_quotation_marks(paragraph_text)
+            if normalize_all_caps:
+                paragraph_text = normalize_all_caps_words(paragraph_text)
+
+            body_text = _ensure_line_terminal_punctuation(paragraph_text.strip())
+            if not body_text:
+                continue
+
+            sentences = [
+                sentence for sentence in split_into_sentences(
+                    body_text, language, tts_service
+                ) if sentence.strip()
+            ]
+
+            dialogue_annotation = dialogue_annotations[paragraph_index]
+            for sentence_index, sentence in enumerate(sentences):
+                sentence_dict = {
+                    "original_sentence": sentence,
+                    "paragraph": "yes" if sentence_index == len(sentences) - 1 else "no",
+                    "chapter": "no",
+                    "split_part": None,
+                    "sentence_continues_after": False,
+                }
+                if (
+                    dialogue_annotation is not None
+                    and sentence_index == len(sentences) - 1
+                ):
+                    sentence_dict["dialogue_flow"] = {
+                        "source": dialogue_annotation["source"],
+                        "paragraph_count": dialogue_annotation["paragraph_count"],
+                        "rule_language": dialogue_annotation["rule_language"],
+                    }
+                    sentence_dict["speech_boundary_after"] = dialogue_annotation[
+                        "speech_boundary_after"
+                    ]
+                processed_sentences.append(sentence_dict)
+
+    # Split only oversized source sentences, and do so before greedy packing.
+    # This prevents a short final part of one sentence from pulling words out
+    # of the next complete sentence merely to fill a block.
+    split_sentences = []
+    for sentence_dict in processed_sentences:
+        if sentence_dict.get("chapter") == "yes":
+            split_sentences.append(sentence_dict)
+        else:
+            split_sentences.extend(
+                split_long_sentences_2(
+                    sentence_dict,
+                    max_sentence_length,
+                    language,
+                    audiobook_preparation=True,
+                )
+            )
+
+    max_words = settings.get("max_segment_words")
+    if isinstance(max_words, int) and not isinstance(max_words, bool) and max_words > 0:
+        split_sentences = [
+            part
+            for segment in split_sentences
+            for part in _limit_segment_words(
+                segment, max_words, language, audiobook_preparation=True
+            )
+        ]
+    byte_budget = settings.get("max_segment_tokenizer_bytes")
+    if isinstance(byte_budget, int) and not isinstance(byte_budget, bool) and byte_budget > 0:
+        split_sentences = [
+            part
+            for segment in split_sentences
+            for part in _limit_segment_tokenizer_bytes(
+                segment, byte_budget, language, audiobook_preparation=True
+            )
+        ]
+
+    if enable_sentence_appending:
+        split_sentences = append_short_sentences(
+            split_sentences,
+            max_sentence_length,
+            max_segment_words=max_words,
+            max_segment_tokenizer_bytes=byte_budget,
+            dialogue_merge_allowed=(
+                settings.get("audiobook_dialogue_merge_allowed") is True
+            ),
+            audiobook_preparation=True,
+        )
+    return split_sentences
+
+
+def _limit_segment_words(
+    segment: dict,
+    maximum: int,
+    language: str,
+    *,
+    audiobook_preparation: bool = False,
+) -> list[dict]:
+    """Apply a word recommendation without discarding paragraph boundaries."""
+    if segment.get("chapter") == "yes":
+        return [segment]
+    words = list(re.finditer(r"\S+", segment["original_sentence"]))
+    if len(words) <= maximum:
+        return [segment]
+    parts = split_long_sentences_2(
+        segment,
+        words[maximum].start(),
+        language,
+        audiobook_preparation=audiobook_preparation,
+    )
+    return [
+        child
+        for part in parts
+        for child in _limit_segment_words(
+            part, maximum, language, audiobook_preparation=audiobook_preparation
+        )
+    ]
+
+
+def _limit_segment_tokenizer_bytes(
+    segment: dict,
+    maximum: int,
+    language: str,
+    *,
+    audiobook_preparation: bool = False,
+) -> list[dict]:
+    """Reserve Irodori's normalized UTF-8 window before native tokenization."""
+    text = segment["original_sentence"]
+    used = 0
+    for index, character in enumerate(text):
+        used += 3 if character == " " else len(character.encode("utf-8"))
+        if used > maximum:
+            if index == 0:
+                raise ValueError("A character exceeds the model's text-token budget.")
+            parts = split_long_sentences_2(
+                segment,
+                index,
+                language,
+                audiobook_preparation=audiobook_preparation,
+            )
+            return [
+                child
+                for part in parts
+                for child in _limit_segment_tokenizer_bytes(
+                    part, maximum, language, audiobook_preparation=audiobook_preparation
+                )
+            ]
+    return [segment]
 
 def _split_text_into_chunks(text: str) -> list[str]:
     chunks = []
@@ -686,7 +975,12 @@ def split_long_sentences(sentence_dict, max_sentence_length, language: str):
 
     return [first_part_dict, second_part_dict]
 
-def find_best_split_index(sentence, language, max_sentence_length):
+def find_best_split_index(
+    sentence, language, max_sentence_length, *, audiobook_preparation: bool = False
+):
+    if audiobook_preparation:
+        return _find_audiobook_split_index(sentence, language, max_sentence_length)
+
     code = normalize_language_code(language)
     if code.split("-")[0] in {"ja", "zh", "ko"} or contains_cjk(sentence):
         target = min(len(sentence) // 2, max_sentence_length)
@@ -726,18 +1020,90 @@ def find_best_split_index(sentence, language, max_sentence_length):
     return best_split_index
 
 
+def _find_audiobook_split_index(sentence: str, language: str, max_length: int) -> int | None:
+    """Choose a punctuation-first split near a balanced target length."""
+    if not sentence or max_length <= 0:
+        return None
+    code = normalize_language_code(language)
+    target = _balanced_split_target(len(sentence), max_length)
+    natural_candidates = natural_split_candidates(sentence, code)
+
+    punctuation = [
+        offset
+        for offset, kind in natural_candidates
+        if kind != "conjunction"
+        and _valid_split_offset(sentence, offset, max_length)
+        and not _is_numeric_comma_boundary(sentence, offset, kind)
+    ]
+    if punctuation:
+        return min(punctuation, key=lambda offset: (abs(offset - target), -offset))
+
+    conjunctions = [
+        offset
+        for offset, kind in natural_candidates
+        if kind == "conjunction" and _valid_split_offset(sentence, offset, max_length)
+    ]
+    if conjunctions:
+        return min(conjunctions, key=lambda offset: (abs(offset - target), -offset))
+    return None
+
+
+def _balanced_split_target(text_length: int, max_length: int) -> int:
+    if text_length <= 0 or max_length <= 0:
+        return 0
+    piece_count = (text_length + max_length - 1) // max_length
+    return max(1, round(text_length / piece_count))
+
+
+def _valid_split_offset(text: str, offset: int, max_length: int) -> bool:
+    return (
+        0 < offset <= max_length
+        and offset < len(text)
+        and bool(text[:offset].strip())
+        and bool(text[offset:].strip())
+    )
+
+
+def _is_numeric_comma_boundary(text: str, offset: int, kind: str) -> bool:
+    if kind != "comma" or offset <= 0 or offset >= len(text):
+        return False
+    comma_index = offset - 1
+    while comma_index >= 0 and text[comma_index] in CLOSING_SPLIT_PUNCTUATION:
+        comma_index -= 1
+    return (
+        comma_index > 0
+        and comma_index + 1 < len(text)
+        and text[comma_index] == ","
+        and text[comma_index - 1].isdigit()
+        and text[comma_index + 1].isdigit()
+    )
+
+
 def _extend_split_index_past_closing_punctuation(sentence: str, split_index: int) -> int:
     while split_index < len(sentence) and sentence[split_index] in CLOSING_SPLIT_PUNCTUATION:
         split_index += 1
     return split_index
 
 
-def split_long_sentences_2(sentence_dict, max_sentence_length, language: str):
+def split_long_sentences_2(
+    sentence_dict,
+    max_sentence_length,
+    language: str,
+    *,
+    audiobook_preparation: bool = False,
+):
     sentence = sentence_dict["original_sentence"]
     if len(sentence) <= max_sentence_length:
-        return [sentence_dict]
+        return [sentence_dict.copy() if audiobook_preparation else sentence_dict]
+    if audiobook_preparation and max_sentence_length <= 0:
+        raise ValueError("The narration character limit must be greater than zero.")
 
-    best_split_index = find_best_split_index(sentence, language, max_sentence_length)
+    best_split_index = find_best_split_index(
+        sentence,
+        language,
+        max_sentence_length,
+        audiobook_preparation=audiobook_preparation,
+    )
     if best_split_index is None:
         if contains_cjk(sentence):
             raise ValueError(
@@ -745,10 +1111,24 @@ def split_long_sentences_2(sentence_dict, max_sentence_length, language: str):
                 "without a natural sentence or clause boundary. Add suitable punctuation "
                 "or increase max_sentence_length; subtitle character wrapping is not a safe speech split."
             )
-        potential_split = sentence.rfind(' ', 0, max_sentence_length)
-        best_split_index = potential_split + 1 if potential_split > 0 else max_sentence_length
+        if audiobook_preparation:
+            best_split_index = _find_balanced_whitespace_split(sentence, max_sentence_length)
+            if best_split_index is None:
+                if re.search(r"\s", sentence.strip()):
+                    raise ValueError(
+                        "Unable to split oversized narration at a safe whitespace "
+                        "boundary within the character limit."
+                    )
+                best_split_index = max_sentence_length
+        else:
+            potential_split = sentence.rfind(' ', 0, max_sentence_length)
+            best_split_index = potential_split + 1 if potential_split > 0 else max_sentence_length
 
     first_part, second_part = sentence[:best_split_index].strip(), sentence[best_split_index:].strip()
+    if audiobook_preparation and (
+        not first_part or not second_part or len(first_part) > max_sentence_length
+    ):
+        raise ValueError("Unable to split oversized narration within the character limit.")
     split_part_prefix = "0" if sentence_dict.get("split_part") is None else str(sentence_dict["split_part"])
     
     first_part_dict = sentence_dict.copy()
@@ -758,6 +1138,9 @@ def split_long_sentences_2(sentence_dict, max_sentence_length, language: str):
         "paragraph": "no",
         "sentence_continues_after": True,
     })
+    if audiobook_preparation:
+        first_part_dict.pop("speech_boundary_after", None)
+        first_part_dict.pop("dialogue_flow", None)
     
     split_sentences = [first_part_dict]
 
@@ -765,15 +1148,45 @@ def split_long_sentences_2(sentence_dict, max_sentence_length, language: str):
         second_part_initial_dict = sentence_dict.copy()
         second_part_initial_dict.update({"original_sentence": second_part, "split_part": split_part_prefix + "b"})
         
-        further_splits = split_long_sentences_2(second_part_initial_dict, max_sentence_length, language)
+        further_splits = split_long_sentences_2(
+            second_part_initial_dict,
+            max_sentence_length,
+            language,
+            audiobook_preparation=audiobook_preparation,
+        )
         if further_splits:
             for part in further_splits[:-1]:
                 part["paragraph"] = "no"
+                if audiobook_preparation:
+                    part.pop("speech_boundary_after", None)
             # The last part inherits the original paragraph status
             further_splits[-1]["paragraph"] = sentence_dict["paragraph"]
         split_sentences.extend(further_splits)
 
+    if audiobook_preparation and split_sentences:
+        for part in split_sentences[:-1]:
+            part["paragraph"] = "no"
+            part["sentence_continues_after"] = True
+            part.pop("speech_boundary_after", None)
+            part.pop("dialogue_flow", None)
+        split_sentences[-1]["paragraph"] = sentence_dict["paragraph"]
+        split_sentences[-1]["sentence_continues_after"] = bool(
+            sentence_dict.get("sentence_continues_after", False)
+        )
+
     return split_sentences
+
+
+def _find_balanced_whitespace_split(text: str, max_length: int) -> int | None:
+    target = _balanced_split_target(len(text), max_length)
+    candidates = []
+    for match in re.finditer(r"\s+", text):
+        offset = match.end()
+        if _valid_split_offset(text, offset, max_length):
+            candidates.append(offset)
+    if candidates:
+        return min(candidates, key=lambda offset: (abs(offset - target), -offset))
+    return None
 
 
 def _is_opening_narration_quote(text: str) -> bool:
@@ -818,7 +1231,24 @@ def _join_narration_fragments(values) -> str:
     return result.strip(" \t\r\n")
 
 
-def append_short_sentences(sentence_dicts, max_sentence_length):
+def append_short_sentences(
+    sentence_dicts,
+    max_sentence_length,
+    *,
+    max_segment_words=None,
+    max_segment_tokenizer_bytes=None,
+    dialogue_merge_allowed=False,
+    audiobook_preparation=False,
+):
+    if audiobook_preparation:
+        return _append_audiobook_sentences(
+            sentence_dicts,
+            max_sentence_length,
+            max_segment_words=max_segment_words,
+            max_segment_tokenizer_bytes=max_segment_tokenizer_bytes,
+            dialogue_merge_allowed=dialogue_merge_allowed,
+        )
+
     appended_sentences = []
     i = 0
     while i < len(sentence_dicts):
@@ -894,6 +1324,180 @@ def append_short_sentences(sentence_dicts, max_sentence_length):
         i += 1
 
     return appended_sentences
+
+
+def _append_audiobook_sentences(
+    sentence_dicts,
+    max_sentence_length,
+    *,
+    max_segment_words=None,
+    max_segment_tokenizer_bytes=None,
+    dialogue_merge_allowed=False,
+):
+    """Greedily pack complete source sentences without crossing paragraphs."""
+    groups = []
+    current_paragraph = []
+    for sentence_dict in sentence_dicts:
+        copied = sentence_dict.copy()
+        if copied.get("chapter") == "yes":
+            if current_paragraph:
+                groups.append(("paragraph", current_paragraph))
+                current_paragraph = []
+            groups.append(("chapter", copied))
+            continue
+
+        current_paragraph.append(copied)
+        if copied.get("paragraph") == "yes":
+            groups.append(("paragraph", current_paragraph))
+            current_paragraph = []
+    if current_paragraph:
+        groups.append(("paragraph", current_paragraph))
+
+    packed_groups = []
+    for group_type, group in groups:
+        if group_type == "chapter":
+            packed_groups.append((group_type, [group]))
+            continue
+
+        packed_groups.append((
+            group_type,
+            _pack_audiobook_paragraph(
+                group,
+                max_sentence_length,
+                max_segment_words=max_segment_words,
+                max_segment_tokenizer_bytes=max_segment_tokenizer_bytes,
+            ),
+        ))
+
+    result = []
+    previous_group_type = None
+    for group_type, packed in packed_groups:
+        if group_type == "chapter":
+            result.extend(packed)
+            previous_group_type = "chapter"
+            continue
+
+        if (
+            dialogue_merge_allowed is True
+            and previous_group_type == "paragraph"
+            and result
+            and result[-1].get("paragraph") == "yes"
+            and len(packed) == 1
+            and _can_merge_dialogue_turns(
+                result[-1],
+                packed[0],
+                max_sentence_length,
+                max_segment_words,
+                max_segment_tokenizer_bytes,
+            )
+        ):
+            left = result[-1]
+            right = packed[0]
+            combined_text = left["original_sentence"].rstrip() + "\n\n" + right[
+                "original_sentence"
+            ].lstrip()
+            left_flow = left["dialogue_flow"]
+            right_flow = right["dialogue_flow"]
+            merged = left.copy()
+            merged.update(right)
+            merged["original_sentence"] = combined_text
+            merged["dialogue_flow"] = right_flow.copy()
+            merged["dialogue_flow"]["paragraph_count"] = (
+                left_flow.get("paragraph_count", 1)
+                + right_flow.get("paragraph_count", 1)
+            )
+            result[-1] = merged
+        else:
+            result.extend(packed)
+        previous_group_type = "paragraph"
+
+    return result
+
+
+def _pack_audiobook_paragraph(
+    rows,
+    max_sentence_length,
+    *,
+    max_segment_words=None,
+    max_segment_tokenizer_bytes=None,
+):
+    packed = []
+    current = None
+    for row in rows:
+        if current is None:
+            current = row.copy()
+            continue
+
+        candidate_text = _join_narration_fragments(
+            (current["original_sentence"], row["original_sentence"])
+        )
+        if _audiobook_candidate_fits(
+            candidate_text,
+            max_sentence_length,
+            max_segment_words,
+            max_segment_tokenizer_bytes,
+        ):
+            current.update(row)
+            current["original_sentence"] = candidate_text
+        else:
+            packed.append(current)
+            current = row.copy()
+
+    if current is not None:
+        packed.append(current)
+    return packed
+
+
+def _can_merge_dialogue_turns(
+    left,
+    right,
+    max_sentence_length,
+    max_segment_words,
+    max_segment_tokenizer_bytes,
+):
+    left_flow = left.get("dialogue_flow")
+    right_flow = right.get("dialogue_flow")
+    if (
+        left.get("speech_boundary_after") != "dialogue_turn"
+        or not isinstance(left_flow, dict)
+        or not isinstance(right_flow, dict)
+        or left_flow.get("source") != "punctuation"
+        or right_flow.get("source") != "punctuation"
+    ):
+        return False
+    candidate = left["original_sentence"].rstrip() + "\n\n" + right[
+        "original_sentence"
+    ].lstrip()
+    return _audiobook_candidate_fits(
+        candidate,
+        max_sentence_length,
+        max_segment_words,
+        max_segment_tokenizer_bytes,
+    )
+
+
+def _audiobook_candidate_fits(text, max_chars, max_words, max_tokenizer_bytes):
+    if len(text) > max_chars:
+        return False
+    if (
+        isinstance(max_words, int)
+        and not isinstance(max_words, bool)
+        and max_words > 0
+        and len(re.findall(r"\S+", text)) > max_words
+    ):
+        return False
+    if (
+        isinstance(max_tokenizer_bytes, int)
+        and not isinstance(max_tokenizer_bytes, bool)
+        and max_tokenizer_bytes > 0
+    ):
+        byte_cost = sum(
+            3 if character == " " else len(character.encode("utf-8"))
+            for character in text
+        )
+        if byte_cost > max_tokenizer_bytes:
+            return False
+    return True
 
 def convert_digits_to_words(sentence: str, language_code: str):
     def replace_numbers(match):

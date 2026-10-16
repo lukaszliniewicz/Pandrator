@@ -4,6 +4,7 @@ import {
   languageMatches,
   type LanguageSupport
 } from './language-registry';
+import type { TtsService } from './api-models';
 
 export type VoiceDescriptor = {
   id: string;
@@ -27,6 +28,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
   ar: 'Arabic',
   de: 'German',
   en: 'American English',
+  'en-us': 'American English',
   'en-gb': 'British English',
   es: 'Spanish',
   fr: 'French',
@@ -77,7 +79,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
 };
 
 const KOKORO_PREFIX_LANGUAGES: Record<string, string> = {
-  a: 'en',
+  a: 'en-us',
   b: 'en-gb',
   d: 'de',
   e: 'es',
@@ -211,6 +213,23 @@ export function describeVoice(
   metadata?: Record<string, unknown>
 ): VoiceDescriptor {
   const service = serviceId.toLowerCase().replaceAll('-', '_');
+  if (metadata?.pandrator_preset === true) {
+    const languageCode = canonicalLanguageTag(
+      String(metadata.language_code ?? '')
+    );
+    return {
+      id: voiceId,
+      name: String(metadata.display_name ?? metadata.name ?? titleize(voiceId)),
+      languageCode: metadata.multilingual === true ? '' : languageCode,
+      language: String(
+        metadata.language_label ??
+          (languageCode
+            ? languageLabel(languageCode)
+            : 'Language not specified')
+      ),
+      gender: titleize(String(metadata.gender ?? ''))
+    };
+  }
   if (service === 'kokoro') return kokoroDescriptor(voiceId);
   if (service === 'kobold_qwen' || service.includes('qwen')) {
     const preset = QWEN_PRESET_VOICES[voiceId.trim().toLowerCase()];
@@ -244,23 +263,21 @@ export function describeVoice(
       cheerful: 'Cheerful',
       neutral: 'Neutral'
     };
-    const languageCode = styles[prefix]
-      ? 'en'
-      : VOXTRAL_LANGUAGES.includes(prefix)
-        ? prefix
-        : '';
+    const presetLanguage = VOXTRAL_LANGUAGES.includes(prefix) ? prefix : '';
     const gender =
       genderCode === 'female' ? 'Female' : genderCode === 'male' ? 'Male' : '';
     const name = styles[prefix]
-      ? `${styles[prefix]}${gender ? ` ${gender}` : ''}`
-      : languageCode
-        ? `Standard${gender ? ` ${gender}` : ''}`
+      ? `${styles[prefix]}${gender ? ` · ${gender}` : ''}`
+      : presetLanguage
+        ? `${languageLabel(presetLanguage)} · ${gender}`
         : titleize(voiceId);
     return {
       id: voiceId,
       name,
-      languageCode,
-      language: LANGUAGE_LABELS[languageCode] ?? 'Multilingual',
+      languageCode: '',
+      language: presetLanguage
+        ? `${languageLabel(presetLanguage)} preset · Multilingual`
+        : 'Multilingual',
       gender
     };
   }
@@ -349,7 +366,9 @@ export function describeVoice(
       gender: String(metadata?.gender ?? '')
     };
   }
-  const locale = String(metadata?.locale ?? '').trim();
+  const locale = String(
+    metadata?.locale ?? metadata?.language_code ?? metadata?.languageCode ?? ''
+  ).trim();
   if (locale) {
     const rawName = voiceId.split(':')[0];
     const name = rawName.toLowerCase().startsWith(`${locale.toLowerCase()}-`)
@@ -358,18 +377,59 @@ export function describeVoice(
     return {
       id: voiceId,
       name: String(metadata?.display_name ?? metadata?.name ?? name),
-      languageCode: canonicalLanguageTag(locale) || locale.toLowerCase(),
-      language: String(metadata?.language ?? locale),
+      languageCode:
+        metadata?.multilingual === true ||
+        ['mul', 'und', 'auto'].includes(locale.toLowerCase())
+          ? ''
+          : canonicalLanguageTag(locale),
+      language: String(metadata?.language ?? languageLabel(locale)),
       gender: String(metadata?.gender ?? '')
     };
   }
   return {
     id: voiceId,
-    name: titleize(voiceId),
+    name: String(metadata?.display_name ?? metadata?.name ?? titleize(voiceId)),
     languageCode: '',
-    language: 'Multilingual',
-    gender: ''
+    language:
+      metadata?.multilingual === true
+        ? 'Multilingual'
+        : 'Language not specified',
+    gender: String(metadata?.gender ?? '')
   };
+}
+
+export function defaultVoiceForLanguage(
+  service:
+    | Pick<
+        TtsService,
+        'default_voices_by_language' | 'default_voices' | 'default_voice'
+      >
+    | null
+    | undefined,
+  model: string,
+  language: string
+): string {
+  const normalized = canonicalLanguageTag(language);
+  const defaults = Object.fromEntries(
+    Object.entries(service?.default_voices_by_language?.[model] ?? {}).map(
+      ([key, value]) => [canonicalLanguageTag(key), value]
+    )
+  );
+  const base = normalized.split('-')[0];
+  const regional =
+    normalized && !normalized.includes('-')
+      ? Object.entries(defaults).find(
+          ([key]) => key.split('-')[0] === normalized
+        )?.[1]
+      : undefined;
+  return (
+    defaults[normalized] ??
+    defaults[base] ??
+    regional ??
+    service?.default_voices?.[model] ??
+    service?.default_voice ??
+    ''
+  );
 }
 
 export function voiceSupportsLanguage(

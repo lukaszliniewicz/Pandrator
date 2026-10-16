@@ -24,10 +24,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
-RUNTIME_VERSION = "0.9.1"
+RUNTIME_VERSION = "0.9.2"
 SCHEMA_VERSION = 1
-SOURCE_URL = "https://github.com/0xShug0/audio.cpp/tree/v0.9.1/model_specs"
-GITHUB_DOCS_BASE = "https://github.com/0xShug0/audio.cpp/blob/v0.9.1/"
+SOURCE_URL = "https://github.com/0xShug0/audio.cpp/tree/v0.9.2/model_specs"
+GITHUB_DOCS_BASE = "https://github.com/0xShug0/audio.cpp/blob/v0.9.2/"
 HF_BASE = "https://huggingface.co"
 MAX_SMALL_FILE_BYTES = 16 * 1024 * 1024
 LEGACY_SMALL_FILE_BYTES = 1 * 1024 * 1024

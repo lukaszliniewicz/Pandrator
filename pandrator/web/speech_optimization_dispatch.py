@@ -56,6 +56,7 @@ from .models import (
     SpeechOptimizationDispatchRun,
     utcnow,
 )
+from .speech_structure_policy import assert_structural_annotation
 
 _SOURCE_ROLES_BY_WORKFLOW = {
     "audiobook": ("prepared_text", "clean_text", "upload"),
@@ -828,23 +829,30 @@ class SpeechOptimizationDispatchRunService:
             ' Optional boundaries: continuation, dialogue_turn, paragraph, scene, chapter.'
             ' Narration remains outside dialogue or in <narrator>. Unnamed voices may use'
             ' <speaker g="male|female|androgynous|unspecified">. Names and aliases resolve'
-            ' through the supplied character_dictionary; new characters are outer character_proposals'
-            ' with id, display_name, aliases, voice_category and notes. Do not assign locked/status.'
+            ' through the supplied character_dictionary. Do not assign locked/status.'
             ' <ins>, <em>, <pace>, <cadence>, <emphasis> are nonspoken scope metadata;'
             ' <span> scopes a phrase. Preserve existing authored controls. Do not indent mixed text,'
             ' change quotation marks, or add formatting whitespace. Omit the duplicate text field'
             ' when speech_xml already contains the complete transcript.'
         )
+        if annotation_mode in {"dialogue", "speakers"}:
+            instructions += (
+                " This structural annotation pass must not add delivery directions, "
+                "vocal events, or explicit voice bindings."
+            )
         if annotation_mode == "dialogue":
             instructions += (
-                " Detect dialogue structure, but do not identify speakers without "
-                "explicit evidence."
+                " Detect dialogue structure and optional category-only marks. Never "
+                "infer or introduce speaker identities or character proposals, "
+                "regardless of evidence; return an empty character_proposals list."
             )
         elif annotation_mode == "speakers":
             instructions += (
                 " Detect dialogue and identify speakers only when evidence supports "
                 "the reference. Never infer identity solely from sex or voice "
-                "category, and never merge namesakes."
+                "category, and never merge namesakes. Propose a supported new identity "
+                "only through outer character_proposals with id, display_name, aliases, "
+                "voice_category and notes."
             )
         else:
             instructions += " Do not add new annotations."
@@ -857,11 +865,19 @@ class SpeechOptimizationDispatchRunService:
                 "from the unit, and optional boundary_after. Include only dialogue spans "
                 "with start/end as Unicode codepoint offsets (zero-based, end-exclusive; "
                 "never UTF-16 offsets), sorted and nonoverlapping. Gaps are narration. "
-                "speaker_ref is a known character ID or null for explicitly unknown "
-                "identity; do not invent identity. Do not include text or speech_xml in "
-                "this variant. Units with existing speech_xml must use the XML variant "
-                "to preserve all authored metadata."
+                "Do not include text or speech_xml in this variant. Units with existing "
+                "speech_xml must use the XML variant to preserve all authored metadata."
             )
+            if annotation_mode == "dialogue":
+                instructions += (
+                    " Set every speaker_ref to null; do not infer or introduce speaker "
+                    "identities or character proposals, regardless of evidence."
+                )
+            elif annotation_mode == "speakers":
+                instructions += (
+                    " speaker_ref is a known character ID or null for explicitly unknown "
+                    "identity; do not invent identity."
+                )
         if run.tts_service:
             instructions += f"\n\nTarget TTS service: {run.tts_service}."
         instructions += (
@@ -1356,6 +1372,20 @@ class SpeechOptimizationDispatchRunService:
                                 f"{error}",
                                 422,
                             ) from error
+                    if annotation_mode in {"dialogue", "speakers"}:
+                        try:
+                            assert_structural_annotation(
+                                source_parsed,
+                                parsed,
+                                mode=annotation_mode,
+                            )
+                        except (TypeError, ValueError) as error:
+                            raise DispatchError(
+                                "invalid_speech_markup",
+                                f"Unit {unit_id} speech_xml violates structural "
+                                f"annotation rules: {error}",
+                                422,
+                            ) from error
                     canonical_xml = parsed.xml
                 except DispatchError:
                     raise
@@ -1483,6 +1513,15 @@ class SpeechOptimizationDispatchRunService:
             raise DispatchError(
                 "invalid_character_proposals",
                 "character_proposals must be a list of at most 100 objects.",
+                422,
+            )
+        annotation_mode = str(
+            (run.settings_json or {}).get("annotation_mode") or "off"
+        ).strip().lower()
+        if annotation_mode == "dialogue" and proposals:
+            raise DispatchError(
+                "invalid_character_proposals",
+                "Dialogue annotation mode cannot accept speaker identity proposals.",
                 422,
             )
         try:

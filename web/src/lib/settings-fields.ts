@@ -16,6 +16,10 @@ const option = (value: string | number, label?: string): SettingOption => ({
 export { LANGUAGE_OPTIONS } from './language-registry';
 
 const CHOICES: Record<string, SettingOption[]> = {
+  audiobook_dialogue_flow: [
+    option('auto', 'Recognise short dialogue exchanges'),
+    option('off', 'Keep every paragraph boundary')
+  ],
   audio_verification_mode: [
     option('off', 'Off'),
     option('signal', 'Flag suspicious raw audio')
@@ -278,6 +282,7 @@ const SETTING_ORDER: Record<string, string[]> = {
     'enable_sentence_splitting',
     'max_sentence_length',
     'enable_sentence_appending',
+    'audiobook_dialogue_flow',
     'disable_paragraph_detection',
     'remove_diacritics',
     'remove_quotation_marks',
@@ -916,6 +921,7 @@ const ACRONYMS: Record<string, string> = {
 
 export function settingLabel(key: string): string {
   const labels: Record<string, string> = {
+    audiobook_dialogue_flow: 'Dialogue flow for new audiobooks',
     max_attempts: 'Maximum attempts per request',
     retry_timeout_seconds: 'Retry time limit (seconds)',
     language_defaults: 'Automatic language limits',

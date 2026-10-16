@@ -52,6 +52,10 @@ Choose the TTS model before preparation: the default length policy groups
 neighboring sentences within its narration budget, preserving paragraphs and
 chapters. **Narration settings** also offers a custom character limit. Existing
 reviewed plans keep their boundaries until explicitly resegmented.
+In **Advanced** view, **Speech plan → Length of new narration blocks** offers
+**Automatic · model default** and **Custom limit**, followed by **Save length**.
+See [narration lengths](../reference/narration-segmentation.md) for the model
+defaults and native splitting constraints.
 Read several neighboring segments aloud before generating: a boundary that is
 visually tidy can still sound unnatural. Fix the text or boundary at this
 stage rather than trying to repair every generated take afterward.

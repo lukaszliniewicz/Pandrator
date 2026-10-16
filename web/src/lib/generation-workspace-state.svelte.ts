@@ -36,7 +36,10 @@ export type GenerationViewPreferences = {
   anchorId: string;
 };
 
-type QueuedAudio = PlaybackItem & { artifact_id?: string };
+type QueuedAudio = PlaybackItem & {
+  artifact_id?: string;
+  assembly_silences?: { at_ms: number; duration_ms: number }[];
+};
 
 /** Project lifetime owns only view preferences and the compact playback queue. */
 export class GenerationWorkspaceState {
@@ -59,7 +62,12 @@ export class GenerationWorkspaceState {
     getNextCursor: () => this.query?.get('cursor'),
     loadMore: () => this.loadMore(),
     getTake: (item) =>
-      item.artifact_id ? { artifact_id: item.artifact_id } : undefined,
+      item.artifact_id
+        ? {
+            artifact_id: item.artifact_id,
+            assembly_silences: item.assembly_silences
+          }
+        : undefined,
     onSelect: () => {},
     onError: (message) => {
       this.error = message;
@@ -85,7 +93,10 @@ export class GenerationWorkspaceState {
       id: item.id,
       removed: item.removed,
       silence_after_ms: item.silence_after_ms,
-      artifact_id: selectedGenerationTake(item, selection)?.artifact_id
+      assembly_silence_after_ms: item.assembly_silence_after_ms,
+      artifact_id: selectedGenerationTake(item, selection)?.artifact_id,
+      assembly_silences: selectedGenerationTake(item, selection)
+        ?.assembly_silences
     }));
     this.query = page.next_cursor == null ? null : new URLSearchParams(query);
     this.query?.set('cursor', String(page.next_cursor));
@@ -97,7 +108,7 @@ export class GenerationWorkspaceState {
     const query = new URLSearchParams(this.query);
     query.set(
       'fields',
-      'id,ordinal,removed,silence_after_ms,takes,history_take_id'
+      'id,ordinal,removed,silence_after_ms,assembly_silence_after_ms,takes,history_take_id'
     );
     const scope = this.scope;
     this.controller?.abort();
@@ -118,8 +129,11 @@ export class GenerationWorkspaceState {
             id: item.id,
             removed: item.removed,
             silence_after_ms: item.silence_after_ms,
+            assembly_silence_after_ms: item.assembly_silence_after_ms,
             artifact_id: selectedGenerationTake(item, this.selection)
-              ?.artifact_id
+              ?.artifact_id,
+            assembly_silences: selectedGenerationTake(item, this.selection)
+              ?.assembly_silences
           }))
       );
       if (

@@ -213,11 +213,67 @@ class AudiobookSetupTests(unittest.TestCase):
         self.assertEqual("single_voice", result["mode"])
         self.assertTrue(result["configured"])
         self.assertTrue(result["document_optimization_enabled"])
-        self.assertEqual("off", result["annotation_mode"])
-        self.assertFalse(result["annotation_only"])
+        self.assertEqual("speakers", result["annotation_mode"])
+        self.assertTrue(result["annotation_only"])
         self.assertFalse(result["casting_enabled"])
         with self.database.session() as session:
             after = session.get(OutcomePlan, self.record.id)
+            self.assertEqual(before_revision, after.revision)
+            self.assertEqual(before_value, after.value_json)
+
+    def test_single_voice_preserves_dialogue_and_annotation_settings(self):
+        self.settings.update(
+            self.record.id,
+            "text",
+            0,
+            {
+                "llm_tts_document_optimization": False,
+                "llm_tts_annotation_mode": "dialogue",
+                "llm_tts_annotation_only": True,
+                "selection_marker": "keep-dialogue-settings",
+            },
+        )
+        self.settings.update(
+            self.record.id,
+            "tts",
+            0,
+            {"casting_enabled": True, "voice_mode_version": 0},
+        )
+        self.outcomes.update(
+            self.record.id,
+            0,
+            {
+                "version": 1,
+                "workflow_kind": "audiobook",
+                "transformations": {
+                    "generate_audio": True,
+                    "llm_tts_document_optimization": False,
+                    "outcome_marker": "preserve-this",
+                },
+                "inputs": {"translation": "source", "generation": "source"},
+            },
+        )
+        with self.database.session() as session:
+            before = session.get(OutcomePlan, self.record.id)
+            before_value = before.value_json
+            before_revision = before.revision
+
+        result = self.configure("single_voice")
+
+        self.assertEqual("dialogue", result["annotation_mode"])
+        self.assertTrue(result["annotation_only"])
+        self.assertFalse(result["document_optimization_enabled"])
+        self.assertFalse(result["casting_enabled"])
+        with self.database.session() as session:
+            text = session.get(SessionSetting, (self.record.id, "text"))
+            tts = session.get(SessionSetting, (self.record.id, "tts"))
+            after = session.get(OutcomePlan, self.record.id)
+            self.assertEqual("dialogue", text.value_json["llm_tts_annotation_mode"])
+            self.assertTrue(text.value_json["llm_tts_annotation_only"])
+            self.assertFalse(text.value_json["llm_tts_document_optimization"])
+            self.assertEqual("keep-dialogue-settings", text.value_json["selection_marker"])
+            self.assertFalse(tts.value_json["casting_enabled"])
+            self.assertEqual(1, tts.value_json["voice_mode_version"])
             self.assertEqual(before_revision, after.revision)
             self.assertEqual(before_value, after.value_json)
 

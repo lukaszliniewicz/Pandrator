@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import re
 from typing import Any
@@ -247,7 +248,7 @@ def build_source_document(epub_path: str) -> SourceDocument:
                 line_number += 1
 
         if item_block_count == 0:
-            fallback_text = _normalize_text(soup.get_text(" ", strip=True))
+            fallback_text = _visible_text(soup)
             if fallback_text:
                 source_index += 1
                 block_roles = []
@@ -450,7 +451,7 @@ def _iter_textual_tags(soup: BeautifulSoup):
         if _has_ancestor_textual_tag(tag):
             continue
 
-        text = _normalize_text(tag.get_text(" ", strip=True))
+        text = _visible_text(tag)
         if text:
             yield tag
 
@@ -476,7 +477,7 @@ def _extract_tag_text_entries(tag) -> list[tuple[str, dict[str, Any], str, list[
         attributes = _safe_attributes(tag)
         return [(alt, attributes, str(tag), ["image_alt"])]
 
-    text = _normalize_text(tag.get_text(" ", strip=True))
+    text = _visible_text(tag)
     if not text:
         return []
 
@@ -491,6 +492,22 @@ def _extract_tag_text_entries(tag) -> list[tuple[str, dict[str, Any], str, list[
             attributes["href"] = str(a_href)
 
     return [(text, attributes, str(tag), [])]
+
+
+def _visible_text(tag) -> str:
+    """Extract block text without pronunciation-only ruby annotations."""
+    if tag.find(["rt", "rp", "rtc"]) is None:
+        return _normalize_text(tag.get_text(" ", strip=True))
+
+    visible_tag = copy.copy(tag)
+    annotations = [
+        annotation
+        for annotation in visible_tag.find_all(["rt", "rp", "rtc"])
+        if annotation.find_parent(["rt", "rp", "rtc"]) is None
+    ]
+    for annotation in annotations:
+        annotation.decompose()
+    return _normalize_text(visible_tag.get_text(" ", strip=True))
 
 
 def _safe_attributes(tag) -> dict[str, Any]:

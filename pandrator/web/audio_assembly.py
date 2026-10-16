@@ -32,6 +32,33 @@ AudioAssemblyCancelled = MediaProcessCancelled
 
 
 @dataclass(frozen=True)
+class AudioSilenceInsertion:
+    """Silence placed at an exact frame boundary of an unchanged raw take."""
+
+    offset_frames: int
+    sample_rate_hz: int
+    duration_ms: int
+
+    def __post_init__(self) -> None:
+        for name, maximum in (("offset_frames", 2**53 - 1), ("sample_rate_hz", 768000), ("duration_ms", 3600000)):
+            value = getattr(self, name)
+            minimum = 1 if name == "sample_rate_hz" else 0
+            if type(value) is not int or not minimum <= value <= maximum:
+                raise ValueError(f"Invalid silence insertion {name}.")
+
+
+def silence_frame_offsets(
+    insertions: tuple[AudioSilenceInsertion, ...], rate: int, source_frames: int
+) -> tuple[tuple[int, int], ...]:
+    """Scale source boundaries once; never include previously inserted frames."""
+    values = tuple((round(item.offset_frames * rate / item.sample_rate_hz),
+                    round(item.duration_ms * rate / 1000)) for item in insertions)
+    if any(offset > source_frames for offset, _ in values):
+        raise ValueError("Silence insertion is outside the source PCM frames.")
+    return values
+
+
+@dataclass(frozen=True)
 class AudioAssemblyPart:
     """One immutable source in an assembly plan.
 
@@ -47,9 +74,17 @@ class AudioAssemblyPart:
     fade_out_ms: int = 0
     crossfade_after_ms: int = 0
     label: str = ""
+    internal_silences: tuple[AudioSilenceInsertion, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path))
+        values = tuple(self.internal_silences)
+        if any(not isinstance(item, AudioSilenceInsertion) for item in values):
+            raise ValueError("Internal silences must be AudioSilenceInsertion values.")
+        if any(left.offset_frames * right.sample_rate_hz > right.offset_frames * left.sample_rate_hz
+               for left, right in zip(values, values[1:], strict=False)):
+            raise ValueError("Internal silence offsets must be sorted.")
+        object.__setattr__(self, "internal_silences", values)
         for field_name in (
             "expected_duration_ms",
             "silence_before_ms",
@@ -201,7 +236,7 @@ def build_audio_assembly_plan(
     for part in ordered:
         timeline_ms += part.silence_before_ms
         starts.append(timeline_ms)
-        timeline_ms += part.expected_duration_ms + part.silence_after_ms
+        timeline_ms += part.expected_duration_ms + part.silence_after_ms + sum(item.duration_ms for item in part.internal_silences)
     chapter_values = tuple(
         AudioChapter(
             part_index=int(part_index),
@@ -361,6 +396,7 @@ def _copy_direct_pcm_wav(
     *,
     encoding: AudioEncodingSettings,
     cancel_event: threading.Event | None,
+    internal_silences: tuple[AudioSilenceInsertion, ...] = (),
 ) -> int | None:
     copied = 0
     try:
@@ -375,16 +411,22 @@ def _copy_direct_pcm_wav(
             or reader.getnchannels() != encoding.channels
         ):
             return None
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                raise MediaProcessCancelled("Audio assembly was canceled.")
-            frames = reader.readframes(PCM_COPY_FRAMES)
-            if not frames:
-                break
-            writer.writeframesraw(frames)
-            copied += len(frames) // (
-                encoding.sample_width_bytes * encoding.channels
-            )
+        insertions = silence_frame_offsets(internal_silences, encoding.sample_rate_hz, reader.getnframes())
+        source_position = 0
+        for offset, silence_frames in (*insertions, (reader.getnframes(), 0)):
+            while source_position < offset:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise MediaProcessCancelled("Audio assembly was canceled.")
+                frames = reader.readframes(min(PCM_COPY_FRAMES, offset - source_position))
+                if not frames:
+                    raise MediaProcessError("Source PCM ended before its declared frame bounds.")
+                count = len(frames) // (encoding.sample_width_bytes * encoding.channels)
+                writer.writeframesraw(frames)
+                source_position += count
+                copied += count
+            _write_silence(writer, silence_frames, encoding.sample_width_bytes * encoding.channels,
+                           cancel_event=cancel_event)
+            copied += silence_frames
     return copied
 
 
@@ -394,12 +436,14 @@ def _copy_normalized_wav(
     *,
     encoding: AudioEncodingSettings,
     cancel_event: threading.Event | None,
+    internal_silences: tuple[AudioSilenceInsertion, ...] = (),
 ) -> int:
     copied = _copy_direct_pcm_wav(
         source,
         writer,
         encoding=encoding,
         cancel_event=cancel_event,
+        internal_silences=internal_silences,
     )
     if copied is None:
         raise MediaProcessError(
@@ -497,6 +541,7 @@ def _assemble_streaming(
                         writer,
                         encoding=encoding,
                         cancel_event=cancel_event,
+                        internal_silences=part.internal_silences,
                     )
                 if copied_frames is None:
                     normalized = temporary_path / f"part-{index + 1:06d}.wav"
@@ -512,6 +557,7 @@ def _assemble_streaming(
                         writer,
                         encoding=encoding,
                         cancel_event=cancel_event,
+                        internal_silences=part.internal_silences,
                     )
                     normalized.unlink(missing_ok=True)
                 part_durations.append(
@@ -548,6 +594,8 @@ def _assemble_streaming(
             )
         if progress is not None:
             progress(0.95, "Finalizing assembled audio")
+        if cancel_event is not None and cancel_event.is_set():
+            raise MediaProcessCancelled("Audio assembly was canceled.")
         os.replace(encoded, destination)
 
     return AudioAssemblyResult(
@@ -604,6 +652,15 @@ def _assemble_pydub(
             audio = audio.fade_in(min(part.fade_in_ms, len(audio)))
         if part.fade_out_ms:
             audio = audio.fade_out(min(part.fade_out_ms, len(audio)))
+        offsets = silence_frame_offsets(part.internal_silences, encoding.sample_rate_hz, int(audio.frame_count()))
+        if offsets:
+            chunks = []
+            previous = 0
+            for offset, silence_frames in (*offsets, (int(audio.frame_count()), 0)):
+                chunks.append(audio.raw_data[previous * audio.frame_width:offset * audio.frame_width])
+                chunks.append(b"\0" * (silence_frames * audio.frame_width))
+                previous = offset
+            audio = audio._spawn(b"".join(chunks))
         part_durations.append(len(audio))
         combined += audio
         part_end_frames.append(int(combined.frame_count()))
@@ -622,6 +679,8 @@ def _assemble_pydub(
     with tempfile.TemporaryDirectory(prefix=".assembly-pydub-", dir=destination.parent) as temporary:
         encoded = Path(temporary) / f"encoded.{encoding.output_format}"
         export_audio(combined, encoded, encoding.output_format, encoding.bitrate)
+        if cancel_event is not None and cancel_event.is_set():
+            raise MediaProcessCancelled("Audio assembly was canceled.")
         os.replace(encoded, destination)
     return AudioAssemblyResult(
         duration_ms=len(combined),

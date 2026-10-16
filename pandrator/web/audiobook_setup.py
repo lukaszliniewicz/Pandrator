@@ -220,18 +220,8 @@ def configure_audiobook_setup(
             settings,
             session,
             session_id,
-            text,
-            {
-                "llm_tts_annotation_mode": "off",
-                "llm_tts_annotation_only": False,
-            },
-        )
-        _patch_if_needed(
-            settings,
-            session,
-            session_id,
             tts,
-            {"casting_enabled": False},
+            {"casting_enabled": False, "voice_mode_version": 1},
         )
 
     session.flush()

@@ -13,6 +13,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
+from .audio_cpp_segmentation import narration_character_policy
 from .tts_handler import _audio_cpp_model_metadata, _audio_cpp_selected_model_options
 
 DEFAULT_MANUAL_LENGTH = 200
@@ -190,6 +191,11 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
         language = str(settings.get("language") or "").lower()
         limit = 120 if language.startswith(("ja", "ko")) else 300
         return "supertonic", limit, None, "Supertonic language-specific application policy"
+    if is_audio_cpp and family:
+        limit, reason = narration_character_policy(
+            family, str(settings.get("language") or settings.get("target_language") or "en")
+        )
+        return family, limit, None, reason
     if "kokoro" in model or service in {"kokoro", "kokoro_tts"}:
         return "kokoro", 240, None, "Kokoro application policy"
     if model in {"gpt-4o-mini-tts", "tts-1", "tts-1-hd"} or model.startswith("gpt-4o-mini-tts-"):
@@ -250,6 +256,20 @@ def audiobook_chunk_budget(
     )
     if cjk_mini:
         policy_limit = 1000
+    if _normalised_service(tts) in {"audio_cpp", "audio.cpp", "audiocpp"} or _selected_adapter(tts) == "audio_cpp":
+        family, selected_model = _audio_cpp_family_and_model(tts)
+        if family:
+            policy_limit, policy_reason = narration_character_policy(family, language)
+        model_settings = tts.get("audio_cpp_model_settings")
+        if isinstance(model_settings, Mapping) and selected_model in model_settings:
+            options = _audio_cpp_selected_model_options(dict(tts), selected_model, family) or {}
+        else:
+            options = tts.get("audio_cpp_options", tts.get("options"))
+        if isinstance(options, Mapping) and family != "confucius4_tts":
+            requested = _positive_integer(options.get("text_chunk_size"))
+            if requested is not None and requested < policy_limit:
+                policy_limit = requested
+                policy_reason += "; reduced to configured text_chunk_size"
     if mode == "manual":
         value = text.get("max_sentence_length", DEFAULT_MANUAL_LENGTH)
         target = _manual_length(value)
@@ -291,7 +311,7 @@ def audiobook_chunk_budget(
                 reason += f"; using {effective_tokens} configured max_tokens"
     if cjk_qwen or cjk_mini:
         reason += "; CJK policy"
-    return {
+    result = {
         "mode": mode,
         "profile": profile,
         "target_chars": max(1, target),
@@ -299,6 +319,11 @@ def audiobook_chunk_budget(
         "input_limit_chars": input_limit,
         "reason": reason,
     }
+    if profile == "voxtral_tts":
+        result["target_words"] = 240
+    if profile == "irodori_tts":
+        result["target_tokenizer_bytes"] = 225
+    return result
 
 
 __all__ = [

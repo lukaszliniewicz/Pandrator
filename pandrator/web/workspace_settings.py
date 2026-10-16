@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.preset_voice_metadata import language_default_voice
 from pandrator.logic.tts_provider_switch import (
     normalize_tts_voice_aliases,
     prepare_tts_provider_switch,
@@ -38,6 +39,7 @@ from .settings_policy import (
     split_legacy_stt_settings,
     stable_hash,
     validate_audio_pause_settings,
+    validate_dialogue_flow_setting,
     validate_output_settings,
     validate_stt_replacement,
     validate_stt_settings,
@@ -643,6 +645,7 @@ class WorkspaceSettingsService:
         if section == "audio":
             validate_audio_pause_settings(value)
         if section == "text":
+            validate_dialogue_flow_setting(value)
             from pandrator.logic.audiobook_chunking import (
                 validate_audiobook_chunking_settings,
             )
@@ -888,7 +891,7 @@ class WorkspaceSettingsService:
                     language = tts_handler.normalize_kokoro_language_code(language)
                 voice = str(
                     resolved["tts"].get("voice")
-                    or model_language_defaults.get(language)
+                    or language_default_voice(model_language_defaults, language)
                     or default_voices.get(model)
                     or selected.get("default_voice")
                     or ""

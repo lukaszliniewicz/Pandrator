@@ -327,6 +327,45 @@ def test_provider_metadata_and_existing_clones_are_discoverable_per_model():
     assert voice["description"] == "Provider description"
 
 
+def test_preset_names_and_voice_specific_languages_reach_catalog_search():
+    from pandrator.logic.tts_service_catalogue import get_service_config
+
+    service = get_service_config({}, "audio_cpp")
+    assert service is not None
+    entries = catalog_entries([], {"services": [service]}, [])
+    french = query_catalog(entries, VoiceCatalogQuery(model="kokoro_82m_q8_0", language="fr"))
+    assert [voice["id"] for voice in french["items"]] == ["ff_siwis"]
+    assert french["items"][0]["name"] == "Siwis"
+    voxtral = query_catalog(entries, VoiceCatalogQuery(
+        model="voxtral_4b_tts_2603_q8_0", language="de", limit=100,
+    ))
+    assert voxtral["total"] == 20
+    voice = next(voice for voice in voxtral["items"] if voice["id"] == "fr_female")
+    assert voice["name"] == "French · Female"
+    assert voice["profile"]["languages"][0]["language"] == "fr"
+    assert voice["reference"]["voice"] == "fr_female"
+    assert "de" in voice["compatibility"][0]["supported_languages"]
+
+
+def test_language_default_resolves_for_generation_without_changing_saved_voice(catalog_client):
+    from pandrator.web.workspace_settings import WorkspaceSettingsService
+
+    client, headers, app = catalog_client
+    session_id = client.post("/api/v1/sessions", json={"name": "Voxtral language default"}, headers=headers).get_json()["id"]
+    path = f"/api/v1/sessions/{session_id}/settings/tts"
+    response = client.put(path, json={"value": {
+        "service": "audio_cpp", "model": "voxtral_4b_tts_2603_q8_0", "language": "fr-FR", "voice": "",
+    }}, headers={**headers, "If-Match": '"0"'})
+    assert response.status_code == 200, response.get_json()
+    settings = WorkspaceSettingsService(app.extensions["pandrator"]["database"])
+    resolved, _ = settings.resolve(session_id, ["tts"])
+    assert resolved["tts"]["voice"] == "fr_male"
+    response = client.patch(path, json={"value": {"voice": "fr_female"}}, headers={**headers, "If-Match": '"1"'})
+    assert response.status_code == 200, response.get_json()
+    resolved, _ = settings.resolve(session_id, ["tts"])
+    assert resolved["tts"]["voice"] == "fr_female"
+
+
 def test_profile_roundtrip_preserves_provider_registration(catalog_client):
     client, headers, app = catalog_client
     voice = client.post(

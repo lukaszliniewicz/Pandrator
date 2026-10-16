@@ -1,4 +1,4 @@
-"""Offline speech contracts for the refreshed audio.cpp 0.9.1 catalogue."""
+"""Offline speech contracts for the refreshed audio.cpp 0.9.2 catalogue."""
 
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ def _payload(model: str, **settings: object) -> dict:
 
 def test_refreshed_inventory_counts_and_new_speech_families_are_projected():
     source = inventory()
-    assert source["runtime_version"] == "0.9.1"
-    assert len(source["families"]) == 112
-    assert len(source["packages"]) == 362
+    assert source["runtime_version"] == "0.9.2"
+    assert len(source["families"]) == 122
+    assert len(source["packages"]) == 380
 
     families = {row["id"] for row in source["families"]}
     assert {"kugelaudio", "kitten_tts2", "lfm2_audio"} <= families
@@ -37,7 +37,7 @@ def test_refreshed_inventory_counts_and_new_speech_families_are_projected():
         "lfm2_audio_1_5b_jp_f16",
     ):
         metadata = package_metadata(model_id)
-        assert metadata["verified_runtime"] == "0.9.1"
+        assert metadata["verified_runtime"] == "0.9.2"
         assert metadata["pandrator_features"]["acoustic_verification"] == "not_tested"
 
 

@@ -311,7 +311,6 @@ class AudioIdentityContext:
                         "settings": self._memoized_material_settings(part_settings),
                         "references": sorted({_hash(item) for item in references}),
                         "request": compile_performance(part["text"], part_settings, None, self._service_config_cache).fingerprint,
-                        **({"silence_before_ms": part["silence_before_ms"]} if part.get("silence_before_ms") else {}),
                     })
                 # Base narrator settings/references are not audible when every
                 # part has a cast binding. Hash the actual resolved requests.
@@ -322,10 +321,10 @@ class AudioIdentityContext:
                         "rvc": self.selected_rvc if self.selected_rvc.get("enabled") else {},
                     }),
                     "voice_reference_hash": _hash([part["references"] for part in requests]),
-                    "performance_request_hash": _hash([
-                        {"range": part["range"], "request": part["request"],
-                         **({"silence_before_ms": part["silence_before_ms"]} if part.get("silence_before_ms") else {})} for part in requests
-                    ]),
+                    "performance_request_hash": _hash({
+                        "render_silence_policy": "assembly-v1",
+                        "parts": [{"range": part["range"], "request": part["request"]} for part in requests],
+                    }),
                 }
             compiled = compile_performance(text, prepared, None, self._service_config_cache)
             baseline_settings = dict(settings)

@@ -90,6 +90,25 @@ The audio.cpp compiler owns instruction aliases after merging tuning options,
 avoiding conflicting aliases or stale top-level overrides. These checks establish
 request construction, not audible adherence.
 
+## audio.cpp 0.9.2 additions
+
+Voxtral 4B TTS offers Q8 and BF16 packages, nine languages, and 20 preset voices.
+The default is `casual_male`; language-specific presets such as `fr_female`
+select the voice. The integrated route has no reference cloning, natural-language
+delivery channel, or non-neutral speed control. Its weights and reference voices
+use CC-BY-NC-4.0. [Model card](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603).
+
+PocketTTS adds French Q8 and BF16 packages with the bundled `cosette` preset and
+optional reference conditioning. Manager sets French at model load and session
+creation. Pandrator uses the author's French temperature of 0.3 when no explicit
+temperature is saved. PocketTTS does not accept delivery directions or speed.
+
+Pandrator prepares narration segments. F5 and OuteTTS are usable, although
+audio.cpp may divide each segment again internally. Those native sub-splits are
+not reported, so their exact internal boundaries and pauses cannot be guaranteed.
+Other supported routes bypass native splitting. See
+[narration lengths and native splitting](narration-segmentation.md).
+
 ## UI and MCP authoring
 
 In **Generation → Editing**, select words for directions, or place the caret

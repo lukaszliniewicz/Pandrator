@@ -14,4 +14,5 @@ GenerationSegmentField = Literal[
     "optimized_text", "speech_plan", "optimization_reviewed", "optimization_model",
     "voice_id", "voice", "language", "silence_after_ms", "marked", "takes",
     "search_matches", "passage_structure", "take_history_loaded", "effective_take",
+    "assembly_silence_after_ms",
 ]

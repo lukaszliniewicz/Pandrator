@@ -76,6 +76,7 @@ export class StageSettingsDraft {
   maxIterations = $state(53);
   splitSentences = $state(true);
   appendSentences = $state(true);
+  audiobookDialogueFlow = $state<'auto' | 'off'>('auto');
   maxSentenceLength = $state(200);
   audiobookChunking = $state<'model' | 'manual'>('model');
   nemoNormalization = $state(true);

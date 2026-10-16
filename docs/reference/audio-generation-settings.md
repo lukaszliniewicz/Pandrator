@@ -4,7 +4,7 @@ Advanced settings let you adjust how the selected model generates a clip. Start
 with its defaults, change one setting at a time, and compare short examples.
 More inference steps or stronger guidance do not necessarily improve the result.
 
-The values below describe Pandrator's audio.cpp v0.9.1 integration. The model
+The values below describe Pandrator's audio.cpp v0.9.2 integration. The model
 catalogue and the controls shown in the playground provide the current defaults,
 choices, and allowed ranges. Unsupported parameters are rejected before a job
 starts. Quantizations of the same checkpoint expose the same controls.

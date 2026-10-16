@@ -136,6 +136,39 @@ def test_manual_pause_survives_xml_and_performance_boundary_and_freezes(case, bo
         assert assembly_pause(row, snapshot) == pause
 
 
+def test_freeze_boundaries_accepts_bounded_ordered_segment_rows(case):
+    with case["services"]["database"].session() as session:
+        segments = list(
+            session.scalars(
+                select(m.GenerationSegment)
+                .where(
+                    m.GenerationSegment.plan_revision_id == case["revision_id"],
+                    m.GenerationSegment.removed.is_(False),
+                )
+                .order_by(m.GenerationSegment.ordinal)
+            )
+        )
+        snapshot = {"audio": {}}
+        freeze_boundaries(session, case["revision_id"], snapshot, segments=segments[:2])
+    assert set(snapshot["speech_boundaries"]) == {segment.id for segment in segments[:2]}
+
+
+def test_frozen_empty_character_dictionary_does_not_read_current_controls(case, monkeypatch):
+    def fail_if_read(*_args, **_kwargs):
+        pytest.fail("frozen character dictionary should avoid current control lookup")
+
+    monkeypatch.setattr(
+        "pandrator.web.speech_boundaries.get_generation_controls", fail_if_read
+    )
+    with case["services"]["database"].session() as session:
+        snapshot = {
+            "audio": {},
+            "performance_snapshot": {"character_dictionary": {}},
+        }
+        freeze_boundaries(session, case["revision_id"], snapshot)
+    assert set(snapshot["speech_boundaries"]) == set(case["segment_ids"])
+
+
 def test_source_explicit_pause_and_clause_classification_are_stored(case):
     plan = case["services"]["generation"].create_plan(
         case["session_id"],
@@ -154,6 +187,118 @@ def test_source_explicit_pause_and_clause_classification_are_stored(case):
         freeze_boundaries(session, plan["active_revision_id"], snapshot)
         assert assembly_pause(segments[0], snapshot) == 42
         assert assembly_pause(segments[1], snapshot) == 0
+
+
+def _store_markup_plan(case, settings, segments):
+    return case["services"]["workflow_handlers"]._store_generation_plan(
+        case["session_id"], segments, settings=settings
+    )
+
+
+def test_tag_only_dialogue_turn_overrides_legacy_paragraph_on_create_and_freeze(case):
+    revision_id, _segment_ids = _store_markup_plan(
+        case,
+        {"sentence_silence_ms": 250, "paragraph_silence_ms": 700},
+        [
+            {
+                "text": "Hello.",
+                "paragraph": "yes",
+                "speech_xml": '<segment id="source-guid"><dialogue>Hello.</dialogue></segment>',
+            }
+        ],
+    )
+    segment = rows(case, revision_id)[0]
+    assert segment.silence_after_ms == 250
+    assert segment.paragraph_break_after is False
+    assert segment.speech_plan_json["pause_kind"] == "sentence"
+
+    with case["services"]["database"].session() as session:
+        snapshot = {
+            "audio": {"sentence_silence_ms": 250, "paragraph_silence_ms": 700}
+        }
+        freeze_boundaries(session, revision_id, snapshot)
+    assert snapshot["speech_boundaries"][segment.id]["boundary_after"] == "dialogue_turn"
+    assert assembly_pause(segment, snapshot) == 250
+
+
+def test_explicit_paragraph_and_continuation_boundaries_beat_legacy_paragraph(case):
+    revision_id, _segment_ids = _store_markup_plan(
+        case,
+        {"sentence_silence_ms": 250, "paragraph_silence_ms": 700},
+        [
+            {
+                "text": "Paragraph.",
+                "paragraph": "yes",
+                "speech_xml": (
+                    '<segment id="source-guid" boundary_after="paragraph">'
+                    "Paragraph.</segment>"
+                ),
+            },
+            {
+                "text": "Continue,",
+                "paragraph": "yes",
+                "speech_xml": (
+                    '<segment id="source-guid" boundary_after="continuation">'
+                    "Continue,</segment>"
+                ),
+            },
+        ],
+    )
+    segments = rows(case, revision_id)
+    assert [segment.silence_after_ms for segment in segments] == [700, 0]
+    assert segments[0].paragraph_break_after is True
+    assert segments[0].speech_plan_json["pause_kind"] == "paragraph"
+    assert segments[1].paragraph_break_after is False
+    assert segments[1].speech_plan_json["pause_kind"] == "clause"
+
+    with case["services"]["database"].session() as session:
+        snapshot = {
+            "audio": {"sentence_silence_ms": 250, "paragraph_silence_ms": 700}
+        }
+        freeze_boundaries(session, revision_id, snapshot)
+    assert [assembly_pause(segment, snapshot) for segment in segments] == [700, 0]
+
+
+def test_explicit_silence_override_wins_and_old_frozen_snapshot_stays_fixed(case):
+    revision_id, _segment_ids = _store_markup_plan(
+        case,
+        {"sentence_silence_ms": 250, "paragraph_silence_ms": 700},
+        [
+            {
+                "text": "Hello.",
+                "paragraph": "yes",
+                "silence_after_ms": 37,
+                "speech_xml": (
+                    '<segment id="source-guid" boundary_after="paragraph">'
+                    "Hello.</segment>"
+                ),
+            },
+            {
+                "text": "Dialogue.",
+                "paragraph": "yes",
+                "speech_xml": (
+                    '<segment id="source-guid"><dialogue>Dialogue.</dialogue></segment>'
+                ),
+            },
+        ],
+    )
+    segments = rows(case, revision_id)
+    assert segments[0].silence_after_ms == 37
+    assert segments[0].speech_plan_json["silence_override_ms"] == 37
+    assert segments[1].silence_after_ms == 250
+    with case["services"]["database"].session() as session:
+        old_snapshot = {
+            "audio": {"sentence_silence_ms": 250, "paragraph_silence_ms": 700}
+        }
+        freeze_boundaries(session, revision_id, old_snapshot)
+        new_snapshot = {
+            "audio": {"sentence_silence_ms": 900, "paragraph_silence_ms": 1200}
+        }
+        freeze_boundaries(session, revision_id, new_snapshot)
+    assert [assembly_pause(segment, old_snapshot) for segment in segments] == [37, 250]
+    assert [assembly_pause(segment, new_snapshot) for segment in segments] == [37, 900]
+    assert old_snapshot["speech_boundaries"][segments[0].id]["silence_after_ms"] == 37
+    assert old_snapshot["speech_boundaries"][segments[1].id]["silence_after_ms"] == 250
 
 
 def test_manual_pause_survives_text_reset_split_and_merge(case):
@@ -223,16 +368,18 @@ def test_voice_change_floor_uses_actual_voice_and_explicit_pause_wins(case):
 
 
 @pytest.mark.parametrize(
-    "same_voice,subtitle,gap,expected",
+    "same_voice,subtitle,gap,expected_gaps,expected_duration",
     [
-        (False, False, 50, 80),
-        (False, False, 100, 130),
-        (True, False, 100, 10),
-        (False, True, 100, 30),
-        (False, False, 0, 30),
+        (False, False, 50, [0, 50], 200),
+        (False, False, 100, [0, 100], 200),
+        (True, False, 100, [0], 100),
+        (False, True, 100, [0, 0], 200),
+        (False, False, 0, [0, 0], 200),
     ],
 )
-def test_render_parts_insert_one_gap_only_at_voice_change(same_voice, subtitle, gap, expected):
+def test_render_parts_defer_requested_voice_gap_to_assembly(
+    same_voice, subtitle, gap, expected_gaps, expected_duration
+):
     controls = deepcopy(CONTROLS)
     if same_voice:
         controls["cast"]["characters"]["c-two"] = {"voice": "one"}
@@ -254,17 +401,20 @@ def test_render_parts_insert_one_gap_only_at_voice_change(same_voice, subtitle, 
     )
     combined, manifest = execute_render_parts(
         parts,
-        synthesize=lambda text, settings: AudioSegment.silent(10 if text in {"A", "AB"} else 20),
+        synthesize=lambda text, settings: AudioSegment.silent(100),
         cancelled=lambda: False,
     )
-    assert len(combined) == expected
-    assert [row["silence_before_ms"] for row in manifest] == (
-        [0] if same_voice else [0, 0 if subtitle else gap]
-    )
-    assert sum(row["duration_ms"] for row in manifest) == (10 if same_voice else 30)
+    assert len(combined) == expected_duration
+    assert [row["silence_before_ms"] for row in manifest] == expected_gaps
+    assert [row["silence_policy"] for row in manifest] == [
+        "assembly-v1"
+    ] * len(manifest)
+    assert sum(row["duration_ms"] for row in manifest) == expected_duration
 
 
-def test_audible_padding_changes_only_multi_voice_identity_and_snapshot_gap(case, monkeypatch):
+def test_voice_gap_settings_do_not_change_multi_voice_provider_request_identity(
+    case, monkeypatch
+):
     from pandrator.web import generation_cast_runtime as casting
 
     monkeypatch.setattr(casting, "get_generation_controls", lambda session, sid: deepcopy(CONTROLS))
@@ -294,7 +444,7 @@ def test_audible_padding_changes_only_multi_voice_identity_and_snapshot_gap(case
         after = AudioIdentityContext(session, padded).for_segment(row)
         assert before["settings_hash"] == after["settings_hash"]
         assert before["voice_reference_hash"] == after["voice_reference_hash"]
-        assert before["performance_request_hash"] != after["performance_request_hash"]
+        assert before["performance_request_hash"] == after["performance_request_hash"]
         only_assembly = deepcopy(padded)
         only_assembly["audio"].update(
             sentence_silence_ms=999,
@@ -354,7 +504,7 @@ def test_audible_padding_changes_only_multi_voice_identity_and_snapshot_gap(case
         ).for_segment(row)
 
 
-def test_raw_renderer_preserves_legacy_gap_when_new_setting_is_absent():
+def test_segment_parts_preserve_legacy_and_explicit_zero_gap_metadata():
     markup = (
         '<segment id="s"><speaker ref="c-one">A</speaker><speaker ref="c-two">B</speaker></segment>'
     )

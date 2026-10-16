@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from sqlalchemy import func, select
@@ -24,15 +26,105 @@ from .models import (
 from .workspace_settings import WorkspaceSettingsService
 
 
-def _take_payload(take: AudioTake, artifact: Artifact | None) -> dict[str, Any]:
-    metadata = (artifact.metadata_json or {}) if artifact is not None else {}
+def _unresolved_legacy_speaker(error: ValueError) -> bool:
+    message = str(error).lower()
+    return "unresolved speaker" in message or "ambiguous speaker" in message
+
+
+def _freeze_legacy_boundaries(
+    session,
+    revision_id: str,
+    snapshot: dict[str, Any],
+    segments: list[GenerationSegment],
+) -> None:
+    """Freeze available legacy rows without consulting current cast controls.
+
+    Rows whose historical markup refers to a speaker absent from the run's
+    snapshot remain unprojected, so ``assembly_pause`` returns their stored
+    pause. Other rows still use their frozen audio settings and annotations.
+    """
+    from .speech_boundaries import freeze_boundaries
+
+    try:
+        freeze_boundaries(session, revision_id, snapshot, segments=segments)
+        return
+    except ValueError as exc:
+        if not _unresolved_legacy_speaker(exc):
+            raise
+
+    unresolved_ids: set[str] = set()
+
+    def locate_unresolved(rows: list[GenerationSegment]) -> None:
+        # freeze_boundaries writes only the top-level speech_boundaries key;
+        # a shallow copy keeps probes bounded even for annotation-rich runs.
+        probe = dict(snapshot)
+        try:
+            freeze_boundaries(session, revision_id, probe, segments=rows)
+        except ValueError as exc:
+            if not _unresolved_legacy_speaker(exc):
+                raise
+            if len(rows) == 1:
+                unresolved_ids.add(rows[0].id)
+                return
+            midpoint = len(rows) // 2
+            locate_unresolved(rows[:midpoint])
+            locate_unresolved(rows[midpoint:])
+
+    locate_unresolved(segments)
+    frozen_boundaries: dict[str, Any] = {}
+    safe_chunk: list[GenerationSegment] = []
+
+    def freeze_chunk() -> None:
+        if not safe_chunk:
+            return
+        freeze_boundaries(session, revision_id, snapshot, segments=safe_chunk)
+        frozen_boundaries.update(snapshot.pop("speech_boundaries", {}))
+        safe_chunk.clear()
+
+    for segment in segments:
+        if segment.id in unresolved_ids:
+            freeze_chunk()
+        else:
+            safe_chunk.append(segment)
+    freeze_chunk()
+    snapshot["speech_boundaries"] = frozen_boundaries
+
+
+def _take_payload(
+    take: AudioTake,
+    artifact: Artifact | None,
+    *,
+    audio_settings: Mapping[str, Any] | None = None,
+    allow_assembly_silences: bool = True,
+) -> dict[str, Any]:
+    raw_metadata = (artifact.metadata_json or {}) if artifact is not None else {}
+    metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
     rendered_voices = []
     seen = set()
-    for part in metadata.get("render_parts") or []:
+    render_parts = metadata.get("render_parts")
+    for part in render_parts if isinstance(render_parts, list) else []:
+        if not isinstance(part, Mapping):
+            continue
         key = (part.get("voice"), tuple(part.get("speaker_ids") or []), part.get("source"))
         if key not in seen:
             seen.add(key)
             rendered_voices.append({"voice": key[0], "speaker_ids": list(key[1]), "speaker_labels": list(part.get("speaker_labels") or []), "source": key[2]})
+    insertions = ()
+    if allow_assembly_silences and isinstance(metadata, Mapping):
+        try:
+            from .assembly_silences import render_part_silences
+
+            insertions = render_part_silences(metadata, audio_settings)
+        except (AttributeError, TypeError, ValueError):
+            # Old or malformed metadata does not authorize adding audio to a take.
+            insertions = ()
+    assembly_silences = [
+        {
+            "at_ms": insertion.offset_frames * 1000 / insertion.sample_rate_hz,
+            "duration_ms": insertion.duration_ms,
+        }
+        for insertion in insertions
+    ]
     return {
         "id": take.id,
         "generation_run_id": take.generation_run_id,
@@ -51,6 +143,7 @@ def _take_payload(take: AudioTake, artifact: Artifact | None) -> dict[str, Any]:
         "llm_model": metadata.get("llm_model"),
         "audio_verification": metadata.get("audio_verification"),
         "rendered_voices": rendered_voices,
+        "assembly_silences": assembly_silences,
         "is_reused": bool(metadata.get("generation_run_id") and metadata["generation_run_id"] != take.generation_run_id),
     }
 
@@ -101,6 +194,10 @@ class GenerationSegmentReader:
                 raise ValueError("Choose explicit segment IDs or contextual inspection.")
         requested_plan_revision_id = plan_revision_id
         audio_snapshot, _ = self.settings.resolve(session_id, sections=["tts", "audio"])
+        project_assembly_pause = (
+            (fields is None and view == "full")
+            or (fields is not None and "assembly_silence_after_ms" in fields)
+        )
         if radius < 0 or radius > 25:
             raise ValueError("Inspection radius must be between 0 and 25 blocks.")
         if around_ordinal is not None and source_cue_id is not None:
@@ -113,7 +210,8 @@ class GenerationSegmentReader:
         if text_field not in {"text", "spoken"}:
             raise ValueError("text_field must be 'text' or 'spoken'.")
         with self.database.session() as session:
-            if session.get(SessionRecord, session_id) is None:
+            session_record = session.get(SessionRecord, session_id)
+            if session_record is None:
                 raise KeyError(session_id)
             selected_run = None
             if generation_run_id:
@@ -272,6 +370,124 @@ class GenerationSegmentReader:
             )
             has_more = len(rows) > limit
             rows = rows[:limit]
+            assembly_pauses: dict[str, int] = {}
+            run_settings_snapshot = (
+                selected_run.settings_snapshot_json
+                if selected_run is not None
+                and isinstance(selected_run.settings_snapshot_json, Mapping)
+                else {}
+            )
+            take_audio_settings = (
+                run_settings_snapshot.get("audio")
+                if selected_run is not None
+                else audio_snapshot.get("audio")
+            )
+            if not isinstance(take_audio_settings, Mapping):
+                take_audio_settings = None
+            if project_assembly_pause:
+                if session_record.workflow_kind != "audiobook":
+                    assembly_pauses = {row.id: 0 for row in rows}
+                elif rows:
+                    if selected_run is not None:
+                        boundary_snapshot = deepcopy(dict(run_settings_snapshot))
+                    else:
+                        boundary_snapshot = {
+                            "audio": deepcopy(audio_snapshot.get("audio") or {})
+                        }
+                    if "speech_boundaries" not in boundary_snapshot:
+                        if selected_run is not None:
+                            performance_snapshot = boundary_snapshot.get(
+                                "performance_snapshot"
+                            )
+                            if not isinstance(performance_snapshot, Mapping):
+                                performance_snapshot = {}
+                            else:
+                                performance_snapshot = dict(performance_snapshot)
+                            if not isinstance(
+                                performance_snapshot.get("character_dictionary"), list
+                            ):
+                                # The parser expects a catalogue list; an empty
+                                # list prevents fallback to mutable current cast data.
+                                performance_snapshot["character_dictionary"] = []
+                            boundary_snapshot["performance_snapshot"] = (
+                                performance_snapshot
+                            )
+                        boundary_rows = [row for row in rows if not row.removed]
+                        if boundary_rows:
+                            next_ordinals = [
+                                select(func.min(GenerationSegment.ordinal))
+                                .where(
+                                    GenerationSegment.plan_revision_id == plan_revision_id,
+                                    GenerationSegment.removed.is_(False),
+                                    GenerationSegment.ordinal > row.ordinal,
+                                )
+                                .scalar_subquery()
+                                for row in boundary_rows
+                            ]
+                            successors = list(
+                                session.scalars(
+                                    select(GenerationSegment)
+                                    .where(
+                                        GenerationSegment.plan_revision_id == plan_revision_id,
+                                        GenerationSegment.removed.is_(False),
+                                        GenerationSegment.ordinal.in_(next_ordinals),
+                                    )
+                                    .order_by(GenerationSegment.ordinal)
+                                    .limit(len(boundary_rows))
+                                ).all()
+                            )
+                            boundary_rows = sorted(
+                                {row.id: row for row in (*boundary_rows, *successors)}.values(),
+                                key=lambda row: row.ordinal,
+                            )
+                        if selected_run is None:
+                            tts_settings = self.settings.get_in_session(
+                                session, session_id, "tts"
+                            )["effective"]
+                            if (
+                                tts_settings.get("casting_enabled")
+                                or tts_settings.get("performance_enabled")
+                            ):
+                                from .models import PerformancePlan
+
+                                adopted_plan = session.scalar(
+                                    select(PerformancePlan.id).where(
+                                        PerformancePlan.plan_revision_id == plan_revision_id,
+                                        PerformancePlan.status == "adopted",
+                                    )
+                                )
+                                if adopted_plan:
+                                    from .performance_plans import freeze_performance_snapshot
+
+                                    freeze_performance_snapshot(
+                                        session, plan_revision_id, boundary_snapshot
+                                    )
+                        if selected_run is not None:
+                            _freeze_legacy_boundaries(
+                                session,
+                                plan_revision_id,
+                                boundary_snapshot,
+                                boundary_rows,
+                            )
+                        else:
+                            from .speech_boundaries import freeze_boundaries
+
+                            freeze_boundaries(
+                                session,
+                                plan_revision_id,
+                                boundary_snapshot,
+                                segments=boundary_rows,
+                            )
+                    from .speech_boundaries import assembly_pause
+
+                    assembly_pauses = {
+                        row.id: (
+                            0
+                            if row.node_kind == "subtitle_cue"
+                            else assembly_pause(row, boundary_snapshot)
+                        )
+                        for row in rows
+                    }
             takes_by_segment: dict[str, list[AudioTake]] = {}
             artifacts_by_id: dict[str, Artifact] = {}
             take_stats_by_segment: dict[str, dict[str, Any]] = {}
@@ -436,6 +652,11 @@ class GenerationSegmentReader:
                     "voice": item.voice,
                     "language": item.language,
                     "silence_after_ms": item.silence_after_ms,
+                    **(
+                        {"assembly_silence_after_ms": assembly_pauses.get(item.id, 0)}
+                        if project_assembly_pause
+                        else {}
+                    ),
                     "marked": item.marked,
                     "removed": item.removed,
                     "status": item.status,
@@ -446,6 +667,11 @@ class GenerationSegmentReader:
                             take,
                             artifacts_by_id.get(take.artifact_id)
                             if take.artifact_id else None,
+                            audio_settings=take_audio_settings,
+                            allow_assembly_silences=(
+                                session_record.workflow_kind == "audiobook"
+                                and item.node_kind != "subtitle_cue"
+                            ),
                         )
                         for take in takes_by_segment.get(item.id, [])
                     ],

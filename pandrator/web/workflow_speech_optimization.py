@@ -88,6 +88,7 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
         int(settings.get("llm_tts_document_batch_size") or settings.get("llm_tts_batch_size") or 8),
     )
     llm_settings = SimpleNamespace(
+        llm_tts_document_batch_size=settings.get("llm_tts_document_batch_size", 8),
         provider_configs=settings["llm_provider_configs"],
         default_model=settings["llm_default_model"],
         request_timeout_seconds=settings["request_timeout_seconds"],

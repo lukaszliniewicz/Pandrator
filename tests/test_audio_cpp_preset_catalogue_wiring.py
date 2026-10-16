@@ -64,9 +64,19 @@ class AudioCppPresetCatalogueWiringTests(unittest.TestCase):
         ]
         self.assertTrue(english_pocket)
         for model in english_pocket:
-            self.assertEqual(["alba"], AUDIO_CPP_MODEL_PRESETS[model])
+            if model.endswith("_safetensors"):
+                self.assertEqual(26, len(AUDIO_CPP_MODEL_PRESETS[model]))
+                self.assertIn("cosette", AUDIO_CPP_MODEL_PRESETS[model])
+                self.assertIn("peter_yearsley", AUDIO_CPP_MODEL_PRESETS[model])
+            else:
+                self.assertEqual(["alba"], AUDIO_CPP_MODEL_PRESETS[model])
+        french_pocket = {
+            model for model in models_by_family["pocket_tts"] if "pocket_tts_french_" in model
+        }
+        for model in french_pocket:
+            self.assertEqual(["cosette"], AUDIO_CPP_MODEL_PRESETS[model])
         self.assertFalse(
-            (set(models_by_family["pocket_tts"]) - set(english_pocket))
+            (set(models_by_family["pocket_tts"]) - set(english_pocket) - french_pocket)
             & set(AUDIO_CPP_MODEL_PRESETS)
         )
 
@@ -111,6 +121,16 @@ class AudioCppPresetCatalogueWiringTests(unittest.TestCase):
             expected = presets[0]
             if family == "kokoro_tts":
                 expected = "af_heart"
+            elif family == "voxtral_tts":
+                expected = "casual_male"
+            elif family == "supertonic":
+                expected = "M1"
+            elif family == "kitten_tts2":
+                expected = "Bruno"
+            elif family == "neutts":
+                expected = "emily"
+            elif family == "kitten_tts":
+                expected = "expr-voice-5-m"
             elif family == "qwen3_tts" and "customvoice" in model:
                 expected = "Aiden"
             self.assertEqual(expected, AUDIO_CPP_MODEL_DEFAULT_VOICES[model])
@@ -148,6 +168,78 @@ class AudioCppPresetCatalogueWiringTests(unittest.TestCase):
         assert kokoro is not None
         kokoro = cast(dict[str, Any], kokoro)
         self.assertEqual("af_heart", kokoro["default_voice"])
+
+    def test_presets_have_names_and_package_specific_language_metadata(self) -> None:
+        from pandrator.logic.preset_voice_metadata import preset_voice_info
+
+        service = get_service_config({}, "audio_cpp")
+        assert service is not None
+        service = cast(dict[str, Any], service)
+        model = "voxtral_4b_tts_2603_q8_0"
+        metadata = service["voice_metadata"]
+        french = metadata[f"{model}:fr_female"]
+        self.assertEqual("French · Female", french["display_name"])
+        self.assertEqual("fr", french["language_code"])
+        self.assertTrue(french["multilingual"])
+        self.assertEqual("fr_female", french["id"])
+        self.assertEqual(20, sum(key.startswith(f"{model}:") for key in metadata))
+        for voice in ("casual_female", "casual_male", "cheerful_female", "neutral_female", "neutral_male"):
+            self.assertEqual("", metadata[f"{model}:{voice}"]["language_code"])
+            self.assertTrue(metadata[f"{model}:{voice}"]["multilingual"])
+        self.assertEqual("en", metadata["pocket_tts_english_safetensors:cosette"]["language_code"])
+        self.assertEqual("fr", metadata["pocket_tts_french_q8_0:cosette"]["language_code"])
+        self.assertEqual("Peter Yearsley", metadata["pocket_tts_english_safetensors:peter_yearsley"]["display_name"])
+        self.assertEqual("Heart", metadata["kokoro_82m_q8_0:af_heart"]["display_name"])
+        self.assertEqual("en-us", metadata["kokoro_82m_q8_0:af_heart"]["language_code"])
+        self.assertEqual(8, len(service["voice_catalogues"]["kitten_tts_mini_0_8_orig"]))
+        self.assertEqual("Leo", metadata["kitten_tts_mini_0_8_orig:expr-voice-5-m"]["display_name"])
+        supertonic = next(item["id"] for item in AUDIO_CPP_MODEL_CATALOG if item["family"] == "supertonic")
+        self.assertEqual("Female 1", metadata[f"{supertonic}:F1"]["display_name"])
+        self.assertEqual({}, preset_voice_info("kitten_tts2", "kitten", "my-reference"))
+        self.assertEqual({}, preset_voice_info("voxtral_tts", model, "ar_female"))
+        unknown = preset_voice_info("neutts", "neutts", "juliette")
+        self.assertEqual("", unknown["language_code"])
+        self.assertEqual("", unknown["gender"])
+        self.assertFalse(unknown["multilingual"])
+
+    def test_language_defaults_preserve_explicit_names_selections_and_locale(self) -> None:
+        from pandrator.logic.preset_voice_metadata import language_default_voice
+
+        model = "voxtral_4b_tts_2603_q8_0"
+        service = get_service_config({"service_configs": [{
+            "id": "audio_cpp", "default_voices": {model: "neutral_female"},
+            "default_voices_by_language": {model: {"fr": "fr_female", "fr-CA": "casual_female"}},
+            "voice_metadata": {f"{model}:fr_female": {"display_name": "My French narrator"}},
+        }]}, "audio_cpp")
+        assert service is not None
+        service = cast(dict[str, Any], service)
+        defaults = service["default_voices_by_language"][model]
+        self.assertEqual("fr_female", language_default_voice(defaults, "fr_FR"))
+        self.assertEqual("casual_female", language_default_voice(defaults, "fr-CA"))
+        self.assertIsNone(language_default_voice(defaults, "de-DE"))
+        self.assertEqual("neutral_female", service["default_voices"][model])
+        self.assertEqual("My French narrator", service["voice_metadata"][f"{model}:fr_female"]["display_name"])
+
+    def test_curated_metadata_never_changes_uploaded_reference_voices(self) -> None:
+        from pandrator.logic.preset_voice_metadata import decorate_preset_voices
+
+        service = {
+            "id": "audio_cpp", "adapter": "audio_cpp", "models": ["base"],
+            "model_catalog": [{"id": "base", "family": "qwen3_tts", "voice_mode": "cloning"}],
+            "voice_catalogues": {"base": ["Aiden"]},
+            "voice_metadata": {"base:Aiden": {"display_name": "My reference", "language_code": "fr"}},
+        }
+        before = copy.deepcopy(service)
+        decorate_preset_voices(service)
+        self.assertEqual(before, service)
+
+    def test_compatible_preset_names_add_no_voice_capability_claims(self) -> None:
+        from pandrator.logic.preset_voice_metadata import decorate_preset_voices
+
+        service = {"id": "custom", "models": ["model"], "voices": ["alloy", "opaque-id-42"]}
+        decorate_preset_voices(service)
+        self.assertEqual({"display_name": "Alloy", "id": "alloy", "model": "model"}, service["voice_metadata"]["model:alloy"])
+        self.assertNotIn("model:opaque-id-42", service["voice_metadata"])
 
     def test_builtin_adapter_does_not_spread_aggregate_or_global_voices(self) -> None:
         service = get_service_config({}, "audio_cpp")

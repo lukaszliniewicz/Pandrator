@@ -80,6 +80,7 @@ _TTS_UNSUPPORTED_NATIVE_OPTIONS = {
     "lfm2_audio": {
         "audio_chunk_mode",
         "audio_chunk_seconds",
+        "audio_chunk_duration_sec",
         "text_temperature",
         "text_top_k",
         "stream_frames_per_event",
@@ -315,6 +316,118 @@ AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY: dict[str, dict[str, dict[str, Any]]] = {
 # Stable alias for callers that describe this as a registry.
 AUDIO_CPP_PARAMETER_REGISTRY = AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY
 
+# v0.9.2's generated inventory uses these names, while saved v0.9.1 settings
+# may still contain the names on the left. Keep the aliases scoped to the
+# families whose upstream option contracts established them.
+_AUDIO_CPP_OPTION_ALIASES: dict[str, dict[str, str]] = {
+    "chatterbox": {"s3gen_cfg_rate": "flow_guidance_scale"},
+    "chatterbox_turbo": {"max_new_tokens": "max_tokens"},
+    "pocket_tts": {
+        "max_steps": "max_frames",
+        "max_tokens": "text_chunk_tokens",
+    },
+    "f5_tts": {"cfg_strength": "guidance_scale"},
+    "firered_audio": {
+        "max_new_audio_steps": "max_audio_steps",
+        "min_new_audio_steps": "min_audio_steps",
+        "max_new_text_tokens": "max_text_tokens",
+        "max_new_tokens": "max_tokens",
+    },
+    "index_tts2": {"duration_factor": "duration_scale"},
+    "inflect_v2": {"speaking_rate": "speed"},
+    "sanotts": {"speaking_rate": "speed"},
+    "sopro_tts": {
+        "max_seconds": "max_duration_sec",
+        "min_seconds": "min_duration_sec",
+        "ref_seconds": "reference_duration_sec",
+    },
+    "zipvoice": {"t_shift": "shift", "lang": "language"},
+    "moss_tts_v15": {"tokens": "duration_frames"},
+}
+
+
+def _normalized_family_name(family: str) -> str:
+    normalized = str(family or "").strip().lower()
+    return "fish_audio_s2" if normalized == "fish_audio" else normalized
+
+
+def _public_option_name(family: str, name: str) -> str:
+    """Map a native alias to its one retained public option name."""
+
+    normalized = _normalized_family_name(family)
+    for legacy_name, native_name in _AUDIO_CPP_OPTION_ALIASES.get(normalized, {}).items():
+        if name not in {legacy_name, native_name}:
+            continue
+        if normalized == "zipvoice" and legacy_name == "lang":
+            return legacy_name
+        if legacy_name in AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY.get(normalized, {}):
+            return legacy_name
+        return native_name
+    return name
+
+
+def _alias_values_equal(left: Any, right: Any) -> bool:
+    # bool is an int subclass in Python. Treating True and 1 as equal here
+    # could hide a value that the descriptor must reject as the wrong type.
+    if isinstance(left, bool) != isinstance(right, bool):
+        return False
+    try:
+        equal = left == right
+    except Exception:
+        return False
+    return isinstance(equal, bool) and equal
+
+
+def _normalize_option_aliases(family: str, options: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy with known old/native option spellings consolidated."""
+
+    normalized_family = _normalized_family_name(family)
+    aliases = _AUDIO_CPP_OPTION_ALIASES.get(normalized_family, {})
+    if not aliases:
+        return dict(options)
+
+    alias_pairs = tuple(aliases.items())
+    alias_names = {
+        name: pair_index
+        for pair_index, (legacy_name, native_name) in enumerate(alias_pairs)
+        for name in (legacy_name, native_name)
+    }
+    result: dict[str, Any] = {}
+    processed_pairs: set[int] = set()
+    for key, value in options.items():
+        pair_index = alias_names.get(key)
+        if pair_index is None:
+            result[key] = value
+            continue
+        if pair_index in processed_pairs:
+            continue
+        processed_pairs.add(pair_index)
+        legacy_name, native_name = alias_pairs[pair_index]
+        legacy_present = legacy_name in options
+        native_present = native_name in options
+        legacy_value = options.get(legacy_name)
+        native_value = options.get(native_name)
+        legacy_nonempty = legacy_present and not _is_empty(legacy_value)
+        native_nonempty = native_present and not _is_empty(native_value)
+
+        if legacy_nonempty and native_nonempty:
+            if not _alias_values_equal(legacy_value, native_value):
+                raise ValueError(
+                    f"Conflicting audio.cpp options '{legacy_name}' and "
+                    f"'{native_name}' for family '{family}'."
+                )
+            selected_value = legacy_value
+        elif legacy_nonempty:
+            selected_value = legacy_value
+        elif native_nonempty:
+            selected_value = native_value
+        else:
+            # Empty and null values already mean "use the model default".
+            continue
+
+        result[_public_option_name(normalized_family, legacy_name)] = selected_value
+    return result
+
 
 def request_parameters_for_family(family: str) -> dict[str, dict[str, Any]]:
     """Return reviewed manual and safe native descriptors for a family.
@@ -348,9 +461,23 @@ def request_parameters_for_family(family: str) -> dict[str, dict[str, Any]]:
                     in _TTS_UNSUPPORTED_NATIVE_OPTIONS.get(normalized, set())
                 ):
                     continue
-                descriptor = _descriptor_from_native_option(option)
+                native_option = option
+                if (
+                    normalized == "zipvoice"
+                    and isinstance(option, Mapping)
+                    and option.get("name") == "language"
+                ):
+                    # ZipVoice's language is a scalar option, but the generic
+                    # language name is reserved for the speech request builder.
+                    native_option = {**option, "name": "lang"}
+                descriptor = _descriptor_from_native_option(native_option)
                 if descriptor is not None:
-                    derived[descriptor.pop("_name")] = descriptor
+                    native_name = descriptor.pop("_name")
+                    derived[_public_option_name(normalized, native_name)] = descriptor
+    if normalized == "chatterbox" and "greedy" not in derived:
+        # audio.cpp still accepts this persisted v0.9.1 bool although the
+        # current native inventory no longer advertises it. Do not add a default.
+        derived["greedy"] = _boolean()
     for name, descriptor in manual.items():
         merged = dict(descriptor)
         native = derived.get(name, {})
@@ -382,6 +509,17 @@ def request_parameters_for_model(
     ):
         for name in _AUK_FLASH_BASE_ONLY_OPTIONS:
             parameters.pop(name, None)
+    if normalized_family == "pocket_tts" and model_id.startswith("pocket_tts_french_"):
+        parameters["temperature"].update(
+            default=0.3,
+            native_default=0.7,
+            default_source="pandrator_policy",
+            description="French uses Kyutai's 0.3 default; audio.cpp's fallback is 0.7.",
+        )
+    if normalized_family == "voxtral_tts":
+        parameters["max_tokens"]["description"] = (
+            "Generated audio frames per segment (80 ms each), not text tokens."
+        )
     return parameters
 
 
@@ -520,14 +658,12 @@ def validate_model_options(
         if model_id is not None
         else request_parameters_for_family(family)
     )
-    normalized_family = str(family or "").strip().lower()
-    if normalized_family == "fish_audio":
-        normalized_family = "fish_audio_s2"
+    normalized_family = _normalized_family_name(family)
     manual_descriptors = AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY.get(
         normalized_family, {}
     )
     result: dict[str, Any] = {}
-    for key, value in options.items():
+    for key, value in _normalize_option_aliases(normalized_family, options).items():
         if key not in descriptors:
             raise ValueError(f"Unknown audio.cpp option '{key}' for family '{family}'.")
         if _is_empty(value):

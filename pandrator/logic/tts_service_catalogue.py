@@ -11,6 +11,7 @@ from datetime import date
 from ..constants import MAGPIE_TTS_MODELS, magpie_voice_catalog
 from . import audio_cpp_model_metadata as _audio_cpp_model_metadata_owner
 from .audio_cpp_voice_catalogue_compat import merge_audio_cpp_voice_catalogues
+from .preset_voice_metadata import decorate_preset_voices
 from .tts_openai_http_policy import _normalize_base_url
 from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
@@ -1210,6 +1211,7 @@ def _shared_service_configs(tts_settings, _cache=None) -> list[dict[str, object]
 
     for service in first_class:
         decorate_service_capabilities(service)
+        decorate_preset_voices(service)
     if _cache is not None and cache_key is not None:
         # Only private lookups may access this shared catalogue. Public
         # results always copy before returning mutable records.

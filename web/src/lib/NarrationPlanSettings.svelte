@@ -181,8 +181,9 @@
     {#if budget}{budget.target_chars.toLocaleString()} characters per block · {policy ===
       'model'
         ? 'Complete sentences, with model headroom.'
-        : 'Current effective length.'}{:else}Loading model defaults…{/if} Paragraph
-    and chapter breaks stay intact. Existing plans keep their boundaries.
+        : 'Current effective length.'}{:else}Loading model defaults…{/if} Clear dialogue
+    turns can share a block when Dialogue flow is enabled. Chapter and scene breaks
+    stay separate. Existing plans keep their boundaries.
   </p>
 </fieldset>
 {#if error}<p role="alert" class="text-sm text-red-700">

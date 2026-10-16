@@ -4,7 +4,10 @@ from pathlib import Path
 
 from ..constants import AUDIO_CPP_KOKORO_VOICES, magpie_voice_catalog
 from .audio_cpp_catalogue import family_metadata, speech_model_catalog
+from .audio_cpp_inventory_data import inventory
 from .audio_cpp_parameters import request_parameters_for_model
+from .audio_cpp_segmentation import narration_character_policy
+from .preset_voice_metadata import CLASSIC_KITTEN_PRESETS, decorate_preset_voices
 
 OPENAI_ADAPTER = "openai_compatible"
 AUDIO_CPP_ADAPTER = "audio_cpp"
@@ -20,19 +23,16 @@ AUDIO_CPP_MODEL_CATALOG = [
         "id": "qwen3_tts_1_7b_base_q8_0",
         "family": "qwen3_tts",
         "voice_mode": "cloning",
-        "recommended_chunk_characters": 300,
     },
     {
         "id": "qwen3_tts_1_7b_customvoice_q8_0",
         "family": "qwen3_tts",
         "voice_mode": "prebuilt",
-        "recommended_chunk_characters": 300,
     },
     {
         "id": "qwen3_tts_1_7b_voicedesign_q8_0",
         "family": "qwen3_tts",
         "voice_mode": "design",
-        "recommended_chunk_characters": 300,
         "supported_languages": [
             "zh",
             "en",
@@ -122,6 +122,9 @@ for _metadata in speech_model_catalog():
         _model["family"] = "fish_audio_s2"
 
 for _audio_cpp_model in AUDIO_CPP_MODEL_CATALOG:
+    _audio_cpp_model["recommended_chunk_characters"] = (
+        narration_character_policy(str(_audio_cpp_model["family"]))[0] * 9 // 10
+    )
     _audio_cpp_model["request_parameters"] = request_parameters_for_model(
         str(_audio_cpp_model.get("family") or ""), str(_audio_cpp_model["id"])
     )
@@ -160,8 +163,18 @@ def _audio_cpp_model_preset(model: dict) -> list[str] | None:
         return list(AUDIO_CPP_PREBUILT_VOICES[:9])
     if family == "magpie_tts":
         return magpie_voice_catalog()
+    if family == "kitten_tts":
+        return list(CLASSIC_KITTEN_PRESETS)
     if family == "pocket_tts" and "pocket_tts_english_" in model_id:
+        if model_id.endswith("_safetensors"):
+            package = next((row for row in inventory()["packages"] if row["id"] == model_id), {})
+            return [
+                Path(name).stem for name in package.get("files", [])
+                if name.startswith("languages/english/embeddings/") and name.endswith(".safetensors")
+            ]
         return ["alba"]
+    if family == "pocket_tts" and "pocket_tts_french_" in model_id:
+        return ["cosette"]
     if family == "supertonic":
         return [f"{gender}{number}" for gender in ("F", "M") for number in range(1, 6)]
     if family == "lfm2_audio":
@@ -170,7 +183,7 @@ def _audio_cpp_model_preset(model: dict) -> list[str] | None:
             if "_jp_" in model_id
             else ["us_male", "us_female", "uk_male", "uk_female"]
         )
-    if family in {"kitten_tts2", "kugelaudio", "neutts"}:
+    if family in {"kitten_tts2", "kugelaudio", "neutts", "voxtral_tts"}:
         options = family_metadata(family).get("options", {}).get("request", [])
         return next(
             (
@@ -196,8 +209,20 @@ for _audio_cpp_model in AUDIO_CPP_MODEL_CATALOG:
     if not _audio_cpp_model_presets:
         continue
     _audio_cpp_default_voice = _audio_cpp_model_presets[0]
+    _native_voice_default = next(
+        (option.get("default") for option in family_metadata(str(_audio_cpp_model.get("family") or ""))
+         .get("options", {}).get("request", []) if option.get("name") == "voice_id"),
+        None,
+    )
+    if isinstance(_native_voice_default, str):
+        _audio_cpp_default_voice = next(
+            (voice for voice in _audio_cpp_model_presets if voice.lower() == _native_voice_default.lower()),
+            _audio_cpp_default_voice,
+        )
     if str(_audio_cpp_model.get("family") or "") == "kokoro_tts":
         _audio_cpp_default_voice = "af_heart"
+    elif str(_audio_cpp_model.get("family") or "") == "voxtral_tts":
+        _audio_cpp_default_voice = "casual_male"
     elif (
         str(_audio_cpp_model.get("family") or "") == "qwen3_tts"
         and "customvoice" in _audio_cpp_model_id
@@ -745,6 +770,10 @@ TTS_PROVIDER_PROFILES = [
         notes="Voice names use Piper identifiers such as en_US-lessac-medium and are downloaded on demand.",
     ),
 ]
+
+
+for _preset_profile in TTS_PROVIDER_PROFILES:
+    decorate_preset_voices(_preset_profile, include_defaults=False)
 
 
 def list_tts_provider_profiles() -> list[dict]:

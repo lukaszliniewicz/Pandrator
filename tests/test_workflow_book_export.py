@@ -452,6 +452,94 @@ class FrozenBookExportTests(unittest.TestCase):
         align.assert_not_called()
         self.assertEqual(2, result["book_timing_diagnostics"]["cache_hits"])
 
+    def test_frozen_internal_silences_accept_raw_duration_and_shift_native_words(self):
+        from copy import deepcopy
+
+        artifact = self.take_artifacts[0]
+        text = artifact.metadata_json["synthesized_text"]
+        parts = []
+        for left, right, start, end in [(0, 4, 0, 22050), (5, len(text), 22050, self.take_frames[0])]:
+            duration = round((end - start) * 1000 / self.rate)
+            part_text = text[left:right]
+            parts.append({"range": [left, right], "start_frame": start, "end_frame": end,
+                          "sample_rate_hz": self.rate, "silence_policy": "assembly-v1",
+                          "silence_before_ms": 100 if start else 0,
+                          "speech_timing": AlignedBookText(part_text,
+                              (BookWord(part_text, 0, duration, 0, len(part_text)),),
+                              "native", {"duration_ms": duration}).as_dict()})
+        with self.database.session() as session:
+            row = session.get(Artifact, artifact.id)
+            row.metadata_json = {**row.metadata_json, "render_parts": parts}
+        metadata = deepcopy(self.audio.metadata_json)
+        metadata["takes"][0].update({"silence_policy": "assembly-v1", "internal_silences": [
+            {"offset_frames": 22050, "sample_rate_hz": self.rate, "duration_ms": 100}]})
+        metadata["takes"][0]["end_frame"] += 4410
+        metadata["takes"][1]["start_frame"] += 4410
+        metadata["takes"][1]["end_frame"] += 4410
+        metadata["audio_timeline"]["total_frames"] += 4410
+        self.write_wav(self.audio_path, metadata["audio_timeline"]["total_frames"])
+        self.audio = self.artifacts.register(self.audio_path, kind="audio", role="assembled_audio",
+                                             session_id=self.record.id, metadata=metadata)
+        result, align = self.run_export(book_text_mode="spoken", book_style="captions")
+        self.assertEqual(1, result["book_timing_diagnostics"]["native"])
+        self.assertEqual(1, align.call_count)
+        # Cached native timing remains raw; the assembly mapping is applied at export.
+        cached = [row for row in self.inventory("speech_timing") if row.metadata_json["take_id"] == self.manifest[0]["take_id"]]
+        _, path = self.artifacts.resolve(cached[0].id)
+        self.assertEqual(500, json.loads(path.read_text())["words"][1]["start_ms"])
+        again, _ = self.run_export(book_text_mode="spoken", book_style="captions")
+        self.assertEqual(2, again["book_timing_diagnostics"]["cache_hits"])
+
+    def test_fractional_frame_native_export_shifts_once_and_keeps_raw_cache(self):
+        from copy import deepcopy
+
+        from pandrator.web.sound_book_timing import rebase_book_words
+
+        artifact = self.take_artifacts[0]
+        text = artifact.metadata_json["synthesized_text"]
+        boundary, pause_ms = 2206, 300
+        added_frames = round(pause_ms * self.rate / 1000)
+        parts = []
+        for left, right, start, end in [(0, 4, 0, boundary), (5, len(text), boundary, self.take_frames[0])]:
+            duration = round((end - start) * 1000 / self.rate)
+            part_text = text[left:right]
+            parts.append({"range": [left, right], "start_frame": start, "end_frame": end,
+                          "sample_rate_hz": self.rate, "silence_policy": "assembly-v1",
+                          "silence_before_ms": pause_ms if start else 0,
+                          "speech_timing": AlignedBookText(part_text,
+                              (BookWord(part_text, 0, duration, 0, len(part_text)),),
+                              "native", {"duration_ms": duration}).as_dict()})
+        with self.database.session() as session:
+            row = session.get(Artifact, artifact.id)
+            row.metadata_json = {**row.metadata_json, "render_parts": parts}
+        metadata = deepcopy(self.audio.metadata_json)
+        metadata["takes"][0].update({"silence_policy": "assembly-v1", "internal_silences": [
+            {"offset_frames": boundary, "sample_rate_hz": self.rate, "duration_ms": pause_ms}]})
+        metadata["takes"][0]["end_frame"] += added_frames
+        metadata["takes"][1]["start_frame"] += added_frames
+        metadata["takes"][1]["end_frame"] += added_frames
+        metadata["audio_timeline"]["total_frames"] += added_frames
+        self.write_wav(self.audio_path, metadata["audio_timeline"]["total_frames"])
+        self.audio = self.artifacts.register(self.audio_path, kind="audio", role="assembled_audio",
+                                             session_id=self.record.id, metadata=metadata)
+        for expected_native, expected_cache_hits in ((1, 0), (0, 2)):
+            observed_words = []
+
+            def capture_rebase(*args, _observed_words=observed_words, **kwargs):
+                words = rebase_book_words(*args, **kwargs)
+                _observed_words.append(words)
+                return words
+
+            with mock.patch("pandrator.web.workflow_book_export.rebase_book_words", side_effect=capture_rebase):
+                result, _ = self.run_export(book_text_mode="spoken", book_style="captions")
+            self.assertEqual(expected_native, result["book_timing_diagnostics"]["native"])
+            self.assertEqual(expected_cache_hits, result["book_timing_diagnostics"]["cache_hits"])
+            self.assertEqual(50, observed_words[0][0].end_ms)
+            self.assertEqual(350, observed_words[0][1].start_ms)
+            cached = [row for row in self.inventory("speech_timing") if row.metadata_json["take_id"] == self.manifest[0]["take_id"]]
+            _, path = self.artifacts.resolve(cached[0].id)
+            self.assertEqual(50, json.loads(path.read_text())["words"][1]["start_ms"])
+
     def test_native_render_parts_cover_full_transcript_and_exact_final_pcm(self):
         artifact = self.take_artifacts[0]
         text = artifact.metadata_json["synthesized_text"]

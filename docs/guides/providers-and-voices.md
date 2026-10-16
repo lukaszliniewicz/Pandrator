@@ -55,7 +55,7 @@ before changing the installation.
 
 **audio.cpp** is the main local TTS provider and the default in a fresh
 workspace. Its model packages cover Qwen3 TTS, Fish Audio S2 Pro, VoxCPM2,
-Chatterbox, MagpieTTS, OmniVoice, PocketTTS, FireRedTTS3, and BreezeTTS 2.
+Chatterbox, MagpieTTS, OmniVoice, PocketTTS, Voxtral TTS, FireRedTTS3, and BreezeTTS 2.
 Select packages in the Manager and select an installed model in generation
 settings. XTTS, Silero, Kokoro, and Voxtral retain their dedicated providers.
 
@@ -64,7 +64,7 @@ settings. XTTS, Silero, Kokoro, and Voxtral retain their dedicated providers.
 | audio.cpp | Multiple speech model families in one runtime | CPU, Vulkan, or CUDA; model requirements vary |
 | Kokoro 82M | Lightweight built-in voices | CPU, CUDA, and supported modern AMD GPUs |
 | XTTS v2 | Multilingual voice cloning and fine-tuned models | CPU or CUDA |
-| Voxtral 4B | Preset voices | WGPU-compatible accelerator |
+| Voxtral 4B | Preset voices | audio.cpp, or the dedicated WGPU backend |
 | Silero | Efficient regional language packs | CPU |
 | CrispASR | Transcription, timestamps, and diarization | CPU, CUDA, Vulkan, or Apple Silicon |
 | RVC | Speech-to-speech voice conversion | CPU or CUDA |
@@ -101,11 +101,11 @@ starting generation.
 
 ## audio.cpp runtime versions
 
-The Manager pins audio.cpp **0.9.1** for Linux CPU/Vulkan/CUDA and Windows
+The Manager pins audio.cpp **0.9.2** for Linux CPU/Vulkan/CUDA and Windows
 CPU/Vulkan/CUDA, with SHA-256-verified upstream archives. Linux CPU and Vulkan
 use the portable builds. Windows CUDA uses the 12.4 binary plus its bundled
 cudart runtime archive. Linux CUDA uses the upstream
-`audio-v0.9.1-bin-ubuntu-x64-cuda12.8-colab.tar.gz` binary best-effort: the
+`audio-v0.9.2-bin-ubuntu-x64-cuda12.8-colab.tar.gz` binary best-effort: the
 colab tag means it was built for Colab (CUDA 12.8), it ships without a bundled
 runtime. It needs a compatible NVIDIA driver and system CUDA 12 libraries
 (including cuBLAS and cuFFT), NCCL 2, and OpenSSL 3. It has not been tested on
@@ -115,8 +115,9 @@ an unexpected archive layout instead of installing a broken slot.
 Updating the runtime does not replace selected models, voices, or generation
 settings. Model package revisions and digests remain independently pinned.
 
-The 0.9.1 catalogue contains 112 families and 362 packages, including KittenTTS2,
-KugelAudio and English/Japanese LFM2.5-Audio checkpoints. Kitten offers native
+The 0.9.2 catalogue contains 122 families and 380 packages. New speech packages
+include Voxtral 4B TTS and French PocketTTS, alongside KittenTTS2, KugelAudio and
+English/Japanese LFM2.5-Audio checkpoints. Kitten TTS 2 offers native
 presets and optional cloning with a matching transcript and a 1–30 second
 reference. Kugel offers preset voices. LFM's language belongs to its checkpoint:
 English offers four voices; Japanese uses one built-in voice with no voice ID.
@@ -129,7 +130,36 @@ new enums, text controls and defaults. Load/session controls remain part of the
 managed package configuration. The catalogue also lists new recognition,
 restoration and other audio models; catalogue membership does not imply a
 corresponding Pandrator workflow or acoustic verification. See the
-[0.9.1 release](https://github.com/0xShug0/audio.cpp/releases/tag/v0.9.1).
+[0.9.2 release](https://github.com/0xShug0/audio.cpp/releases/tag/v0.9.2).
+
+## Preset voice names and languages
+
+Preset choices show readable names while keeping the provider's voice identifier
+for synthesis. For example, Voxtral's `fr_female` appears as **French · Female**,
+Kokoro's `af_heart` as **Heart**, and Supertonic's `F1` as **Female 1**. The voice
+library and project settings use the same metadata.
+
+Voxtral's fifteen locale-labelled presets cover Arabic, Dutch, French, German,
+Hindi, Italian, Portuguese and Spanish. Its five general presets have no
+documented native language. Fresh defaults prefer a matching locale preset;
+English uses the upstream general default, **Casual · Male**. Voxtral and Qwen
+voices remain selectable across their model's supported languages: a preset's
+language describes its voice context, not a hard synthesis restriction.
+[Mistral](https://docs.mistral.ai/studio/audio/text_to_speech/speech) and
+[Qwen](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice) recommend
+matching the voice language to the text for best quality.
+
+PocketTTS's English GGUF packages bundle **Alba**, and its English safetensors
+package bundles 26 voices. French GGUF packages bundle **Cosette**. Cosette also
+exists in the English safetensors package; the package determines its language.
+Classic Kitten Mini 0.8 exposes its eight voices with names such as **Bella**
+and **Leo**, retaining their native expression IDs. NeuTTS voices get readable
+names, with undocumented per-voice language and gender left unspecified.
+
+Fresh audio.cpp defaults follow the native declared defaults, including
+Supertonic **M1**, Kitten TTS 2 **Bruno**, and NeuTTS **emily**. Explicit saved
+model defaults, language defaults, voice names and project selections remain
+authoritative.
 
 ## Language and capability checks
 
@@ -146,12 +176,14 @@ request format:
 | FireRedTTS3 | Native names such as `German`, with native `ZH_*` dialect tags preserved. |
 | MagpieTTS | Language codes, preserving `ar-AE`, `ar-SA`, `ar-MSA`, and `pt-BR`. |
 | Chatterbox, OmniVoice | Base language codes such as `de`. |
+| Kokoro | The selected voice's phonemizer language, preserving British `en-gb` and American `en-us`. Generic English accepts either voice accent. |
+| Voxtral | No request hint: pronunciation follows the text and selected preset. |
 | Fish Audio S2, VoxCPM2, BreezeTTS | No language hint: these projects infer language from the input. |
 | PocketTTS | No request hint: language belongs to the loaded package. The English package rejects a request to switch languages. |
 
 An omitted hint does not add language support to a model. These contracts were
 checked against the pinned audio.cpp runtime and its
-[model specifications](https://github.com/0xShug0/audio.cpp/tree/v0.9.1/model_specs).
+[model specifications](https://github.com/0xShug0/audio.cpp/tree/v0.9.2/model_specs).
 
 Generation failures retain the provider's explanation, model, and HTTP status.
 Temporary failures still retry; known audio.cpp language, cached-voice, and
@@ -169,6 +201,22 @@ Before a large run:
 CrispASR offers Whisper for broad transcription coverage and other engines for
 different speed, timestamp, and diarization trade-offs. A known language is
 usually safer than automatic detection for long, consistent media.
+
+### Japanese with Kokoro
+
+audio.cpp supports Japanese Kokoro with language `ja` and voices **Alpha**
+(`jf_alpha`), **Gongitsune** (`jf_gongitsune`), **Nezumi** (`jf_nezumi`),
+**Tebukuro** (`jf_tebukuro`), and **Kumo** (`jm_kumo`). Choose a Japanese voice;
+an English voice cannot be paired with the Japanese phonemizer.
+
+The Japanese frontend also requires native **MeCab** and **UniDic** dictionary
+resources. The small release GGUF includes the Japanese G2P table but omits
+UniDic; installing the model alone does not make Japanese synthesis ready.
+Re-exporting with `--embed-multilingual-resources` embeds the dictionary, but
+still requires the native MeCab library. Installing Python dictionaries alone
+does not add them to an existing GGUF. Linux uses `libmecab.so.2` by default,
+with `AUDIOCPP_MECAB_LIBRARY` as an override. See the pinned
+[Kokoro multilingual packaging guide](https://github.com/0xShug0/audio.cpp/blob/0097d365a00b52a6991ad7618f0a04e8d2935e47/tests/kokoro_tts/MULTILINGUAL_GGUF.md).
 
 ## Voice references
 

@@ -229,7 +229,7 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
             backlink_map=backlink_map,
         )
 
-        chapter_text = "\n\n".join(doc_lines).strip()
+        chapter_text = "\n\n".join(line for line in doc_lines if line.strip()).strip()
         if chapter_text:
             extracted_chapters.append(chapter_text)
 

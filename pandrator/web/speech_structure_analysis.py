@@ -17,19 +17,20 @@ from pandrator.logic.llm_handler import (
     chat_completion_with_metadata,
 )
 from pandrator.logic.speech_markup import (
-    ParsedSpeechMarkup,
     assert_authored_markup_preserved,
     parse_speech_markup,
 )
-from pandrator.logic.speech_performance import Delivery
 
 from .generation_controls import get_generation_controls, merge_character_proposals
 from .speech_planning import _extract_json
+from .speech_structure_policy import assert_structural_annotation
 from .tts_optimization import OptimizationUsage
 
 ANNOTATION_MODES = frozenset({"off", "dialogue", "speakers"})
 MAX_BATCH_UNITS = 8
+MAX_CONFIGURED_BATCH_UNITS = 64
 MAX_BATCH_TEXT_CHARS = 24_000
+_assert_structural_only = assert_structural_annotation
 
 SPEECH_STRUCTURE_SYSTEM_PROMPT = """You are a constrained speech-structure annotation component.
 Annotate the supplied speech units without rewriting their text. Preserve every
@@ -49,10 +50,12 @@ cadence continuing|concluding|questioning|contrast; emphasis light|moderate|stro
 instruction and emotion are plain bounded directions. Events, when already authored,
 use only pause, laugh, chuckle, sigh, inhale, exhale, cough, gasp, clear_throat.
 Do not add new emotion/instruction/event controls in this structural pass.
+Structural annotation never adds delivery controls, vocal events, or explicit
+voice bindings.
 
 Keep existing authored speaker assignments, explicit voices, delivery controls,
 events, and boundaries unchanged. Never infer identity solely from sex or voice
-category, and never merge namesakes. Character proposals are objects such as
+category, and never merge namesakes. In speakers mode, character proposals are objects such as
 {"id":"c-alice","display_name":"Alice","aliases":["A."],"voice_category":"female","notes":"..."}
 and are only suggestions for the host to validate. Return each supplied unit_id exactly
 once and in the supplied order. The speech_xml transcript must equal the supplied
@@ -73,7 +76,16 @@ def _source_for(source_markup: Mapping[str, str] | None, unit_id: int) -> str | 
     return value if isinstance(value, str) else None
 
 
-def _batch_units(texts: Sequence[str]) -> list[list[tuple[int, str]]]:
+def _bounded_batch_size(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return MAX_BATCH_UNITS
+    return min(MAX_CONFIGURED_BATCH_UNITS, max(1, value))
+
+
+def _batch_units(
+    texts: Sequence[str], max_units: int | None = MAX_BATCH_UNITS
+) -> list[list[tuple[int, str]]]:
+    batch_limit = _bounded_batch_size(max_units)
     batches: list[list[tuple[int, str]]] = []
     current: list[tuple[int, str]] = []
     current_chars = 0
@@ -82,7 +94,7 @@ def _batch_units(texts: Sequence[str]) -> list[list[tuple[int, str]]]:
         # A single oversized unit must still be sent once; the bound applies to
         # normal request batches and splitting its text would change a unit.
         if current and (
-            len(current) >= MAX_BATCH_UNITS
+            len(current) >= batch_limit
             or current_chars + len(text_value) > MAX_BATCH_TEXT_CHARS
         ):
             batches.append(current)
@@ -93,72 +105,6 @@ def _batch_units(texts: Sequence[str]) -> list[list[tuple[int, str]]]:
     if current:
         batches.append(current)
     return batches
-
-
-def _assert_structural_only(
-    source: ParsedSpeechMarkup | None,
-    result: ParsedSpeechMarkup,
-    *,
-    mode: str,
-) -> None:
-    """Reject controls a structural annotation pass is not allowed to add.
-
-    The comparison is made at character coverage rather than XML node
-    boundaries, so a result may subdivide an authored scope while retaining
-    exactly the same authored controls.  Structural annotation can add
-    dialogue/category/narrator/boundary structure, but it cannot manufacture
-    delivery directions, events, voice bindings, or (in dialogue mode) speaker
-    identities.
-    """
-
-    source_spans = tuple(source.spans) if source is not None else ()
-    # Parsed markup omits optional delivery controls that have no value.
-    empty_delivery = Delivery().model_dump(mode="json", exclude_none=True)
-    for result_span in result.spans:
-        # Parsed source spans cover the identical transcript. Compare each
-        # overlapping metadata scope once, rather than scanning per character.
-        overlaps = [
-            span
-            for span in source_spans
-            if span.end > result_span.start and span.start < result_span.end
-        ]
-        for source_span in overlaps or [None]:
-            expected_delivery = (
-                source_span.delivery if source_span is not None else empty_delivery
-            )
-            if result_span.delivery != expected_delivery:
-                raise ValueError(
-                    "Structural speech annotation introduced or changed delivery "
-                    f"controls over {result_span.start}:{result_span.end}; "
-                    "preserve authored delivery directions exactly."
-                )
-
-            if result_span.voice:
-                expected_voice = source_span.voice if source_span is not None else None
-                if result_span.voice != expected_voice:
-                    raise ValueError(
-                        "Structural speech annotation introduced or changed an "
-                        f"explicit voice binding over {result_span.start}:{result_span.end}; "
-                        "voice bindings must already be authored."
-                    )
-
-            if mode == "dialogue" and result_span.speaker_id:
-                expected_speaker = (
-                    source_span.speaker_id if source_span is not None else None
-                )
-                if result_span.speaker_id != expected_speaker:
-                    raise ValueError(
-                        "Dialogue annotation introduced a speaker identity over "
-                        f"{result_span.start}:{result_span.end}; preserve authored "
-                        "speaker assignments or use speakers mode."
-                    )
-
-    source_events = tuple(source.events) if source is not None else ()
-    if tuple(result.events) != source_events:
-        raise ValueError(
-            "Structural speech annotation introduced or changed vocal events; "
-            "preserve authored events exactly."
-        )
 
 
 def _parse_markup(
@@ -185,7 +131,7 @@ def _parse_markup(
             characters=characters,
         )
         assert_authored_markup_preserved(source, parsed)
-    _assert_structural_only(
+    assert_structural_annotation(
         source,
         parsed,
         mode=mode,
@@ -384,8 +330,14 @@ def annotate_speech_units(
             preserved.append(xml)
         return preserved
 
+    if isinstance(llm_settings, Mapping):
+        configured_batch_size = llm_settings.get("llm_tts_document_batch_size")
+    else:
+        configured_batch_size = getattr(
+            llm_settings, "llm_tts_document_batch_size", None
+        )
     results = [""] * len(normalized_texts)
-    for batch in _batch_units(normalized_texts):
+    for batch in _batch_units(normalized_texts, max_units=configured_batch_size):
         if _cancelled(cancel_event):
             return []
         first_id = batch[0][0]
@@ -429,7 +381,9 @@ def annotate_speech_units(
             if requested_mode == "dialogue":
                 system_prompt += (
                     "\nIn dialogue mode, detect dialogue boundaries and optional g voice "
-                    "categories only; do not identify speakers."
+                    "categories only. Never infer or introduce speaker identities or "
+                    "character proposals, regardless of evidence; return an empty "
+                    "character_proposals list."
                 )
             else:
                 system_prompt += (

@@ -20,6 +20,7 @@
   import type { TtsCatalogue } from './api-models';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import {
+    defaultVoiceForLanguage,
     describeVoice,
     languagesForService,
     voiceSupportsLanguage,
@@ -122,7 +123,7 @@
         ...configured,
         ...(service.live_voices ?? []).map(String),
         ...managed,
-        String(service.default_voices_by_language?.[model]?.[language] ?? ''),
+        defaultVoiceForLanguage(service, model, language),
         String(service.default_voices?.[model] ?? service.default_voice ?? '')
       ])
     ).filter(
@@ -143,12 +144,7 @@
     model: string,
     language: string
   ) {
-    const preferred = String(
-      service.default_voices_by_language?.[model]?.[language] ??
-        service.default_voices?.[model] ??
-        service.default_voice ??
-        ''
-    );
+    const preferred = defaultVoiceForLanguage(service, model, language);
     return (
       alternateVoiceIds(service, model, language).find(
         (voice) => normalizeId(voice) === normalizeId(preferred)

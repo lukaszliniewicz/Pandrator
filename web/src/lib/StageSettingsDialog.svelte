@@ -16,6 +16,7 @@
     qwenTimedLanguageProblem
   } from './stt-language-policy';
   import { preferredTtsService } from './tts-provider-policy';
+  import { defaultVoiceForLanguage } from './voice-catalog';
   import { errorMessage } from './errors';
   import { jobApi, sessionApi } from './domain-api';
   import { TtsCatalogueState } from './tts-catalogue-state.svelte';
@@ -621,6 +622,8 @@
     draft.maxIterations = Number(saved.max_iterations ?? 53);
     draft.splitSentences = Boolean(saved.enable_sentence_splitting ?? true);
     draft.appendSentences = Boolean(saved.enable_sentence_appending ?? true);
+    draft.audiobookDialogueFlow =
+      saved.audiobook_dialogue_flow === 'off' ? 'off' : 'auto';
     draft.maxSentenceLength = Number(saved.max_sentence_length ?? 200);
     draft.audiobookChunking =
       saved.audiobook_chunking === 'manual' ? 'manual' : 'model';
@@ -934,13 +937,10 @@
           preserveSelection && preserved
             ? previousVoice
             : draft.voiceName ||
-              String(
-                active.default_voices_by_language?.[draft.ttsModel]?.[
-                  draft.targetLanguage
-                ] ??
-                  active.default_voices?.[draft.ttsModel] ??
-                  active.default_voice ??
-                  ''
+              defaultVoiceForLanguage(
+                active,
+                draft.ttsModel,
+                draft.targetLanguage
               );
       }
       if (active && force) await discoverTtsService(active);
@@ -1237,13 +1237,10 @@
     draft.voiceName =
       service?.model_voice_modes?.[draft.ttsModel] === 'optional_cloning'
         ? ''
-        : String(
-            service?.default_voices_by_language?.[draft.ttsModel]?.[
-              draft.targetLanguage
-            ] ??
-              service?.default_voices?.[draft.ttsModel] ??
-              service?.default_voice ??
-              ''
+        : defaultVoiceForLanguage(
+            service,
+            draft.ttsModel,
+            draft.targetLanguage
           );
   }
 
@@ -1255,13 +1252,10 @@
     draft.voiceName =
       service?.model_voice_modes?.[value] === 'optional_cloning'
         ? ''
-        : String(
-            service?.default_voices_by_language?.[value]?.[
-              draft.targetLanguage
-            ] ??
-              service?.default_voices?.[value] ??
-              modelVoices[0] ??
-              ''
+        : defaultVoiceForLanguage(
+            service ? { ...service, default_voice: modelVoices[0] } : undefined,
+            value,
+            draft.targetLanguage
           );
   }
 
@@ -1795,6 +1789,7 @@
       stageSettings[key] = {
         enable_sentence_splitting: draft.splitSentences,
         enable_sentence_appending: draft.appendSentences,
+        audiobook_dialogue_flow: draft.audiobookDialogueFlow,
         max_sentence_length: draft.maxSentenceLength,
         audiobook_chunking: draft.audiobookChunking,
         enable_nemo_normalization: draft.nemoNormalization,
@@ -2441,63 +2436,67 @@
                   voiceover.</span
                 ></label
               >{/if}{/if}
-          {#if settingsStage.key === 'optimize_tts'}
-            <fieldset class="rounded-xl border border-[var(--line)] p-4">
-              <legend class="px-1 text-sm font-semibold"
-                >When should optimization run?</legend
-              >
-              <div class="mt-2 grid gap-2">
-                <label
-                  class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
-                  ><input
-                    type="radio"
-                    name={`${radioGroupId}-optimization-timing`}
-                    bind:group={draft.optimizationTiming}
-                    value="document"
-                  /><span
-                    ><strong class="block"
-                      >Before generation · reviewable revision</strong
-                    ><span class="muted mt-1 block text-xs"
-                      >Process the document's existing narration units, create
-                      an editable before-and-after artifact, and review it
-                      before TTS.</span
-                    ></span
-                  ></label
-                ><label
-                  class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
-                  ><input
-                    type="radio"
-                    name={`${radioGroupId}-optimization-timing`}
-                    bind:group={draft.optimizationTiming}
-                    value="generation"
-                    disabled={draft.speechAnnotationMode !== 'off'}
-                  /><span
-                    ><strong class="block"
-                      >During plan preparation · final speech units</strong
-                    ><span class="muted mt-1 block text-xs"
-                      >Optimize the final speech blocks before reviewing
-                      speakers and delivery. Generation uses the accepted
-                      wording.</span
-                    ></span
-                  ></label
+          {#if ['optimize_tts', 'optimize_document'].includes(settingsStage.key)}
+            {#if settingsStage.key === 'optimize_tts'}
+              <fieldset class="rounded-xl border border-[var(--line)] p-4">
+                <legend class="px-1 text-sm font-semibold"
+                  >When should optimization run?</legend
                 >
-              </div>
-            </fieldset>
+                <div class="mt-2 grid gap-2">
+                  <label
+                    class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
+                    ><input
+                      type="radio"
+                      name={`${radioGroupId}-optimization-timing`}
+                      bind:group={draft.optimizationTiming}
+                      value="document"
+                    /><span
+                      ><strong class="block"
+                        >Before generation · reviewable revision</strong
+                      ><span class="muted mt-1 block text-xs"
+                        >Process the document's existing narration units, create
+                        an editable before-and-after artifact, and review it
+                        before TTS.</span
+                      ></span
+                    ></label
+                  ><label
+                    class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
+                    ><input
+                      type="radio"
+                      name={`${radioGroupId}-optimization-timing`}
+                      bind:group={draft.optimizationTiming}
+                      value="generation"
+                      disabled={draft.speechAnnotationMode !== 'off'}
+                    /><span
+                      ><strong class="block"
+                        >During plan preparation · final speech units</strong
+                      ><span class="muted mt-1 block text-xs"
+                        >Optimize the final speech blocks before reviewing
+                        speakers and delivery. Generation uses the accepted
+                        wording.</span
+                      ></span
+                    ></label
+                  >
+                </div>
+              </fieldset>
+            {/if}
             <p class="muted text-xs">
               Speaker identification and delivery directions have separate
               analysis controls in the prepared speech plan. They keep spoken
               words unchanged.
             </p>
-            {#if draft.speechAnnotationMode !== 'off'}<details
+            {#if session.workflow_kind === 'audiobook' || draft.speechAnnotationMode !== 'off'}<details
+                open={session.workflow_kind === 'audiobook'}
                 class="rounded-xl border border-[var(--line)] p-3"
               >
                 <summary class="cursor-pointer text-sm"
-                  >Existing combined text and speaker preparation</summary
+                  >Optional AI dialogue recognition</summary
                 >
                 <p class="muted my-2 text-xs">
-                  This project already has recognition enabled in its text step.
-                  These settings are preserved for compatibility. Use the
-                  separate speech-plan analysis for new speaker passes.
+                  Recognise passages that punctuation rules leave uncertain.
+                  Dialogue-only recognition needs no speaker assignments. Review
+                  the result before generation; delivery directions remain
+                  separate.
                 </p>
                 <fieldset
                   class="speech-controls rounded-xl border border-[var(--line)] p-4 space-y-3"
@@ -2511,37 +2510,42 @@
                       class="input mt-1 w-full"
                       bind:value={draft.speechAnnotationMode}
                       onchange={() => {
-                        if (draft.speechAnnotationMode !== 'off')
+                        if (draft.speechAnnotationMode !== 'off') {
                           draft.optimizationTiming = 'document';
+                          draft.speechAnnotationOnly = true;
+                        }
                       }}
                     >
-                      <option value="off">Preserve supplied markup</option>
+                      <option value="off">Off · preserve supplied markup</option
+                      >
                       <option value="dialogue"
-                        >Recognize dialogue and turn boundaries</option
+                        >Dialogue only · recognise turn boundaries</option
                       >
                       <option value="speakers"
                         >Recognize dialogue and identify characters</option
                       >
                     </select>
                   </label>
-                  <label class="flex items-start gap-2 text-sm"
-                    ><input
-                      type="checkbox"
-                      bind:checked={draft.speechAnnotationOnly}
-                    />Annotate only — keep every spoken word unchanged</label
-                  >
+                  {#if draft.speechAnnotationMode !== 'off'}<label
+                      class="flex items-start gap-2 text-sm"
+                      ><input
+                        type="checkbox"
+                        bind:checked={draft.speechAnnotationOnly}
+                      />Annotate only · keep every spoken word unchanged</label
+                    >{/if}
                   <p class="muted text-xs">
-                    Dialogue annotations preserve integral segments and avoid
-                    treating each dialogue line as a long paragraph pause.
-                    Character proposals use the project dictionary. Review
-                    structure and casting before generation; emotional
-                    directions remain optional.
+                    This pass preserves existing speech blocks. Dialogue turns
+                    use the sentence pause; explicit paragraph and scene breaks
+                    remain longer. Choose character recognition only when you
+                    also want speaker identities.
                   </p>
                 </fieldset>
               </details>{/if}
             <label class="text-sm font-semibold"
               >Speech-planning policy<select
                 bind:value={draft.speechOptimizationMode}
+                disabled={draft.speechAnnotationMode !== 'off' &&
+                  draft.speechAnnotationOnly}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
               >
                 <option value="guarded">Guarded · safest</option>
@@ -2607,11 +2611,30 @@
               </div>
               <p class="muted mt-1 text-xs leading-relaxed">
                 Pack complete sentences up to the selected model’s narration
-                budget, leaving headroom for generation. Paragraph and chapter
-                breaks remain intact. Changes apply when preparing new
-                narration.
+                budget. Oversized sentences split at natural clause boundaries,
+                favouring balanced parts. Chapter and scene breaks remain
+                separate. Changes apply when preparing new narration.
               </p>
             </div>
+            <label
+              class="block rounded-xl border border-[var(--line)] p-4 text-sm"
+            >
+              <span class="font-semibold">Dialogue flow</span>
+              <select
+                bind:value={draft.audiobookDialogueFlow}
+                class="input mt-2 w-full"
+              >
+                <option value="auto">Keep short dialogue turns together</option>
+                <option value="off">Keep every paragraph boundary</option>
+              </select>
+              <span class="muted mt-2 block text-xs leading-relaxed">
+                Recognise English, Polish, French, Dutch, Japanese and German
+                dialogue using the text’s language. Other languages use
+                conservative quotation rules. Clear exchanges use shorter
+                pauses; one-narrator turns can share a block when they fit.
+                Uncertain passages keep their paragraph boundaries.
+              </span>
+            </label>
             <div class="grid gap-3 sm:grid-cols-2">
               <label class="text-sm font-semibold sm:col-span-2"
                 >Segment length policy<select

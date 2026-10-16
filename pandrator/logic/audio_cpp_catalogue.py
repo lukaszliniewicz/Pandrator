@@ -16,6 +16,7 @@ from typing import Any
 
 from .audio_cpp_inventory_data import family_metadata as family_metadata
 from .audio_cpp_inventory_data import inventory as inventory
+from .audio_cpp_segmentation import NATIVE_SPLIT_NOTE, NATIVE_SPLIT_ONLY_FAMILIES
 from .language_capabilities import (
     canonical_language_tag,
     language_matches,
@@ -543,6 +544,8 @@ def package_metadata(model_id: str) -> dict[str, Any]:
         controls.get("notes"),
         result["pandrator_features"].get("capability_notes"),
     )
+    if package["family"] in NATIVE_SPLIT_ONLY_FAMILIES:
+        capability_notes = _capability_notes(capability_notes, [NATIVE_SPLIT_NOTE])
     if package["family"] == "fireredtts3" and "instruct" in model_id.casefold():
         capability_notes = _capability_notes(
             capability_notes,

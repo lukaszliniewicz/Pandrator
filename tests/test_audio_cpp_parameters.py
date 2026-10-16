@@ -39,7 +39,7 @@ class AudioCppParameterTests(unittest.TestCase):
             endpoint,
         )
 
-        self.assertEqual({"temperature": 0.8}, payload["options"])
+        self.assertEqual({"temperature": 0.8, "text_chunk_size": 8192}, payload["options"])
         self.assertNotIn("top_p", payload["options"])
         self.assertNotIn("seed", payload["options"])
         self.assertNotIn("speed", payload)

@@ -17,13 +17,17 @@ from ..context import ManagerContext
 from ..models import ComputeVariant
 from .host import compute_choices, normalized_architecture, resolve_auto_compute
 
-AUDIO_CPP_VERSION = "0.9.1"
+AUDIO_CPP_VERSION = "0.9.2"
 AUDIO_CPP_RELEASE_BASE = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/v{AUDIO_CPP_VERSION}"
 )
 AUDIO_CPP_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 AUDIO_CPP_DEFAULT_MODEL = "qwen3_tts_1_7b_base_q8_0"
 AUDIO_CPP_PORT = 8060
+# Soprano only exposes its splitter size at session creation. Pandrator's
+# narration UI caps authored segments at 8192 characters; allow compiled text
+# and normalization to grow without a second native sentence-splitting pass.
+AUDIO_CPP_SINGLE_SEGMENT_SESSION_CHARACTERS = 65536
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,61 +215,61 @@ SUPPORTED_MODEL_IDS = MANUAL_MODEL_IDS + tuple(
 )
 
 # Public alias matching the naming used by the other native driver.
-# Digests: upstream v0.9.1 release assets, published 2026-10-07. Portable Linux
-# builds avoid requiring the release runner's CPU instruction set. Windows CUDA
+# Digests: upstream v0.9.2 release assets, published 2026-10-15. Portable CPU
+# and Vulkan builds avoid the release runner's CPU instruction set. Windows CUDA
 # stays on the 12.4 binary/runtime pair for driver compatibility.
 ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     ("linux", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.9.1-bin-ubuntu-x64-cpu-portable.tar.gz",
-            "a73fed5d83b9d411b7b2aac1556396b81fcba57efcb4f03bc3d690ab0db8bfef",
+            "audio-v0.9.2-bin-ubuntu-x64-cpu-portable.tar.gz",
+            "72bfb07f46bb8f4cc0217a604619dbb78cfc388dfa4e639feb412ca7e2410980",
             ComputeVariant.CPU,
         ),
     ),
     ("linux", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.9.1-bin-ubuntu-x64-vulkan-portable.tar.gz",
-            "1aae59b03d10c0fa289fe11f4529ef8325bec4dad5c003652b99c23f3d9f5e32",
+            "audio-v0.9.2-bin-ubuntu-x64-vulkan-portable.tar.gz",
+            "37294a0d9d52383475a47df95dc725c83faee0dbfae00088f1509ed4d7f3619d",
             ComputeVariant.VULKAN,
         ),
     ),
     # Best-effort Linux CUDA: upstream publishes only the
-    # cuda12.8-colab-tagged binary for 0.9.1, with no bundled cudart archive
-    # (unlike Windows). It needs a compatible CUDA 12 runtime/driver plus NCCL 2 and has not
+    # cuda12.8-colab-tagged server binary. Its optional cudart archive is not
+    # installed here; it needs a compatible CUDA 12 runtime/driver plus NCCL 2 and has not
     # been tested on local NVIDIA hardware. Staging fails closed when the
     # archive layout differs from the expected archive-root files.
     ("linux", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.9.1-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
-            "de068e8a22eb8f9c229c8ecaf77e12b6340be4d7d91606604fae7ccc48c174b6",
+            "audio-v0.9.2-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
+            "d1ffb5b314bd9905425e9122831fcda015b2e82fb339b1c0812794ba4ebbf3b8",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.9.1-bin-windows-x64-cpu-portable.zip",
-            "2fccc73dc97af84da1e81c3af545fa619348a46d023ea7d927ba80bc8680d2a0",
+            "audio-v0.9.2-bin-windows-x64-cpu-portable.zip",
+            "4bea04239d753d2d0a294580ad4af2a0fa81b0de244a1b9146650c7f9fa4e84d",
             ComputeVariant.CPU,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.9.1-bin-windows-x64-vulkan.zip",
-            "3425c4e60f36c16d50b5418e37b8a5f2811741237a8575ae645c119fbceeadd4",
+            "audio-v0.9.2-bin-windows-x64-vulkan-portable.zip",
+            "4d11a82c560f7a1dc0934e6fef847d6e0b779cf79854aa7d90d8b28e4ad04d93",
             ComputeVariant.VULKAN,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.9.1-bin-windows-x64-cuda12.4.zip",
-            "f32a40f8fb14ac4772c9c25525f97715db228979178e51654da73aa65005c0ef",
+            "audio-v0.9.2-bin-windows-x64-cuda12.4.zip",
+            "099bd43b74a5175fd9e03ac95c9fabe8b97718826d547890a03950483e81b168",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
         AudioCppAsset(
-            "audio-v0.9.1-cudart-windows-x64-cuda12.4.zip",
-            "8bfdce7cb00b5a51560b5ab0d444344d86a2f0d7e2727bb7f18c15ef4734451b",
+            "audio-v0.9.2-cudart-windows-x64-cuda12.4.zip",
+            "50e278d213daa38e782a10b501b764c5c0738381898dacee7243101b890eeb0d",
             ComputeVariant.CUDA,
             kind="cuda_runtime",
         ),
@@ -359,6 +363,11 @@ def server_config(
             entry["load_options"] = dict(package.load_options)
         if package.session_options:
             entry["session_options"] = dict(package.session_options)
+        if package.family == "soprano_tts":
+            entry["session_options"] = {
+                **dict(package.session_options or {}),
+                "text_chunk_size": AUDIO_CPP_SINGLE_SEGMENT_SESSION_CHARACTERS,
+            }
         models.append(entry)
     return {
         "host": "127.0.0.1",

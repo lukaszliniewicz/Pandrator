@@ -353,6 +353,36 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 )
         return segment_ids
 
+    def test_reassembly_changes_internal_pauses_without_changing_raw_takes(self):
+        ids = self._plan_with_takes()
+        hashes = {}
+        with self.database.session() as session:
+            for take in session.scalars(select(AudioTake)):
+                artifact = session.get(Artifact, take.artifact_id)
+                path = self.paths.managed_path(artifact.relative_path)
+                hashes[path] = hashlib.sha256(path.read_bytes()).hexdigest()
+                with wave.open(str(path)) as reader:
+                    frames, rate = reader.getnframes(), reader.getframerate()
+                artifact.metadata_json = {"render_parts": [
+                    {"start_frame": 0, "end_frame": frames // 2, "sample_rate_hz": rate,
+                     "silence_before_ms": 0, "silence_policy": "assembly-v1"},
+                    {"start_frame": frames // 2, "end_frame": frames, "sample_rate_hz": rate,
+                     "silence_before_ms": 100, "silence_policy": "assembly-v1"},
+                ]}
+        for pause in (100, 300):
+            queued = self.generation.create_assembly(self.record.id, run_override={
+                "audio": {"in_segment_voice_change_silence_ms": pause}, "output": {"format": "wav"},
+            })
+            result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+                {"output_assembly_id": queued["id"]}, lambda *_: None, threading.Event(),
+            )
+            artifact, path = ArtifactService(self.database, self.paths).resolve(result["artifact_id"])
+            self.assertEqual(420 + pause * 2, len(AudioSegment.from_file(path)))
+            self.assertEqual(ids, [row["segment_id"] for row in artifact.metadata_json["takes"]])
+            self.assertEqual([pause, pause], [row["internal_silences"][0]["duration_ms"] for row in artifact.metadata_json["takes"]])
+        for path, expected in hashes.items():
+            self.assertEqual(expected, hashlib.sha256(path.read_bytes()).hexdigest())
+
     def test_sequential_manifest_frames_follow_actual_selected_take_order(self):
         segment_ids = self._plan_with_takes(frame_counts=(51, 109))
         queued = self.generation.create_assembly(
@@ -839,6 +869,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self,
     ):
         with self.database.session() as session:
+            session.get(SessionRecord, self.record.id).workflow_kind = "voiceover"
             document = Document(
                 session_id=self.record.id, stage="translation", language="pl"
             )
@@ -906,8 +937,16 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             Sine(440 + index * 110).to_audio_segment(duration=duration).export(
                 path, format="wav"
             ).close()
+            with wave.open(str(path)) as reader:
+                frames, rate = reader.getnframes(), reader.getframerate()
             artifact = artifacts.register(
-                path, kind="audio", role="generation_take", session_id=self.record.id
+                path, kind="audio", role="generation_take", session_id=self.record.id,
+                metadata={"render_parts": [
+                    {"start_frame": 0, "end_frame": frames // 2, "sample_rate_hz": rate,
+                     "silence_before_ms": 0, "silence_policy": "assembly-v1"},
+                    {"start_frame": frames // 2, "end_frame": frames, "sample_rate_hz": rate,
+                     "silence_before_ms": 1000, "silence_policy": "assembly-v1"},
+                ]},
             )
             with self.database.session() as session:
                 segment = session.get(GenerationSegment, segment_id)

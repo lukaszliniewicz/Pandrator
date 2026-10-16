@@ -344,6 +344,23 @@
         "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE",
         "commercial_use": "conditional"
       }
+    },
+    "voxtral_tts": {
+      "license": {
+        "name": "CC-BY-NC-4.0",
+        "url": "https://huggingface.co/mistralai/Voxtral-4B-TTS-2603",
+        "commercial_use": "noncommercial"
+      },
+      "voice_mode": "prebuilt",
+      "reference_audio": "not_used",
+      "reference_text": "not_used",
+      "language_note": "Nine advertised languages and twenty embedded voices. Choose a language-appropriate preset; the runtime does not use a language override. Reference-audio cloning and delivery instructions are unavailable.",
+      "upstream_features": {
+        "voice_cloning": false,
+        "voice_design": false,
+        "instructions": false,
+        "streaming": true
+      }
     }
   },
   "models": {
@@ -535,6 +552,32 @@
           "zh dialects"
         ],
         "note": "The pinned family declaration also names Chinese dialects without individual locale identifiers; these are retained as unmapped evidence, not synthesized as tags."
+      },
+      "voxtral_tts": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en",
+          "fr",
+          "es",
+          "de",
+          "it",
+          "pt",
+          "nl",
+          "ar",
+          "hi"
+        ],
+        "native_language_codes": [
+          "en",
+          "fr",
+          "es",
+          "de",
+          "it",
+          "pt",
+          "nl",
+          "ar",
+          "hi"
+        ]
       }
     },
     "models": {
@@ -1055,6 +1098,26 @@
       "voicetut_tts_f16": {
         "source_key": "voicetut_tts_languages",
         "note": "Egyptian Arabic fine-tune; native language code arz, including for Arabic/English code-switching."
+      },
+      "pocket_tts_french_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "fr"
+        ],
+        "native_language_codes": [
+          "fr"
+        ]
+      },
+      "pocket_tts_french_bf16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "fr"
+        ],
+        "native_language_codes": [
+          "fr"
+        ]
       }
     },
     "verified_on": "2026-10-02"

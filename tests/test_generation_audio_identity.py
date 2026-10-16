@@ -42,6 +42,31 @@ class GenerationAudioIdentityTests(unittest.TestCase):
         }})
         self.assertEqual(original, changed)
 
+    def test_cast_pause_changes_preserve_raw_identity_and_new_policy_marker(self):
+        from pandrator.web.generation_audio_identity import _hash, _material_settings
+        from pandrator.web.generation_controls import save_generation_controls
+
+        session_id, _, segment_ids = self._create_case([{"text": "First quiet line."}])
+        with self.database.session() as session:
+            save_generation_controls(session, session_id, expected_revision=0,
+                                     characters=[], cast={"narrator": {"voice": "Kore"}})
+        identities = []
+        for pause in (100, 300):
+            snapshot = self._resolved(session_id, {
+                "tts": {"service": "gemini", "model": "gemini-2.5-flash-tts",
+                        "voice": "Kore", "casting_enabled": True},
+                "audio": {"in_segment_voice_change_silence_ms": pause,
+                          "voice_change_silence_ms": pause, "paragraph_silence_ms": pause},
+            })
+            with self.database.session() as session:
+                identities.append(AudioIdentityContext(session, snapshot).for_segment(session.get(GenerationSegment, segment_ids[0])))
+        self.assertEqual(identities[0], identities[1])
+        self.assertIn("performance_request_hash", identities[0])
+        # Legacy cast hashes were lists with optional baked silence values.
+        self.assertNotEqual(_hash([]), identities[0]["performance_request_hash"])
+        self.assertEqual(_material_settings({"tts": {"service": "Silero"}, "audio": {"in_segment_voice_change_silence_ms": 100}}),
+                         _material_settings({"tts": {"service": "Silero"}, "audio": {"in_segment_voice_change_silence_ms": 300}}))
+
     def test_transient_identity_copy_policy_preserves_frozen_and_unfrozen_identity_bytes(self):
         from copy import deepcopy
 

@@ -37,6 +37,7 @@ covers assistant connections, access permissions, and workflow operations.
 - [Subtitle-to-speech pipeline and parameters](reference/subtitle-pipeline.md)
 - [Speech directions, dialogue, and character voices](reference/generation-controls.md)
 - [Model identities and speech controls](reference/model-capabilities.md)
+- [Narration lengths and native splitting](reference/narration-segmentation.md)
 - [Provider model lifecycle and migrations](reference/provider-lifecycle.md)
 - [Sounds, music, project placement, and mixing](reference/sounds-and-mixing.md)
 - [Choosing a sound or music model](reference/sound-and-music-models.md)

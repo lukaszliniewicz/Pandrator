@@ -348,11 +348,13 @@ NeMo normalization is skipped rather than guessed as English.
 
 Model-aware targets are application policies with headroom, not claims of an
 acoustic optimum. Qwen and VoxCPM2 target 1,800 characters; OpenAI and native
-Azure Speech target 3,600; Gemini 1,800; Kokoro 216; Fish S2 180; XTTS 200;
+Azure Speech and Gemini target 3,600; Kokoro 216; Fish S2 270; XTTS 200;
 unknown providers 300. Qwen uses 450 for Chinese, Japanese, and Korean, and
 scales down for explicitly lower output-token limits. Short paragraphs remain
 short. Prepared artifacts record the resolved budget and observed lengths.
 Changes affect new preparation only; annotated XML is never silently repacked.
+The [narration length reference](narration-segmentation.md) lists audio.cpp
+family defaults, language exceptions, word/token budgets, and the UI controls.
 
 Timed subtitle/voiceover generation uses separate speech-block limits; these
 do not reduce audiobook narration to 220-character blocks. Assembly pause

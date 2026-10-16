@@ -57,6 +57,7 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
             "artifact_id": t.get("artifact_id"),
             "created_at": t.get("created_at"),
             **({"rendered_voices": t["rendered_voices"]} if "rendered_voices" in t else {}),
+            **({"assembly_silences": t["assembly_silences"]} if "assembly_silences" in t else {}),
         }
         for t in takes
         if isinstance(t, dict)
@@ -71,6 +72,8 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
         "speaker": segment.get("speaker"),
         "node_kind": segment.get("node_kind"),
         "silence_after_ms": segment.get("silence_after_ms"),
+        **({"assembly_silence_after_ms": segment["assembly_silence_after_ms"]}
+           if "assembly_silence_after_ms" in segment else {}),
         "paragraph_break_after": segment.get("paragraph_break_after"),
         "source_segment_ids": segment.get("source_segment_ids") or [],
         "alignment_group": segment.get("alignment_group"),

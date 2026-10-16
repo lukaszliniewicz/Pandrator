@@ -621,8 +621,6 @@ def execute_render_parts(
         if duration_ms <= 0:
             raise RuntimeError(f"Speech part {index} produced no audio.")
         silence_before_ms = max(0, int(part.get("silence_before_ms") or 0)) if index else 0
-        if combined is not None and silence_before_ms:
-            combined += AudioSegment.silent(duration=silence_before_ms, frame_rate=combined.frame_rate)
         target_rate = max(combined.frame_rate, audio.frame_rate) if combined is not None else audio.frame_rate
         start_frame = int(combined.frame_count()) if combined is not None else 0
         if combined is not None and combined.frame_rate != target_rate:
@@ -649,6 +647,7 @@ def execute_render_parts(
                 **({"speaker_labels": list(part["speaker_labels"])} if part.get("speaker_labels") else {}),
                 "duration_ms": duration_ms,
                 "silence_before_ms": silence_before_ms,
+                "silence_policy": "assembly-v1",
                 "start_frame": start_frame,
                 "end_frame": int(combined.frame_count()),
                 "sample_rate_hz": combined.frame_rate,

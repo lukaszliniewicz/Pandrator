@@ -10,6 +10,7 @@ from pandrator.logic.text_preprocessor import (
     find_best_split_index,
     preprocess_text,
     split_into_sentences,
+    split_long_sentences_2,
 )
 
 
@@ -463,6 +464,242 @@ class ParallelPreprocessorContractTests(unittest.TestCase):
                 _parallel_preprocess_text("fixture", {})
         self.assertIs(error, raised.exception)
         executor.__exit__.assert_called_once()
+
+
+class AudiobookSegmentationTests(unittest.TestCase):
+    @staticmethod
+    def row(text, paragraph="no", **extra):
+        row = {
+            "original_sentence": text,
+            "paragraph": paragraph,
+            "chapter": "no",
+            "split_part": None,
+            "sentence_continues_after": False,
+        }
+        row.update(extra)
+        return row
+
+    def test_greedy_packing_accepts_exact_limit_and_starts_overflow_next(self):
+        rows = [
+            self.row("One."),
+            self.row("Two."),
+            self.row("Three."),
+            self.row("Four.", paragraph="yes"),
+        ]
+
+        packed = append_short_sentences(
+            rows, 16, audiobook_preparation=True
+        )
+
+        self.assertEqual(
+            [row["original_sentence"] for row in packed],
+            ["One. Two. Three.", "Four."],
+        )
+        self.assertEqual([row["paragraph"] for row in packed], ["no", "yes"])
+
+        exact = append_short_sentences(
+            [self.row("One."), self.row("Four.", paragraph="yes")],
+            10,
+            audiobook_preparation=True,
+        )
+        self.assertEqual([row["original_sentence"] for row in exact], ["One. Four."])
+
+    def test_packing_respects_word_and_tokenizer_byte_budgets(self):
+        rows = [
+            self.row("Élan starts."),
+            self.row("A second sentence.", paragraph="yes"),
+        ]
+
+        by_words = append_short_sentences(
+            rows,
+            200,
+            max_segment_words=3,
+            audiobook_preparation=True,
+        )
+        self.assertEqual(len(by_words), 2)
+        self.assertTrue(
+            all(len(row["original_sentence"].split()) <= 3 for row in by_words)
+        )
+
+        by_bytes = append_short_sentences(
+            rows,
+            200,
+            max_segment_tokenizer_bytes=24,
+            audiobook_preparation=True,
+        )
+        self.assertEqual(len(by_bytes), 2)
+
+        from pandrator.logic.text_preprocessor import (
+            _limit_segment_tokenizer_bytes,
+            _limit_segment_words,
+        )
+
+        source = self.row(
+            "Élan carried several important letters through the old city.",
+            paragraph="yes",
+        )
+        word_parts = _limit_segment_words(
+            source, 4, "en", audiobook_preparation=True
+        )
+        byte_parts = _limit_segment_tokenizer_bytes(
+            source, 24, "en", audiobook_preparation=True
+        )
+        self.assertTrue(
+            all(len(part["original_sentence"].split()) <= 4 for part in word_parts)
+        )
+        self.assertTrue(
+            all(
+                sum(
+                    3 if character == " " else len(character.encode("utf-8"))
+                    for character in part["original_sentence"]
+                )
+                <= 24
+                for part in byte_parts
+            )
+        )
+        self.assertEqual(
+            " ".join(part["original_sentence"] for part in word_parts),
+            "Élan carried several important letters through the old city.",
+        )
+
+    def test_dialogue_merge_requires_opt_in_metadata_and_all_budgets(self):
+        dialogue_metadata = {"source": "punctuation", "paragraph_count": 1}
+        rows = [
+            self.row(
+                "The first speaker gives a long answer.",
+                paragraph="yes",
+                dialogue_flow=dialogue_metadata.copy(),
+                speech_boundary_after="dialogue_turn",
+            ),
+            self.row(
+                "The second speaker gives another answer.",
+                paragraph="yes",
+                dialogue_flow=dialogue_metadata.copy(),
+                speech_boundary_after="paragraph",
+            ),
+        ]
+
+        kept = append_short_sentences(
+            rows, 200, dialogue_merge_allowed=False, audiobook_preparation=True
+        )
+        self.assertEqual(len(kept), 2)
+
+        merged = append_short_sentences(
+            rows,
+            200,
+            dialogue_merge_allowed=True,
+            audiobook_preparation=True,
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertIn("\n\n", merged[0]["original_sentence"])
+        self.assertEqual(merged[0]["dialogue_flow"]["paragraph_count"], 2)
+        self.assertEqual(merged[0]["speech_boundary_after"], "paragraph")
+        self.assertEqual(merged[0]["paragraph"], "yes")
+
+        too_many_words = append_short_sentences(
+            rows,
+            200,
+            max_segment_words=10,
+            dialogue_merge_allowed=True,
+            audiobook_preparation=True,
+        )
+        self.assertEqual(len(too_many_words), 2)
+
+    def test_audiobook_split_prefers_clause_punctuation_and_balanced_whitespace(self):
+        sentence = "a" * 49 + ";" + "b" * 49
+        split_index = find_best_split_index(
+            sentence, "en", 80, audiobook_preparation=True
+        )
+        self.assertEqual(split_index, 50)
+
+        punctuation_before_nearby_space = "a" * 68 + "; " + "b" * 50
+        self.assertEqual(
+            find_best_split_index(
+                punctuation_before_nearby_space,
+                "en",
+                80,
+                audiobook_preparation=True,
+            ),
+            69,
+        )
+
+        whitespace_only = "alpha " * 14 + "omega"
+        parts = split_long_sentences_2(
+            self.row(whitespace_only, paragraph="yes"),
+            40,
+            "en",
+            audiobook_preparation=True,
+        )
+        self.assertTrue(all(len(part["original_sentence"]) <= 40 for part in parts))
+        self.assertTrue(all(len(part["original_sentence"]) >= 20 for part in parts))
+
+    def test_oversized_sentence_splits_losslessly_and_terminal_flags_stay_final(self):
+        sentence = (
+            "The first clause is long enough to speak clearly, and the second clause "
+            "continues the idea; the final clause closes it with care."
+        )
+        source = self.row(
+            sentence,
+            paragraph="yes",
+            dialogue_flow={"source": "punctuation", "paragraph_count": 1},
+            speech_boundary_after="paragraph",
+        )
+
+        parts = split_long_sentences_2(
+            source, 48, "en", audiobook_preparation=True
+        )
+
+        self.assertGreater(len(parts), 2)
+        self.assertTrue(all(0 < len(part["original_sentence"]) <= 48 for part in parts))
+        self.assertEqual(
+            " ".join(part["original_sentence"] for part in parts),
+            " ".join(sentence.split()),
+        )
+        self.assertTrue(all(part["paragraph"] == "no" for part in parts[:-1]))
+        self.assertTrue(all(part["sentence_continues_after"] for part in parts[:-1]))
+        self.assertTrue(all("speech_boundary_after" not in part for part in parts[:-1]))
+        self.assertTrue(all("dialogue_flow" not in part for part in parts[:-1]))
+        self.assertEqual(parts[-1]["paragraph"], "yes")
+        self.assertEqual(parts[-1]["speech_boundary_after"], "paragraph")
+        self.assertEqual(parts[-1]["dialogue_flow"]["paragraph_count"], 1)
+
+    def test_hard_character_fallback_is_limited_to_single_long_tokens(self):
+        one_token = split_long_sentences_2(
+            self.row("unbreakabletoken"),
+            5,
+            "en",
+            audiobook_preparation=True,
+        )
+        self.assertEqual(
+            [part["original_sentence"] for part in one_token],
+            ["unbre", "akabl", "etoke", "n"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "safe whitespace boundary"):
+            split_long_sentences_2(
+                self.row("unbreakabletoken followed by words"),
+                5,
+                "en",
+                audiobook_preparation=True,
+            )
+        with self.assertRaisesRegex(ValueError, "CJK narration exceeds"):
+            split_long_sentences_2(
+                self.row("これは句読点のない文章です"),
+                5,
+                "ja",
+                audiobook_preparation=True,
+            )
+
+    def test_numeric_commas_are_not_clause_boundaries_and_quotes_stay_with_punctuation(self):
+        from pandrator.logic.text_preprocessor import (
+            _extend_split_index_past_closing_punctuation,
+            _is_numeric_comma_boundary,
+        )
+
+        self.assertTrue(_is_numeric_comma_boundary("1,234", 2, "comma"))
+        self.assertEqual(
+            _extend_split_index_past_closing_punctuation('“Stop!” next', 6), 7
+        )
 
 if __name__ == "__main__":
     unittest.main()

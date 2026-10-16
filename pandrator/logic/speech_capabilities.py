@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-CAPABILITY_VERSION = "2026-10-10.2"
+CAPABILITY_VERSION = "2026-10-16.1"
 
 _FISH_EVENTS = {
     "pause": "pause",
@@ -328,6 +328,12 @@ def capabilities_for_model(
         )
         profile["notes"].append(
             "Only route-verified legacy vocal tags are compiled; other events remain saved."
+        )
+    elif audio_cpp and family == "voxtral_tts":
+        profile["status"] = "documented"
+        profile["notes"].append(
+            "Voxtral uses its embedded preset voices; cloning, voice design, "
+            "delivery instructions and speed controls are unavailable in this runtime."
         )
     elif (
         audio_cpp

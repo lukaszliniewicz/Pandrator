@@ -972,7 +972,7 @@ class BackendArchitectureTests(unittest.TestCase):
             catalogue = registry.enrich_catalog(service)
 
         self.assertEqual(
-            300,
+            1800,
             catalogue["model_catalog"][0]["recommended_chunk_characters"],
         )
 
@@ -984,7 +984,7 @@ class BackendArchitectureTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(300, catalogue[0]["recommended_chunk_characters"])
+        self.assertEqual(1800, catalogue[0]["recommended_chunk_characters"])
 
 
 if __name__ == "__main__":

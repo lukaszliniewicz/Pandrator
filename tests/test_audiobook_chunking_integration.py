@@ -7,6 +7,7 @@ from unittest import mock
 
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
+from pandrator.web.global_settings import GlobalSettingsService
 from pandrator.web.jobs import JobQueue
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -216,6 +217,73 @@ class AudiobookChunkingIntegrationTests(unittest.TestCase):
             [row["speech_boundary_after"] for row in rows],
         )
         self.assertEqual([True, False], [row["paragraph_break_after"] for row in rows])
+
+    def test_dialogue_flow_default_off_switch_and_casting_are_applied(self):
+        source = self._register_clean_text(
+            '"Where are you going?"\n\n"To the old house, before sunset."',
+            filename="short-exchange.txt",
+        )
+        base = {
+            "enable_nemo_normalization": False,
+            "remove_quotation_marks": False,
+            "remove_diacritics": False,
+            "normalize_all_caps": False,
+            "_audiobook_tts_settings": self._qwen_settings(language="en"),
+        }
+        _result, _artifact, grouped = self._prepare(source, base)
+        self.assertEqual(1, len(grouped))
+        self.assertEqual(2, grouped[0]["dialogue_flow"]["paragraph_count"])
+        self.assertEqual("paragraph", grouped[0]["speech_boundary_after"])
+        self.assertIn('\n\n', grouped[0]["original_sentence"])
+
+        _result, _artifact, disabled = self._prepare(
+            source, {**base, "audiobook_dialogue_flow": "off"}
+        )
+        self.assertEqual(2, len(disabled))
+        self.assertTrue(all("dialogue_flow" not in row for row in disabled))
+
+        _result, _artifact, cast = self._prepare(
+            source,
+            {
+                **base,
+                "_audiobook_tts_settings": {
+                    **base["_audiobook_tts_settings"],
+                    "casting_enabled": True,
+                },
+            },
+        )
+        self.assertEqual(2, len(cast))
+        self.assertEqual("dialogue_turn", cast[0]["speech_boundary_after"])
+        self.assertEqual("paragraph", cast[1]["speech_boundary_after"])
+
+    def test_voiceover_never_opts_into_audiobook_preprocessing(self):
+        self.session = self.sessions.create(
+            "Timed workflow guard", workflow_kind="voiceover", source_language="en"
+        )
+        self.session_dir = self.paths.sessions / self.session.storage_key
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        source = self._register_clean_text('"First turn."\n\n"Second turn."')
+        with mock.patch(
+            "pandrator.logic.text_preprocessor.preprocess_text",
+            return_value=[{"original_sentence": "Voiceover fixture."}],
+        ) as preprocess:
+            self._prepare(source, {"enable_nemo_normalization": False})
+        self.assertIs(False, preprocess.call_args.args[1]["audiobook_preparation"])
+
+    def test_saved_dialogue_flow_rejects_unknown_modes(self):
+        workspace = WorkspaceSettingsService(self.database)
+        defaults = GlobalSettingsService(self.database, self.paths)
+        for mode in ("english", True, None):
+            with self.subTest(mode=mode), self.assertRaisesRegex(
+                ValueError, "audiobook_dialogue_flow must be auto or off"
+            ):
+                workspace.update(
+                    self.session.id, "text", 0, {"audiobook_dialogue_flow": mode}
+                )
+            with self.subTest(global_mode=mode), self.assertRaisesRegex(
+                ValueError, "audiobook_dialogue_flow must be auto or off"
+            ):
+                defaults.replace("defaults.text", {"audiobook_dialogue_flow": mode}, "*")
 
 
 if __name__ == "__main__":

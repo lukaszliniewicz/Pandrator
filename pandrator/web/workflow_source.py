@@ -587,10 +587,17 @@ def prepare_text(
                 # Segmentation is intentionally provider-independent.  This
                 # selects the shared multilingual sentence tokenizer only.
                 "tts_service": "XTTS",
+                "audiobook_preparation": record.workflow_kind == "audiobook",
+                "audiobook_dialogue_flow": settings.get(
+                    "audiobook_dialogue_flow", text_defaults["audiobook_dialogue_flow"]
+                ),
+                "audiobook_dialogue_merge_allowed": not bool((captured_tts or {}).get("casting_enabled")),
                 # XTTS remains the tokenizer choice for language-aware
                 # splitting; the captured provider budget controls only
                 # the target length.
                 "max_sentence_length": budget["target_chars"],
+                "max_segment_words": budget.get("target_words"),
+                "max_segment_tokenizer_bytes": budget.get("target_tokenizer_bytes"),
                 "enable_sentence_splitting": bool(
                     settings.get(
                         "enable_sentence_splitting",

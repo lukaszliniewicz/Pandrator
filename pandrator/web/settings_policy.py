@@ -44,6 +44,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "enable_sentence_splitting": True,
         "max_sentence_length": 200,
         "audiobook_chunking": "model",
+        "audiobook_dialogue_flow": "auto",
         "enable_sentence_appending": True,
         "remove_diacritics": False,
         "remove_quotation_marks": False,
@@ -864,6 +865,11 @@ def validate_output_settings(value: dict[str, Any]) -> None:
     from pandrator.logic.book_settings import validate_book_settings
 
     validate_book_settings(value)
+
+
+def validate_dialogue_flow_setting(value: dict[str, Any]) -> None:
+    if "audiobook_dialogue_flow" in value and value["audiobook_dialogue_flow"] not in ("auto", "off"):
+        raise ValueError("audiobook_dialogue_flow must be auto or off.")
 
 
 def validate_audio_pause_settings(value: dict[str, Any]) -> None:
