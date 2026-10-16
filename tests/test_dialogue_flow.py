@@ -56,6 +56,9 @@ class DialogueFlowScannerTests(unittest.TestCase):
             ["“Inhale slowly into the abdomen.”", "“Exhale while relaxing the shoulders.”"],
             ["‘Wisdom begins with careful thought.’", "‘Patience makes difficult work possible.’"],
             ["“Sometimes fortune favours a traveller.”", "“At other times the road is hard.”"],
+            ["“Our theory explains these observations.”", "“We must examine the next premise.”"],
+            ["“I prefer quiet evenings.”", "“I enjoy outdoor activities.”"],
+            ["“I will wait here.”", "“We can wait together.”"],
         ):
             with self.subTest(paragraphs=paragraphs):
                 self.assertEqual(classify_dialogue_paragraphs(paragraphs, "en"), [None, None])
@@ -66,12 +69,23 @@ class DialogueFlowScannerTests(unittest.TestCase):
             ["“The train is late,” said Ada.", "“Again.”"],
             ["  “The train is late,” said Ada.  ", "“Again.”"],
             ["“The train is late.”", "“Yes, unfortunately.”"],
-            ["“I will wait here.”", "“We can wait together.”"],
+            ["“I will wait here.”", "“I will bring your coat.”"],
         ):
             with self.subTest(paragraphs=paragraphs):
                 result = classify_dialogue_paragraphs(paragraphs, "en")
                 self.assertEqual(result[0]["speech_boundary_after"], "dialogue_turn")
                 self.assertEqual(result[1]["speech_boundary_after"], "paragraph")
+
+    def test_polish_lowercase_and_numeric_dash_lists_keep_paragraph_pauses(self):
+        for paragraphs in (
+            ["— na śniadanie podawano chleb i mleko;", "— na obiad podawano zupę;"],
+            ["– pierwszy składnik", "– drugi składnik"],
+            ["— 100 gramów mąki", "— 200 gramów cukru"],
+        ):
+            with self.subTest(paragraphs=paragraphs):
+                self.assertEqual(classify_dialogue_paragraphs(paragraphs, "pl"), [None, None])
+        result = classify_dialogue_paragraphs(["— Ładna pogoda.", "— „Zgadzam się”."], "pl")
+        self.assertEqual(result[0]["speech_boundary_after"], "dialogue_turn")
 
     def test_english_paragraphs_may_contain_multiple_quoted_spans(self):
         paragraphs = [
@@ -319,7 +333,7 @@ class DialogueFlowPreprocessorTests(unittest.TestCase):
 
     def test_three_quoted_paragraphs_merge_when_voice_and_budgets_allow(self):
         text = (
-            "“I have considered every detail and reached my decision.”\n\n"
+            "“I have considered your proposal and reached my decision.”\n\n"
             "“Then we should begin the work before the evening ends.”\n\n"
             "“Agreed, I will gather the papers and meet you shortly.”"
         )
@@ -361,7 +375,7 @@ class DialogueFlowPreprocessorTests(unittest.TestCase):
         self.assertLessEqual(len(result[0]["original_sentence"]), 32)
 
     def test_auto_dialogue_uses_sequential_path_across_would_be_chunk_boundary(self):
-        first = "“I have checked every record and made my final decision.”"
+        first = "“I have checked your records and made my final decision.”"
         second = "“Then let us begin before the evening ends.”"
         text = f"{first}\n\n{second}"
         small_chunk_size = max(len(first), len(second)) + 1
@@ -422,7 +436,7 @@ class DialogueFlowPreprocessorTests(unittest.TestCase):
 
     def test_voice_separation_and_budget_overflow_keep_turns_separate(self):
         text = (
-            "“I have considered every detail and reached my decision.”\n\n"
+            "“I have considered your proposal and reached my decision.”\n\n"
             "“Then we should begin the work before the evening ends.”"
         )
         separated = self.prepare(text, audiobook_dialogue_merge_allowed=False)
@@ -436,7 +450,7 @@ class DialogueFlowPreprocessorTests(unittest.TestCase):
 
     def test_quote_removal_happens_after_dialogue_detection(self):
         text = (
-            "“I have considered every detail and reached my decision.”\n\n"
+            "“I have considered your proposal and reached my decision.”\n\n"
             "“Then we should begin the work before the evening ends.”"
         )
 

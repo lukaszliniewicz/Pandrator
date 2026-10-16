@@ -25,12 +25,16 @@ locally. Changing an output-token limit is not the same as changing a text limit
 In **Segment narration → Settings**, **Dialogue flow** defaults to keeping short
 dialogue turns together. English, Polish, French, Dutch, Japanese and German have
 their own quotation and reporting-tag rules; Polish and French also recognise
-conventional dash-led exchanges. French accepts unspaced em dashes and a
+conventional dash-led exchanges. Polish dash turns require an initial capital or
+quotation mark; lowercase and numeric dash lists retain paragraph pauses. French
+accepts unspaced em dashes and a
 guillemet that opens a short, explicitly closed exchange across paragraphs.
 English quotation runs also need evidence of an exchange: a question, a speaker
-tag, an explicit reply, or conversational wording across multiple paragraphs.
-Quoted instructions and collections of maxims keep their paragraph pauses when
-that evidence is absent. Ambiguous passages can still need review or AI annotation.
+tag, an explicit reply, or personal wording with direct address across multiple
+paragraphs. First-person statements alone do not establish a conversation.
+Quoted instructions, survey answers and collections of maxims keep their paragraph
+pauses when that evidence is absent. Ambiguous passages can still need review or
+AI annotation.
 Other languages use conservative, balanced
 quotation rules. Unknown passages retain their paragraph boundaries. This pass
 uses local punctuation rules and makes no LLM requests or speaker assignments.

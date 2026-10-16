@@ -360,8 +360,8 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
     },
     "audio": {
         "audio_verification_mode": "Selects whether generated speech takes receive the optional raw-signal screen; off disables checks and signal records RMS, clipping, DC offset, tails, and duration anomalies.",
-        "sentence_silence_ms": "Adds this many milliseconds between generated sentence audio parts during local assembly; it controls audiobook and voiceover pacing rather than subtitle timing.",
-        "paragraph_silence_ms": "Adds this many milliseconds between generated paragraph audio parts during local assembly; it controls long-form narration pacing.",
+        "sentence_silence_ms": "Adds this many milliseconds at audiobook sentence boundaries during local assembly and playlist playback. Generated takes stay unpadded; fixed voiceover cue timings remain independent.",
+        "paragraph_silence_ms": "Adds this many milliseconds at audiobook paragraph boundaries during local assembly and playlist playback, replacing the sentence pause. Generated takes stay unpadded; fixed voiceover cue timings remain independent.",
         "clause_silence_ms": "Pause at a clause boundary inside a sentence. Use a shorter pause than the regular segment pause. Applies to audiobook narration; fixed subtitle timings take priority.",
         "in_segment_voice_change_silence_ms": "Adds a short pause when the voice changes inside one segment, such as quoted dialogue followed by the narrator's 'X said'. Try 50–100 ms; zero disables it. Natural silence already in the audio remains. New runs use this value; saved takes and resumed runs keep their original pacing. Fixed subtitle timings receive no added pause.",
         "voice_change_silence_ms": "Minimum inserted pause when the resolved voice changes between segments. The longer sentence, paragraph or clause pause wins; a manually edited segment pause takes priority. Zero disables this minimum. Pauses inside a segment have their own setting. Fixed subtitle timings take priority.",

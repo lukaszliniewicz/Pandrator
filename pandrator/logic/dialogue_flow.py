@@ -89,6 +89,7 @@ _MAX_FRENCH_OPENING_DASH_REPLIES = 64
 _SPEAKER_WORD = r"[\p{L}\p{M}][\p{L}\p{M}'’\-]*"
 _CAPITALIZED_NAME = r"\p{Lu}[\p{L}\p{M}\-]*"
 _ENGLISH_PERSON = re.compile(r"\b(?:i|we|us|our|ours|you|your|yours|me|my|mine)\b", re.I)
+_ENGLISH_ADDRESSEE = re.compile(r"\b(?:you|your|yours)\b", re.I)
 _ENGLISH_REPLY = re.compile(
     r'''^[“‘"']\s*(?:yes|no|hello|hi|thanks|thank you|sorry|okay|ok|agreed|certainly|indeed|well)\s*[,!?.…“”‘’"']''',
     re.I,
@@ -263,7 +264,15 @@ def _is_dash_dialogue_candidate(paragraph: str, language: str) -> bool:
         and (stripped[1].isalpha() or stripped[1] in {"«", "“", '"'})
     ):
         return True
-    return bool(re.match(r"^\s*[—–]\s+\S", paragraph))
+    spaced = re.match(r"^\s*[—–]\s+(\S)", paragraph)
+    if spaced is None:
+        return False
+    if language == "pl":
+        # Polish turns normally start with a capital or a quotation. Lowercase
+        # and numeric dash items are common prose lists, including meal plans.
+        first = spaced.group(1)
+        return first.isupper() or first in {opening for opening, _ in _QUOTE_PAIRS["pl"]}
+    return True
 
 
 def _english_exchange_evidence(paragraphs: Sequence[str]) -> bool:
@@ -272,7 +281,12 @@ def _english_exchange_evidence(paragraphs: Sequence[str]) -> bool:
         return True
     if any(_ENGLISH_REPLY.search(paragraph.strip()) for paragraph in paragraphs):
         return True
-    if sum(bool(_ENGLISH_PERSON.search(paragraph)) for paragraph in paragraphs) >= 2:
+    # First-person survey answers and academic quotations are often adjacent
+    # without forming a conversation. Require direct address as well.
+    if (
+        sum(bool(_ENGLISH_PERSON.search(paragraph)) for paragraph in paragraphs) >= 2
+        and any(_ENGLISH_ADDRESSEE.search(paragraph) for paragraph in paragraphs)
+    ):
         return True
     # Candidate validation has already restricted outside text to speaker
     # attributions. Look for one without matching reporting verbs inside quotes.
