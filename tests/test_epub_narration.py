@@ -20,7 +20,10 @@ from pandrator.logic.source_cleaning.deterministic.parser import (
     unpack_epub_structure,
 )
 from pandrator.logic.source_cleaning.epub_adapter import build_source_document
-from pandrator.logic.source_cleaning.epub_narration import prepare_narration_html
+from pandrator.logic.source_cleaning.epub_narration import (
+    _meaningful,
+    prepare_narration_html,
+)
 
 
 def blocks(markup, *, tables="headers", images="descriptions", language="en"):
@@ -209,6 +212,30 @@ def test_image_modes_caption_deduplication_and_distinct_descriptions():
 ])
 def test_generic_or_filename_alternatives_are_silent(alternative):
     assert lines(f'<img alt="{alternative}"/><p>Ordinary picture prose.</p>') == ["Ordinary picture prose."]
+
+
+@pytest.mark.parametrize("alternative", [
+    "Images", "IMAGES", "title", "halftitle", "half title", "half-title", "title page",
+    "Book Title Page", "Table 3.3", "Table 3", "images 3.3", "figures 12",
+    "photos", "illustrations IV", "Figure 3.3", "Image IV",
+])
+def test_english_image_placeholder_labels_are_silent_in_helper_and_narration(alternative):
+    assert not _meaningful(alternative)
+    prepared = prepare_narration_html(
+        f'<img alt="{alternative}"/><p>Original prose.</p>',
+        table_mode="headers", image_mode="descriptions", language="en",
+    )
+    assert "<img" not in prepared
+    assert lines(prepared) == ["Original prose."]
+
+
+@pytest.mark.parametrize("description", [
+    "The title is shown above", "Images of the harbour at sunset", "Table Mountain at dawn",
+])
+def test_meaningful_prose_with_generic_image_words_survives(description):
+    assert _meaningful(description)
+    assert lines(f'<img alt="{description}"/>') == [f"Image: {description}"]
+    assert lines(f'<figure><img alt="image"/><figcaption>{description}</figcaption></figure>') == [description]
 
 
 def test_image_decorations_aria_and_dropcaps_preserve_prose_letters():

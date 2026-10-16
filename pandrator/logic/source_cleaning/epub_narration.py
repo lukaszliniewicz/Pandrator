@@ -31,12 +31,14 @@ _RELEVANT = re.compile(
 )
 _CAPTION_CLASS = re.compile(r"^(?:figcaption|caption\d*|image-caption|figure-caption)$", re.I)
 _GENERIC = re.compile(
-    r"^(?:image|cover|illustration|figure|fig|photo|photograph|picture|img|text|"
+    r"^(?:(?:images?|cover|illustrations?|figures?|fig|photos?|photograph|picture|img|text|"
     r"ilustracja|ilustracje|obraz|obrazek|zdjęcie|okładka|rysunek|"
     r"abbildung|bild|foto|fotografie|umschlag|"
     r"afbeelding|omslag|illustratie|"
     r"couverture|photographie|図|画像|表紙|挿絵)"
-    r"(?:\s*[.\-:#]?\s*(?:\d+|[ivxlcdm]+))?$",
+    r"(?:\s*[.\-:#]?\s*(?:\d+(?:\.\d+)*|[ivxlcdm]+))?"
+    r"|title|half[ -]?title|(?:book\s+)?title\s+page"
+    r"|table\s+\d+(?:\.\d+)*)$",
     re.I,
 )
 _FILE_LABEL = re.compile(

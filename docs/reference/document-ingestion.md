@@ -243,7 +243,8 @@ is guessed from appearance alone.
 **Illustrations** defaults to **Read captions and descriptions**
 (`epub_image_mode="descriptions"`). Meaningful supplied image alternatives and
 captions enter the narration in source order. Decorative images, filename or URL
-alternatives, generic placeholders, and matching alt/caption duplicates are
+alternatives, generic placeholders (including bare image numbers and title-page
+labels), and matching alt/caption duplicates are
 excluded. Distinct descriptions and captions remain. Inline image drop capitals
 retain their letter. **Read captions only** (`captions`) omits image alternatives;
 **Skip illustrations** (`skip`) retains the earlier omission policy. Pandrator
