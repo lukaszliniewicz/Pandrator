@@ -1716,6 +1716,8 @@ class SourceCleaningDispatchRunCreateRequest(StrictModel):
     pdf_ocr_dpi: int | None = Field(default=None, ge=120, le=400)
     pdf_remove_toc: bool | None = None
     pdf_remove_repeated_marginals: bool | None = None
+    epub_table_mode: Literal["headers", "rows", "skip"] | None = None
+    epub_image_mode: Literal["descriptions", "captions", "skip"] | None = None
 
 
 class SourceCleaningDispatchDecision(StrictModel):

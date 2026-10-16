@@ -88,6 +88,11 @@ _MAX_REPORTING_TAG_CHARS = 120
 _MAX_FRENCH_OPENING_DASH_REPLIES = 64
 _SPEAKER_WORD = r"[\p{L}\p{M}][\p{L}\p{M}'’\-]*"
 _CAPITALIZED_NAME = r"\p{Lu}[\p{L}\p{M}\-]*"
+_ENGLISH_PERSON = re.compile(r"\b(?:i|we|us|our|ours|you|your|yours|me|my|mine)\b", re.I)
+_ENGLISH_REPLY = re.compile(
+    r'''^[“‘"']\s*(?:yes|no|hello|hi|thanks|thank you|sorry|okay|ok|agreed|certainly|indeed|well)\s*[,!?.…“”‘’"']''',
+    re.I,
+)
 
 
 def _rule_language(language: object) -> str:
@@ -261,6 +266,34 @@ def _is_dash_dialogue_candidate(paragraph: str, language: str) -> bool:
     return bool(re.match(r"^\s*[—–]\s+\S", paragraph))
 
 
+def _english_exchange_evidence(paragraphs: Sequence[str]) -> bool:
+    """Keep unrelated quoted maxims/instructions out of the dialogue path."""
+    if any("?" in paragraph or "？" in paragraph for paragraph in paragraphs):
+        return True
+    if any(_ENGLISH_REPLY.search(paragraph.strip()) for paragraph in paragraphs):
+        return True
+    if sum(bool(_ENGLISH_PERSON.search(paragraph)) for paragraph in paragraphs) >= 2:
+        return True
+    # Candidate validation has already restricted outside text to speaker
+    # attributions. Look for one without matching reporting verbs inside quotes.
+    pairs = _QUOTE_PAIRS["en"]
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        cursor = 0
+        while cursor < len(paragraph):
+            quote_end = _find_balanced_quote_end(paragraph[cursor:], pairs)
+            if quote_end is None:
+                break
+            absolute_end = cursor + quote_end
+            next_start = _find_next_quote_start(paragraph, absolute_end, pairs)
+            if paragraph[absolute_end:next_start].strip():
+                return True
+            if next_start is None:
+                break
+            cursor = next_start
+    return False
+
+
 def _find_french_opening_quote_end(
     paragraphs: Sequence[str], candidates: Sequence[str | None], opener_index: int
 ) -> int | None:
@@ -342,6 +375,12 @@ def classify_dialogue_paragraphs(
                 break
 
         run_length = end - index
+        if (
+            rule_language == "en" and run_length >= 2
+            and not _english_exchange_evidence(paragraphs[index:end])
+        ):
+            index = end
+            continue
         dash_is_eligible = run_length >= 2
         for paragraph_index in range(index, end):
             if candidates[paragraph_index] == "dash" and not dash_is_eligible:

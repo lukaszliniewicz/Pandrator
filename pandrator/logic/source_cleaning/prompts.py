@@ -359,8 +359,15 @@ WHAT TO DELETE:
 - Running page headers: the book title or author name repeated at the top of each page/section
 - Running page footers: similar repeated text at the bottom of each page/section
 - Standalone page numbers: blocks containing only a number (or a number with minimal punctuation)
-- Image captions and image alt-text blocks (short descriptive text for images, not narrative)
-- Repeated section separators that are not meaningful (e.g. "* * *" repeated dozens of times)
+- Repeated visual placeholders only when context confirms that they carry no meaning
+- Repeated section separators only when context confirms they have no structural meaning
+
+WHAT TO PRESERVE:
+- Meaningful image descriptions and captions retained by source preparation
+- Table headings, values and row structure, including necessary repeated headings
+- Poetry, dialogue and other narrative repetitions
+Source preparation already applies the selected illustration and table settings.
+Do not delete content solely because it is a caption, alternative text or a table.
 
 WHAT NOT TO DELETE:
 - Chapter headings (even if they look like short patterns — they are NOT repeated across every page)
@@ -412,7 +419,8 @@ def _repeated_elements_user_prompt(
     }
     parts = [
         "Identify and delete repeated non-narrative elements (running headers/footers, "
-        "page numbers, image captions). Start with list_repeated_lines.\n\n"
+        "page numbers). Preserve meaningful captions, descriptions, table content, "
+        "and narrative repetitions. Start with list_repeated_lines.\n\n"
         + json.dumps(summary, ensure_ascii=False, indent=2)
     ]
     if previous_phase_summaries:
@@ -563,7 +571,8 @@ Core rules:
 - Before finishing a book-length source, inspect chapter structure and verify chapter-marker completeness against navigation titles and likely heading candidates.
 - Do not mark only the first/last examples of a repeated chapter pattern. Preview the full selector and use mark_chapters_by_selector when it safely covers the complete narrative heading set.
 - Mark real chapter/part/opening section headings with [[Chapter]] via mark_chapter or mark_chapters_by_selector operations.
-- Remove non-audiobook material: TOC-as-list, copyright boilerplate, ads, image alt text, captions, running headers/footers, page numbers, and optional notes.
+- Remove confirmed non-audiobook material: TOC-as-list, copyright boilerplate, ads, running headers/footers, page numbers, and optional notes.
+- Preserve meaningful image descriptions, captions and table rows retained by the selected source-preparation settings. Do not remove them solely because they are visual material, or remove table headings merely because they repeat. Preserve narrative repetitions such as poetry and dialogue.
 - Preserve narrative prose unless there is strong evidence it should not be read aloud.
 - Finish is automatically evaluated by deterministic guards. Call evaluate_operations only when you want feedback before committing to a finish proposal.
 - {footnote_policy}
@@ -599,7 +608,7 @@ Final command schema:
   "operations": [
     {{"op":"set_metadata","title":"...","author":"...","language":"..."}},
     {{"op":"delete_range","start_line":1,"end_line":12,"reason":"copyright boilerplate"}},
-    {{"op":"delete_blocks","block_ids":["..."],"reason":"image alt text"}},
+    {{"op":"delete_blocks","block_ids":["..."],"reason":"confirmed repeated decorative placeholder"}},
     {{"op":"delete_by_selector","selector":{{"href":"toc.xhtml"}},"reason":"EPUB navigation/TOC document, confirmed by preview_selector"}},
     {{"op":"delete_by_selector","selector":{{"class":"footnote"}},"reason":"footnote class, confirmed by preview_selector"}},
     {{"op":"mark_chapter","block_id":"...","title":"Chapter title"}},

@@ -149,6 +149,131 @@ class SourceCleaningDispatchWebTests(unittest.TestCase):
         self.assertEqual(202, response.status_code, response.get_json())
         return response.get_json()
 
+    def test_epub_modes_are_captured_in_dispatch_hash_and_job_input(self):
+        session_id, source_id = self._source()
+        settings_path = f"/api/v1/sessions/{session_id}/settings/source_cleaning"
+        settings = self.client.get(settings_path).get_json()
+        updated = self.client.put(
+            settings_path,
+            headers={
+                **self._headers(),
+                "If-Match": f'"{settings["revision"]}"',
+            },
+            json={
+                "value": {
+                    "epub_table_mode": "rows",
+                    "epub_image_mode": "descriptions",
+                },
+            },
+        )
+        self.assertEqual(200, updated.status_code, updated.get_json())
+
+        def create_run(body: dict[str, str], key: str) -> dict[str, object]:
+            response = self.client.post(
+                f"/api/v1/sessions/{session_id}/source-cleaning-dispatch-runs",
+                json={"source_artifact_id": source_id, **body},
+                headers=self._headers(key),
+            )
+            self.assertEqual(202, response.status_code, response.get_json())
+            return response.get_json()
+
+        inherited = create_run({}, "epub-modes-inherited")
+        explicit = create_run(
+            {"epub_table_mode": "skip", "epub_image_mode": "captions"},
+            "epub-modes-explicit",
+        )
+        database = self.extension["database"]
+        with database.session() as session:
+            inherited_run = session.get(SourceCleaningDispatchRun, inherited["run_id"])
+            explicit_run = session.get(SourceCleaningDispatchRun, explicit["run_id"])
+            inherited_settings = dict(inherited_run.settings_json or {})
+            explicit_settings = dict(explicit_run.settings_json or {})
+            inherited_hash = inherited_run.input_hash
+            explicit_hash = explicit_run.input_hash
+        self.assertEqual("rows", inherited_settings["epub_table_mode"])
+        self.assertEqual("descriptions", inherited_settings["epub_image_mode"])
+        self.assertEqual("skip", explicit_settings["epub_table_mode"])
+        self.assertEqual("captions", explicit_settings["epub_image_mode"])
+        self.assertNotEqual(inherited_hash, explicit_hash)
+
+        changed = self.client.put(
+            settings_path,
+            headers={
+                **self._headers(),
+                "If-Match": f'"{updated.get_json()["revision"]}"',
+            },
+            json={
+                "value": {
+                    "epub_table_mode": "headers",
+                    "epub_image_mode": "skip",
+                },
+            },
+        )
+        self.assertEqual(200, changed.status_code, changed.get_json())
+
+        document = self._document("book.epub")
+        with (
+            patch(
+                "pandrator.web.source_cleaning_dispatch.extract_epub_with_diagnostics",
+                return_value=EpubExtractionResult.success(document.plain_text()),
+            ) as extract,
+            patch(
+                "pandrator.web.source_cleaning_dispatch.source_cleaning."
+                "build_cleaned_epub_source_document",
+                return_value=document,
+            ),
+            patch(
+                "pandrator.web.source_cleaning_dispatch.source_cleaning."
+                "propose_embedded_chapter_operations",
+                return_value=[],
+            ),
+        ):
+            self.extension["source_cleaning_dispatch"].prepare_run(
+                inherited["run_id"], lambda *_args: None, Event()
+            )
+        self.assertEqual(
+            "rows", extract.call_args.kwargs["epub_table_mode"]
+        )
+        self.assertEqual(
+            "descriptions", extract.call_args.kwargs["epub_image_mode"]
+        )
+
+    def test_legacy_epub_dispatch_run_defaults_to_rows_and_skip(self):
+        session_id, source_id = self._source()
+        created = self._create(session_id, source_id)
+        database = self.extension["database"]
+        with database.session() as session:
+            run = session.get(SourceCleaningDispatchRun, created["run_id"])
+            legacy_settings = dict(run.settings_json or {})
+            legacy_settings.pop("epub_table_mode", None)
+            legacy_settings.pop("epub_image_mode", None)
+            run.settings_json = legacy_settings
+
+        document = self._document("book.epub")
+        with (
+            patch(
+                "pandrator.web.source_cleaning_dispatch.extract_epub_with_diagnostics",
+                return_value=EpubExtractionResult.success(document.plain_text()),
+            ) as extract,
+            patch(
+                "pandrator.web.source_cleaning_dispatch.source_cleaning."
+                "build_cleaned_epub_source_document",
+                return_value=document,
+            ),
+            patch(
+                "pandrator.web.source_cleaning_dispatch.source_cleaning."
+                "propose_embedded_chapter_operations",
+                return_value=[],
+            ),
+        ):
+            prepared = self.extension["source_cleaning_dispatch"].prepare_run(
+                created["run_id"], lambda *_args: None, Event()
+            )
+
+        self.assertEqual("ready", prepared["status"])
+        self.assertEqual("rows", extract.call_args.kwargs["epub_table_mode"])
+        self.assertEqual("skip", extract.call_args.kwargs["epub_image_mode"])
+
     def test_epub_dispatch_prepares_without_provider_and_materializes_clean_text(self):
         session_id, source_id = self._source()
         created = self._create(session_id, source_id)

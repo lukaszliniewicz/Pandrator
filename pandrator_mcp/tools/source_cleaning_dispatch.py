@@ -162,6 +162,8 @@ def create_source_cleaning_dispatch_run(
         pdf_ocr_dpi=arguments.pdf_ocr_dpi,
         pdf_remove_toc=arguments.pdf_remove_toc,
         pdf_remove_repeated_marginals=arguments.pdf_remove_repeated_marginals,
+        epub_table_mode=arguments.epub_table_mode,
+        epub_image_mode=arguments.epub_image_mode,
         idempotency_key=arguments.idempotency_key,
     )
     run_id = _run_id(result)

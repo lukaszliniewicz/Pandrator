@@ -21,6 +21,7 @@ from pandrator.web.credentials import (
 from pandrator.web.models import (
     AppSetting,
     AppSettingHistory,
+    Job,
     SessionSetting,
     SessionSettingHistory,
     StoredCredential,
@@ -100,6 +101,73 @@ class SettingsApiTests(unittest.TestCase):
                     })
                     self.assertEqual(422, response.status_code, response.get_json())
                     self.assertIn(next(iter(value)), response.get_json()["error"]["message"])
+
+    def test_epub_source_narration_defaults_and_settings_validation(self):
+        created = self.client.post(
+            "/api/v1/sessions", json={"name": "EPUB narration settings"}, headers=self.headers,
+        ).get_json()
+        path = f'/api/v1/sessions/{created["id"]}/settings/source_cleaning'
+        current = self.client.get(path).get_json()
+        self.assertEqual("headers", current["effective"]["epub_table_mode"])
+        self.assertEqual("descriptions", current["effective"]["epub_image_mode"])
+
+        global_update = self.client.put(
+            "/api/v1/settings/defaults.source_cleaning",
+            headers={**self.headers, "If-Match": '"0"'},
+            json={"value": {"epub_table_mode": "rows", "epub_image_mode": "captions"}},
+        )
+        self.assertEqual(200, global_update.status_code, global_update.get_json())
+        self.assertEqual(
+            {"epub_table_mode": "rows", "epub_image_mode": "captions"},
+            global_update.get_json()["value"],
+        )
+
+        session_update = self.client.put(
+            path,
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+            json={"value": {"epub_table_mode": "rows", "epub_image_mode": "captions"}},
+        )
+        self.assertEqual(200, session_update.status_code, session_update.get_json())
+        self.assertEqual("rows", session_update.get_json()["effective"]["epub_table_mode"])
+        self.assertEqual("captions", session_update.get_json()["effective"]["epub_image_mode"])
+
+        invalid_values = (
+            {"epub_table_mode": "invalid"},
+            {"epub_table_mode": None},
+            {"epub_image_mode": "invalid"},
+            {"epub_image_mode": None},
+        )
+        for endpoint, revision in (
+            (path, session_update.get_json()["revision"]),
+            ("/api/v1/settings/defaults.source_cleaning", global_update.get_json()["revision"]),
+        ):
+            for value in invalid_values:
+                with self.subTest(endpoint=endpoint, value=value):
+                    response = self.client.put(
+                        endpoint,
+                        headers={**self.headers, "If-Match": f'"{revision}"'},
+                        json={"value": value},
+                    )
+                    self.assertEqual(422, response.status_code, response.get_json())
+
+    def test_invalid_clean_source_mode_is_rejected_before_job_creation(self):
+        created = self.client.post(
+            "/api/v1/sessions", json={"name": "Invalid EPUB stage mode"}, headers=self.headers,
+        ).get_json()
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            before = session.scalar(select(func.count(Job.id)))
+
+        response = self.client.post(
+            f'/api/v1/sessions/{created["id"]}/stages/clean_source/run',
+            headers=self.headers,
+            json={"epub_table_mode": "invalid"},
+        )
+        self.assertEqual(409, response.status_code, response.get_json())
+        self.assertIn("epub_table_mode", response.get_json()["error"]["message"])
+        with database.session() as session:
+            after = session.scalar(select(func.count(Job.id)))
+        self.assertEqual(before, after)
 
     def _assert_settings_reply_matches_committed_revision(self, method):
         session_id = self.client.post(

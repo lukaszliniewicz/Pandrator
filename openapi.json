@@ -8792,6 +8792,40 @@
       "SourceCleaningDispatchRunCreateRequest": {
         "additionalProperties": false,
         "properties": {
+          "epub_image_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "descriptions",
+                  "captions",
+                  "skip"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Epub Image Mode"
+          },
+          "epub_table_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "headers",
+                  "rows",
+                  "skip"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Epub Table Mode"
+          },
           "evidence_limit": {
             "default": 500,
             "description": "Maximum evidence items exposed in each phase packet. This is a transport bound, not a model-token or iteration budget.",

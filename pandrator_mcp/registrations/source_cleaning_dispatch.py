@@ -75,6 +75,8 @@ def register_source_cleaning_dispatch_tools(
         pdf_ocr_dpi: Annotated[int | None, Field(ge=120, le=400)] = None,
         pdf_remove_toc: bool | None = None,
         pdf_remove_repeated_marginals: bool | None = None,
+        epub_table_mode: NativeNullableEnum[Literal["headers", "rows", "skip"]] = None,
+        epub_image_mode: NativeNullableEnum[Literal["descriptions", "captions", "skip"]] = None,
     ) -> dict[str, Any]:
         """Queue deterministic preparation; no model provider or token budget is used."""
 
@@ -94,6 +96,8 @@ def register_source_cleaning_dispatch_tools(
                 "pdf_ocr_dpi": pdf_ocr_dpi,
                 "pdf_remove_toc": pdf_remove_toc,
                 "pdf_remove_repeated_marginals": pdf_remove_repeated_marginals,
+                "epub_table_mode": epub_table_mode,
+                "epub_image_mode": epub_image_mode,
                 "idempotency_key": idempotency_key,
             },
         )

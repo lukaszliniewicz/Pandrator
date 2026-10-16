@@ -318,6 +318,8 @@ class ApplicationDispatchMethods(ApplicationRequests):
         pdf_ocr_dpi: int | None,
         pdf_remove_toc: bool | None,
         pdf_remove_repeated_marginals: bool | None,
+        epub_table_mode: Literal["headers", "rows", "skip"] | None = None,
+        epub_image_mode: Literal["descriptions", "captions", "skip"] | None = None,
         idempotency_key: str,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -333,6 +335,8 @@ class ApplicationDispatchMethods(ApplicationRequests):
             "pdf_ocr_dpi": pdf_ocr_dpi,
             "pdf_remove_toc": pdf_remove_toc,
             "pdf_remove_repeated_marginals": pdf_remove_repeated_marginals,
+            "epub_table_mode": epub_table_mode,
+            "epub_image_mode": epub_image_mode,
         }
         body.update({key: value for key, value in optional.items() if value is not None})
         return self._request_json(

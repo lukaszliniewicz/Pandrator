@@ -10,6 +10,8 @@ English, Polish, French, Dutch, Japanese and German, plus conservative quotation
 rules for other languages. Compatible turns can share a narration block with one
 narrator. Oversized sentences split at balanced natural boundaries. Optional AI
 dialogue annotation is available independently of casting and delivery analysis.
+English quoted passages require exchange evidence so unrelated quoted maxims and
+instructions retain their paragraph pauses.
 
 New raw takes contain no app-added silence. Assembly applies audiobook pauses,
 and playlist playback follows the same pause metadata; individual auditions remain
@@ -17,6 +19,19 @@ raw. Historical padded takes are preserved. Voiceover retains its separate cue
 timing and synchronization rules. EPUB extraction also excludes ruby readings
 from written text and prevents empty metadata wrappers from creating scene gaps.
 See [narration preparation and pauses](reference/narration-segmentation.md).
+
+EPUB preparation now offers table and illustration policies. The defaults retain
+meaningful supplied descriptions and captions, avoid duplicate alternatives, and
+read data rows with their published headings. Unmarked layout tables retain
+plain row order. Table content and illustration text can be controlled in source
+settings or passive MCP requests. Re-preparing the source applies the policy;
+existing text and recordings remain available. See [EPUB content
+policies](reference/document-ingestion.md#tables-and-illustration-text).
+
+EPUB note extraction preserves inline anchor positions and container boundaries,
+preventing one note from absorbing later notes. A book-scoped path index avoids
+repeated scans of every document for each reference. Fallback sentence splitting
+also reuses its language configuration between paragraphs.
 
 Compare subtitles opens the project's selected written captions. The editor
 shows which version is editable and whether it matches the selected captions.

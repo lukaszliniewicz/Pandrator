@@ -87,6 +87,7 @@ def resolve_workflow_stage_in_session(
     # snapshot is immutable job input: later settings edits affect only
     # future runs, and Run Now values still take highest precedence.
     from .settings_policy import adapt_runtime_settings, normalize_subtitle_limit_override
+    from .source_narration_settings import validate_source_narration_settings
     from .workspace_settings import WorkspaceSettingsService
 
     section_map: dict[str, tuple[str, ...]] = {
@@ -217,6 +218,11 @@ def resolve_workflow_stage_in_session(
             resolved_stage_settings[key] = adapt_runtime_settings(
                 "tts", resolved_stage_settings[key]
             )
+
+    if stage_key == "clean_source":
+        validate_source_narration_settings(flattened)
+    if stage_key == "clean_source" or continuation:
+        validate_source_narration_settings(resolved_stage_settings["clean_source"])
 
     record = session.get(SessionRecord, session_id)
     if record is None:

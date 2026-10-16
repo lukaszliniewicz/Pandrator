@@ -544,6 +544,49 @@ class AgenticCleaningTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    def test_clean_source_forwards_epub_narration_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                session_record = SessionService(database).create("Narration modes")
+                (paths.sessions / session_record.storage_key).mkdir()
+                source_path = paths.uploads / "book.epub"
+                source_path.write_bytes(b"test fixture")
+                source = ArtifactService(database, paths).register(
+                    source_path,
+                    kind="source",
+                    role="upload",
+                    session_id=session_record.id,
+                )
+                with mock.patch(
+                    "pandrator.logic.file_handler.extract_text_from_epub",
+                    return_value="Narration text.",
+                ) as extract:
+                    WorkflowHandlers(database, paths).clean_source(
+                        {
+                            "session_id": session_record.id,
+                            "source_artifact_id": source.id,
+                            "settings": {
+                                "agentic": False,
+                                "epub_table_mode": "rows",
+                                "epub_image_mode": "captions",
+                            },
+                        },
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+
+                extract.assert_called_once_with(
+                    str(source_path),
+                    remove_footnotes=False,
+                    filter_citations=True,
+                    epub_table_mode="rows",
+                    epub_image_mode="captions",
+                )
+            finally:
+                database.dispose()
+
     def test_agentic_pdf_exposes_deterministic_operations_to_pipeline_review(self):
         import pymupdf as fitz
 

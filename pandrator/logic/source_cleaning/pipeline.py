@@ -54,7 +54,7 @@ PHASE_HELP_TEXT = {
     "metadata": "Find the title, author, and language.",
     "navigation": "Remove navigation documents and inline contents lists.",
     "boilerplate": "Remove copyright, license, ads, and other non-narrative matter.",
-    "repeated_elements": "Remove repeated headers, footers, page numbers, and captions.",
+    "repeated_elements": "Remove confirmed repeated headers, footers and page numbers. Preserve meaningful captions, descriptions, table rows and narrative repetitions retained by source preparation.",
     "chapter_marking": "Find narrative chapter headings and add chapter markers.",
 }
 

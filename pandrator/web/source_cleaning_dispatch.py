@@ -35,6 +35,7 @@ from .models import (
     SourceCleaningDispatchRun,
     utcnow,
 )
+from .source_narration_settings import validate_source_narration_settings
 from .workspace import resolve_primary_source
 from .workspace_settings import WorkspaceSettingsService
 
@@ -784,6 +785,8 @@ class SourceCleaningDispatchRunService:
         pdf_ocr_dpi: int | None,
         pdf_remove_toc: bool | None,
         pdf_remove_repeated_marginals: bool | None,
+        epub_table_mode: str | None = None,
+        epub_image_mode: str | None = None,
     ) -> dict[str, Any]:
         if self.jobs is None:
             raise RuntimeError(
@@ -807,10 +810,13 @@ class SourceCleaningDispatchRunService:
             "pdf_ocr_dpi": pdf_ocr_dpi,
             "pdf_remove_toc": pdf_remove_toc,
             "pdf_remove_repeated_marginals": pdf_remove_repeated_marginals,
+            "epub_table_mode": epub_table_mode,
+            "epub_image_mode": epub_image_mode,
         }
         effective.update(
             {key: value for key, value in overrides.items() if value is not None}
         )
+        validate_source_narration_settings(effective)
         settings = {
             "mode": "passive",
             "agentic": False,
@@ -825,6 +831,8 @@ class SourceCleaningDispatchRunService:
             "pdf_remove_repeated_marginals": bool(
                 effective.get("pdf_remove_repeated_marginals", True)
             ),
+            "epub_table_mode": effective.get("epub_table_mode", "headers"),
+            "epub_image_mode": effective.get("epub_image_mode", "descriptions"),
         }
         selection_snapshot = self._selection_snapshot(session, session_id, source.id)
         output_head = session.scalar(
@@ -972,6 +980,10 @@ class SourceCleaningDispatchRunService:
                     str(source_path),
                     remove_footnotes=bool(settings.get("remove_footnotes", False)),
                     filter_citations=bool(settings.get("filter_citations", True)),
+                    # Older frozen runs predate these fields. Preserve their
+                    # original no-label/no-illustration extraction behavior.
+                    epub_table_mode=settings.get("epub_table_mode", "rows"),
+                    epub_image_mode=settings.get("epub_image_mode", "skip"),
                 )
                 if not extraction_result.ok:
                     raise DispatchError(

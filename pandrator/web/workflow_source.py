@@ -266,6 +266,8 @@ def clean_source(
             str(source_path),
             remove_footnotes=bool(settings.get("remove_footnotes", False)),
             filter_citations=bool(settings.get("filter_citations", True)),
+            epub_table_mode=settings.get("epub_table_mode", "rows"),
+            epub_image_mode=settings.get("epub_image_mode", "skip"),
         )
         baseline_text = cleaned_text
     elif extension == ".pdf":

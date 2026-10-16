@@ -2,6 +2,7 @@
   import { modalFocus } from './modal-focus';
   import { LoaderCircle, RotateCcw, Save, X } from '@lucide/svelte';
   import ParameterLabel from './ParameterLabel.svelte';
+  import EpubNarrationSettings from './EpubNarrationSettings.svelte';
   import TranscriptionStageSettings from './TranscriptionStageSettings.svelte';
   import SourcePassageSettings from './SourcePassageSettings.svelte';
   import GenerationStageSettings from './GenerationStageSettings.svelte';
@@ -619,6 +620,14 @@
       ? 'document'
       : 'generation';
     draft.agentic = Boolean(saved.agentic ?? false);
+    draft.epubTableMode =
+      saved.epub_table_mode === 'rows' || saved.epub_table_mode === 'skip'
+        ? saved.epub_table_mode
+        : 'headers';
+    draft.epubImageMode =
+      saved.epub_image_mode === 'captions' || saved.epub_image_mode === 'skip'
+        ? saved.epub_image_mode
+        : 'descriptions';
     draft.maxIterations = Number(saved.max_iterations ?? 53);
     draft.splitSentences = Boolean(saved.enable_sentence_splitting ?? true);
     draft.appendSentences = Boolean(saved.enable_sentence_appending ?? true);
@@ -1783,6 +1792,8 @@
       stageSettings[key] = {
         ...common,
         agentic: draft.agentic,
+        epub_table_mode: draft.epubTableMode,
+        epub_image_mode: draft.epubImageMode,
         max_iterations: draft.maxIterations
       };
     else if (key === 'prepare_text')
@@ -2579,7 +2590,12 @@
               </p>
             </div>
           {/if}
-          {#if settingsStage.key === 'clean_source'}<label
+          {#if settingsStage.key === 'clean_source'}
+            <EpubNarrationSettings
+              bind:tableMode={draft.epubTableMode}
+              bind:imageMode={draft.epubImageMode}
+            />
+            <label
               class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4"
               ><input
                 type="checkbox"

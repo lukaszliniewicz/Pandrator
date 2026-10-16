@@ -75,6 +75,8 @@ def visual_block_indexes(blocks: list[dict], protected_indexes: set[int] | None 
 
 def is_visual_material_block(block: dict) -> bool:
     """Return True for EPUB blocks that are clearly illustration/caption material."""
+    if block.get("narration_kind") in {"image_caption", "image_description", "table", "table_row"}:
+        return False
     tag = str(block.get("tag", "") or "").strip().lower()
     if tag in VISUAL_TAGS:
         return True

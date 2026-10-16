@@ -2,6 +2,7 @@ import concurrent.futures
 import difflib
 import re
 import unicodedata
+from functools import lru_cache
 
 import hasami
 import regex
@@ -890,14 +891,20 @@ def _normalize_sentence_splitter_language(language: str) -> str:
     return "en"
 
 
+@lru_cache(maxsize=32)
+def _get_sentence_splitter(language: str) -> SentenceSplitter:
+    """Reuse the fallback's read-only language prefixes across paragraphs."""
+    return SentenceSplitter(language=language)
+
+
 def _split_with_sentence_splitter(text: str, language: str) -> list[str]:
     splitter_language = _normalize_sentence_splitter_language(language)
     try:
-        splitter = SentenceSplitter(language=splitter_language)
+        splitter = _get_sentence_splitter(splitter_language)
         return splitter.split(text)
     except Exception:
         if splitter_language != "en":
-            splitter = SentenceSplitter(language="en")
+            splitter = _get_sentence_splitter("en")
             return splitter.split(text)
         raise
 

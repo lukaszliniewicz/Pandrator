@@ -126,6 +126,7 @@ def _label(name: str) -> str:
         "tts": "TTS",
         "vad": "VAD",
         "cjk": "CJK",
+        "epub": "EPUB",
         "lufs": "LUFS",
         "ms": "ms",
         "db": "dB",
@@ -385,6 +386,8 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
     },
     "source_cleaning": {
         "agentic": "Enables the multi-phase LLM source-cleaning pipeline after deterministic cleanup; when disabled, only deterministic source operations run.",
+        "epub_table_mode": "Controls EPUB table narration: headers repeats published headings with their values, rows reads plain rows, and skip omits table content. Unmarked tables use plain row order; explicit presentation tables retain narrative text. Each row becomes a paragraph, using the audiobook paragraph pause at assembly. Apply changes by preparing the source again.",
+        "epub_image_mode": "Controls EPUB illustration text: descriptions retains meaningful supplied image alternatives and captions, captions keeps captions only, and skip omits illustrations. Decorative images, filename alternatives and duplicate descriptions are excluded. No image descriptions are invented. Apply changes by preparing the source again.",
         "max_iterations": "Provides the total legacy model-turn budget distributed across source-cleaning phases when explicit per-phase limits are absent.",
         "pdf_ocr_mode": "Controls PDF OCR: auto uses OCR when extracted text is inadequate, off never uses OCR, and force always renders and recognizes pages.",
         "pdf_ocr_language": "Selects the OCR language hint for PDF recognition, or auto to infer a suitable language.",
@@ -1063,6 +1066,8 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "f0_method": {"unit": "provider-defined"},
     },
     "source_cleaning": {
+        "epub_table_mode": {"choices": ["headers", "rows", "skip"]},
+        "epub_image_mode": {"choices": ["descriptions", "captions", "skip"]},
         "max_iterations": {
             "minimum": 1,
             "unit": "model/tool turns",

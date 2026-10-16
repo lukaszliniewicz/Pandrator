@@ -334,6 +334,8 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "source_cleaning": {
         "agentic": False,
         "max_iterations": 53,
+        "epub_table_mode": "headers",
+        "epub_image_mode": "descriptions",
         "pdf_ocr_mode": "auto",
         "pdf_ocr_language": "auto",
         "pdf_ocr_dpi": 200,

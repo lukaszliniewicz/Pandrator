@@ -144,6 +144,19 @@ def build_global_toc_map(structure: dict) -> dict[str, str]:
         if is_toc_file(href, doc, spine):
             blocks = doc.get("blocks", [])
             for block in blocks:
+                navigation_values = set()
+                for key in ("epub_type", "epub_types", "role", "roles"):
+                    values = block.get(key, [])
+                    if isinstance(values, str):
+                        values = values.split()
+                    navigation_values.update(str(value).lower() for value in values)
+                if navigation_values.intersection({
+                    "page-list", "pagelist", "doc-pagelist", "doc-page-list",
+                    "landmarks", "landmark", "doc-landmarks", "doc-landmark",
+                }):
+                    # Page destinations and landmarks are navigation evidence,
+                    # never chapter-title authority. Keep them in the raw index.
+                    continue
                 for part in block.get("parts", []):
                     if part.get("type") == "anchor":
                         h = part.get("href", "")

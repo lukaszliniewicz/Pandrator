@@ -8282,6 +8282,16 @@ export interface components {
         /** SourceCleaningDispatchRunCreateRequest */
         SourceCleaningDispatchRunCreateRequest: {
             /**
+             * Epub Image Mode
+             * @default null
+             */
+            epub_image_mode?: ("descriptions" | "captions" | "skip") | null;
+            /**
+             * Epub Table Mode
+             * @default null
+             */
+            epub_table_mode?: ("headers" | "rows" | "skip") | null;
+            /**
              * Evidence Limit
              * @description Maximum evidence items exposed in each phase packet. This is a transport bound, not a model-token or iteration budget.
              * @default 500

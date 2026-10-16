@@ -38,6 +38,16 @@ CASES = [
         {**BASE, "idempotency_key": KEY},
     ),
     (
+        "pandrator_create_source_cleaning_dispatch_run",
+        "epub_table_mode",
+        {**BASE, "idempotency_key": KEY},
+    ),
+    (
+        "pandrator_create_source_cleaning_dispatch_run",
+        "epub_image_mode",
+        {**BASE, "idempotency_key": KEY},
+    ),
+    (
         "pandrator_configure_tts",
         "tts_context_mode",
         {**BASE, "service_id": "fixture", "expected_revision": 1, "idempotency_key": KEY},

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import collections
 import os
-import posixpath
 import re
 from typing import NotRequired, TypedDict
 from urllib.parse import unquote
+
+from .note_content import get_footnote_text_multi_block as get_footnote_text_multi_block
+from .note_targets import NoteDocumentIndex
+from .note_targets import normalize_archive_path as _normalize_archive_path
 
 
 class _LanguageConfig(TypedDict):
@@ -339,43 +342,15 @@ def split_sentences_regex(text: str) -> list[str]:
         
     return [s for s in sentences if s]
 
-def _normalize_archive_path(value: str) -> str:
-    decoded = unquote(str(value or "").split("?", 1)[0]).replace("\\", "/")
-    normalized = posixpath.normpath(decoded).lstrip("/")
-    return "" if normalized == "." else normalized.casefold()
-
-
 def _resolve_target_document(
     referencing_href: str,
     target_file: str,
     parsed_documents: dict,
+    document_index: NoteDocumentIndex | None = None,
 ) -> str | None:
     """Resolve an EPUB link by archive path; use basename only when unique."""
-    if target_file:
-        resolved = posixpath.normpath(
-            posixpath.join(
-                posixpath.dirname(str(referencing_href or "").replace("\\", "/")),
-                unquote(str(target_file)).replace("\\", "/"),
-            )
-        )
-    else:
-        resolved = referencing_href
-    normalized = _normalize_archive_path(resolved)
-    exact = [
-        key
-        for key in parsed_documents
-        if _normalize_archive_path(str(key)) == normalized
-    ]
-    if len(exact) == 1:
-        return exact[0]
-
-    basename = posixpath.basename(normalized)
-    fallback = [
-        key
-        for key in parsed_documents
-        if posixpath.basename(_normalize_archive_path(str(key))) == basename
-    ]
-    return fallback[0] if len(fallback) == 1 else None
+    index = document_index or NoteDocumentIndex(parsed_documents)
+    return index.resolve(referencing_href, target_file)
 
 
 def _resolve_fragment_index(target_doc: dict, fragment: str) -> int | None:
@@ -415,12 +390,17 @@ def _resolve_unfragmented_footnote_index(target_doc: dict) -> int | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-def build_backlink_map(parsed_documents: dict) -> dict[tuple[str, str], dict]:
+def build_backlink_map(
+    parsed_documents: dict,
+    *,
+    document_index: NoteDocumentIndex | None = None,
+) -> dict[tuple[str, str], dict]:
     """
     Builds a pre-indexed backlink map for the entire EPUB.
     Maps (resolved referencing document, number string) to a footnote body.
     """
     backlink_map = {}
+    index = document_index or NoteDocumentIndex(parsed_documents)
     for doc_href, doc in parsed_documents.items():
         for block in doc.get("blocks", []):
             for part in block.get("parts", []):
@@ -438,6 +418,7 @@ def build_backlink_map(parsed_documents: dict) -> dict[tuple[str, str], dict]:
                                     doc_href,
                                     target_file,
                                     parsed_documents,
+                                    document_index=index,
                                 )
                                 if target_doc:
                                     backlink_map.setdefault(
@@ -587,29 +568,25 @@ def is_backlink_fragment(frag: str) -> bool:
         return True
     return False
 
-def get_footnote_text_multi_block(
-    blocks: list[dict],
-    start_idx: int,
-) -> tuple[str, list[int]]:
-    start_block = blocks[start_idx]
-    start_text = start_block["text"].strip()
-    consumed_indices = [start_idx]
-    
-    if start_text:
-        return start_text, consumed_indices
-        
-    texts = []
-    curr_idx = start_idx + 1
-    while curr_idx < len(blocks):
-        b = blocks[curr_idx]
-        if b["id"]:
-            break
-        if b["text"].strip():
-            texts.append(b["text"])
-        consumed_indices.append(curr_idx)
-        curr_idx += 1
-        
-    return " ".join(texts), consumed_indices
+def _anchor_position_in_block(block: dict, anchor: dict) -> int | None:
+    """Locate the actual anchor part, rather than an earlier matching digit.
+
+    Chapter formatting may prepend a marker while retaining original parts.
+    Callers keep the old search fallback for genuinely rewritten blocks.
+    """
+    parts = block.get("parts", [])
+    joined = "".join(part.get("content", "") for part in parts)
+    normalized = re.sub(r"\s+", " ", joined).strip()
+    text_start = block.get("text", "").find(normalized) if normalized else -1
+    if text_start < 0:
+        return None
+    prefix = ""
+    for part in parts:
+        if part is anchor:
+            return text_start + len(re.sub(r"\s+", " ", prefix).lstrip())
+        prefix += part.get("content", "")
+    return None
+
 
 def reposition_footnotes_in_document(
     doc_href: str,
@@ -619,7 +596,8 @@ def reposition_footnotes_in_document(
     remove_footnotes: bool = False,
     filter_citations: bool = True,
     detected_lang: str = "en",
-    backlink_map: dict | None = None
+    backlink_map: dict | None = None,
+    document_index: NoteDocumentIndex | None = None,
 ) -> list[str]:
     """
     Repositions footnotes in a document inline, immediately following their marker sentences.
@@ -627,6 +605,7 @@ def reposition_footnotes_in_document(
     If remove_footnotes is True, resolves and consumes footnotes without injecting them.
     If filter_citations is True, bibliographic citation references are stripped (skipped) deterministically.
     """
+    index = document_index or NoteDocumentIndex(parsed_documents)
     cleaned_lines = []
     
     for block in blocks:
@@ -666,6 +645,7 @@ def reposition_footnotes_in_document(
                 doc_href,
                 target_file_rel,
                 parsed_documents,
+                document_index=index,
             )
                     
             target_block = None
@@ -692,7 +672,10 @@ def reposition_footnotes_in_document(
                     target_doc_key_resolved = matched_doc_key
                 else:
                     if backlink_map is None:
-                        backlink_map = build_backlink_map(parsed_documents)
+                        backlink_map = build_backlink_map(
+                            parsed_documents,
+                            document_index=index,
+                        )
                     fallback = find_gutenberg_fallback_footnote(doc_href, frag_id, backlink_map)
                     if fallback:
                         target_block = fallback
@@ -730,7 +713,11 @@ def reposition_footnotes_in_document(
                 sentence_footnotes[len(sentences) - 1].append(fn_text)
                 continue
                 
-            pos = plain_text.find(anchor_content, search_start)
+            part_position = _anchor_position_in_block(block, anchor)
+            pos = (
+                part_position if part_position is not None
+                else plain_text.find(anchor_content, search_start)
+            )
             if pos == -1:
                 clean_content = re.sub(r'\D+', '', anchor_content)
                 if clean_content:
@@ -759,11 +746,17 @@ def reposition_footnotes_in_document(
             
         # Rebuild the sentences with inline footnotes
         final_sentences = []
+        source_cursor = 0
         for s_idx, s in enumerate(sentences):
+            source_position = plain_text.find(s, source_cursor)
+            if source_position >= source_cursor:
+                final_sentences.append(plain_text[source_cursor:source_position])
+                source_cursor = source_position + len(s)
             final_sentences.append(s)
             if s_idx in sentence_footnotes:
                 for fn in sentence_footnotes[s_idx]:
                     final_sentences.append(f" [Footnote: {fn}]")
+        final_sentences.append(plain_text[source_cursor:])
                     
         cleaned_lines.append("".join(final_sentences))
         

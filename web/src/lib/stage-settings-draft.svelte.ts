@@ -73,6 +73,8 @@ export class StageSettingsDraft {
   documentOptimizationEnabled = $state(false);
   optimizationTiming = $state<'document' | 'generation'>('generation');
   agentic = $state(false);
+  epubTableMode = $state<'headers' | 'rows' | 'skip'>('headers');
+  epubImageMode = $state<'descriptions' | 'captions' | 'skip'>('descriptions');
   maxIterations = $state(53);
   splitSentences = $state(true);
   appendSentences = $state(true);

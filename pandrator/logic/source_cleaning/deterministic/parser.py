@@ -79,6 +79,7 @@ class EPUBHTMLParser(HTMLParser):
         
         # Block-level tag stack to track nested blocks
         self.block_stack = []
+        self.block_element_count = 0
         
         # Current block accumulator
         self.current_block_tag = None
@@ -90,6 +91,7 @@ class EPUBHTMLParser(HTMLParser):
         self.current_block_roles = []
         self.current_block_epub_types = []
         self.current_block_aria_label = ""
+        self.current_block_narration_kind = ""
         self.pending_ids = []
         
         # Accumulating plain text vs anchor elements inside block
@@ -108,6 +110,11 @@ class EPUBHTMLParser(HTMLParser):
         epub_type = attr_dict.get("epub:type", "")
         role_val = attr_dict.get("role", "")
         aria_label = attr_dict.get("aria-label", "")
+        narration_kind = attr_dict.get("data-pandrator-kind", "")
+        if narration_kind and tag not in BLOCK_TAGS and self.current_block_tag is not None:
+            self.current_block_narration_kind = narration_kind
+            if self.block_stack:
+                self.block_stack[-1]["narration_kind"] = narration_kind
         
         self.tag_stack.append((tag, class_val, id_val, role_val, epub_type, aria_label))
         
@@ -117,8 +124,12 @@ class EPUBHTMLParser(HTMLParser):
                 
         # Block-level tag start
         if tag in BLOCK_TAGS:
+            inherited_narration_kind = (
+                self.block_stack[-1].get("narration_kind", "") if self.block_stack else ""
+            )
             # If there's an existing block, close it
             self._close_current_block()
+            self.block_element_count += 1
             
             block_info = {
                 "tag": tag,
@@ -130,6 +141,8 @@ class EPUBHTMLParser(HTMLParser):
                 "roles": self._inherited_attr_values("role"),
                 "epub_types": self._inherited_attr_values("epub:type"),
                 "aria_label": aria_label,
+                "narration_kind": narration_kind or inherited_narration_kind,
+                "element_index": self.block_element_count,
             }
             if id_val:
                 block_info["nested_ids"].append(id_val)
@@ -146,6 +159,7 @@ class EPUBHTMLParser(HTMLParser):
             self.current_block_roles = block_info["roles"]
             self.current_block_epub_types = block_info["epub_types"]
             self.current_block_aria_label = block_info["aria_label"]
+            self.current_block_narration_kind = block_info["narration_kind"]
             self.current_parts = []
         else:
             # If we are not in a block, store the ID in pending
@@ -247,6 +261,7 @@ class EPUBHTMLParser(HTMLParser):
                     self.current_block_roles = parent["roles"]
                     self.current_block_epub_types = parent["epub_types"]
                     self.current_block_aria_label = parent["aria_label"]
+                    self.current_block_narration_kind = parent["narration_kind"]
                     self.current_parts = []
                 else:
                     self.current_block_tag = None
@@ -282,12 +297,15 @@ class EPUBHTMLParser(HTMLParser):
             block = {
                 "tag": self.current_block_tag,
                 "id": self.current_block_id,
+                "nested_ids": list(dict.fromkeys(self.current_block_nested_ids)),
+                "element_path": tuple(item["element_index"] for item in self.block_stack),
                 "classes": self.current_block_classes,
                 "role": self.current_block_role,
                 "epub_type": self.current_block_epub_type,
                 "roles": self.current_block_roles,
                 "epub_types": self.current_block_epub_types,
                 "aria_label": self.current_block_aria_label,
+                "narration_kind": self.current_block_narration_kind,
                 "parts": parts_clean,
                 "text": plain_text,
                 "href": self.href,
@@ -297,9 +315,13 @@ class EPUBHTMLParser(HTMLParser):
             
             # Map ID to block index
             if self.current_block_id:
-                self.ids[self.current_block_id] = block_idx
+                self.ids.setdefault(self.current_block_id, block_idx)
             for nid in self.current_block_nested_ids:
-                self.ids[nid] = block_idx
+                self.ids.setdefault(nid, block_idx)
+            # IDs identify their source position. A resumed outer container
+            # must not attach already-emitted inline anchors to later blocks.
+            if self.block_stack:
+                self.block_stack[-1]["nested_ids"] = []
                 
         # Reset current block state
         self.current_block_tag = None
@@ -309,6 +331,7 @@ class EPUBHTMLParser(HTMLParser):
         self.current_block_roles = []
         self.current_block_epub_types = []
         self.current_block_aria_label = ""
+        self.current_block_narration_kind = ""
 
     def _inherited_attr_values(self, attr_name: str) -> list[str]:
         values = []
@@ -325,7 +348,11 @@ class EPUBHTMLParser(HTMLParser):
         self._close_current_block()
         super().close()
 
-def parse_single_document(z: zipfile.ZipFile, opf_dir: str, rel_path: str) -> dict:
+def parse_single_document(
+    z: zipfile.ZipFile, opf_dir: str, rel_path: str, *,
+    epub_table_mode: str | None = None, epub_image_mode: str | None = None,
+    language: str = "en",
+) -> dict:
     """Parses a single HTML document from the EPUB zip and returns its structural dict."""
     zip_path = os.path.normpath(os.path.join(opf_dir, rel_path)).replace("\\", "/")
     
@@ -355,6 +382,14 @@ def parse_single_document(z: zipfile.ZipFile, opf_dir: str, rel_path: str) -> di
             "error": str(error),
         }
         
+    if epub_table_mode is not None or epub_image_mode is not None:
+        from ..epub_narration import prepare_narration_html
+
+        html_data = prepare_narration_html(
+            html_data, table_mode="headers" if epub_table_mode is None else epub_table_mode,
+            image_mode="descriptions" if epub_image_mode is None else epub_image_mode,
+            language=language,
+        )
     parser = EPUBHTMLParser(rel_path)
     parse_error = None
     try:
@@ -371,8 +406,18 @@ def parse_single_document(z: zipfile.ZipFile, opf_dir: str, rel_path: str) -> di
         "error": parse_error
     }
 
-def unpack_epub_structure(epub_path: str) -> dict:
+def unpack_epub_structure(
+    epub_path: str, *, epub_table_mode: str | None = None,
+    epub_image_mode: str | None = None,
+) -> dict:
     """Unpacks EPUB structure, returning metadata, manifest, ordered spine and parsed docs."""
+    if epub_table_mode is not None or epub_image_mode is not None:
+        from ..epub_narration import validate_narration_modes
+
+        validate_narration_modes(
+            "headers" if epub_table_mode is None else epub_table_mode,
+            "descriptions" if epub_image_mode is None else epub_image_mode,
+        )
     if not os.path.exists(epub_path):
         raise FileNotFoundError(f"EPUB file not found at: {epub_path}")
         
@@ -441,7 +486,10 @@ def unpack_epub_structure(epub_path: str) -> dict:
             href = item["href"]
             if not item["media_type"] or "html" not in item["media_type"].lower():
                 continue
-            doc_struct = parse_single_document(z, opf_dir, href)
+            doc_struct = parse_single_document(
+                z, opf_dir, href, epub_table_mode=epub_table_mode,
+                epub_image_mode=epub_image_mode, language=metadata.get("language", "en"),
+            )
             parsed_docs[href] = doc_struct
             
         # Parse NCX TOC mapping if available

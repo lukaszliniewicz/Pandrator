@@ -26,6 +26,8 @@ BLOCK_TAGS = {
     "dd",
     "pre",
     "aside",
+    "td",
+    "th",
 }
 
 CONTAINER_TAGS = {"div", "section", "article", "main", "header", "footer"}

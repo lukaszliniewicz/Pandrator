@@ -99,6 +99,16 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('medium', 'Medium · balanced'),
     option('high', 'High · strongest')
   ],
+  epub_table_mode: [
+    option('headers', 'Read rows with published headings'),
+    option('rows', 'Read plain rows'),
+    option('skip', 'Skip table content')
+  ],
+  epub_image_mode: [
+    option('descriptions', 'Read captions and descriptions'),
+    option('captions', 'Read captions only'),
+    option('skip', 'Skip illustrations')
+  ],
   timing_context_mode: [
     option('full', 'Full timing · best quality'),
     option('overlap_only', 'Overlap only · fewer tokens'),
@@ -466,6 +476,8 @@ const SETTING_ORDER: Record<string, string[]> = {
   ],
   source_cleaning: [
     'agentic',
+    'epub_table_mode',
+    'epub_image_mode',
     'max_iterations',
     'phase_max_iterations',
     'request_timeout_seconds',
@@ -957,6 +969,8 @@ export function settingLabel(key: string): string {
     web_research_result_chars: 'Maximum characters per tool result',
     llm_processing_enabled: 'Enable LLM text processing',
     agentic: 'Use LLM-assisted source cleaning',
+    epub_table_mode: 'EPUB tables',
+    epub_image_mode: 'EPUB illustrations',
     max_iterations: 'Maximum source-cleaning agent turns',
     fade_enabled: 'Fade generated audio edges',
     fade_in_ms: 'Fade-in duration (ms)',

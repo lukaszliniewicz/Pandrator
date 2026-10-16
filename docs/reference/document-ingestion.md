@@ -217,6 +217,52 @@ The EPUB adapter:
 - applies `remove_footnotes` and `filter_citations` without treating every
   superscript or number as disposable.
 
+### Tables and illustration text
+
+Open **Clean source → Settings** to choose the EPUB content policy. The same
+controls are available in the full **Source cleaning** settings and as project
+overrides or global defaults. They take effect when the source is prepared
+again; existing extracted text and recordings remain available.
+
+**Tables** defaults to **Read rows with published headings**
+(`epub_table_mode="headers"`). Explicit table headings are associated with their
+values using the book's header markup, including row and column spans. Each data
+row becomes a paragraph. Values follow source row order; necessary headings may
+repeat to keep those values intelligible aloud. Data rows use the audiobook
+paragraph pause at assembly and in playlist playback, without silence baked into
+the generated recording.
+
+Unmarked tables use plain rows without invented headings or row announcements.
+This matters because many EPUBs use tables for poetry, parallel text, indexes or
+page layout. Explicit presentation tables retain narrative content.
+**Read plain rows** (`rows`) avoids repeated headings. **Skip table content**
+(`skip`) omits other tables, which can also omit prose stored in unmarked tables.
+Complex or ambiguous tables need review against the source; no column meaning
+is guessed from appearance alone.
+
+**Illustrations** defaults to **Read captions and descriptions**
+(`epub_image_mode="descriptions"`). Meaningful supplied image alternatives and
+captions enter the narration in source order. Decorative images, filename or URL
+alternatives, generic placeholders, and matching alt/caption duplicates are
+excluded. Distinct descriptions and captions remain. Inline image drop capitals
+retain their letter. **Read captions only** (`captions`) omits image alternatives;
+**Skip illustrations** (`skip`) retains the earlier omission policy. Pandrator
+does not invent descriptions for pictures lacking useful text.
+
+These defaults follow the accessibility principle of preserving published
+relationships and useful alternatives. See the [W3C table
+guidance](https://www.w3.org/WAI/tutorials/tables/) and [image decision
+tree](https://www.w3.org/WAI/tutorials/images/decision-tree/). Applying these
+principles to linear audiobook narration still requires reviewing the result,
+especially when a publisher supplied weak markup.
+
+Through MCP, inspect or patch the `source_cleaning` settings using
+`pandrator_get_session_settings` and `pandrator_patch_session_settings`.
+`pandrator_create_source_cleaning_dispatch_run` also accepts optional
+`epub_table_mode` and `epub_image_mode` arguments. Omitted arguments inherit the
+project settings; each new run captures its choices, so later setting changes
+cannot alter queued work. Reusing the same idempotency key replays that run.
+
 If structured EPUB indexing fails but deterministic text extraction succeeds,
 Pandrator can continue with a cleaned-text fallback and records the loss of
 raw-markup tools as a warning. A corrupt container, missing rootfile/package
@@ -237,7 +283,11 @@ prose. Advisory tools therefore omit bare-number candidates by default and can
 return them separately as low-confidence evidence when
 `include_ambiguous=true`. Relative EPUB paths are resolved before a unique
 basename fallback, avoiding accidental cross-links when different directories
-contain files such as `notes.xhtml`.
+contain files such as `notes.xhtml`. The path index is built once per book.
+Inline note anchors retain their original source position when an outer
+container resumes after a nested paragraph. A note wrapper's descendants stay
+together, while sibling note containers remain separate; a backlink marker by
+itself does not replace the note body.
 
 ### Optional model cleanup and the EPUB baseline
 
@@ -249,7 +299,7 @@ source view: its host model may search and inspect publisher markup when a
 heuristic result is doubtful, but source-only block IDs cannot be submitted as
 operation targets. This enforces a critical invariant: a model may challenge
 and refine the baseline, but a no-op or incomplete response cannot resurrect a
-removed contents page, illustration caption, license block, citation, or
+removed contents page, excluded illustration material, license block, citation, or
 footnote.
 
 This is a quality/safety tradeoff. Deterministic structure remains the source
@@ -406,7 +456,8 @@ Before preparing narration:
 2. Check every chapter boundary and make sure `[[Chapter]]` is absent from
    ordinary prose.
 3. Search for contents entries, repeated headers/footers, page numbers,
-   publisher/license text, illustration captions, citations, and notes.
+   publisher/license text, unwanted illustration placeholders, citations, and
+   notes. Confirm that meaningful captions and table values remain when selected.
 4. Inspect paragraph joins near PDF page boundaries and column changes.
 5. Check names, abbreviations, dates, numbers, quotations, and languages that
    normalization may affect.

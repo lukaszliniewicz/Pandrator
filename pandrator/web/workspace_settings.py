@@ -46,6 +46,7 @@ from .settings_policy import (
     validate_tts_retry_settings,
     validate_voiceover_repair_settings,
 )
+from .source_narration_settings import validate_source_narration_settings
 from .source_resolution import classify_source, resolve_media_source
 
 
@@ -676,6 +677,8 @@ class WorkspaceSettingsService:
             )
         if section == "output":
             validate_output_settings(value)
+        if section == "source_cleaning":
+            validate_source_narration_settings(value)
         if section == "source_passages":
             from pandrator.logic.dubbing.source_passage_settings import (
                 SOURCE_PASSAGE_DEFAULTS,

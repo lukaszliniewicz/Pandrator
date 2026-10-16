@@ -2,21 +2,30 @@ from __future__ import annotations
 
 import re
 
+from ..epub_narration import validate_narration_modes
 from . import boilerplate, chapters, diagnostics, footnotes, illustrations, parser, toc
 from .diagnostics import EpubExtractionError as EpubExtractionError
 from .diagnostics import EpubExtractionResult as EpubExtractionResult
 from .diagnostics import EpubSourceProbe as EpubSourceProbe
+from .note_targets import NoteDocumentIndex
 
 
-def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_citations: bool = True) -> str:
+def extract_clean_epub(
+    epub_path: str, remove_footnotes: bool = False, filter_citations: bool = True, *,
+    epub_table_mode: str = "headers", epub_image_mode: str = "descriptions",
+) -> str:
     """
     Extracts, filters, and formats text from an EPUB file.
     Performs deterministic removal of TOCs, front/end boilerplate,
     multilingual chapter heading markings, and inline footnote repositioning.
     """
-    structure = parser.unpack_epub_structure(epub_path)
+    validate_narration_modes(epub_table_mode, epub_image_mode)
+    structure = parser.unpack_epub_structure(
+        epub_path, epub_table_mode=epub_table_mode, epub_image_mode=epub_image_mode,
+    )
     spine = structure["spine"]
     parsed_docs = structure["parsed_documents"]
+    document_index = NoteDocumentIndex(parsed_docs)
     metadata = structure.get("metadata", {})
 
     detected_lang = footnotes.detect_book_language(metadata, parsed_docs)
@@ -51,7 +60,10 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
     repositioned_block_ids = set()
     extracted_chapters = []
 
-    backlink_map = footnotes.build_backlink_map(parsed_docs)
+    backlink_map = footnotes.build_backlink_map(
+        parsed_docs,
+        document_index=document_index,
+    )
     for doc_href in content_docs:
         doc = parsed_docs[doc_href]
         blocks = _strip_block_boilerplate(
@@ -227,6 +239,7 @@ def extract_clean_epub(epub_path: str, remove_footnotes: bool = False, filter_ci
             filter_citations=filter_citations,
             detected_lang=detected_lang,
             backlink_map=backlink_map,
+            document_index=document_index,
         )
 
         chapter_text = "\n\n".join(line for line in doc_lines if line.strip()).strip()
@@ -250,6 +263,9 @@ def extract_epub_with_diagnostics(
     epub_path: str,
     remove_footnotes: bool = False,
     filter_citations: bool = True,
+    *,
+    epub_table_mode: str = "headers",
+    epub_image_mode: str = "descriptions",
 ) -> EpubExtractionResult:
     """Extract EPUB text and classify unsupported or unexpectedly empty input.
 
@@ -257,6 +273,7 @@ def extract_epub_with_diagnostics(
     paths should use this result API so encryption, OCR-required publications,
     parser gaps, and genuinely empty books do not become opaque ready baselines.
     """
+    validate_narration_modes(epub_table_mode, epub_image_mode)
     package_probe = diagnostics.inspect_epub_source(epub_path)
     if package_probe.encrypted_narrative_resources:
         return diagnostics.classify_epub_extraction("", package_probe)
@@ -265,6 +282,8 @@ def extract_epub_with_diagnostics(
         epub_path,
         remove_footnotes=remove_footnotes,
         filter_citations=filter_citations,
+        epub_table_mode=epub_table_mode,
+        epub_image_mode=epub_image_mode,
     )
     if text.strip():
         return diagnostics.classify_epub_extraction(text, package_probe)

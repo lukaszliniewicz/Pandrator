@@ -27,6 +27,10 @@ dialogue turns together. English, Polish, French, Dutch, Japanese and German hav
 their own quotation and reporting-tag rules; Polish and French also recognise
 conventional dash-led exchanges. French accepts unspaced em dashes and a
 guillemet that opens a short, explicitly closed exchange across paragraphs.
+English quotation runs also need evidence of an exchange: a question, a speaker
+tag, an explicit reply, or conversational wording across multiple paragraphs.
+Quoted instructions and collections of maxims keep their paragraph pauses when
+that evidence is absent. Ambiguous passages can still need review or AI annotation.
 Other languages use conservative, balanced
 quotation rules. Unknown passages retain their paragraph boundaries. This pass
 uses local punctuation rules and makes no LLM requests or speaker assignments.
@@ -72,6 +76,13 @@ duration-changing conversion is rejected before publication.
 
 Voiceover uses its own cue placement, slowdown, catch-up and synchronization gap
 rules. Audiobook paragraph and dialogue pauses are not applied to that workflow.
+
+EPUB data tables can be prepared as separate row paragraphs with published
+headings repeated beside their values. Those rows retain paragraph boundaries
+and use the paragraph pause; a long row may still need multiple speech blocks.
+Unmarked layout tables retain plain row flow. Choose table and illustration
+handling before preparing the source, under **Clean source → Settings**.
+See [EPUB content policies](document-ingestion.md#tables-and-illustration-text).
 
 ## Optional AI dialogue annotation
 

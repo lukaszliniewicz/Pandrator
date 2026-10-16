@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, call, patch
 from pandrator.logic.text_preprocessor import (
     CHUNK_SIZE,
     _ensure_line_terminal_punctuation,
+    _get_sentence_splitter,
     _parallel_preprocess_text,
+    _split_with_sentence_splitter,
     append_short_sentences,
     find_best_split_index,
     preprocess_text,
@@ -15,6 +17,32 @@ from pandrator.logic.text_preprocessor import (
 
 
 class TextPreprocessorTests(unittest.TestCase):
+    def test_fallback_reuses_language_prefixes_without_changing_splits(self):
+        from sentence_splitter import SentenceSplitter
+
+        examples = {
+            "en": ["Dr. Smith waited. Then he left.", "A different paragraph. More text."],
+            "pl": ["To jest tekst. A to następne zdanie.", "Inny akapit. I jeszcze jeden."],
+            "fr": ["Mme. Martin attend. Puis elle part.", "Un autre paragraphe. Encore du texte."],
+            "nl": ["Dit is tekst. Nog een zin.", "Een andere alinea. Meer tekst."],
+            "de": ["Dr. Schmidt wartet. Dann geht er.", "Ein anderer Absatz. Noch mehr Text."],
+        }
+        expected = {
+            language: [SentenceSplitter(language=language).split(text) for text in texts]
+            for language, texts in examples.items()
+        }
+        _get_sentence_splitter.cache_clear()
+        try:
+            with patch(
+                "pandrator.logic.text_preprocessor.SentenceSplitter", wraps=SentenceSplitter
+            ) as constructor:
+                for language, texts in examples.items():
+                    actual = [_split_with_sentence_splitter(text, language) for text in texts]
+                    self.assertEqual(actual, expected[language])
+                self.assertEqual(constructor.call_count, len(examples))
+        finally:
+            _get_sentence_splitter.cache_clear()
+
     @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
     def test_single_newlines_are_wrapping_and_blank_lines_are_paragraphs(self, split_text):
         split_text.side_effect = [

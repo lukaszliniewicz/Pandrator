@@ -51,6 +51,28 @@ class DialogueFlowScannerTests(unittest.TestCase):
             [None, None],
         )
 
+    def test_english_quoted_instructions_and_maxims_keep_paragraph_boundaries(self):
+        for paragraphs in (
+            ["“Inhale slowly into the abdomen.”", "“Exhale while relaxing the shoulders.”"],
+            ["‘Wisdom begins with careful thought.’", "‘Patience makes difficult work possible.’"],
+            ["“Sometimes fortune favours a traveller.”", "“At other times the road is hard.”"],
+        ):
+            with self.subTest(paragraphs=paragraphs):
+                self.assertEqual(classify_dialogue_paragraphs(paragraphs, "en"), [None, None])
+
+    def test_english_exchange_evidence_preserves_questions_tags_and_plain_replies(self):
+        for paragraphs in (
+            ["“Where is the station?”", "“Beyond the bridge.”"],
+            ["“The train is late,” said Ada.", "“Again.”"],
+            ["  “The train is late,” said Ada.  ", "“Again.”"],
+            ["“The train is late.”", "“Yes, unfortunately.”"],
+            ["“I will wait here.”", "“We can wait together.”"],
+        ):
+            with self.subTest(paragraphs=paragraphs):
+                result = classify_dialogue_paragraphs(paragraphs, "en")
+                self.assertEqual(result[0]["speech_boundary_after"], "dialogue_turn")
+                self.assertEqual(result[1]["speech_boundary_after"], "paragraph")
+
     def test_english_paragraphs_may_contain_multiple_quoted_spans(self):
         paragraphs = [
             "“I do,” said Scrooge. “Merry Christmas! What right have you to be "

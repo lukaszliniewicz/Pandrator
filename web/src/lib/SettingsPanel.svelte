@@ -225,6 +225,8 @@
     ],
     source_cleaning: [
       'agentic',
+      'epub_table_mode',
+      'epub_image_mode',
       'max_iterations',
       'pdf_ocr_mode',
       'pdf_ocr_language',

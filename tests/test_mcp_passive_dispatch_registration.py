@@ -50,6 +50,8 @@ CASES = [
             "pdf_ocr_dpi": None,
             "pdf_remove_toc": None,
             "pdf_remove_repeated_marginals": None,
+            "epub_table_mode": None,
+            "epub_image_mode": None,
             "idempotency_key": "registration:dispatch:1",
         },
     ),
@@ -275,6 +277,8 @@ EXTRAS = [
             "pdf_ocr_language": "pol",
             "pdf_ocr_dpi": 300,
             "remove_footnotes": True,
+            "epub_table_mode": "rows",
+            "epub_image_mode": "captions",
         },
         {
             "instructions": "Fixture",
@@ -282,6 +286,8 @@ EXTRAS = [
             "pdf_ocr_language": "pol",
             "pdf_ocr_dpi": 300,
             "remove_footnotes": True,
+            "epub_table_mode": "rows",
+            "epub_image_mode": "captions",
         },
     ),
     extra(
@@ -514,7 +520,7 @@ async def tool_metadata(root: Path) -> dict[str, Any]:
     async with Client(build_server(runtime), mode="auto", raise_exceptions=False) as client:
         metadata = (await client.list_tools()).model_dump(mode="json", by_alias=True)
     assert calls == application.mock_calls == []
-    assert len(metadata["tools"]) == 185
+    assert len(metadata["tools"]) == 187
     selected = [tool for tool in metadata["tools"] if tool["name"] in {case.name for case in CASES}]
     assert [tool["name"] for tool in selected] == [case.name for case in CASES]
     for tool in selected:

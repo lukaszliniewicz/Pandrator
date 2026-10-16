@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
+from pandrator_mcp.clients.application_dispatch import ApplicationDispatchMethods
 from pandrator_mcp.schemas import (
     ClaimSourceCleaningDispatchBatchInput,
     CreateSourceCleaningDispatchRunInput,
@@ -36,6 +37,7 @@ class _Application:
             "status": "preparing",
             "settings_json": {"private": True},
         }
+
 
     def get_source_cleaning_dispatch_run(self, run_id):
         self.calls.append(("get", {"run_id": run_id}))
@@ -127,6 +129,18 @@ class _Application:
         }
 
 
+class _DispatchClientRecorder(ApplicationDispatchMethods):
+    def __init__(self):
+        self.requests: list[dict] = []
+
+    def _request_json(self, path, **kwargs):
+        self.requests.append({"path": path, **kwargs})
+        return {}
+
+    def _request_binary_json(self, *_args, **_kwargs):
+        raise AssertionError("Binary transport is unused in this test.")
+
+
 class SourceCleaningDispatchHandlerTests(unittest.TestCase):
     def setUp(self):
         self.application = _Application()
@@ -168,6 +182,61 @@ class SourceCleaningDispatchHandlerTests(unittest.TestCase):
                 lease_seconds=29,
                 idempotency_key="source:claim-1",
             )
+
+    def test_create_forwards_epub_modes_to_application(self):
+        create_source_cleaning_dispatch_run(
+            self.runtime,
+            CreateSourceCleaningDispatchRunInput(
+                session_id="session-1",
+                epub_table_mode="rows",
+                epub_image_mode="captions",
+                idempotency_key="source:create-modes",
+            ),
+        )
+        self.assertEqual("rows", self.application.calls[0][1]["epub_table_mode"])
+        self.assertEqual(
+            "captions", self.application.calls[0][1]["epub_image_mode"]
+        )
+
+    def test_application_client_omits_unset_epub_modes_and_forwards_values(self):
+        application = _DispatchClientRecorder()
+        application.create_source_cleaning_dispatch_run(
+            "session-1",
+            source_artifact_id=None,
+            instructions="",
+            evidence_limit=500,
+            remove_footnotes=None,
+            filter_citations=None,
+            pdf_ocr_mode=None,
+            pdf_ocr_language=None,
+            pdf_ocr_dpi=None,
+            pdf_remove_toc=None,
+            pdf_remove_repeated_marginals=None,
+            idempotency_key="source:client-modes-1",
+        )
+        body = application.requests[-1]["body"]
+        self.assertNotIn("epub_table_mode", body)
+        self.assertNotIn("epub_image_mode", body)
+
+        application.create_source_cleaning_dispatch_run(
+            "session-1",
+            source_artifact_id=None,
+            instructions="",
+            evidence_limit=500,
+            remove_footnotes=None,
+            filter_citations=None,
+            pdf_ocr_mode=None,
+            pdf_ocr_language=None,
+            pdf_ocr_dpi=None,
+            pdf_remove_toc=None,
+            pdf_remove_repeated_marginals=None,
+            epub_table_mode="rows",
+            epub_image_mode="captions",
+            idempotency_key="source:client-modes-2",
+        )
+        body = application.requests[-1]["body"]
+        self.assertEqual("rows", body["epub_table_mode"])
+        self.assertEqual("captions", body["epub_image_mode"])
 
     def test_create_get_and_claim_form_a_bounded_editorial_loop(self):
         created = create_source_cleaning_dispatch_run(

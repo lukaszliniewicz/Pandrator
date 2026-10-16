@@ -114,7 +114,10 @@ def _extract_chapter_text(html_content, all_html_content=""):
 
     return chapter_text
 
-def extract_text_from_epub(epub_path: str, remove_footnotes: bool = False, filter_citations: bool = True) -> str:
+def extract_text_from_epub(
+    epub_path: str, remove_footnotes: bool = False, filter_citations: bool = True, *,
+    epub_table_mode: str = "headers", epub_image_mode: str = "descriptions",
+) -> str:
     """Extracts and combines text from all documents in an EPUB file using robust heuristics."""
     from .source_cleaning.deterministic import extract_epub_with_diagnostics
 
@@ -122,6 +125,8 @@ def extract_text_from_epub(epub_path: str, remove_footnotes: bool = False, filte
         epub_path,
         remove_footnotes=remove_footnotes,
         filter_citations=filter_citations,
+        epub_table_mode=epub_table_mode,
+        epub_image_mode=epub_image_mode,
     ).require_text()
 
 def extract_text_from_pdf(pdf_path: str) -> str:

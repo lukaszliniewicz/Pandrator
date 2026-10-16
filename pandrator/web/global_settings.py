@@ -28,6 +28,7 @@ from .settings_policy import (
     validate_tts_retry_settings,
     validate_voiceover_repair_settings,
 )
+from .source_narration_settings import validate_source_narration_settings
 from .workspace_settings import migrate_legacy_subtitle_settings
 
 
@@ -153,6 +154,8 @@ class GlobalSettingsService:
                 )
             if setting_key == "defaults.audio":
                 validate_audio_pause_settings(prepared_value)
+            if setting_key == "defaults.source_cleaning":
+                validate_source_narration_settings(prepared_value)
             if setting_key == "defaults.text":
                 validate_dialogue_flow_setting(prepared_value)
             if setting_key == "defaults.tts":
