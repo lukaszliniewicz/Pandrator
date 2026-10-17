@@ -532,6 +532,9 @@ test('Unicode delivery edits retain precise boundaries and optional model direct
 test('selection review stays open on a revision conflict and fits a phone', async ({
   page
 }, info) => {
+  // Routed pages bypass the browser cache; cold Windows navigation can use
+  // most of 45 seconds before this scenario reaches its editor assertions.
+  if (process.platform === 'win32') test.setTimeout(90_000);
   await page.setViewportSize({ width: 390, height: 844 });
   await setup(page, { conflict: true });
   const editor = await selectPhrase(page, 0, 6);
