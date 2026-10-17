@@ -34,8 +34,9 @@ def get_footnote_text_multi_block(
     """Read a wrapper's descendants, or an unwrapped note up to the next ID.
 
     Parser element paths distinguish sibling note containers even when their
-    IDs live on inline backlink anchors. Legacy caller-provided blocks retain
-    the original ID-delimited fallback.
+    IDs live on inline backlink anchors. A leaf marker's continuation stays
+    inside its enclosing block. Legacy blocks without paths retain the
+    original ID-delimited fallback.
     """
     start = blocks[start_idx]
     start_text = str(start.get("text") or "").strip()
@@ -53,8 +54,12 @@ def get_footnote_text_multi_block(
         if start_text and not _marker_only(start):
             return start_text, [start_idx]
         end = start_idx + 1
+        parent_path = path[:-1]
         while end < len(blocks):
             following = blocks[end]
+            following_path = tuple(following.get("element_path") or ())
+            if parent_path and following_path[:len(parent_path)] != parent_path:
+                break
             if following.get("id") or following.get("nested_ids"):
                 break
             end += 1

@@ -73,7 +73,11 @@ test('project TTS settings filter MAI voices by model and language and retain mu
       models: ['gpt-4o-mini-tts'],
       default_model: 'gpt-4o-mini-tts',
       default_voice: 'alloy',
-      voices: ['alloy', 'coral']
+      voices: ['alloy', 'coral'],
+      voice_metadata: {
+        'gpt-4o-mini-tts:alloy': { multilingual: true },
+        'gpt-4o-mini-tts:coral': { multilingual: true }
+      }
     }
   ];
   await page.route('**/api/v1/services/tts**', (route) =>

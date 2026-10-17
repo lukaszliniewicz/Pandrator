@@ -44,6 +44,7 @@ a = Analysis(
         (str(manager_package / "audio_cpp_inventory.json"), "pandrator_manager"),
         (str(manager_package / "audio_cpp_curation.json"), "pandrator_manager"),
         (str(manager_package / "audio_cpp_model_metadata.json"), "pandrator_manager"),
+        (str(manager_package / "mecab-BSD.txt"), "pandrator_manager"),
         (str(recovery_static), "pandrator_manager/recovery_ui/static"),
         (str(tray_icon), "pandrator_manager/tray"),
     ],

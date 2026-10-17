@@ -216,6 +216,181 @@ def test_automatic_output_reads_retained_metadata_and_skips_voiceover(tmp_path, 
         database.dispose()
 
 
+@pytest.mark.parametrize("take_count", [1, 10])
+def test_automatic_output_batches_take_manifest_rows_without_changing_assembly(
+    tmp_path, take_count
+):
+    from sqlalchemy import event, select
+
+    from pandrator.web.artifacts import ArtifactService
+    from pandrator.web.database import Database
+    from pandrator.web.jobs import JobQueue
+    from pandrator.web.models import AudioTake, GenerationSegment
+    from pandrator.web.sessions import SessionService
+    from pandrator.web.workflow_generation_automatic_output import (
+        AutomaticAudioOutput,
+        assemble_automatic_output,
+    )
+    from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
+    from tests.web_test_support import prepare_web_test_data_root
+
+    paths = prepare_web_test_data_root(tmp_path / "data")
+    database = Database(paths.database)
+    try:
+        record = SessionService(database).create(
+            "Automatic batched manifest", workflow_kind="audiobook"
+        )
+        generation = GenerationService(
+            database, JobQueue(database), WorkspaceSettingsService(database)
+        )
+        generation.create_plan(
+            record.id,
+            source_revision_id=None,
+            segments=[{"text": f"Segment {index}", "speaker": f"Speaker {index}"}
+                      for index in range(take_count)],
+        )
+        with database.session() as session:
+            segments = session.scalars(
+                select(GenerationSegment).order_by(GenerationSegment.ordinal)
+            ).all()
+            segment_ids = [segment.id for segment in segments]
+
+        audio, render_manifest = rendered()
+        source = paths.sessions / record.storage_key / "take-source.wav"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        audio.export(source, format="wav").close()
+        artifacts = ArtifactService(database, paths)
+        metadata = {"render_parts": render_manifest}
+        take_artifacts = []
+        take_paths = []
+        for index in range(take_count):
+            take_path = source.parent / f"take-{index}.wav"
+            take_path.write_bytes(source.read_bytes())
+            take_paths.append(take_path)
+            take_artifacts.append(
+                artifacts.register(
+                    take_path,
+                    kind="audio",
+                    role="generation_take",
+                    session_id=record.id,
+                    metadata=metadata,
+                )
+            )
+        takes = [
+            AudioTake(
+                generation_segment_id=segment_ids[index],
+                artifact_id=take_artifacts[index].id,
+                status="completed",
+                kind="tts",
+                duration_ms=200,
+            )
+            for index in range(take_count)
+        ]
+        with database.session() as session:
+            session.add_all(takes)
+            session.flush()
+            ordered_rows = [
+                {
+                    "take_id": take.id,
+                    "segment_id": segment_ids[index],
+                    "artifact_id": take_artifacts[index].id,
+                    "take_revision": take.revision,
+                    "segment_revision": 1,
+                    "kind": take.kind,
+                    "node_kind": "paragraph",
+                    "speaker": f"Speaker {index}",
+                }
+                for index, take in enumerate(takes)
+            ]
+
+        input_indices = list(range(take_count))
+        if take_count == 10:
+            input_indices.append(2)
+        assembly_inputs = [
+            (take_paths[index], 200, 50, metadata) for index in input_indices
+        ]
+        take_artifact_ids = [take_artifacts[index].id for index in input_indices]
+        destination = source.parent / "assembled.wav"
+        audio_take_selects = []
+
+        def count_audio_take_selects(
+            _connection, _cursor, statement, _parameters, _context, _executemany
+        ):
+            lowered = statement.lower()
+            if statement.lstrip().lower().startswith("select") and "from audio_takes" in lowered:
+                audio_take_selects.append(statement)
+
+        event.listen(database.engine, "before_cursor_execute", count_audio_take_selects)
+        try:
+            result = assemble_automatic_output(
+                artifacts,
+                AutomaticAudioOutput(
+                    session_id=record.id,
+                    source_artifact_id=take_artifacts[0].id,
+                    role="assembled_audio",
+                    destination=destination,
+                    settings={"in_segment_voice_change_silence_ms": 300},
+                    assembly_inputs=assembly_inputs,
+                    take_artifact_ids=take_artifact_ids,
+                    segment_count=len(assembly_inputs),
+                    plan_revision_id="fixture",
+                ),
+                lambda *_: None,
+                threading.Event(),
+            )
+        finally:
+            event.remove(database.engine, "before_cursor_execute", count_audio_take_selects)
+
+        output, output_path = artifacts.resolve(result["artifact_id"])
+        manifest_rows = output.metadata_json["takes"]
+        expected_duration_ms = len(assembly_inputs) * 500 + (len(assembly_inputs) - 1) * 50
+        assert output.metadata_json["duration_ms"] == expected_duration_ms
+        assert output.metadata_json["audio_timeline"]["total_frames"] == expected_duration_ms * 24
+        assert len(audio_take_selects) == 1
+        expected_start_frame = 0
+        expected_rows = []
+        for index, take_index in enumerate(input_indices):
+            expected_end_frame = expected_start_frame + 500 * 24
+            expected_silence_after_ms = 50 if index < len(manifest_rows) - 1 else 0
+            expected_rows.append(
+                {
+                    **ordered_rows[take_index],
+                    "duration_ms": 500,
+                    "start_frame": expected_start_frame,
+                    "end_frame": expected_end_frame,
+                    "silence_after_ms": expected_silence_after_ms,
+                    "silence_policy": "assembly-v1",
+                    "internal_silences": [
+                        {
+                            "offset_frames": 2400,
+                            "sample_rate_hz": 24000,
+                            "duration_ms": 300,
+                        }
+                    ],
+                }
+            )
+            expected_start_frame = expected_end_frame + expected_silence_after_ms * 24
+        assert manifest_rows == expected_rows
+
+        with wave.open(str(output_path)) as reader:
+            assert reader.getframerate() == 24000
+            assert reader.getnframes() == expected_duration_ms * 24
+            frame_width = reader.getsampwidth() * reader.getnchannels()
+            pcm = reader.readframes(reader.getnframes())
+        for row in manifest_rows:
+            internal_silence_start = row["start_frame"] + 2400
+            internal_silence_frames = 300 * 24
+            start = internal_silence_start * frame_width
+            end = (internal_silence_start + internal_silence_frames) * frame_width
+            assert pcm[start:end] == b"\0" * (end - start)
+            if row["silence_after_ms"]:
+                start = row["end_frame"] * frame_width
+                end = start + row["silence_after_ms"] * 24 * frame_width
+                assert pcm[start:end] == b"\0" * (end - start)
+    finally:
+        database.dispose()
+
+
 @pytest.mark.parametrize("backend", ["streaming", "pydub"])
 def test_late_cancellation_preserves_existing_destination(tmp_path, backend):
     source = tmp_path / "source.wav"

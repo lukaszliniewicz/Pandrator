@@ -192,7 +192,11 @@ class SessionViewPerformanceTests(unittest.TestCase):
                         session_id, limit=250, **options
                     )
                     selects = [sql for sql in log if sql.lstrip().upper().startswith("SELECT")]
-                    self.assertLessEqual(len(selects), 23)
+                    # Full audiobook reads also project assembly pauses and
+                    # inspect the following voice at the page boundary.
+                    budget = {"full": 24, "compact": 23, "provenance": 23,
+                              "search": 25, "source-cue": 25}[name]
+                    self.assertLessEqual(len(selects), budget, f"{name}: {count} segments")
                     counts_by_read.setdefault(name, []).append(len(selects))
                     self.assertEqual(1, sum("FROM audio_takes" in sql for sql in selects))
                     # Isolate page take-artifact retrieval by primary key from

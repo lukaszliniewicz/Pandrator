@@ -30,9 +30,27 @@ def test_success_refreshes_catalogue_and_distinguishes_loaded_from_selectable():
     application.tts_catalog.assert_called_once_with(refresh=True)
     states = result.result["tts_catalogue_refresh"]["services"][0]["model_states"]
     assert states == [
-        {"id": "base", "selectable": True, "loaded": True},
-        {"id": "design", "selectable": True, "loaded": False},
-        {"id": "uninstalled", "selectable": False, "loaded": None},
+        {
+            "id": "base",
+            "listed": True,
+            "selectable": True,
+            "selectability_reason": "available",
+            "loaded": True,
+        },
+        {
+            "id": "design",
+            "listed": True,
+            "selectable": True,
+            "selectability_reason": "available",
+            "loaded": False,
+        },
+        {
+            "id": "uninstalled",
+            "listed": False,
+            "selectable": False,
+            "selectability_reason": "not_advertised",
+            "loaded": None,
+        },
     ]
     assert _safe_tts_service(service, model_ids=["design"])["model_states"] == [
         states[1]

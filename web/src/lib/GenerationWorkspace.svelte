@@ -3126,6 +3126,7 @@
             <button
               type="button"
               class="action"
+              aria-label="Speech plans"
               aria-expanded={planMenuOpen}
               disabled={!payload.plan_revision_id}
               onclick={() => {
@@ -4089,6 +4090,31 @@
   .activity-detail {
     max-width: 26rem;
     overflow-wrap: anywhere;
+  }
+  @media (width >= 64rem) {
+    .generation-header,
+    .generation-activity,
+    .header-controls {
+      flex-wrap: nowrap;
+    }
+    .generation-heading {
+      flex-shrink: 1;
+    }
+    .generation-heading h2 {
+      flex-shrink: 0;
+    }
+    .drawer-summary,
+    .activity-detail {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .generation-activity {
+      flex: 1 1 0;
+    }
+    .header-controls {
+      flex-shrink: 0;
+    }
   }
   .cost-pill {
     white-space: nowrap;

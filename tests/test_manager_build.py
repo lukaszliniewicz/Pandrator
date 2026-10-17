@@ -164,6 +164,7 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
             "audio_cpp_inventory.json",
             "audio_cpp_curation.json",
             "audio_cpp_model_metadata.json",
+            "mecab-BSD.txt",
         ):
             self.assertIn(
                 f'(str(manager_package / "{filename}"), "pandrator_manager")',

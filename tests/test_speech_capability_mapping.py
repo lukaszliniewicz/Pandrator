@@ -411,7 +411,11 @@ def test_moss_instruction_aliases_are_compiler_owned():
     model = "moss_tts_v15_bf16_codec_f16"
     payload = _payload(model, generation_prompt="A low, husky voice", audio_cpp_options={
         "instruct": "stale", "instruction": "stale", "instructions": "stale", "caption": "stale"})
-    assert payload["options"] == {"instruct": "A low, husky voice"}
+    # MOSS owns its instruction alias and fixed native chunk size.
+    assert payload["options"] == {
+        "instruct": "A low, husky voice",
+        "text_chunk_size": 200,
+    }
     assert "instructions" not in payload
     assert _catalogued("audio_cpp", model)["expressive_capabilities"]["voice_design"] is False
 

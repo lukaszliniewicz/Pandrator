@@ -149,6 +149,30 @@ def test_transcription_snapshot_available_formats_defaults_to_empty():
         result_available=False,
         inline_result=False,
         result_url="/api/v1/transcriptions/transcription-1/result",
+        # Snapshot schema records requested, resolved, and runtime selection stages.
+        selection={
+            "requested": {
+                "engine": None,
+                "language": None,
+                "model_quantization": None,
+                "compute_backend": None,
+            },
+            "resolved": {
+                "engine": None,
+                "language": None,
+                "model": None,
+                "model_quantization": None,
+                "compute_backend": None,
+            },
+            "runtime": {
+                "engine": None,
+                "model": None,
+                "model_quantization": None,
+                "compute_backend": None,
+                "language": None,
+            },
+            "normalization": {},
+        },
     )
     assert snapshot.available_formats == []
 

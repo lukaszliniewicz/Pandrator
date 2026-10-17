@@ -1762,6 +1762,10 @@ def _service_audio_endpoint(tts_settings, provider: str, _cache=None) -> dict[st
         "model_catalog": copy.deepcopy(service.get("model_catalog") or []),
         "model_voice_modes": copy.deepcopy(service.get("model_voice_modes") or {}),
         "voice_catalogues": copy.deepcopy(service.get("voice_catalogues") or {}),
+        "default_voices": copy.deepcopy(service.get("default_voices") or {}),
+        "default_voices_by_language": copy.deepcopy(
+            service.get("default_voices_by_language") or {}
+        ),
         "voice_reference_text": str(service.get("voice_reference_text") or "ignored"),
     }
 

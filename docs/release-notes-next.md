@@ -30,7 +30,8 @@ existing text and recordings remain available. See [EPUB content
 policies](reference/document-ingestion.md#tables-and-illustration-text).
 
 EPUB note extraction preserves inline anchor positions and container boundaries,
-preventing one note from absorbing later notes. A book-scoped path index avoids
+preventing one note from absorbing later notes or the narrative after a
+marker-only note target. A book-scoped path index avoids
 repeated scans of every document for each reference. Fallback sentence splitting
 also reuses its language configuration between paragraphs.
 
@@ -69,12 +70,20 @@ rules. Width and timing limits still apply.
   documented limits on internal boundaries and pauses. Irodori validates
   its token window before synthesis. Existing plans and recordings remain intact.
   See [narration lengths](reference/narration-segmentation.md).
+- Kokoro offers an optional **Japanese support** installation setting. It adds
+  verified private MeCab and UniDic resources, prepares a separate GGUF without
+  changing the original model's tensor bytes or precision, and works with
+  existing installations. The setting defaults to off and explains the extra
+  502 MiB download and disk requirements. See
+  [Japanese with Kokoro](guides/providers-and-voices.md#japanese-with-kokoro).
+  Adding another model keeps the saved Japanese-support choice.
 - Preset voices share readable names and language metadata across the voice
   library and project selectors. Voxtral prefers language-matched defaults while
   retaining cross-language choices. Pocket's English safetensors voices and
   classic Kitten's eight voices are listed, and fresh Supertonic, Kitten TTS 2,
   and NeuTTS defaults follow their native defaults. British Kokoro voices retain
   the correct phonemizer language. Saved choices and voice identifiers stay intact.
+  First-class audio.cpp requests retain configured defaults for each language.
   See [preset voices](guides/providers-and-voices.md#preset-voice-names-and-languages).
 - M4B exports convert WebP covers to genuine PNG artwork, including transparency.
   JPEG and PNG artwork is identified by its contents. The uploaded cover stays
@@ -84,6 +93,11 @@ rules. Width and timing limits still apply.
 - Required-reference audio.cpp models expose consistent reference metadata.
   MCP catalogue responses distinguish advertised models, service availability,
   and unknown health.
+- Opening provider and voice controls uses local Google application-default
+  credential discovery without waiting for cloud metadata probes. An explicit
+  provider refresh retains network discovery.
+- Automatic assembly batches take-metadata lookups, and generation views reuse
+  their resolved settings instead of reading them twice.
 - Provider settings show lifecycle warnings for deprecated models and announced
   shutdowns. Saved model choices stay intact; migration remains explicit.
   See [provider lifecycle and migrations](reference/provider-lifecycle.md).
@@ -93,3 +107,6 @@ rules. Width and timing limits still apply.
   adapter. The adapter is licensed for noncommercial use. Ready sound candidates
   and saved clip variants also have direct download controls. See
   [sound and music generation](reference/audio-generation-models.md).
+
+Source archives recursively exclude private working notes and review files,
+including nested example environment files.

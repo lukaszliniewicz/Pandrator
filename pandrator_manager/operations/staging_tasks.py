@@ -19,6 +19,10 @@ from ..components.audiocpp import (
     model_package,
     server_config,
 )
+from ..components.audiocpp_kokoro import (
+    kokoro_japanese_ready,
+    prepare_kokoro_japanese,
+)
 from ..components.audiocpp_reuse import reuse_verified_package
 from ..components.crispasr import CRISPASR_VERSION
 from ..components.slots import active_component_path
@@ -333,6 +337,11 @@ class ComponentStagingTasks(ComponentSourceTasks):
                     )
                 )
                 for package in packages
+            ) and (
+                not task.inputs.get("kokoro_japanese")
+                or kokoro_japanese_ready(
+                    target, packages, execution.context.system, execution.check_cancelled
+                )
             ):
                 return {
                     "staged_path": str(target),
@@ -477,9 +486,25 @@ class ComponentStagingTasks(ComponentSourceTasks):
                 package,
             )
 
-        _atomic_json(
-            target / "server.json", server_config(effective, [package.id for package in packages])
-        )
+        japanese = {}
+        if task.inputs.get("kokoro_japanese"):
+            japanese = prepare_kokoro_japanese(
+                target,
+                packages,
+                system=execution.context.system,
+                cache_root=execution.context.layout.cache / "artifacts" / "audio_cpp",
+                downloader=ArtifactDownloader(
+                    cancellation=execution.cancellation,
+                    environment=execution.context.environment,
+                ),
+                check_cancelled=execution.check_cancelled,
+            )
+        config = server_config(effective, [package.id for package in packages])
+        for entry in config["models"]:
+            prepared = japanese.get("models", {}).get(entry["id"])
+            if prepared:
+                entry["path"] = prepared["path"]
+        _atomic_json(target / "server.json", config)
         _atomic_json(
             target / "install.json",
             {
@@ -502,6 +527,7 @@ class ComponentStagingTasks(ComponentSourceTasks):
                 "model_revision": AUDIO_CPP_MODEL_REVISION,
                 "model_digest_verification": "sha256",
                 "model_reuse": reused_models,
+                "kokoro_japanese": japanese,
             },
         )
         shutil.rmtree(unpacked)

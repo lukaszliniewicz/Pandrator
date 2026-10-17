@@ -20,7 +20,7 @@ from pandrator.web.models import (
     SessionRecord,
 )
 
-MIGRATION_HEAD = "0057_segment_lineage_child_index"
+MIGRATION_HEAD = "0058_project_folders"
 PREVIOUS_REVISION = "0056_project_sound_plans"
 INDEX_NAME = "ix_segment_lineage_child_segment_id"
 
@@ -55,9 +55,13 @@ def _assert_child_index(engine: Engine) -> None:
 def _create_0056_fixture(path: Path) -> Engine:
     command.upgrade(_config(path), PREVIOUS_REVISION)
     engine = create_database_engine(path)
-    # Early baseline migrations use current metadata's create_all; remove this
-    # new index to model a database that was already at 0056 before this change.
+    # Early baseline migrations use current metadata's create_all; remove schema
+    # objects added after 0056 to model a database that was already at that revision.
     with engine.begin() as connection:
+        Base.metadata.tables["project_folder_memberships"].drop(
+            connection, checkfirst=True
+        )
+        Base.metadata.tables["project_folders"].drop(connection, checkfirst=True)
         connection.exec_driver_sql(f"DROP INDEX IF EXISTS {INDEX_NAME}")
     with Session(engine) as session:
         session.add(SessionRecord(id="session-fixture", name="Lineage fixture"))

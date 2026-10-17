@@ -259,7 +259,7 @@ def test_cancelled_wait_stops_before_another_readiness_query(
     assert event.is_set()
 
 
-@pytest.mark.parametrize(("timeout_seconds", "clamped"), [(0.2, 1.0), (999.0, 300.0)])
+@pytest.mark.parametrize(("timeout_seconds", "clamped"), [(0.2, 0.2), (999.0, 300.0)])
 def test_recovery_timeout_clamps_with_one_virtual_wait(
     virtual_clock, controlled_readiness, api_key, timeout_seconds, clamped
 ):

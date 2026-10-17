@@ -116,8 +116,16 @@ def test_health_refresh_is_reused_without_probe_until_expiry(
     )
     reused_service = reused_failure["services"][0]
     assert failed_service["online"] is True
-    assert failed_service["available"] is False
-    assert reused_service["availability_reason"] == "Fixture catalogue error"
+    assert failed_service["available"] is True
+    assert failed_service["availability_reason"] == ""
+    assert failed_service["catalogue"]["complete"] is False
+    assert failed_service["catalogue"]["error"] == "Fixture catalogue error"
+    assert reused_service["online"] is True
+    assert reused_service["available"] is True
+    assert reused_service["availability_reason"] == ""
+    assert reused_service["catalogue"]["complete"] is False
+    assert reused_service["catalogue"]["error"] == "Fixture catalogue error"
+    assert failed_service["health_checked_at"] is not None
     assert reused_service["health_checked_at"] == failed_service["health_checked_at"]
     assert health.call_count == 2
 
@@ -188,7 +196,9 @@ def _managed_voice(identifier, *, sample_count, registration=None):
     }
 
 
-def _clone_service(*, available=None, health_checked_at=None, reason=None, listed=True):
+def _clone_service(
+    *, available=None, health_checked_at=None, reason=None, listed=True, catalogue=None
+):
     service = {
         "id": "fixture-provider",
         "models": ["clone-model"] if listed else [],
@@ -198,6 +208,8 @@ def _clone_service(*, available=None, health_checked_at=None, reason=None, liste
     if health_checked_at is not None:
         service["health_checked_at"] = health_checked_at
         service["availability_reason"] = reason
+    if catalogue is not None:
+        service["catalogue"] = catalogue
     return service
 
 
@@ -270,7 +282,22 @@ def test_missing_local_model_does_not_undo_reference_preparation():
     )
     entry = catalog_entries(
         [voice],
-        {"services": [_clone_service(available=True, listed=False)]},
+        {
+            "services": [
+                _clone_service(
+                    available=True,
+                    listed=False,
+                    catalogue={
+                        "source": "runtime",
+                        "scope": "service",
+                        "service_id": "fixture-provider",
+                        "checked_at": "2026-10-17T00:00:00+00:00",
+                        "complete": True,
+                        "error": None,
+                    },
+                )
+            ]
+        },
         [],
     )[0]
     compatibility = entry["compatibility"][0]

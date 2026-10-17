@@ -63,6 +63,54 @@ def test_unwrapped_note_stops_at_next_inline_anchor():
     assert note(document, "note2")[0] == "Second body."
 
 
+@pytest.mark.parametrize("inline_id", [False, True])
+def test_leaf_note_marker_stops_at_its_enclosing_container(inline_id):
+    marker = (
+        '<p><a id="note1" epub:type="backlink" href="#ref1">1</a></p>'
+        if inline_id
+        else '<p id="note1"><a epub:type="backlink" href="#ref1">1</a></p>'
+    )
+    document = parse(
+        '<aside epub:type="footnote">' + marker
+        + '<p>Actual note.</p><p>Note continuation.</p></aside>'
+        '<p>Following narrative.</p><p>Final narrative without an ID.</p>'
+    )
+    text, consumed = note(document, "note1")
+    assert text == "Actual note. Note continuation."
+    assert len(consumed) == 3
+    assert all("narrative" not in document["blocks"][index]["text"] for index in consumed)
+
+
+def test_extraction_keeps_narrative_after_a_leaf_note_marker_in_place(tmp_path):
+    book = epub.EpubBook()
+    book.set_identifier("leaf-note-container-regression")
+    book.set_title("A Chapter with a Footnote")
+    book.set_language("en")
+    chapter = epub.EpubHtml(title="Chapter", file_name="chapter.xhtml")
+    chapter.content = (
+        '<h1>Chapter</h1>'
+        '<p id="ref1">First claim<a epub:type="noteref" href="#note1">1</a>.</p>'
+        '<p>Middle narrative.</p>'
+        '<aside epub:type="footnote">'
+        '<p id="note1"><a epub:type="backlink" href="#ref1">1</a></p>'
+        '<p>Actual note.</p></aside>'
+        '<p>Following narrative.</p><p>Final narrative without an ID.</p>'
+    )
+    book.add_item(chapter)
+    book.add_item(epub.EpubNcx())
+    book.toc = [epub.Link("chapter.xhtml", "Chapter", "chapter")]
+    book.spine = [chapter]
+    path = tmp_path / "leaf-note.epub"
+    epub.write_epub(str(path), book)
+    text = extract_clean_epub(str(path), filter_citations=False)
+    assert "[Footnote: Actual note.]" in text
+    paragraphs = ["First claim", "Actual note.", "Middle narrative.",
+                  "Following narrative.", "Final narrative without an ID."]
+    assert all(text.count(paragraph) == 1 for paragraph in paragraphs)
+    positions = [text.index(paragraph) for paragraph in paragraphs]
+    assert positions == sorted(positions)
+
+
 def test_note_aliases_on_one_container_resolve_the_same_body():
     document = parse(
         '<div id="note1"><a id="alias1"></a><p>Shared body.</p></div>'

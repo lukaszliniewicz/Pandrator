@@ -193,20 +193,21 @@ class QuickTranscriptionToolTests(unittest.TestCase):
                 return {"content": {"selection": selection}, "selection": selection}
 
         application = _SelectedApplication()
-        runtime = _runtime(Path("/tmp"), application)
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = _runtime(Path(directory), application)
 
-        status = get_transcription(
-            runtime,
-            GetTranscriptionInput(id="transcription-1"),
-        )
-        result = get_transcription_result(
-            runtime,
-            GetTranscriptionResultInput(id="transcription-1"),
-        )
+            status = get_transcription(
+                runtime,
+                GetTranscriptionInput(id="transcription-1"),
+            )
+            result = get_transcription_result(
+                runtime,
+                GetTranscriptionResultInput(id="transcription-1"),
+            )
 
-        self.assertEqual(selection, status.result["selection"])
-        self.assertEqual(selection, result.result["selection"])
-        self.assertEqual(selection, result.result["content"]["selection"])
+            self.assertEqual(selection, status.result["selection"])
+            self.assertEqual(selection, result.result["selection"])
+            self.assertEqual(selection, result.result["content"]["selection"])
 
     def test_waiting_routes_extend_transport_timeout_without_mutating_default(self):
         profile = TargetProfile(

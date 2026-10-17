@@ -148,6 +148,32 @@ def assemble_automatic_output(
     )
     planned_parts = []
     take_rows = []
+    unique_take_artifact_ids = list(dict.fromkeys(take_artifact_ids))
+    take_metadata_by_artifact: dict[str, dict[str, Any]] = {}
+    with artifacts.database.session() as session:
+        for offset in range(0, len(unique_take_artifact_ids), 500):
+            artifact_id_chunk = unique_take_artifact_ids[offset : offset + 500]
+            rows = session.execute(
+                select(AudioTake, GenerationSegment)
+                .join(
+                    GenerationSegment,
+                    GenerationSegment.id == AudioTake.generation_segment_id,
+                )
+                .where(AudioTake.artifact_id.in_(artifact_id_chunk))
+            )
+            for take, segment in rows:
+                take_metadata_by_artifact.setdefault(
+                    take.artifact_id,
+                    {
+                        "take_id": take.id,
+                        "take_revision": take.revision,
+                        "segment_id": segment.id,
+                        "segment_revision": segment.revision,
+                        "kind": take.kind,
+                        "node_kind": segment.node_kind,
+                        "speaker": segment.speaker,
+                    },
+                )
     for index, item in enumerate(assembly_inputs):
         path, duration_ms, silence_after_ms = item[:3]
         if len(item) == 4:
@@ -155,17 +181,12 @@ def assemble_automatic_output(
         else:
             retained, _ = artifacts.resolve(take_artifact_ids[index])
             metadata = retained.metadata_json or {}
-        with artifacts.database.session() as session:
-            row = session.execute(select(AudioTake, GenerationSegment).join(
-                GenerationSegment, GenerationSegment.id == AudioTake.generation_segment_id
-            ).where(AudioTake.artifact_id == take_artifact_ids[index])).first()
-            take_rows.append({
+        take_rows.append(
+            {
                 "artifact_id": take_artifact_ids[index],
-                **({"take_id": row[0].id, "take_revision": row[0].revision,
-                    "segment_id": row[1].id, "segment_revision": row[1].revision,
-                    "kind": row[0].kind, "node_kind": row[1].node_kind,
-                    "speaker": row[1].speaker} if row is not None else {}),
-            })
+                **take_metadata_by_artifact.get(take_artifact_ids[index], {}),
+            }
+        )
         planned_parts.append(AudioAssemblyPart(
             path=path,
             expected_duration_ms=duration_ms,

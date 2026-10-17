@@ -31,6 +31,7 @@ from .audiocpp import (
     resolve_assets,
     source_markers_for,
 )
+from .audiocpp_kokoro import kokoro_japanese_download_bytes
 from .catalog import presentation_for
 from .crispasr import resolve_asset
 from .host import resolve_auto_compute, vulkan_requires_quantized_models
@@ -599,6 +600,7 @@ class AudioCppComponentDriver(MarkerComponentDriver):
                 "requested_compute": desired.compute.value,
                 "effective_compute": effective.value,
                 "models": selected_models,
+                "kokoro_japanese": resolved.options.get("kokoro_japanese") == "enabled",
                 "model_changes": {
                     "add": added_models,
                     "remove": removed_models,
@@ -629,11 +631,19 @@ class AudioCppComponentDriver(MarkerComponentDriver):
             or AUDIO_CPP_VERSION not in str(inspection.installed_revision or "")
         )
         runtime_allowance = 1024 * 1024 * 1024 if runtime_refresh else 0
+        kokoro_count = sum(
+            MODEL_PACKAGES[model_id].family == "kokoro_tts" for model_id in selected_models
+        )
+        japanese = resolved.options.get("kokoro_japanese") == "enabled" and kokoro_count > 0
+        japanese_download = kokoro_japanese_download_bytes(context.system) if japanese else 0
+        # Reserve archive, dictionary staging, derived GGUFs and native runtime
+        # extraction. The cache avoids repeat transfers; this remains an estimate.
+        japanese_disk = (2 + kokoro_count) * 1024**3 if japanese else 0
         stage = stage.model_copy(
             update={
-                "estimated_download_bytes": added_model_bytes + runtime_allowance,
+                "estimated_download_bytes": added_model_bytes + runtime_allowance + japanese_download,
                 "estimated_disk_bytes": int(added_model_bytes * 1.25)
-                + runtime_allowance,
+                + runtime_allowance + japanese_disk,
             }
         )
         verify = self._task(

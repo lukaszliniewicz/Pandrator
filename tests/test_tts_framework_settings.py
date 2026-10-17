@@ -61,7 +61,8 @@ def test_model_reset_survives_global_changes_and_inherit_restores_tuning(workspa
     assert effective["audio_cpp_model_settings"][MODEL] is None
     endpoint = {"id": "audio_cpp", "adapter": "audio_cpp"}
     payload = tts_handler._build_audio_cpp_audio_payload("Hello.", effective, endpoint)
-    assert payload.get("options", {}) == {}
+    # Reset suppresses inherited tuning while fixed transport policy remains.
+    assert payload.get("options", {}) == {"text_chunk_size": 8192}
     assert "speed" not in payload
     budget = audiobook_chunk_budget({"audiobook_chunking": "model"}, effective)
     assert budget["target_chars"] == 1800  # Legacy 512-token tuning is suppressed.

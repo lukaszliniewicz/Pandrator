@@ -5,11 +5,13 @@ from __future__ import annotations
 import socket
 from copy import deepcopy
 from typing import Any, Iterator
+from unittest.mock import Mock
 from urllib.parse import quote
 
 import google.auth
 import pytest
 import requests
+from google.auth.compute_engine import _metadata
 from google.auth.exceptions import DefaultCredentialsError
 
 from pandrator.logic import google_tts_catalogue_http, tts_handler
@@ -455,13 +457,13 @@ def test_vertex_adc_credentials_are_decorated_without_refreshing(
     expected: bool,
 ) -> None:
     catalogue, _database, _providers = catalogue_stack
-    default_calls: list[dict[str, object]] = []
+    default_calls: list[dict[str, Any]] = []
 
     class CredentialsWithoutRefresh:
         def refresh(self, _request: object) -> None:
             raise AssertionError("credential decoration must not refresh ADC")
 
-    def default_credentials(**options: object) -> tuple[object, str | None]:
+    def default_credentials(**options: Any) -> tuple[object, str | None]:
         default_calls.append(dict(options))
         if not adc_available:
             raise DefaultCredentialsError("fixture-adc-secret")
@@ -488,6 +490,77 @@ def test_vertex_adc_credentials_are_decorated_without_refreshing(
     assert service["credential_source"] == (
         "application_default" if expected else "none"
     )
+    if expected:
+        assert service["credential_origin"] == "application_default"
+        assert service["_google_project"] == (configured_project or detected_project)
+        assert len(service["_adc_identity_hash"]) == 64
+    else:
+        assert service["credential_origin"] == "unconfigured"
+        assert "_google_project" not in service
+        assert "_adc_identity_hash" not in service
+        assert "fixture-adc-secret" not in repr(service)
+    assert len(default_calls) == 1
+    assert set(default_calls[0]) == {"scopes", "request"}
+    assert default_calls[0]["scopes"] == [
+        "https://www.googleapis.com/auth/cloud-platform"
+    ]
+    request = default_calls[0]["request"]
+    assert callable(request)
+    request_attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def counted_request(*args: Any, **kwargs: Any) -> Any:
+        request_attempts.append((args, kwargs))
+        return request(*args, **kwargs)
+
+    with pytest.raises(
+        DefaultCredentialsError, match="disabled for passive catalogue reads"
+    ):
+        _metadata.ping(counted_request)
+    assert len(request_attempts) == 1
+    assert request_attempts[0][1]["method"] == "GET"
+
+
+def test_vertex_adc_refresh_keeps_default_transport_network_capable(
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue_stack: tuple[TtsCatalogueService, Database, TtsProviderRegistry],
+) -> None:
+    catalogue, _database, providers = catalogue_stack
+    default_calls: list[dict[str, Any]] = []
+
+    class CredentialsWithoutRefresh:
+        def refresh(self, _request: object) -> None:
+            raise AssertionError("credential decoration must not refresh ADC")
+
+    def default_credentials(**options: Any) -> tuple[object, str | None]:
+        default_calls.append(dict(options))
+        return CredentialsWithoutRefresh(), "detected-project"
+
+    health = Mock(return_value=TtsHealth(True, True))
+    enrichment = Mock(return_value={})
+    monkeypatch.setattr(google.auth, "default", default_credentials)
+    monkeypatch.setattr(
+        tts_handler,
+        "get_service_configs",
+        lambda _settings: [_google_service("vertex_ai")],
+    )
+    monkeypatch.setattr(providers, "health", health)
+    monkeypatch.setattr(providers, "enrich_catalog", enrichment)
+
+    snapshot, _revision = catalogue.snapshot(
+        refresh=True,
+        view="compact",
+        service_ids=("vertex_ai",),
+        include_profiles=False,
+    )
+
+    service = _catalogue_service(snapshot, "vertex_ai")
+    assert service["credential_configured"] is True
+    assert service["credential_source"] == "application_default"
+    assert service["available"] is True
+    assert service["catalogue"]["source"] == "runtime"
+    assert service["catalogue"]["complete"] is True
     assert default_calls == [
         {"scopes": ["https://www.googleapis.com/auth/cloud-platform"]}
     ]
+    health.assert_called_once()
+    enrichment.assert_called_once()

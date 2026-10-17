@@ -449,7 +449,7 @@ class ElevenLabsCatalogueTests(unittest.TestCase):
         self.assertTrue(raised.exception.retryable)
         get_voices.assert_not_called()
 
-    def test_catalogue_refresh_marks_provider_unavailable_after_auth_failure(self):
+    def test_catalogue_auth_discovery_failure_preserves_successful_health(self):
         providers = Mock()
         providers.health.return_value = TtsHealth(online=True, available=True)
         providers.enrich_catalog.side_effect = TtsProviderError(
@@ -470,10 +470,13 @@ class ElevenLabsCatalogueTests(unittest.TestCase):
 
         catalogue._refresh(services)
 
-        self.assertFalse(services[0]["available"])
+        service = services[0]
+        self.assertTrue(service["online"])
+        self.assertTrue(service["available"])
+        self.assertFalse(service["catalogue"]["complete"])
         self.assertEqual(
             "ElevenLabs API key was rejected while listing models.",
-            services[0]["availability_reason"],
+            service["catalogue"]["error"],
         )
 
 

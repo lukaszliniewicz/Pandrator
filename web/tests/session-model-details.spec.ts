@@ -37,7 +37,14 @@ async function fixture(page: Page) {
               'model-b': { temperature: 0.5 }
             }
           },
-          override: { service: 'audio_cpp', model: 'model-a' }
+          override: {
+            service: 'audio_cpp',
+            model: 'model-a',
+            audio_cpp_model_settings: {
+              'model-a': { temperature: 0.5 },
+              'model-b': { temperature: 0.5 }
+            }
+          }
         }
       });
     }

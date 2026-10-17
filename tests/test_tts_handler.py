@@ -1125,6 +1125,8 @@ class TTSHandlerTests(unittest.TestCase):
                 "response_format": "wav",
                 "speed": 1.5,
                 "language": "pl",
+                # Chatterbox's native transport policy supplies its chunk size.
+                "options": {"text_chunk_size": 128},
                 # This Chatterbox route cannot consume natural-language directions.
                 "reference_text": "Reference transcript.",
             },
@@ -1281,7 +1283,9 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual(2**32 - 1, designed["seed"])
         for field in ("voice", "voice_ref", "reference_text"):
             self.assertNotIn(field, designed)
-        self.assertEqual({"temperature": 0.8}, designed["options"])
+        self.assertEqual(
+            {"temperature": 0.8, "text_chunk_size": 8192}, designed["options"]
+        )
 
         with self.assertRaisesRegex(ValueError, "require instructions"):
             tts_handler._build_audio_cpp_audio_payload(

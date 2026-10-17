@@ -276,6 +276,24 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
                 estimated_download_bytes=5_079_668_352,
             ),
         ),
+        install_options=(
+            ComponentInstallOption(
+                key="kokoro_japanese",
+                label="Kokoro Japanese support",
+                description=(
+                    "For Kokoro packages: adds native MeCab and the UniDic "
+                    "pronunciation dictionary for Japanese voices. About 502 MiB "
+                    "extra download; allow 3 GiB extra disk space for one Kokoro "
+                    "precision, including cache and temporary files. Pandrator "
+                    "manages these dependencies privately; no system setup is needed."
+                ),
+                default="disabled",
+                choices=(
+                    choice("disabled", "Not installed (smaller download)"),
+                    choice("enabled", "Add Japanese support"),
+                ),
+            ),
+        ),
         estimated_download_bytes=31 * GiB,
         estimated_installed_bytes=38 * GiB,
         size_note=(

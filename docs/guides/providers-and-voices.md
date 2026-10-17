@@ -209,13 +209,35 @@ audio.cpp supports Japanese Kokoro with language `ja` and voices **Alpha**
 **Tebukuro** (`jf_tebukuro`), and **Kumo** (`jm_kumo`). Choose a Japanese voice;
 an English voice cannot be paired with the Japanese phonemizer.
 
-The Japanese frontend also requires native **MeCab** and **UniDic** dictionary
-resources. The small release GGUF includes the Japanese G2P table but omits
-UniDic; installing the model alone does not make Japanese synthesis ready.
-Re-exporting with `--embed-multilingual-resources` embeds the dictionary, but
-still requires the native MeCab library. Installing Python dictionaries alone
-does not add them to an existing GGUF. Linux uses `libmecab.so.2` by default,
-with `AUDIOCPP_MECAB_LIBRARY` as an override. See the pinned
+In the audio.cpp installation settings, change **Kokoro Japanese support** from
+**Not installed (smaller download)** to **Add Japanese support**, select a Kokoro
+package, and apply the update. Existing installations can add it the same way;
+Japanese support is optional and off by default.
+
+Japanese needs native **MeCab** to analyse the text and the **UniDic**
+pronunciation dictionary. The add-on downloads about **502 MiB** and reserves
+about **3 GiB** of extra disk space for one Kokoro precision, including the
+download cache, prepared model and temporary dictionary extraction during
+generation. Selecting both precisions requires more space. Cached downloads
+are reused. These are private managed dependencies; no Python binding,
+administrator access, or system MeCab configuration is needed.
+The first generation after loading the prepared model can take longer while
+audio.cpp extracts its resources; later requests reuse them until the model unloads.
+
+The small upstream GGUF includes the Japanese G2P table but omits UniDic.
+Pandrator verifies and retains that original model, makes a separate GGUF with
+UniDic embedded, and selects it when the add-on is enabled. Its voices, tensor
+bytes and precision stay intact. Disabling the add-on and applying another
+update returns to the original model; previous slots remain available for rollback.
+MeCab and dictionary redistribution notices are retained with the installation.
+The dictionary is the pinned UniDic 3.1.0 package used by the upstream converter,
+not an automatically selected newer dictionary.
+
+For a manually managed audio.cpp server, re-exporting with
+`--embed-multilingual-resources` embeds the dictionary but still requires native
+MeCab. Installing Python dictionaries alone does not add them to an existing
+GGUF. Linux uses `libmecab.so.2` by default, with `AUDIOCPP_MECAB_LIBRARY` as an
+override. See the pinned
 [Kokoro multilingual packaging guide](https://github.com/0xShug0/audio.cpp/blob/0097d365a00b52a6991ad7618f0a04e8d2935e47/tests/kokoro_tts/MULTILINGUAL_GGUF.md).
 
 ## Voice references

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -243,11 +244,26 @@ class Planner:
             raise PlannerValidationError(
                 "audio.cpp additive model selection must resolve to at least one ID."
             )
-        options = {
-            key: value
-            for key, value in state.options.items()
-            if key != "add_models"
-        }
+        options = copy.deepcopy(
+            {
+                key: value
+                for key, value in (
+                    persisted_state.options.items()
+                    if persisted_state is not None
+                    else ()
+                )
+                if key not in {"models", "add_models"}
+            }
+        )
+        options.update(
+            copy.deepcopy(
+                {
+                    key: value
+                    for key, value in state.options.items()
+                    if key not in {"models", "add_models"}
+                }
+            )
+        )
         options["models"] = combined
         normalized["audio_cpp"] = state.model_copy(update={"options": options})
         return normalized

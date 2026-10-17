@@ -50,6 +50,8 @@ def test_native_mcp_fork_and_parallel_language_runs(tmp_path: Path):
             return data
 
         application = object.__new__(ApplicationClient)
+        # Match ApplicationClient's constructor default used by dispatch helpers.
+        application.timeout_seconds = 15.0
         application._request_json = request_json
         runtime = build_runtime(
             McpSettings(target_name="unconfigured", configuration_path=tmp_path / "absent.json")

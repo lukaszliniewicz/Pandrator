@@ -216,7 +216,7 @@ def test_parallel_batch_preserves_native_timing():
     registry.close()
 
 
-def test_cast_manifest_offsets_include_one_pause_and_final_pcm_rate():
+def test_cast_manifest_keeps_pause_instructions_and_contiguous_pcm_offsets():
     parts = [
         {"text": "A", "start": 0, "end": 1, "settings": {"voice": "first"}},
         {
@@ -246,25 +246,21 @@ def test_cast_manifest_offsets_include_one_pause_and_final_pcm_rate():
     combined, manifest = execute_render_parts(
         parts, synthesize=lambda *_: next(results), cancelled=lambda: False
     )
-    expected = audios[0] + AudioSegment.silent(duration=20, frame_rate=16000) + audios[1]
-    expected += AudioSegment.silent(duration=30, frame_rate=22050)
-    expected += audios[2]
+    # Pause lengths remain assembly instructions; provider audio stays contiguous.
+    expected = audios[0] + audios[1] + audios[2]
     assert combined.raw_data == expected.raw_data
     assert combined.frame_rate == 48000
     assert all(part["sample_rate_hz"] == 48000 for part in manifest)
+    assert [part["silence_before_ms"] for part in manifest] == [0, 20, 30]
+    assert all(part["silence_policy"] == "assembly-v1" for part in manifest)
     assert manifest[0]["start_frame"] == 0
     assert (
         manifest[0]["end_frame"]
         == audios[0].set_frame_rate(22050).set_frame_rate(48000).frame_count()
     )
-    prefix = audios[0] + AudioSegment.silent(duration=20, frame_rate=16000) + audios[1]
+    prefix = audios[0] + audios[1]
     assert manifest[1]["end_frame"] == prefix.set_frame_rate(48000).frame_count()
-    prefix += AudioSegment.silent(duration=30, frame_rate=22050)
-    assert manifest[2]["start_frame"] == prefix.set_frame_rate(48000).frame_count()
+    assert manifest[1]["start_frame"] == manifest[0]["end_frame"]
+    assert manifest[2]["start_frame"] == manifest[1]["end_frame"]
     assert manifest[-1]["end_frame"] == combined.frame_count()
-    for previous, current in zip(manifest, manifest[1:], strict=False):
-        assert (
-            abs(current["start_frame"] - previous["end_frame"] - current["silence_before_ms"] * 48)
-            <= 2
-        )
     assert [part["speech_timing"]["text"] for part in manifest] == list("ABC")

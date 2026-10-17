@@ -326,6 +326,7 @@ class TtsCatalogueService:
         service: dict[str, Any],
         *,
         resolved_credential: ResolvedCredential | None = None,
+        allow_adc_network: bool = False,
     ) -> None:
         service_id, key_env, secret_reference = self._credential_details(service)
         service["credential_required"] = bool(
@@ -354,10 +355,19 @@ class TtsCatalogueService:
         if service_id == "vertex_ai" and not service.get("credential_configured"):
             try:
                 import google.auth
+                from google.auth.exceptions import DefaultCredentialsError
 
-                credentials, project = google.auth.default(
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
-                )
+                options: dict[str, Any] = {
+                    "scopes": ["https://www.googleapis.com/auth/cloud-platform"]
+                }
+                if not allow_adc_network:
+                    def reject_adc_network(*_args: Any, **_kwargs: Any) -> Any:
+                        raise DefaultCredentialsError(
+                            "ADC network discovery is disabled for passive catalogue reads."
+                        )
+
+                    options["request"] = reject_adc_network
+                credentials, project = google.auth.default(**options)
                 if project or service.get("vertex_project"):
                     service["_google_project"] = str(service.get("vertex_project") or project)
                     service.update(
@@ -957,7 +967,11 @@ class TtsCatalogueService:
             credential_inputs,
         )
         for service, credential in zip(services, resolved_credentials, strict=True):
-            self._decorate_credentials(service, resolved_credential=credential)
+            self._decorate_credentials(
+                service,
+                resolved_credential=credential,
+                allow_adc_network=refresh,
+            )
         discovery_keys = [
             self._native_discovery_key(
                 service, {**default_value, **connection_value}, credential.resolved_value(),

@@ -826,10 +826,13 @@ def test_composite_generation_frozen_cast_and_one_take_per_segment(case):
             if item.generation_segment_id == case["segment_ids"][0]
         )
         artifact = session.get(m.Artifact, first.artifact_id)
-        assert first.duration_ms == 260  # Three parts plus two default 100ms speaker pauses.
-        assert len(artifact.metadata_json["render_parts"]) == 3
+        assert first.duration_ms == 60  # Three raw 20ms provider takes are contiguous.
+        render_parts = artifact.metadata_json["render_parts"]
+        assert len(render_parts) == 3
+        assert [part["silence_before_ms"] for part in render_parts] == [0, 100, 100]
+        assert all(part["silence_policy"] == "assembly-v1" for part in render_parts)
         assert all(
-            "settings" not in part for part in artifact.metadata_json["render_parts"]
+            "settings" not in part for part in render_parts
         )
     # The draft preview sees the current cast; the completed run retained Puck.
     response = case["post"](

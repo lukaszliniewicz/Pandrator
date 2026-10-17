@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .components.audiocpp import AUDIO_CPP_PORT
+from .components.audiocpp_kokoro import kokoro_japanese_environment
 from .components.runtime_bootstrap import (
     KOKORO_MANIFEST_NAME,
     KOKORO_RUNNER_NAME,
@@ -461,7 +462,10 @@ def component_runtime_spec(
             executable=str(executable),
             arguments=("--config", "server.json", "--no-ui"),
             cwd=str(root),
-            environment=common_environment,
+            environment={
+                **common_environment,
+                **kokoro_japanese_environment(root, "windows" if os.name == "nt" else "linux"),
+            },
             ports=(AUDIO_CPP_PORT,),
             readiness=HealthProbeSpec(
                 kind="http",

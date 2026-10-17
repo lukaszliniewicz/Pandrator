@@ -278,10 +278,12 @@ test('recognition settings and managed voice categories are editable without gen
   const dialog = page.getByRole('dialog', { name: 'Optimize text for speech' });
   await expect(
     dialog.getByRole('combobox', { name: 'Annotation level' })
-  ).toHaveCount(0);
-  await expect(dialog).toContainText(
-    'separate analysis controls in the prepared speech plan'
-  );
+  ).toHaveValue('off');
+  await expect(
+    dialog
+      .getByRole('combobox', { name: 'Annotation level' })
+      .getByRole('option', { name: /Dialogue/ })
+  ).toHaveAttribute('value', 'dialogue');
   await page.getByRole('button', { name: 'Close stage settings' }).click();
   const textUrl = `/api/v1/sessions/${sid}/settings/text`;
   const textSettings = await (await page.request.get(textUrl)).json();
@@ -299,11 +301,6 @@ test('recognition settings and managed voice categories are editable without gen
   expect(legacy.ok(), await legacy.text()).toBeTruthy();
   await page.reload();
   await stage.getByRole('button', { name: 'Timing & settings' }).click();
-  await dialog
-    .getByText('Existing combined text and speaker preparation', {
-      exact: true
-    })
-    .click();
   await dialog
     .getByRole('combobox', { name: 'Annotation level' })
     .selectOption('speakers');

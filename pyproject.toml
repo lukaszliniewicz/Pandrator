@@ -79,14 +79,14 @@ include = [
 [tool.hatch.build.targets.sdist]
 exclude = [
   "/AGENTS.md",
-  "/tmp",
-  "/.local-notes",
-  "/review-notes",
-  "/reviews",
-  "/docs/development",
-  "/docs/plans",
-  "/docs/research",
-  "/docs/reports",
+  "/tmp/**",
+  "/.local-notes/**",
+  "/review-notes/**",
+  "/reviews/**",
+  "/docs/development/**",
+  "/docs/plans/**",
+  "/docs/research/**",
+  "/docs/reports/**",
 ]
 
 [tool.pytest.ini_options]

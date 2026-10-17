@@ -159,7 +159,8 @@ def _segment_read_scope_parity(
 
 @pytest.mark.parametrize(
     ("casting_enabled", "performance_enabled", "context_mode", "query_budget"),
-    [(False, False, "off", 23), (False, True, "both", 31), (True, False, "both", 32)],
+    # Full reads include effective assembly boundaries as well as annotations.
+    [(False, False, "off", 25), (False, True, "both", 35), (True, False, "both", 36)],
     ids=["strict-single", "directed-context", "named-cast-context"],
 )
 def test_segment_reader_scoped_settings_preserve_rich_payload(

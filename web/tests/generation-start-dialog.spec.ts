@@ -6,6 +6,12 @@ import {
   startModeFlags
 } from '../src/lib/generation-start';
 
+test.afterEach(async ({ page }) => {
+  // Mode changes can leave deliberately delayed preview responses in flight.
+  // Their routing handlers no longer matter once the test assertions finish.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
 test('start mode flags map the explicit choice onto backend selection flags', () => {
   expect(startModeFlags('continue')).toEqual({
     missing_only: true,

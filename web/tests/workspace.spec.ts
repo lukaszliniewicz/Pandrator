@@ -663,6 +663,14 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   expect(audioPreviewRequests).toEqual(['edited-media']);
   await expect(review.getByText('Showing 1–50 of 75 rows')).toBeVisible();
   await expect(review.locator('tbody tr')).toHaveCount(50);
+  // The default viewport starts compact subtitle review maximized.
+  await expect(
+    review.getByRole('button', { name: 'Restore workspace size' })
+  ).toHaveAttribute('aria-pressed', 'true');
+  await review.getByRole('button', { name: 'Restore workspace size' }).click();
+  await expect(
+    review.getByRole('button', { name: 'Maximize workspace' })
+  ).toHaveAttribute('aria-pressed', 'false');
   await review.getByRole('button', { name: 'Maximize workspace' }).click();
   await expect(
     review.getByRole('button', { name: 'Restore workspace size' })

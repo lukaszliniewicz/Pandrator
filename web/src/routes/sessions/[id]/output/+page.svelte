@@ -606,7 +606,10 @@
     >
       {error}
     </p>{/if}
-  {#if exportJobs.length}<section class="surface rounded-2xl p-5">
+  {#if exportJobs.length}<section
+      aria-label="Export activity"
+      class="surface rounded-2xl p-5"
+    >
       <div class="section-label">Export activity</div>
       <div class="mt-4 space-y-3">
         {#each exportJobs.slice(0, 4) as job (job.id)}<div

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -197,6 +198,141 @@ class ManagerModelSelectionTests(unittest.TestCase):
             projected_stage["estimated_download_bytes"],
         )
         self.assertNotIn("inputs", projected_stage)
+
+    def test_additive_plan_inherits_persisted_options_and_honors_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            desired_state = DesiredComponentState(
+                compute=ComputeVariant.CPU,
+                options={
+                    "add_models": ["breeze_tts_2_q8_0"],
+                    "overlaid_option": {"source": ["request"]},
+                },
+            )
+            persisted_state = DesiredComponentState(
+                compute=ComputeVariant.CPU,
+                options={
+                    "models": ["voxcpm2_q8_0", "kokoro_82m_q8_0"],
+                    "kokoro_japanese": "enabled",
+                    "persisted_option": {"nested": ["retain"]},
+                    "overlaid_option": {"source": ["persisted"]},
+                },
+            )
+            desired_before = copy.deepcopy(desired_state)
+            persisted_before = copy.deepcopy(persisted_state)
+
+            inherited_plan = application.planner.create_plan(
+                kind=OperationKind.INSTALL,
+                desired={"audio_cpp": desired_state},
+                expected_revision=0,
+                actual_revision=0,
+                persisted_desired={"audio_cpp": persisted_state},
+            )
+            inherited = inherited_plan.desired["audio_cpp"].options
+            inherited_stage = next(
+                task for task in inherited_plan.tasks if task.kind == "stage_audio_cpp"
+            )
+
+            self.assertEqual(
+                ["voxcpm2_q8_0", "kokoro_82m_q8_0", "breeze_tts_2_q8_0"],
+                inherited["models"],
+            )
+            self.assertNotIn("add_models", inherited)
+            self.assertEqual("enabled", inherited["kokoro_japanese"])
+            self.assertTrue(inherited_stage.inputs["kokoro_japanese"])
+            self.assertEqual({"nested": ["retain"]}, inherited["persisted_option"])
+            self.assertEqual({"source": ["request"]}, inherited["overlaid_option"])
+            self.assertIsNot(
+                inherited["persisted_option"],
+                persisted_state.options["persisted_option"],
+            )
+            self.assertIsNot(
+                inherited["persisted_option"]["nested"],
+                persisted_state.options["persisted_option"]["nested"],
+            )
+            self.assertIsNot(
+                inherited["overlaid_option"],
+                desired_state.options["overlaid_option"],
+            )
+
+            disabled_state = DesiredComponentState(
+                compute=ComputeVariant.CPU,
+                options={
+                    "add_models": ["breeze_tts_2_q8_0"],
+                    "kokoro_japanese": "disabled",
+                },
+            )
+            disabled_before = copy.deepcopy(disabled_state)
+            disabled_plan = application.planner.create_plan(
+                kind=OperationKind.INSTALL,
+                desired={"audio_cpp": disabled_state},
+                expected_revision=0,
+                actual_revision=0,
+                persisted_desired={"audio_cpp": persisted_state},
+            )
+            disabled_stage = next(
+                task for task in disabled_plan.tasks if task.kind == "stage_audio_cpp"
+            )
+            self.assertEqual(
+                "disabled", disabled_plan.desired["audio_cpp"].options["kokoro_japanese"]
+            )
+            self.assertFalse(disabled_stage.inputs["kokoro_japanese"])
+            self.assertNotIn("add_models", disabled_plan.desired["audio_cpp"].options)
+
+            self.assertEqual(desired_before, desired_state)
+            self.assertEqual(persisted_before, persisted_state)
+            self.assertEqual(disabled_before, disabled_state)
+
+    def test_exact_models_replacement_and_fresh_defaults_remain_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            exact_plan = application.planner.create_plan(
+                kind=OperationKind.INSTALL,
+                desired={
+                    "audio_cpp": DesiredComponentState(
+                        compute=ComputeVariant.CPU,
+                        options={"models": ["breeze_tts_2_q8_0"]},
+                    )
+                },
+                expected_revision=0,
+                actual_revision=0,
+                persisted_desired={
+                    "audio_cpp": DesiredComponentState(
+                        compute=ComputeVariant.CPU,
+                        options={
+                            "models": ["kokoro_82m_q8_0"],
+                            "kokoro_japanese": "enabled",
+                        },
+                    )
+                },
+            )
+            exact_stage = next(
+                task for task in exact_plan.tasks if task.kind == "stage_audio_cpp"
+            )
+            self.assertEqual(
+                ["breeze_tts_2_q8_0"],
+                exact_plan.desired["audio_cpp"].options["models"],
+            )
+            self.assertFalse(exact_stage.inputs["kokoro_japanese"])
+
+            fresh_plan = application.planner.create_plan(
+                kind=OperationKind.INSTALL,
+                desired={
+                    "audio_cpp": DesiredComponentState(
+                        compute=ComputeVariant.CPU,
+                        options={"models": ["kokoro_82m_q8_0"]},
+                    )
+                },
+                expected_revision=0,
+                actual_revision=0,
+            )
+            fresh_stage = next(
+                task for task in fresh_plan.tasks if task.kind == "stage_audio_cpp"
+            )
+            self.assertNotIn(
+                "kokoro_japanese", fresh_plan.desired["audio_cpp"].options
+            )
+            self.assertFalse(fresh_stage.inputs["kokoro_japanese"])
 
     def test_retry_payload_and_exact_replacement_remain_distinct(self):
         arguments = PlanComponentChangeInput(

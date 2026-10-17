@@ -346,6 +346,16 @@ Pandrator and source-backed engines are downloaded into staging, checked, and
 activated side by side. Manager updates use the project-signed release
 channel.
 
+For **audio.cpp Kokoro**, the **Kokoro Japanese support** install setting is
+optional and defaults to **Not installed (smaller download)**. **Add Japanese
+support** installs private native MeCab and the pinned UniDic pronunciation
+dictionary, then prepares a separate GGUF with unchanged tensor bytes and
+precision. It adds about 502 MiB to the download; allow 3 GiB extra disk space
+for one precision, including cache and temporary files. The same setting works
+when updating an existing Kokoro installation. No Python binding or system
+MeCab configuration is required. See
+[Japanese with Kokoro](../docs/guides/providers-and-voices.md#japanese-with-kokoro).
+
 ## Shared model browser
 
 The standalone Manager groups audio.cpp packages with the same helpers as the

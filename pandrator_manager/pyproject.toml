@@ -87,6 +87,7 @@ pandrator_manager = "."
   "audio_cpp_curation.json",
   "audio_cpp_model_metadata.json",
   "provider_policy.json",
+  "mecab-BSD.txt",
 ]
 "pandrator_manager.recovery_ui" = [
   "static/**",

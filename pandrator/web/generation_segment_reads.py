@@ -441,9 +441,9 @@ class GenerationSegmentReader:
                                 key=lambda row: row.ordinal,
                             )
                         if selected_run is None:
-                            tts_settings = self.settings.get_in_session(
-                                session, session_id, "tts"
-                            )["effective"]
+                            # Use the same resolved provider/project settings as
+                            # the audio identity below, without a second read.
+                            tts_settings = audio_snapshot.get("tts") or {}
                             if (
                                 tts_settings.get("casting_enabled")
                                 or tts_settings.get("performance_enabled")

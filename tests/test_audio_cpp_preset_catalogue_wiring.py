@@ -8,6 +8,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 from pandrator.constants import AUDIO_CPP_KOKORO_VOICES, magpie_voice_catalog
+from pandrator.logic import tts_handler
 from pandrator.logic.audio_cpp_catalogue import family_metadata
 from pandrator.logic.tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
@@ -16,7 +17,10 @@ from pandrator.logic.tts_provider_profiles import (
     AUDIO_CPP_PREBUILT_VOICES,
     get_tts_provider_profile,
 )
-from pandrator.logic.tts_service_catalogue import get_service_config
+from pandrator.logic.tts_service_catalogue import (
+    get_service_config,
+    resolve_openai_audio_endpoint,
+)
 from pandrator.web.tts_providers import AudioCppAdapter
 
 
@@ -219,6 +223,77 @@ class AudioCppPresetCatalogueWiringTests(unittest.TestCase):
         self.assertIsNone(language_default_voice(defaults, "de-DE"))
         self.assertEqual("neutral_female", service["default_voices"][model])
         self.assertEqual("My French narrator", service["voice_metadata"][f"{model}:fr_female"]["display_name"])
+
+    def test_resolved_audio_cpp_endpoint_keeps_language_defaults_for_speech_requests(self) -> None:
+        model = "kokoro_82m_q8_0"
+        stored_service = {
+            "id": "audio_cpp",
+            "api_base": "http://audio-cpp.fixture",
+            "default_model": model,
+            "default_voice": "af_heart",
+            "default_voices": {model: "af_heart"},
+            "default_voices_by_language": {
+                model: {"fr": "ff_siwis", "en-GB": "bf_emma"}
+            },
+        }
+        settings = {
+            "service": "audio_cpp",
+            "service_configs": [stored_service],
+            "model": model,
+        }
+        endpoint, error = resolve_openai_audio_endpoint(settings)
+        self.assertEqual("", error)
+        self.assertIsNotNone(endpoint)
+        assert endpoint is not None
+        self.assertEqual("af_heart", endpoint["default_voices"][model])
+        language_defaults = endpoint["default_voices_by_language"][model]
+        self.assertEqual("ff_siwis", language_defaults["fr"])
+        self.assertEqual("bf_emma", language_defaults["en-GB"])
+        self.assertIsNot(endpoint["default_voices"], stored_service["default_voices"])
+        self.assertIsNot(
+            endpoint["default_voices_by_language"][model],
+            stored_service["default_voices_by_language"][model],
+        )
+
+        endpoint["default_voices"][model] = "bf_alice"
+        endpoint["default_voices_by_language"][model]["fr"] = "bf_alice"
+        self.assertEqual("af_heart", stored_service["default_voices"][model])
+        self.assertEqual(
+            "ff_siwis",
+            stored_service["default_voices_by_language"][model]["fr"],
+        )
+
+        response = object()
+        requests = (
+            ({"language": "fr-FR"}, "ff_siwis", "fr"),
+            ({"language": "en-GB"}, "bf_emma", "en-gb"),
+            ({"language": "en-GB", "speaker": "bf_alice"}, "bf_alice", "en-gb"),
+        )
+        for overrides, expected_voice, expected_language in requests:
+            with self.subTest(overrides=overrides):
+                request_settings = {**settings, **overrides}
+                with patch(
+                    "pandrator.logic.tts_handler.requests.post",
+                    return_value=response,
+                ) as post:
+                    self.assertIs(
+                        response,
+                        tts_handler._request_openai_compatible_audio(
+                            "A short passage.", request_settings
+                        ),
+                    )
+
+                self.assertEqual(
+                    "http://audio-cpp.fixture/v1/audio/speech",
+                    post.call_args.args[0],
+                )
+                payload = post.call_args.kwargs["json"]
+                self.assertEqual(model, payload["model"])
+                self.assertEqual("A short passage.", payload["input"])
+                self.assertEqual(expected_voice, payload["voice"])
+                self.assertEqual(expected_language, payload["language"])
+                self.assertNotIn("default_voices", payload)
+                self.assertNotIn("default_voices_by_language", payload)
 
     def test_curated_metadata_never_changes_uploaded_reference_voices(self) -> None:
         from pandrator.logic.preset_voice_metadata import decorate_preset_voices

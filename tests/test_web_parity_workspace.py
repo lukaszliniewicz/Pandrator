@@ -140,7 +140,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
     def test_global_defaults_endpoint_exposes_builtins_and_revisioned_values(self):
         services = self.client.get("/api/v1/services/tts").get_json()
         self.assertEqual("audio_cpp", services["default_service"])
-        self.assertEqual(5, services["builtin_defaults"]["max_attempts"])
+        self.assertEqual(10, services["builtin_defaults"]["max_attempts"])
         fish = next(
             service for service in services["services"] if service["id"] == "fishs2"
         )

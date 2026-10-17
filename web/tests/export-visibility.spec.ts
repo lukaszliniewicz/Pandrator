@@ -135,7 +135,9 @@ test('an older HTTP snapshot preserves newer live export progress and other jobs
         changed_entities: ['jobs']
       });
     }, session.id);
-    await expect(page.getByText('Newer live progress')).toBeVisible();
+    await expect(
+      page.getByText('Newer live progress', { exact: true })
+    ).toBeVisible();
   } finally {
     releaseSnapshot();
   }
@@ -144,7 +146,9 @@ test('an older HTTP snapshot preserves newer live export progress and other jobs
     page.getByRole('heading', { name: 'Audiobook output', exact: true })
   ).toBeVisible();
   await expect(page.getByText('Completed export')).toBeVisible();
-  await expect(page.getByText('Newer live progress')).toBeVisible();
+  await expect(
+    page.getByText('Newer live progress', { exact: true })
+  ).toBeVisible();
   await expect(
     page.getByRole('progressbar', { name: 'Export new-live progress' })
   ).toHaveAttribute('aria-valuenow', '90');
@@ -178,6 +182,10 @@ for (const kind of ['export.create', 'export.variant']) {
       progress_detail: 'Muxing the selected soundtrack'
     });
     items = [job];
+    const exportActivity = page.getByRole('region', {
+      name: 'Export activity',
+      exact: true
+    });
     // Progress must be processed directly, even when only jobs are invalidated.
     await page.evaluate(
       ({ sid, jobKind }) => {
@@ -195,7 +203,9 @@ for (const kind of ['export.create', 'export.variant']) {
     );
     await expect(page.getByText('Running export')).toBeVisible();
     await expect(
-      page.getByText('Muxing the selected soundtrack')
+      exportActivity.getByText('Muxing the selected soundtrack', {
+        exact: true
+      })
     ).toBeVisible();
     await expect(
       page.getByRole('progressbar', { name: 'Export live-job progress' })
@@ -234,12 +244,14 @@ for (const kind of ['export.create', 'export.variant']) {
       },
       { sid: session.id, jobKind: kind }
     );
-    await expect(page.getByText('Attaching subtitle tracks')).toBeVisible();
+    await expect(
+      exportActivity.getByText('Attaching subtitle tracks')
+    ).toBeVisible();
     await expect(page.getByText('Do not display other projects')).toHaveCount(
       0
     );
     await expect(
-      page.getByText('Do not display assemblies as exports')
+      exportActivity.getByText('Do not display assemblies as exports')
     ).toHaveCount(0);
     Object.assign(job, {
       status: 'failed',
@@ -261,10 +273,14 @@ for (const kind of ['export.create', 'export.variant']) {
       { sid: session.id, jobKind: kind }
     );
     await expect(page.getByText('Failed export')).toBeVisible();
-    await expect(page.getByText('The output drive is full.')).toBeVisible();
+    await expect(
+      exportActivity.getByText('The output drive is full.')
+    ).toBeVisible();
     await page.reload();
     await expect(page.getByText('Failed export')).toBeVisible();
-    await expect(page.getByText('The output drive is full.')).toBeVisible();
+    await expect(
+      exportActivity.getByText('The output drive is full.')
+    ).toBeVisible();
   });
 }
 

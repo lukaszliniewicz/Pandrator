@@ -14,9 +14,27 @@ class _McpCatalogueApplication:
     def __init__(self, payload):
         self.payload = payload
 
-    def tts_catalog(self, *, refresh):
+    def tts_catalog(self, *, refresh, service_id=None):
         del refresh
-        return self.payload
+        if service_id is None:
+            return self.payload
+        normalized_service_id = (
+            service_id.casefold().replace("-", "_").replace(" ", "_")
+        )
+        return {
+            **self.payload,
+            "services": [
+                service
+                for service in self.payload.get("services", [])
+                if (
+                    str(service.get("id") or service.get("name") or "")
+                    .casefold()
+                    .replace("-", "_")
+                    .replace(" ", "_")
+                    == normalized_service_id
+                )
+            ],
+        }
 
     def list_voices(self):
         return {"items": []}
