@@ -4,7 +4,9 @@ export default defineConfig({
   testDir: './tests',
   fullyParallel: false,
   workers: 1,
-  timeout: 45_000,
+  // Routed pages bypass the browser cache. Cold Windows loads can consume
+  // 20-30 seconds per view, so multi-page flows need a separate total budget.
+  timeout: process.platform === 'win32' ? 90_000 : 45_000,
   // Fresh Windows pages can spend more than eight seconds loading the static
   // bundle before hydration begins. Keep a bounded platform budget, not retries.
   expect: { timeout: process.platform === 'win32' ? 20_000 : 8_000 },
