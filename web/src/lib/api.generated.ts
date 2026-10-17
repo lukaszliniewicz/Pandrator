@@ -4823,7 +4823,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.12.0
+             * @default 0.13.0
              */
             application_version?: string;
             /** Canonical Origin */

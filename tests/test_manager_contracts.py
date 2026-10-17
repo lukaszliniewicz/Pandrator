@@ -117,7 +117,7 @@ def test_package_import_is_lazy_and_convenience_exports_are_actual_bindings(tmp_
 def test_legacy_version_matches_leaf_and_manager_project_version():
     with (REPOSITORY / "pandrator_manager" / "pyproject.toml").open("rb") as handle:
         project = tomllib.load(handle)
-    assert __version__ == leaf_version == project["project"]["version"] == "0.9.29"
+    assert __version__ == leaf_version == project["project"]["version"] == "0.9.30"
 
 
 @pytest.mark.parametrize("executable", [None, ""])

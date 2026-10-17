@@ -298,10 +298,10 @@ by both modern and maintained legacy hosts.
 
 ## Install
 
-The current release is 0.6.2. Use Pandrator 0.12.0 for the complete tool set,
-including speech editing, selective voice regeneration, pronunciation rules,
-and sound and music workflows. Older applications retain their existing workflows
-but cannot serve the new routes. Restart or
+Use the MCP and application packages from the same [Pandrator release](https://github.com/lukaszliniewicz/Pandrator/releases).
+Pandrator 0.13.0 provides the complete current tool set, including speech editing,
+selective voice regeneration, pronunciation rules, and subtitle passage editing.
+Older applications retain their existing workflows but cannot serve the new routes. Restart or
 reconnect long-running MCP clients after upgrading so their tool schemas refresh.
 With Python 3.11 or 3.12, install it as an isolated command-line tool:
 

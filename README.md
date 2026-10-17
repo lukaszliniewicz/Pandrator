@@ -33,6 +33,8 @@ Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.12.0 / Manager 0.9.29
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
+The 0.13.0 release is being prepared. See the [candidate notes](docs/release-notes-0.13.0.md) for upcoming changes; the downloads above remain the current published release.
+
 ## New in 0.12.0
 
 - **Shape the performance.** Edit speech, assign character voices, and add
