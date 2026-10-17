@@ -24,31 +24,24 @@ opens Pandrator in your browser. Older workspace data can still be imported.
 For the retired Qt desktop interface, use an
 [older release](https://github.com/lukaszliniewicz/Pandrator/releases).
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.12.0/PandratorManager-0.9.29-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.12.0/PandratorManager-0.9.29-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.13.0/PandratorManager-0.9.30-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.13.0/PandratorManager-0.9.30-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.12.0 / Manager 0.9.29
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.13.0 / Manager 0.9.30
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-The 0.13.0 release is being prepared. See the [candidate notes](docs/release-notes-0.13.0.md) for upcoming changes; the downloads above remain the current published release.
+## New in 0.13.0
 
-## New in 0.12.0
+- **Refine audiobook pacing.** Keep short dialogue exchanges together, split long sentences more carefully, and adjust pauses when assembling the audio.
+- **Choose how EPUB content is read.** Set narration preferences for tables and illustration text, with better handling of footnotes and ruby readings.
+- **Edit captions without re-recording.** Display-only edits preserve the spoken text and recordings. New subtitle exports use your current display text; historical wording remains available when you need it.
+- **Keep related work together.** Organize projects in virtual folders and keep language versions under one project.
+- **Use more local speech options.** audio.cpp 0.9.2 adds French PocketTTS and Voxtral TTS. Kokoro offers optional Japanese support with a separate dictionary download. Voxtral's weights are licensed for noncommercial use.
 
-- **Shape the performance.** Edit speech, assign character voices, and add
-  delivery directions in the generation workspace.
-- **Change a voice without starting over.** Regenerate the affected recordings,
-  compare Before and After, and return to the earlier audio when needed.
-- **Create sounds and music.** Generate or import clips, save them in a reusable
-  library, and place them alongside narration or voiceovers.
-- **Choose how much control you need.** Simple mode keeps everyday work focused;
-  Advanced mode exposes detailed speech and mixing controls.
-- **Turn an audiobook into a video book.** Export saved narration with timed
-  reading text and configurable presentation.
-
-See the [0.12.0 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.12.0).
+See the [0.13.0 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.13.0) and [detailed changes](docs/release-changes-0.13.0.md).
 
 ## Try your first workflow
 
