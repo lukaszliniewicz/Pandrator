@@ -64,7 +64,7 @@ dev = [
 pandrator = "pandrator.web.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/lukaszliniewicz/Pandrator"
+Homepage = "https://pandrator.liniewicz.eu/"
 Documentation = "https://github.com/lukaszliniewicz/Pandrator/tree/main/docs"
 Repository = "https://github.com/lukaszliniewicz/Pandrator"
 Issues = "https://github.com/lukaszliniewicz/Pandrator/issues"

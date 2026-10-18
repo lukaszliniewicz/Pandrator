@@ -6,6 +6,11 @@
 
 **Make audiobooks, subtitles, voiceovers, sounds, and music in one workspace.**
 
+[Website](https://pandrator.liniewicz.eu/en)
+· [Tutorials with screenshots](https://pandrator.liniewicz.eu/en/tutorials)
+· [Voice samples](https://pandrator.liniewicz.eu/en/examples)
+· [Po polsku](https://pandrator.liniewicz.eu/pl)
+
 Turn a book into something you can listen to. Transcribe a recording, translate
 its subtitles, or give it a new voice. Add sound effects and background music.
 Pandrator brings the steps together in a browser interface, with room to review
