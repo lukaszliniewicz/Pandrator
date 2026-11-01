@@ -44,6 +44,8 @@ graphify-out/
 htmlcov/
 web/node_modules/
 web/.svelte-kit/
+/.svelte-kit/
+/.vite/
 
 # Runtime data
 Outputs/
