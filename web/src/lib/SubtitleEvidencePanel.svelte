@@ -552,7 +552,9 @@
     <div class="mt-3">
       <AudioPlayer
         compact
-        src={projectLinkUrl(`/api/v1/artifacts/${latestRecord.clip_artifact_id}/content`)}
+        src={projectLinkUrl(
+          `/api/v1/artifacts/${latestRecord.clip_artifact_id}/content`
+        )}
         label="Bounded evidence clip"
       />
       <p class="muted mt-1 text-[.62rem] tabular-nums">

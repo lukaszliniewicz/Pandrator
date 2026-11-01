@@ -50,9 +50,7 @@ test('Administrator creates, edits and disables an account with protected initia
   await expect(
     row.getByText('Password not set', { exact: true })
   ).toBeVisible();
-  await expect(
-    page.getByText(/their sign-in is not enabled yet/)
-  ).toBeVisible();
+  await expect(page.getByText(/Solo mode is active/)).toBeVisible();
   await row.getByRole('button', { name: `Edit ${name}`, exact: true }).click();
   const edit = page.getByRole('dialog', { name: 'Edit account' });
   await expect(edit.getByLabel('Login name', { exact: true })).toBeDisabled();

@@ -1,0 +1,1738 @@
+{
+  "disclaimer": "Entirely synthetic data; password and credential are public test values. No real user data or provider calls.",
+  "files": {
+    "artifacts/release-rich/source.txt": "44a6cd9d065d38b1acd69d6d6ae61b4fafc4ae8013bac5c8ed4262f742421a50",
+    "artifacts/release-rich/source.wav": "2a3c7dd8ce7bbd15aaf0e1485f86186186ce2c0d46ee240c97f0715bc698f3c7",
+    "artifacts/release-rich/subtitles.srt": "30d7e833d4e4e7153141b1130ae864450785e5bef76bb9b83c135c4f33c01dc7",
+    "artifacts/release-rich/take-v1.wav": "ce8fbd7e22680b522d05f5457eaa3ca0816d1cc8f6818dacb9e048cddfcf2506",
+    "artifacts/release-rich/take-v2.wav": "5075cc2567772a019cb8b21a52715767feac28055cda410bae0c521a4125b336",
+    "artifacts/release-rich/voice-sample.wav": "3e559306fc58ec9e4b8b401505f958cff538cd9cd670aa6a5e6bf12b24e82f21",
+    "migration-web-v1.json": "330bed1b0944b3a7d948e6de7b792a7a18a38d2298ad72da2428c8f5d8aa3381"
+  },
+  "gzip_sha256": "766c4cf1304bdafe327d4049a040b8d903f76b9d6a0e814209fc857f581435b2",
+  "ids": {
+    "artifacts": {
+      "source": "2a7cc34e-61be-4447-ab40-fdac7f9fc39a",
+      "subtitles": "0184e36b-965a-457a-a283-f832f002a84b",
+      "take-v1": "a2708891-6df7-4f7d-8c9c-b4035fb8fb53",
+      "take-v2": "bcf03091-71a7-4c23-afce-9bba88bdcd81",
+      "text": "2469ad2b-c76e-4358-a50c-681b84aea4e9",
+      "voice-sample": "c794c271-3d9d-4933-85bd-e9a03e3c09cd"
+    },
+    "audiobook": "release-rich-audiobook",
+    "job": "4670b27a-765f-4c00-a1e8-ef8f516bccb8",
+    "plan": "a99d2f3f-7e62-4728-ba91-205553310e62",
+    "plan_revision": "692bb8dc-b535-47fa-ae43-f9187f5bb8b2",
+    "segment": "7ebca7f1-1aa5-4802-9007-d389f32e27d8",
+    "source": "d3ba4ec3-9c80-44f1-b42b-a324bed4e207",
+    "subtitle": "release-rich-subtitles"
+  },
+  "password": "synthetic-upgrade-password-2026",
+  "schema": "0058_project_folders",
+  "sql_sha256": "3b4be84f0940577faa06ffdfafcb71b18cf714d4b4ce473ebf8052daff2e7996",
+  "tables": {
+    "agent_runs": {
+      "columns": [
+        "id",
+        "kind",
+        "session_id",
+        "source_artifact_id",
+        "result_artifact_id",
+        "job_id",
+        "status",
+        "source_content_hash",
+        "settings_hash",
+        "checkpoint_revision",
+        "error_message",
+        "settings_json",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "agent_steps": {
+      "columns": [
+        "id",
+        "agent_run_id",
+        "ordinal",
+        "unit_key",
+        "input_hash",
+        "phase",
+        "status",
+        "summary",
+        "input_json",
+        "output_json",
+        "cost_usd",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "api_idempotency": {
+      "columns": [
+        "id",
+        "principal_subject",
+        "operation_id",
+        "idempotency_key",
+        "request_digest",
+        "state",
+        "status_code",
+        "response_json",
+        "resource_kind",
+        "resource_id",
+        "created_at",
+        "expires_at"
+      ],
+      "rows": []
+    },
+    "api_tokens": {
+      "columns": [
+        "id",
+        "label",
+        "token_hash",
+        "token_prefix",
+        "subject",
+        "scopes_json",
+        "expires_at",
+        "principal_kind",
+        "created_by",
+        "client_id",
+        "target_instance_id",
+        "canonical_origin",
+        "created_at",
+        "last_used_at",
+        "revoked_at"
+      ],
+      "rows": []
+    },
+    "app_settings": {
+      "columns": [
+        "key",
+        "value_json",
+        "revision",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "global",
+          "{}",
+          1,
+          "2026-11-01 16:13:34.968711"
+        ],
+        [
+          "qualification.release-rich",
+          "{\"credential_ref\": \"db:release-rich-provider\", \"language\": \"pl\", \"synthetic\": true}",
+          3,
+          "2026-11-01 16:13:35.259134"
+        ],
+        [
+          "system.identity",
+          "{\"schema_version\": \"1\", \"instance_id\": \"261513ee-e0e0-4567-af8a-44fd7dc9c22e\"}",
+          1,
+          "2026-11-01 16:13:34.998511"
+        ]
+      ]
+    },
+    "app_settings_history": {
+      "columns": [
+        "id",
+        "key",
+        "value_json",
+        "revision",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "artifact_edges": {
+      "columns": [
+        "parent_artifact_id",
+        "child_artifact_id",
+        "relation"
+      ],
+      "rows": []
+    },
+    "artifacts": {
+      "columns": [
+        "id",
+        "session_id",
+        "kind",
+        "role",
+        "relative_path",
+        "mime_type",
+        "size_bytes",
+        "content_hash",
+        "state",
+        "settings_hash",
+        "metadata_json",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "0184e36b-965a-457a-a283-f832f002a84b",
+          "release-rich-subtitles",
+          "subtitle",
+          "transcription",
+          "artifacts/release-rich/subtitles.srt",
+          "text/plain",
+          51,
+          "30d7e833d4e4e7153141b1130ae864450785e5bef76bb9b83c135c4f33c01dc7",
+          "current",
+          null,
+          "{}",
+          "2026-11-01 16:13:35.187253",
+          "2026-11-01 16:13:35.187257"
+        ],
+        [
+          "2469ad2b-c76e-4358-a50c-681b84aea4e9",
+          "release-rich-audiobook",
+          "text",
+          "source_text",
+          "artifacts/release-rich/source.txt",
+          "text/plain",
+          29,
+          "44a6cd9d065d38b1acd69d6d6ae61b4fafc4ae8013bac5c8ed4262f742421a50",
+          "current",
+          null,
+          "{}",
+          "2026-11-01 16:13:35.181556",
+          "2026-11-01 16:13:35.181560"
+        ],
+        [
+          "2a7cc34e-61be-4447-ab40-fdac7f9fc39a",
+          "release-rich-audiobook",
+          "audio",
+          "source_audio",
+          "artifacts/release-rich/source.wav",
+          "audio/x-wav",
+          204,
+          "2a3c7dd8ce7bbd15aaf0e1485f86186186ce2c0d46ee240c97f0715bc698f3c7",
+          "current",
+          null,
+          "{}",
+          "2026-11-01 16:13:35.163697",
+          "2026-11-01 16:13:35.163701"
+        ],
+        [
+          "a2708891-6df7-4f7d-8c9c-b4035fb8fb53",
+          "release-rich-audiobook",
+          "audio",
+          "artifact",
+          "artifacts/release-rich/take-v1.wav",
+          "audio/x-wav",
+          204,
+          "ce8fbd7e22680b522d05f5457eaa3ca0816d1cc8f6818dacb9e048cddfcf2506",
+          "current",
+          null,
+          "{}",
+          "2026-11-01 16:13:35.167436",
+          "2026-11-01 16:13:35.167439"
+        ],
+        [
+          "bcf03091-71a7-4c23-afce-9bba88bdcd81",
+          "release-rich-audiobook",
+          "audio",
+          "artifact",
+          "artifacts/release-rich/take-v2.wav",
+          "audio/x-wav",
+          204,
+          "5075cc2567772a019cb8b21a52715767feac28055cda410bae0c521a4125b336",
+          "current",
+          null,
+          "{}",
+          "2026-11-01 16:13:35.170857",
+          "2026-11-01 16:13:35.170860"
+        ],
+        [
+          "c794c271-3d9d-4933-85bd-e9a03e3c09cd",
+          null,
+          "audio",
+          "artifact",
+          "artifacts/release-rich/voice-sample.wav",
+          "audio/x-wav",
+          204,
+          "3e559306fc58ec9e4b8b401505f958cff538cd9cd670aa6a5e6bf12b24e82f21",
+          "current",
+          null,
+          "{}",
+          "2026-11-01 16:13:35.177215",
+          "2026-11-01 16:13:35.177218"
+        ]
+      ]
+    },
+    "audio_takes": {
+      "columns": [
+        "id",
+        "generation_segment_id",
+        "generation_run_id",
+        "artifact_id",
+        "parent_take_id",
+        "kind",
+        "status",
+        "settings_hash",
+        "duration_ms",
+        "is_active",
+        "revision",
+        "created_at"
+      ],
+      "rows": [
+        [
+          "release-rich-take-v1",
+          "7ebca7f1-1aa5-4802-9007-d389f32e27d8",
+          "release-rich-run",
+          "a2708891-6df7-4f7d-8c9c-b4035fb8fb53",
+          null,
+          "tts",
+          "completed",
+          null,
+          10,
+          1,
+          1,
+          "2026-11-01 16:13:35.351867"
+        ],
+        [
+          "release-rich-take-v2",
+          "7ebca7f1-1aa5-4802-9007-d389f32e27d8",
+          "release-rich-run",
+          "bcf03091-71a7-4c23-afce-9bba88bdcd81",
+          "release-rich-take-v1",
+          "tts",
+          "completed",
+          null,
+          10,
+          0,
+          2,
+          "2026-11-01 16:13:35.357638"
+        ]
+      ]
+    },
+    "audit_events": {
+      "columns": [
+        "id",
+        "request_id",
+        "traceparent",
+        "principal_subject",
+        "principal_kind",
+        "scopes_json",
+        "action",
+        "method",
+        "path",
+        "idempotency_key",
+        "plan_id",
+        "plan_digest",
+        "resource_kind",
+        "resource_id",
+        "outcome",
+        "status_code",
+        "duration_ms",
+        "metadata_json",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "automation_clients": {
+      "columns": [
+        "id",
+        "name",
+        "subject",
+        "redirect_uris_json",
+        "allowed_scopes_json",
+        "target_instance_id",
+        "canonical_origin",
+        "created_by",
+        "created_at",
+        "last_used_at",
+        "revoked_at"
+      ],
+      "rows": []
+    },
+    "automation_enrollment_grants": {
+      "columns": [
+        "id",
+        "client_id",
+        "code_hash",
+        "code_prefix",
+        "redirect_uri",
+        "scopes_json",
+        "code_challenge",
+        "code_challenge_method",
+        "expires_at",
+        "token_expires_at",
+        "consumed_at",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "capability_snapshots": {
+      "columns": [
+        "id",
+        "payload_json",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "dispatch_batches": {
+      "columns": [
+        "id",
+        "dispatch_run_id",
+        "ordinal",
+        "input_json",
+        "input_hash",
+        "status",
+        "lease_token",
+        "claim_key",
+        "lease_expires_at",
+        "normalized_output_json",
+        "output_hash",
+        "submission_key",
+        "accepted_at",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "dispatch_runs": {
+      "columns": [
+        "id",
+        "session_id",
+        "kind",
+        "output_role",
+        "source_artifact_id",
+        "source_revision_id",
+        "source_state",
+        "source_content_hash",
+        "source_language",
+        "target_language",
+        "settings_json",
+        "selection_snapshot_json",
+        "input_hash",
+        "output_head_artifact_id",
+        "result_artifact_id",
+        "result_revision_id",
+        "glossary_json",
+        "status",
+        "batch_count",
+        "completed_batch_count",
+        "error_code",
+        "error_message",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "document_revisions": {
+      "columns": [
+        "id",
+        "document_id",
+        "parent_revision_id",
+        "revision_number",
+        "content_hash",
+        "reviewed",
+        "settings_hash",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "documents": {
+      "columns": [
+        "id",
+        "session_id",
+        "stage",
+        "language",
+        "active_revision_id",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "exports": {
+      "columns": [
+        "id",
+        "session_id",
+        "job_id",
+        "artifact_id",
+        "options_json",
+        "status",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "generation_plan_revisions": {
+      "columns": [
+        "id",
+        "plan_id",
+        "source_revision_id",
+        "parent_revision_id",
+        "revision_number",
+        "settings_json",
+        "operation_json",
+        "content_hash",
+        "created_at"
+      ],
+      "rows": [
+        [
+          "692bb8dc-b535-47fa-ae43-f9187f5bb8b2",
+          "a99d2f3f-7e62-4728-ba91-205553310e62",
+          null,
+          null,
+          1,
+          "{\"synthetic\": true}",
+          "{}",
+          "e0bfe93f846bac07e94733f95931fc680ff15c5088a64308ef3e547904ad6430",
+          "2026-11-01 16:13:35.285916"
+        ]
+      ]
+    },
+    "generation_plans": {
+      "columns": [
+        "id",
+        "session_id",
+        "active_revision_id",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "a99d2f3f-7e62-4728-ba91-205553310e62",
+          "release-rich-audiobook",
+          "692bb8dc-b535-47fa-ae43-f9187f5bb8b2",
+          "2026-11-01 16:13:35.279733",
+          "2026-11-01 16:13:35.293156"
+        ]
+      ]
+    },
+    "generation_runs": {
+      "columns": [
+        "id",
+        "session_id",
+        "plan_revision_id",
+        "source_generation_run_id",
+        "output_generation_run_id",
+        "job_id",
+        "sequence_number",
+        "operation",
+        "status",
+        "pause_requested",
+        "cancel_requested",
+        "resume_source_on_completion",
+        "settings_snapshot_json",
+        "audio_version_json",
+        "settings_hash",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "release-rich-run",
+          "release-rich-audiobook",
+          "692bb8dc-b535-47fa-ae43-f9187f5bb8b2",
+          null,
+          null,
+          null,
+          1,
+          "generate",
+          "completed",
+          0,
+          0,
+          0,
+          "{\"synthetic\": true}",
+          null,
+          null,
+          "2026-11-01 16:13:35.336064",
+          "2026-11-01 16:13:35.336072"
+        ]
+      ]
+    },
+    "generation_segment_revisions": {
+      "columns": [
+        "id",
+        "generation_segment_id",
+        "revision",
+        "ordinal",
+        "source_segment_ids_json",
+        "speech_block_provenance_json",
+        "alignment_group",
+        "node_kind",
+        "paragraph_break_after",
+        "speaker",
+        "text",
+        "optimized_text",
+        "speech_plan_json",
+        "optimization_status",
+        "optimization_reviewed",
+        "marked",
+        "removed",
+        "voice_id",
+        "voice",
+        "language",
+        "silence_after_ms",
+        "created_at"
+      ],
+      "rows": [
+        [
+          1,
+          "7ebca7f1-1aa5-4802-9007-d389f32e27d8",
+          1,
+          0,
+          "[]",
+          "{}",
+          null,
+          "paragraph",
+          0,
+          null,
+          "Synthetic original draft.",
+          null,
+          "{}",
+          "not_requested",
+          0,
+          0,
+          0,
+          "release-rich-voice",
+          null,
+          "en",
+          0,
+          "2026-11-01 16:13:35.341312"
+        ]
+      ]
+    },
+    "generation_segments": {
+      "columns": [
+        "id",
+        "plan_revision_id",
+        "ordinal",
+        "source_segment_ids_json",
+        "speech_block_provenance_json",
+        "alignment_group",
+        "node_kind",
+        "paragraph_break_after",
+        "speaker",
+        "text",
+        "optimized_text",
+        "speech_plan_json",
+        "optimization_status",
+        "optimization_source_hash",
+        "optimization_reviewed",
+        "optimization_model",
+        "voice_id",
+        "voice",
+        "language",
+        "silence_after_ms",
+        "marked",
+        "removed",
+        "status",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "7ebca7f1-1aa5-4802-9007-d389f32e27d8",
+          "692bb8dc-b535-47fa-ae43-f9187f5bb8b2",
+          0,
+          "[]",
+          "{}",
+          null,
+          "paragraph",
+          0,
+          null,
+          "Synthetic historical source.",
+          null,
+          "{\"pause_kind\": \"sentence\"}",
+          "not_requested",
+          null,
+          0,
+          null,
+          "release-rich-voice",
+          null,
+          "en",
+          250,
+          0,
+          0,
+          "completed",
+          1,
+          "2026-11-01 16:13:35.300221",
+          "2026-11-01 16:13:35.300231"
+        ]
+      ]
+    },
+    "job_events": {
+      "columns": [
+        "id",
+        "job_id",
+        "event_type",
+        "payload_json",
+        "created_at"
+      ],
+      "rows": [
+        [
+          1,
+          "4670b27a-765f-4c00-a1e8-ef8f516bccb8",
+          "job.queued",
+          "{\"kind\": \"noop\", \"session_id\": \"release-rich-audiobook\", \"job_kind\": \"noop\", \"workflow_run_id\": null, \"status\": \"queued\", \"progress\": 0.0, \"changed_entities\": [\"jobs\", \"workflow\"]}",
+          "2026-11-01 16:13:35.385637"
+        ]
+      ]
+    },
+    "jobs": {
+      "columns": [
+        "id",
+        "kind",
+        "session_id",
+        "workflow_run_id",
+        "status",
+        "payload_json",
+        "resource_keys_json",
+        "result_json",
+        "progress",
+        "progress_detail",
+        "error_code",
+        "error_message",
+        "lease_owner",
+        "lease_expires_at",
+        "lease_generation",
+        "available_at",
+        "attempts",
+        "max_attempts",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "4670b27a-765f-4c00-a1e8-ef8f516bccb8",
+          "noop",
+          "release-rich-audiobook",
+          null,
+          "queued",
+          "{\"synthetic\": true, \"message\": \"preserve queued legacy payload\"}",
+          "[]",
+          null,
+          0.0,
+          null,
+          null,
+          null,
+          null,
+          null,
+          0,
+          null,
+          0,
+          2,
+          "2026-11-01 16:13:35.367552",
+          null,
+          null,
+          "2026-11-01 16:13:35.367560"
+        ]
+      ]
+    },
+    "knowledge_ledgers": {
+      "columns": [
+        "id",
+        "session_id",
+        "kind",
+        "source_language",
+        "target_language",
+        "payload_json",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "media_edit_dispatch_batches": {
+      "columns": [
+        "id",
+        "dispatch_run_id",
+        "ordinal",
+        "input_json",
+        "input_hash",
+        "status",
+        "lease_token",
+        "claim_key",
+        "lease_expires_at",
+        "normalized_output_json",
+        "output_hash",
+        "submission_key",
+        "accepted_at",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "media_edit_dispatch_runs": {
+      "columns": [
+        "id",
+        "session_id",
+        "source_revision_id",
+        "source_revision_number",
+        "source_content_hash",
+        "instructions",
+        "settings_json",
+        "input_hash",
+        "status",
+        "batch_count",
+        "completed_batch_count",
+        "result_revision_id",
+        "error_code",
+        "error_message",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "media_edit_plan_revisions": {
+      "columns": [
+        "id",
+        "plan_id",
+        "parent_revision_id",
+        "revision_number",
+        "source_media_artifact_id",
+        "editorial_transcript_artifact_id",
+        "timing_artifact_id",
+        "duration_ms",
+        "instructions",
+        "keep_ranges_json",
+        "cues_json",
+        "evidence_json",
+        "operation_json",
+        "reviewed",
+        "content_hash",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "media_edit_plans": {
+      "columns": [
+        "id",
+        "session_id",
+        "active_revision_id",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "outcome_plan_history": {
+      "columns": [
+        "id",
+        "session_id",
+        "value_json",
+        "revision",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "outcome_plans": {
+      "columns": [
+        "session_id",
+        "value_json",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "output_assemblies": {
+      "columns": [
+        "id",
+        "session_id",
+        "generation_run_id",
+        "job_id",
+        "artifact_id",
+        "status",
+        "settings_json",
+        "settings_hash",
+        "error_message",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "owner_account": {
+      "columns": [
+        "singleton_id",
+        "password_hash",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          1,
+          "$argon2id$v=19$m=65536,t=3,p=4$NEePqczfbLr9wkw1pA1bgQ$7Hu0Kzg5qO6xEWsFFygK3ZgDfGZM5n0VUUWR6nCutXg",
+          "2026-11-01 16:13:35.083640",
+          "2026-11-01 16:13:35.083645"
+        ]
+      ]
+    },
+    "performance_batches": {
+      "columns": [
+        "id",
+        "performance_plan_id",
+        "ordinal",
+        "segment_ids_json",
+        "status",
+        "lease_token",
+        "lease_expires_at",
+        "annotations_json",
+        "response_hash",
+        "usage_json"
+      ],
+      "rows": []
+    },
+    "performance_plans": {
+      "columns": [
+        "id",
+        "session_id",
+        "plan_revision_id",
+        "base_signature",
+        "settings_json",
+        "units_json",
+        "manual_annotations_json",
+        "status",
+        "version",
+        "job_id",
+        "created_at",
+        "adopted_at"
+      ],
+      "rows": []
+    },
+    "project_folder_memberships": {
+      "columns": [
+        "folder_id",
+        "project_session_id",
+        "position"
+      ],
+      "rows": []
+    },
+    "project_folders": {
+      "columns": [
+        "id",
+        "name",
+        "parent_id",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "project_sound_cues": {
+      "columns": [
+        "id",
+        "logical_id",
+        "plan_id",
+        "variant_id",
+        "anchor_json",
+        "playback_json",
+        "included",
+        "placement_status",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "project_sound_plans": {
+      "columns": [
+        "id",
+        "session_id",
+        "revision",
+        "speech_plan_revision_id",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "pronunciation_entries": {
+      "columns": [
+        "id",
+        "scope",
+        "session_id",
+        "source_form",
+        "normalized_form",
+        "language",
+        "phonetic",
+        "alphabet",
+        "backend",
+        "status",
+        "source",
+        "notes",
+        "metadata_json",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "provider_models": {
+      "columns": [
+        "id",
+        "provider_id",
+        "model_id",
+        "is_active",
+        "is_default",
+        "default_temperature",
+        "default_reasoning_effort",
+        "input_cost_per_million",
+        "cached_input_cost_per_million",
+        "output_cost_per_million",
+        "context_window_tokens",
+        "max_output_tokens",
+        "input_modalities_json",
+        "output_modalities_json",
+        "options_json",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "providers": {
+      "columns": [
+        "id",
+        "kind",
+        "provider_key",
+        "label",
+        "enabled",
+        "base_url",
+        "secret_ref",
+        "options_json",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "quick_transcriptions": {
+      "columns": [
+        "id",
+        "owner_subject",
+        "job_id",
+        "source_suffix",
+        "size_bytes",
+        "sha256",
+        "uploaded_bytes",
+        "next_chunk_index",
+        "format",
+        "settings_json",
+        "state",
+        "created_at",
+        "expires_at"
+      ],
+      "rows": []
+    },
+    "research_cache_entries": {
+      "columns": [
+        "cache_key",
+        "provider",
+        "operation",
+        "request_json",
+        "response_json",
+        "created_at",
+        "expires_at"
+      ],
+      "rows": []
+    },
+    "resource_claims": {
+      "columns": [
+        "resource_key",
+        "job_id",
+        "lease_owner",
+        "lease_generation",
+        "expires_at",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "segment_lineage": {
+      "columns": [
+        "parent_segment_id",
+        "child_segment_id",
+        "relation",
+        "sequence"
+      ],
+      "rows": []
+    },
+    "segments": {
+      "columns": [
+        "id",
+        "revision_id",
+        "ordinal",
+        "node_kind",
+        "start_ms",
+        "end_ms",
+        "text",
+        "speaker",
+        "metadata_json"
+      ],
+      "rows": []
+    },
+    "session_purges": {
+      "columns": [
+        "session_id",
+        "state",
+        "manifest_json",
+        "expected_revision",
+        "impact_token",
+        "error_message",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "session_settings": {
+      "columns": [
+        "session_id",
+        "section",
+        "value_json",
+        "revision",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "release-rich-audiobook",
+          "tts",
+          "{\"voice_mode_version\": 1}",
+          0,
+          "2026-11-01 16:13:35.149496"
+        ]
+      ]
+    },
+    "session_settings_history": {
+      "columns": [
+        "id",
+        "session_id",
+        "section",
+        "value_json",
+        "revision",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "session_sources": {
+      "columns": [
+        "id",
+        "session_id",
+        "source_asset_id",
+        "role",
+        "is_current",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "08555c4c-6a4a-4d72-83a3-27f6df0aa996",
+          "release-rich-audiobook",
+          "d3ba4ec3-9c80-44f1-b42b-a324bed4e207",
+          "primary",
+          1,
+          1,
+          "2026-11-01 16:13:35.230499",
+          "2026-11-01 16:13:35.230510"
+        ]
+      ]
+    },
+    "session_stage_selections": {
+      "columns": [
+        "session_id",
+        "stage_key",
+        "artifact_id",
+        "revision",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "release-rich-audiobook",
+          "clean_source",
+          null,
+          1,
+          "2026-11-01 16:13:35.240932"
+        ],
+        [
+          "release-rich-audiobook",
+          "correct",
+          null,
+          1,
+          "2026-11-01 16:13:35.237832"
+        ],
+        [
+          "release-rich-audiobook",
+          "edit_media",
+          null,
+          1,
+          "2026-11-01 16:13:35.236113"
+        ],
+        [
+          "release-rich-audiobook",
+          "optimize_tts",
+          null,
+          1,
+          "2026-11-01 16:13:35.244675"
+        ],
+        [
+          "release-rich-audiobook",
+          "prepare_text",
+          null,
+          1,
+          "2026-11-01 16:13:35.242785"
+        ],
+        [
+          "release-rich-audiobook",
+          "transcribe",
+          null,
+          1,
+          "2026-11-01 16:13:35.234561"
+        ],
+        [
+          "release-rich-audiobook",
+          "translate",
+          null,
+          1,
+          "2026-11-01 16:13:35.239393"
+        ],
+        [
+          "release-rich-subtitles",
+          "transcribe",
+          "0184e36b-965a-457a-a283-f832f002a84b",
+          1,
+          "2026-11-01 16:13:35.192826"
+        ]
+      ]
+    },
+    "sessions": {
+      "columns": [
+        "id",
+        "name",
+        "storage_key",
+        "legacy_name",
+        "legacy_path",
+        "workflow_kind",
+        "interface_mode",
+        "source_language",
+        "target_language",
+        "workflow_preset",
+        "included_stages_json",
+        "status",
+        "revision",
+        "created_at",
+        "updated_at",
+        "trashed_at",
+        "purge_after"
+      ],
+      "rows": [
+        [
+          "release-rich-audiobook",
+          "Synthetic preservation audiobook",
+          "release-rich-audiobook",
+          null,
+          null,
+          "audiobook",
+          "simple",
+          "en",
+          null,
+          "custom",
+          "[]",
+          "idle",
+          1,
+          "2026-11-01 16:13:35.148525",
+          "2026-11-01 16:13:35.148528",
+          null,
+          null
+        ],
+        [
+          "release-rich-subtitles",
+          "Synthetic Polish subtitles",
+          "release-rich-subtitles",
+          null,
+          null,
+          "subtitles",
+          "simple",
+          "en",
+          "pl",
+          "custom",
+          "[]",
+          "idle",
+          1,
+          "2026-11-01 16:13:35.152274",
+          "2026-11-01 16:13:35.152276",
+          null,
+          null
+        ]
+      ]
+    },
+    "sound_items": {
+      "columns": [
+        "id",
+        "name",
+        "tags_json",
+        "revision",
+        "archived",
+        "preferred_variant_id",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "sound_variants": {
+      "columns": [
+        "id",
+        "item_id",
+        "job_id",
+        "artifact_id",
+        "state",
+        "fingerprint",
+        "provenance_json",
+        "sample_rate",
+        "channels",
+        "frame_count",
+        "duration_seconds",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "source_assets": {
+      "columns": [
+        "id",
+        "artifact_id",
+        "display_name",
+        "kind",
+        "mime_type",
+        "external_path",
+        "size_bytes",
+        "content_hash",
+        "state",
+        "metadata_json",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "d3ba4ec3-9c80-44f1-b42b-a324bed4e207",
+          "2a7cc34e-61be-4447-ab40-fdac7f9fc39a",
+          "source.wav",
+          "wav",
+          "audio/x-wav",
+          null,
+          204,
+          "2a3c7dd8ce7bbd15aaf0e1485f86186186ce2c0d46ee240c97f0715bc698f3c7",
+          "current",
+          "{\"legacy_session_id\": \"release-rich-audiobook\"}",
+          1,
+          "2026-11-01 16:13:35.207428",
+          "2026-11-01 16:13:35.207439"
+        ]
+      ]
+    },
+    "source_cleaning_dispatch_batches": {
+      "columns": [
+        "id",
+        "dispatch_run_id",
+        "ordinal",
+        "phase",
+        "input_json",
+        "input_hash",
+        "status",
+        "lease_token",
+        "claim_key",
+        "lease_expires_at",
+        "normalized_output_json",
+        "output_hash",
+        "submission_key",
+        "accepted_at",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "source_cleaning_dispatch_runs": {
+      "columns": [
+        "id",
+        "session_id",
+        "job_id",
+        "source_artifact_id",
+        "source_state",
+        "source_content_hash",
+        "source_format",
+        "settings_json",
+        "selection_snapshot_json",
+        "input_hash",
+        "output_head_artifact_id",
+        "baseline_artifact_id",
+        "index_artifact_id",
+        "result_artifact_id",
+        "status",
+        "batch_count",
+        "completed_batch_count",
+        "accepted_operation_count",
+        "rejected_proposal_count",
+        "validation_json",
+        "error_code",
+        "error_message",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "sources": {
+      "columns": [
+        "id",
+        "session_id",
+        "kind",
+        "display_name",
+        "artifact_id",
+        "external_path",
+        "content_hash",
+        "metadata_json",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "speech_optimization_dispatch_batches": {
+      "columns": [
+        "id",
+        "dispatch_run_id",
+        "ordinal",
+        "input_json",
+        "input_hash",
+        "status",
+        "lease_token",
+        "claim_key",
+        "lease_expires_at",
+        "normalized_output_json",
+        "output_hash",
+        "submission_key",
+        "accepted_at",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "speech_optimization_dispatch_runs": {
+      "columns": [
+        "id",
+        "session_id",
+        "source_artifact_id",
+        "source_state",
+        "source_content_hash",
+        "source_format",
+        "language",
+        "voice_language",
+        "tts_service",
+        "settings_json",
+        "selection_snapshot_json",
+        "input_hash",
+        "output_head_artifact_id",
+        "result_artifact_id",
+        "result_revision_id",
+        "status",
+        "batch_count",
+        "completed_batch_count",
+        "error_code",
+        "error_message",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "speech_plan_reviews": {
+      "columns": [
+        "revision_id",
+        "content_hash",
+        "reviewed_at"
+      ],
+      "rows": []
+    },
+    "stage_runs": {
+      "columns": [
+        "id",
+        "workflow_run_id",
+        "stage_key",
+        "status",
+        "settings_hash",
+        "artifact_id",
+        "detail",
+        "started_at",
+        "finished_at"
+      ],
+      "rows": []
+    },
+    "stored_credentials": {
+      "columns": [
+        "key",
+        "label",
+        "secret_value",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "release-rich-provider",
+          "Synthetic preservation key",
+          "SYNTHETIC-NOT-A-REAL-CREDENTIAL",
+          "2026-11-01 16:13:35.260476",
+          "2026-11-01 16:13:35.260483"
+        ]
+      ]
+    },
+    "subtitle_evidence": {
+      "columns": [
+        "id",
+        "session_id",
+        "source_artifact_id",
+        "source_media_artifact_id",
+        "source_revision_id",
+        "source_segment_id",
+        "cue_id",
+        "start_ms",
+        "end_ms",
+        "clip_start_ms",
+        "clip_end_ms",
+        "reason",
+        "routes_json",
+        "audio_model_ids_json",
+        "status",
+        "job_id",
+        "clip_artifact_id",
+        "candidates_json",
+        "resolution_json",
+        "error_message",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "timed_words": {
+      "columns": [
+        "id",
+        "revision_id",
+        "segment_id",
+        "ordinal",
+        "text",
+        "start_ms",
+        "end_ms",
+        "speaker",
+        "confidence",
+        "metadata_json"
+      ],
+      "rows": []
+    },
+    "training_runs": {
+      "columns": [
+        "id",
+        "kind",
+        "voice_id",
+        "job_id",
+        "source_artifact_id",
+        "source_text_artifact_id",
+        "output_artifact_id",
+        "model_name",
+        "status",
+        "settings_json",
+        "error_message",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "translation_project_branches": {
+      "columns": [
+        "id",
+        "project_id",
+        "session_id",
+        "target_language",
+        "source_checkpoint_artifact_id",
+        "source_content_hash",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "translation_project_operations": {
+      "columns": [
+        "id",
+        "project_id",
+        "principal_subject",
+        "target_instance_id",
+        "action",
+        "status",
+        "preview_digest",
+        "preview_json",
+        "children_json",
+        "revision",
+        "cancel_requested",
+        "created_at",
+        "updated_at",
+        "expires_at"
+      ],
+      "rows": []
+    },
+    "translation_projects": {
+      "columns": [
+        "id",
+        "name",
+        "source_session_id",
+        "checkpoint_artifact_id",
+        "source_content_hash",
+        "source_language",
+        "source_media_edit_revision_id",
+        "source_media_edit_content_hash",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "upload_sessions": {
+      "columns": [
+        "id",
+        "session_id",
+        "filename",
+        "mime_type",
+        "size_bytes",
+        "chunk_size",
+        "chunk_count",
+        "received_json",
+        "expected_hash",
+        "temporary_relative_path",
+        "state",
+        "result_json",
+        "created_at",
+        "updated_at",
+        "expires_at"
+      ],
+      "rows": []
+    },
+    "usage_events": {
+      "columns": [
+        "id",
+        "session_id",
+        "workflow_run_id",
+        "job_id",
+        "artifact_id",
+        "generation_run_id",
+        "agent_run_id",
+        "request_key",
+        "stage",
+        "provider_key",
+        "model_id",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "cost_source",
+        "raw_usage_json",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "voice_catalog_overrides": {
+      "columns": [
+        "voice_key",
+        "voice_ref_json",
+        "name",
+        "description",
+        "voice_category",
+        "profile_json",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "voice_collection_members": {
+      "columns": [
+        "collection_id",
+        "voice_key",
+        "voice_ref_json",
+        "managed_voice_id",
+        "created_at"
+      ],
+      "rows": []
+    },
+    "voice_collections": {
+      "columns": [
+        "id",
+        "name",
+        "description",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "voice_samples": {
+      "columns": [
+        "id",
+        "voice_id",
+        "artifact_id",
+        "transcript",
+        "transcript_language",
+        "transcript_reviewed",
+        "created_at"
+      ],
+      "rows": [
+        [
+          "release-rich-sample",
+          "release-rich-voice",
+          "c794c271-3d9d-4933-85bd-e9a03e3c09cd",
+          "Synthetic sample transcript.",
+          "en",
+          1,
+          "2026-11-01 16:13:35.268536"
+        ]
+      ]
+    },
+    "voices": {
+      "columns": [
+        "id",
+        "name",
+        "language",
+        "description",
+        "rvc_model_ref",
+        "metadata_json",
+        "revision",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": [
+        [
+          "release-rich-voice",
+          "Synthetic preservation voice",
+          "en",
+          null,
+          null,
+          "{\"synthetic\": true}",
+          1,
+          "2026-11-01 16:13:35.254045",
+          "2026-11-01 16:13:35.254053"
+        ]
+      ]
+    },
+    "workflow_execution_plans": {
+      "columns": [
+        "id",
+        "session_id",
+        "principal_subject",
+        "target_instance_id",
+        "plan_digest",
+        "plan_json",
+        "state_fingerprint",
+        "required_confirmations_json",
+        "resulting_job_id",
+        "created_at",
+        "expires_at",
+        "consumed_at"
+      ],
+      "rows": []
+    },
+    "workflow_runs": {
+      "columns": [
+        "id",
+        "session_id",
+        "preset",
+        "status",
+        "settings_json",
+        "created_at",
+        "updated_at"
+      ],
+      "rows": []
+    }
+  },
+  "wheel_sha256": "e5794a13bd5736c5e1336a19ddc4d17cf287f97f7c7ef6b85cde89603fb22042",
+  "wheel_url": "https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.13.0/pandrator-0.13.0-py3-none-any.whl"
+}

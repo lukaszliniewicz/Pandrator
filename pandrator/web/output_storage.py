@@ -93,8 +93,11 @@ def reserve_output_space(
     estimated_bytes: int,
     *,
     label: str = "output",
+    preserve_existing: bool = False,
 ) -> None:
     """Reserve additional working bytes on this destination's filesystem."""
+    if not isinstance(preserve_existing, bool):
+        raise TypeError("preserve_existing must be a boolean")
     if type(estimated_bytes) is int and estimated_bytes == 0:
         return
     running = current_job_lease.get() if _active_scope.get() else None
@@ -110,6 +113,7 @@ def reserve_output_space(
             StorageRequirement(path, estimated_bytes, label),
             StorageRequirement(database.path, _HEADER_BYTES, "database metadata"),
         ],
+        preserve_existing=preserve_existing,
     )
     if lease is not None and facts:
         _reserved_lease.set(lease)

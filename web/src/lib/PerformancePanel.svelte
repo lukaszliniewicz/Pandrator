@@ -1156,8 +1156,10 @@
             ></select
           ></label
         >
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users must be able to scroll this list after its buttons are disabled.) -->
         <nav
           aria-label="Speech blocks"
+          tabindex="0"
           class:workspace-blocks={workspace}
           class="max-h-48 overflow-auto rounded-xl border border-[var(--line)] divide-y divide-[var(--line)]"
         >

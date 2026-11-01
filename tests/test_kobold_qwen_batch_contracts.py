@@ -73,7 +73,7 @@ def _completed_event(item_id="0"):
 
 @pytest.mark.parametrize("error", [{"detail": "temporary", "retryable": True}, "malformed"])
 def test_native_http_reader_preserves_completed_and_normalized_failed_events(
-    monkeypatch, reader_threads, error
+    monkeypatch, reader_threads, error, host_model_acquisition
 ):
     response = CountingResponse(
         [
@@ -110,7 +110,9 @@ def test_native_http_reader_preserves_completed_and_normalized_failed_events(
     assert reader_threads[0].name == "qwen-batch-reader" and reader_threads[0].daemon
 
 
-def test_native_http_reader_propagates_bad_ndjson_and_closes_response(monkeypatch, reader_threads):
+def test_native_http_reader_propagates_bad_ndjson_and_closes_response(
+    monkeypatch, reader_threads, host_model_acquisition
+):
     response = CountingResponse(["not valid JSON"])
     monkeypatch.setattr(tts_handler.requests, "post", lambda *_args, **_options: response)
     with pytest.raises(RuntimeError, match="invalid NDJSON"):
@@ -175,7 +177,9 @@ def test_reader_close_signals_the_admitted_native_producer(monkeypatch, reader_t
         stream.close()
 
 
-def test_native_reader_cancellation_stops_after_the_inflight_result(monkeypatch, reader_threads):
+def test_native_reader_cancellation_stops_after_the_inflight_result(
+    monkeypatch, reader_threads, host_model_acquisition
+):
     cancel = threading.Event()
     cancel.set()
     response = CountingResponse([_completed_event("0"), _completed_event("1")])
@@ -202,7 +206,9 @@ def test_empty_reader_does_not_start_a_worker_or_request(monkeypatch, reader_thr
     assert reader_threads == []
 
 
-def test_native_reader_http_error_closes_its_unconsumed_response(monkeypatch, reader_threads):
+def test_native_reader_http_error_closes_its_unconsumed_response(
+    monkeypatch, reader_threads, host_model_acquisition
+):
     response = CountingResponse([])
     response.status_code = 500
     response.reason = "controlled server failure"

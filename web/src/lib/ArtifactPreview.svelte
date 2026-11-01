@@ -74,13 +74,15 @@
     sources?: { url: string; title?: string }[];
   };
   let subtitleTracks = $state<SubtitleTrack[]>([]);
-  const url = $derived(projectLinkUrl(
-    `/api/v1/artifacts/${artifact.id}/content${
-      artifact.content_hash
-        ? `?v=${encodeURIComponent(artifact.content_hash)}`
-        : ''
-    }`
-  ));
+  const url = $derived(
+    projectLinkUrl(
+      `/api/v1/artifacts/${artifact.id}/content${
+        artifact.content_hash
+          ? `?v=${encodeURIComponent(artifact.content_hash)}`
+          : ''
+      }`
+    )
+  );
   const filename = $derived(displayName?.trim() || artifactFilename(artifact));
   const extension = $derived(filename.split('.').at(-1)?.toLowerCase() ?? '');
   const mime = $derived(String(artifact.mime_type ?? '').toLowerCase());
@@ -486,7 +488,9 @@
         class="mx-auto max-h-[72vh] max-w-full rounded-xl bg-black"
         >{#each subtitleTracks as track}<track
             kind="subtitles"
-            src={projectLinkUrl(`/api/v1/artifacts/${track.artifact_id}/content`)}
+            src={projectLinkUrl(
+              `/api/v1/artifacts/${track.artifact_id}/content`
+            )}
             srclang={track.language}
             label={track.title}
             default={track.default}

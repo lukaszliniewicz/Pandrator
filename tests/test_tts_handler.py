@@ -926,8 +926,8 @@ class TTSHandlerTests(unittest.TestCase):
         cache = {}
         with patch.object(
             tts_service_catalogue,
-            "_default_service_configs",
-            wraps=tts_service_catalogue._default_service_configs,
+            "_default_service_config_templates",
+            wraps=tts_service_catalogue._default_service_config_templates,
         ) as build:
             selected = tts_handler.get_service_config(settings, "OpenAI", cache)
             assert selected is not None

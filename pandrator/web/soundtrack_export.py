@@ -351,7 +351,7 @@ def ensure_soundtrack_master(
     )
     check_output_io(handler)
     reserve_output_space(handler, destination.parent, estimated_pcm_bytes(samples * 1000 / SAMPLE_RATE),
-                         label="soundtrack")
+                         label="soundtrack", preserve_existing=True)
     temporary = destination.with_name(f".{destination.stem}.partial.wav")
     command = [_executable("ffmpeg"), "-nostdin", "-v", "error", "-y"]
     if audio_mode == "mixed":
@@ -463,7 +463,7 @@ def export_soundtrack_file(
     # Encoded audio may be slightly larger than PCM for very short inputs;
     # a second complete input-size allowance covers supported output formats.
     reserve_output_space(handler, destination.parent, 2 * source_path.stat().st_size + 65536,
-                         label="audio export")
+                         label="audio export", preserve_existing=True)
     try:
         if format_name == "wav":
             if cancel_event.is_set():

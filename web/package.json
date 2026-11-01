@@ -18,7 +18,8 @@
     "test:a11y": "playwright test tests/accessibility.spec.ts",
     "test:e2e": "playwright test",
     "build:manager-models": "node scripts/build-manager-model-groups.mjs",
-    "check:manager-models": "node scripts/build-manager-model-groups.mjs --check"
+    "check:manager-models": "node scripts/build-manager-model-groups.mjs --check",
+    "check:assets": "node scripts/check-static-assets.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",

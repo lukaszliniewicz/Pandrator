@@ -541,7 +541,9 @@
         </div>
         {#if sourceArtifact && !candidatesLoading}<div class="mt-3">
             <AudioPlayer
-              src={projectLinkUrl(`/api/v1/artifacts/${sourceArtifact}/content`)}
+              src={projectLinkUrl(
+                `/api/v1/artifacts/${sourceArtifact}/content`
+              )}
               label="Selected recording"
             />
           </div>{/if}
@@ -825,7 +827,9 @@
                   disabled={!appState.isAdministrator || busy}
                   class="text-xs font-semibold">Retry</button
                 >{:else if item.output_artifact_id}<a
-                  href={projectLinkUrl(`/api/v1/artifacts/${item.output_artifact_id}/content`)}
+                  href={projectLinkUrl(
+                    `/api/v1/artifacts/${item.output_artifact_id}/content`
+                  )}
                   class="text-xs font-semibold">Manifest</a
                 >{/if}
             </div>{:else}<p class="muted text-sm">

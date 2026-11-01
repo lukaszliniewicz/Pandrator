@@ -307,8 +307,9 @@ class InstallerLifecycleTests(unittest.TestCase):
                     self.assertIn("already supervised", error)
                     auth.assert_not_called()
                     self.assertEqual(os.environ.get("PANDRATOR_OWNER_PASSWORD"), "fixture-password")
+                after = secret.stat()
                 self.assertEqual(secret.read_bytes(), b"original signing secret")
-                self.assertEqual(secret.stat(), before)
+                self.assertEqual(after, before)
                 self.assertTrue(owner.acquired)
             finally:
                 owner.release()

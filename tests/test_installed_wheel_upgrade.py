@@ -13,6 +13,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy.engine import URL
 
+from pandrator.web.database import SCHEMA_HEAD
+
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "pandrator" / "web" / "migrations"
 FIXTURE = ROOT / "tests" / "fixtures" / "schema-0058-installed-wheel.sql.gz"
@@ -21,7 +23,6 @@ FIXTURE_SHA256 = "4e32115df911ee3255401bd7c0b91406d0cd4201e4cd812ba3e060571e3204
 FIXTURE_SQL_SHA256 = "4a3a651cac33883af4a73aae5b12970506a7655dfc616d52f888d752b8154c4c"
 OLD_REVISION = "0058_project_folders"
 PREDECESSOR_REVISION = "0080_configuration_scope_consistency"
-TARGET_REVISION = "0085_project_speech_references"
 
 
 def _quote(identifier: str) -> str:
@@ -101,7 +102,7 @@ def test_installed_fixture_upgrade_preserves_old_rows(tmp_path: Path) -> None:
     command.upgrade(_config(path), "head")
     with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            TARGET_REVISION,
+            SCHEMA_HEAD,
         )
         after = _snapshot(connection, {table: value[0] for table, value in before.items()})
         # 0072 moves non-host defaults into the initial personal workspace.

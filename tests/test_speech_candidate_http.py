@@ -16,6 +16,12 @@ URLS = ("http://fixture.invalid/v1/audio/speech", "http://fixture.invalid/audio/
 PROVIDERS = ("magpie", "xtts", "voxcpm", "fishs2", "voxtral", "kokoro", "chatterbox")
 
 
+@pytest.fixture
+def _xtts_transport_model_acquisition(request: pytest.FixtureRequest) -> None:
+    if request.node.callspec.params.get("provider") == "xtts":
+        request.getfixturevalue("host_model_acquisition")
+
+
 @pytest.fixture(autouse=True)
 def synthetic_provider_key_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("VOXCPM_API_KEY", "FISHS2_API_KEY", "VOXTRAL_API_KEY", "KOKORO_API_KEY"):
@@ -167,7 +173,10 @@ def default_options(provider: str, timeout: int = 300) -> dict[str, object]:
     "statuses", ((200,), (401,), (429,), (503,), (404, 200), (405, 401), (501, 503), (404, 405))
 )
 def test_literal_default_requests_and_fallback_responses(
-    monkeypatch: pytest.MonkeyPatch, provider: str, statuses: tuple[int, ...]
+    monkeypatch: pytest.MonkeyPatch,
+    _xtts_transport_model_acquisition: None,
+    provider: str,
+    statuses: tuple[int, ...],
 ) -> None:
     settings: dict[str, object] = {}
     original = deepcopy(settings)
@@ -193,7 +202,7 @@ def test_literal_default_requests_and_fallback_responses(
 
 @pytest.mark.parametrize("provider", ("magpie", "xtts"))
 def test_custom_payload_and_bounded_xtts_instruction_overrides(
-    monkeypatch: pytest.MonkeyPatch, provider: str
+    monkeypatch: pytest.MonkeyPatch, _xtts_transport_model_acquisition: None, provider: str
 ) -> None:
     settings: dict[str, object] = {
         "speaker": " voice ",
@@ -263,7 +272,10 @@ def test_custom_payload_and_bounded_xtts_instruction_overrides(
 @pytest.mark.parametrize("provider", PROVIDERS)
 @pytest.mark.parametrize("error_type", (requests.Timeout, requests.ConnectionError, RuntimeError))
 def test_post_exceptions_keep_identity_message_and_cause_without_fallback(
-    monkeypatch: pytest.MonkeyPatch, provider: str, error_type: type[Exception]
+    monkeypatch: pytest.MonkeyPatch,
+    _xtts_transport_model_acquisition: None,
+    provider: str,
+    error_type: type[Exception],
 ) -> None:
     error = error_type("fixture request failure")
     cause = RuntimeError("fixture original cause")
@@ -313,7 +325,7 @@ def test_empty_root_candidates_raise_without_post(
 
 @pytest.mark.parametrize("provider", PROVIDERS)
 def test_versioned_base_has_one_candidate_and_returns_actual_falsey_error(
-    monkeypatch: pytest.MonkeyPatch, provider: str
+    monkeypatch: pytest.MonkeyPatch, _xtts_transport_model_acquisition: None, provider: str
 ) -> None:
     result = response(404)
     calls: list[tuple[str, dict[str, object]]] = []
@@ -332,7 +344,7 @@ def test_versioned_base_has_one_candidate_and_returns_actual_falsey_error(
 
 @pytest.mark.parametrize("provider", PROVIDERS)
 def test_candidate_loop_preserves_root_resolution_and_option_evaluation_order(
-    monkeypatch: pytest.MonkeyPatch, provider: str
+    monkeypatch: pytest.MonkeyPatch, _xtts_transport_model_acquisition: None, provider: str
 ) -> None:
     events: list[str] = []
     calls: list[tuple[str, dict[str, object]]] = []
@@ -421,7 +433,9 @@ def test_candidate_loop_preserves_root_resolution_and_option_evaluation_order(
 
 @pytest.mark.parametrize("provider", PROVIDERS)
 def test_malformed_speed_keeps_provider_specific_preparation_behavior(
-    monkeypatch: pytest.MonkeyPatch, provider: str
+    monkeypatch: pytest.MonkeyPatch,
+    _xtts_transport_model_acquisition: None,
+    provider: str,
 ) -> None:
     settings: dict[str, object] = {"speed": "bad float"}
     original = deepcopy(settings)

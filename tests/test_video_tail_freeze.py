@@ -202,7 +202,7 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
             )
 
     def _register_speech(self, sid, duration):
-        path = self.services.paths.uploads / f"speech-{duration}.wav"
+        path = self.services.paths.uploads / f"speech-{sid}-{duration}.wav"
         self._write_speech(path, duration)
         return self.services.artifacts.register(
             path, kind="audio", role="dubbing_audio", session_id=sid

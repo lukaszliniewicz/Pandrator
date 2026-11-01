@@ -277,8 +277,29 @@ class ApplicationRecoveryTests(unittest.TestCase):
 
     def test_initial_install_orders_mcp_after_its_worker_dependency(self):
         self.include_mcp = True
-        self._install()
-        self.assertEqual(set(self.supervisor._runtime), set(PANDRATOR_SERVICE_START_ORDER))
+        ready_order = []
+        start_one = self.supervisor._start_one
+
+        def record_ready(spec):
+            service = start_one(spec)
+            ready_order.append(spec.service_id)
+            return service
+
+        with mock.patch.object(self.supervisor, "_start_one", side_effect=record_ready):
+            self._install()
+
+        fixture_service_ids = {
+            spec.service_id for spec in self._specs(self.application)
+        }
+        self.assertEqual(set(self.supervisor._runtime), fixture_service_ids)
+        self.assertLess(
+            ready_order.index(PANDRATOR_API_SERVICE),
+            ready_order.index(PANDRATOR_WORKER_SERVICE),
+        )
+        self.assertLess(
+            ready_order.index(PANDRATOR_WORKER_SERVICE),
+            ready_order.index(PANDRATOR_MCP_SERVICE),
+        )
 
     def test_optional_mcp_failure_keeps_core_services_running(self):
         self.include_mcp = True

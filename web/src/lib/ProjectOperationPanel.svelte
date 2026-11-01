@@ -467,7 +467,9 @@
                     </p>{/if}
                   {#each language.artifacts as file (file.artifact_id)}<a
                       class="mt-1 block break-all text-[var(--accent)]"
-                      href={projectLinkUrl(`/api/v1/artifacts/${file.artifact_id}/content`)}
+                      href={projectLinkUrl(
+                        `/api/v1/artifacts/${file.artifact_id}/content`
+                      )}
                       download={file.filename}>{file.filename}</a
                     >{/each}
                 </li>{/each}

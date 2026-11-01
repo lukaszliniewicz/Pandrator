@@ -43,13 +43,8 @@ from pandrator.web.models import (
 from pandrator.web.projects.models import Project
 from pandrator.web.public_links.authorization import aware
 from pandrator.web.public_links.contracts import LINK_SCOPES, PublicLinkError
-from pandrator.web.public_links.models import ProjectLink
+from pandrator.web.public_links.models import ProjectLink, ProjectLinkSubmission
 from pandrator.web.public_links.service import PublicLinkService, digest
-
-VERIFY_ROOT = (
-    Path(__file__).resolve().parents[1]
-    / ".local-notes/public-access-sharing-2026-11-01/verification/foundation"
-)
 
 
 @dataclass
@@ -66,9 +61,8 @@ class Case:
 
 
 @pytest.fixture(scope="session")
-def schema_template() -> Iterator[Path]:
-    VERIFY_ROOT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=VERIFY_ROOT) as directory:
+def schema_template(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(dir=tmp_path_factory.mktemp("project-link-schema")) as directory:
         path = Path(directory) / "schema.sqlite3"
         database = Database(path)
         Base.metadata.create_all(database.engine)
@@ -77,9 +71,8 @@ def schema_template() -> Iterator[Path]:
 
 
 @pytest.fixture
-def case(schema_template: Path) -> Iterator[Case]:
-    VERIFY_ROOT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=VERIFY_ROOT) as directory:
+def case(schema_template: Path, tmp_path: Path) -> Iterator[Case]:
+    with tempfile.TemporaryDirectory(dir=tmp_path) as directory:
         path = Path(directory) / "test.sqlite3"
         shutil.copyfile(schema_template, path)
         db = Database(path)
@@ -445,6 +438,38 @@ def migration():
     return module
 
 
+def migration_state(database: Database):
+    with database.engine.connect() as connection:
+        schema = tuple(
+            tuple(row)
+            for row in connection.execute(
+                text(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+                )
+            ).all()
+        )
+        tables = [
+            str(row[0])
+            for row in connection.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+            ).all()
+        ]
+        rows = {
+            table: tuple(
+                sorted(
+                    (tuple(row) for row in connection.exec_driver_sql(f'SELECT * FROM "{table}"')),
+                    key=repr,
+                )
+            )
+            for table in tables
+        }
+    return schema, rows
+
+
 def test_migration_reconciles_bootstrap_and_refuses_live_downgrade(case: Case) -> None:
     module = migration()
     with (
@@ -469,6 +494,50 @@ def test_migration_reconciles_bootstrap_and_refuses_live_downgrade(case: Case) -
         module.upgrade()
         assert connection.execute(text("SELECT COUNT(*) FROM project_links")).scalar_one() == 0
         assert connection.execute(text("PRAGMA foreign_key_check")).first() is None
+
+
+@pytest.mark.parametrize("status", ["pending", "accepted", "rejected"])
+@pytest.mark.parametrize("link_state", ["expired", "revoked", "expired_and_revoked"])
+def test_migration_refuses_retained_submissions_for_inactive_links(
+    case: Case, status: str, link_state: str
+) -> None:
+    module = migration()
+    with case.database.engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(
+            text("INSERT INTO alembic_version (version_num) VALUES (:revision)"),
+            {"revision": module.revision},
+        )
+
+    enable(case)
+    created = create(case)
+    now = utcnow()
+    with case.database.immediate_session() as session:
+        link = session.get(ProjectLink, created["link"]["id"])
+        assert link is not None
+        if link_state in {"expired", "expired_and_revoked"}:
+            link.expires_at = now - timedelta(seconds=1)
+        if link_state in {"revoked", "expired_and_revoked"}:
+            link.revoked_at = now
+        session.add(
+            ProjectLinkSubmission(
+                link_id=link.id,
+                changes_json=[],
+                request_key="retained-submission",
+                payload_hash="b" * 64,
+                revision=1,
+                status=status,
+            )
+        )
+
+    before = migration_state(case.database)
+    with pytest.raises(RuntimeError, match=r"Cannot discard retained translation submissions\."):
+        with (
+            case.database.engine.begin() as connection,
+            Operations.context(MigrationContext.configure(connection)),
+        ):
+            module.downgrade()
+    assert migration_state(case.database) == before
 
 
 def test_unbound_credential_and_tampered_grants_fail_closed(case: Case) -> None:

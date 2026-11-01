@@ -59,7 +59,7 @@ def test_explicit_family_selects_shared_policy_for_unfamiliar_package_id():
 
 def test_kobold_does_not_claim_audio_cpp_runtime_defaults():
     metadata = generation_limit_metadata(service="kobold_qwen", model="Prebuilt Voices", family="qwen3_tts")
-    assert metadata["default_segment_characters"] == 1800
+    assert metadata["default_segment_characters"] == 350
     assert "runtime_output_budget" not in metadata
     assert "runtime_chunk_characters" not in metadata
 

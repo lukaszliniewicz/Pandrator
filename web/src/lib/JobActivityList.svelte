@@ -276,7 +276,9 @@
             {#if storageWait && job.available_at}
               <p class="muted mt-2 text-xs">
                 Next check <time datetime={job.available_at}
-                  >{new Date(apiTimestamp(job.available_at)).toLocaleString()}</time
+                  >{new Date(
+                    apiTimestamp(job.available_at)
+                  ).toLocaleString()}</time
                 >
               </p>
             {/if}

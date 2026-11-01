@@ -78,6 +78,10 @@ def is_private_archive_member(raw_name: str) -> bool:
         or ".." in member.parts
         or "tmp" in lowered_parts
         or any(part in {".local-notes", "review-notes", "reviews"} for part in lowered_parts)
+        or any(
+            part in {"node_modules", ".svelte-kit", ".vite", "playwright-report", "test-results"}
+            for part in lowered_parts
+        )
         or lowered_name == "release-acceptance.md"
         or lowered_name == "agents.md"
         or "__pycache__" in lowered_parts

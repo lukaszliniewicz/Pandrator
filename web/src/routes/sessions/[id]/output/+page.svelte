@@ -1066,7 +1066,9 @@
                                 size={16}
                               />{:else}<Copy size={16} />{/if}</button
                           >{/if}<a
-                          href={projectLinkUrl(`/api/v1/artifacts/${artifact.id}/content`)}
+                          href={projectLinkUrl(
+                            `/api/v1/artifacts/${artifact.id}/content`
+                          )}
                           download={outputName(artifact)}
                           class="grid min-h-11 min-w-11 place-items-center rounded-lg p-2 hover:bg-[var(--accent-soft)]"
                           title="Download output"

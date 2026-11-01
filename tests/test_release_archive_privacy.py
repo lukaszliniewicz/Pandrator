@@ -8,6 +8,11 @@ from scripts import audit_python_distributions as auditor
 from scripts import build_release_packages as builder
 
 PRIVATE_PATHS = (
+    "web/node_modules/fixture/index.js",
+    "web/.svelte-kit/output/server.js",
+    ".vite/deps/_metadata.json",
+    "web/playwright-report/index.html",
+    "web/test-results/trace.zip",
     ".local-notes/local-review.md",
     "review-notes/fixture.png",
     "reviews/result.json",

@@ -791,7 +791,9 @@
                 }}
                 class="mt-3 block aspect-square w-full overflow-hidden rounded-xl bg-[var(--paper)]"
                 ><img
-                  src={projectLinkUrl(`/api/v1/artifacts/${selectedCover.id}/content`)}
+                  src={projectLinkUrl(
+                    `/api/v1/artifacts/${selectedCover.id}/content`
+                  )}
                   alt={artifactFilename(selectedCover)}
                   class="size-full object-cover"
                 /></button

@@ -122,6 +122,13 @@ def script(mode: str) -> list[requests.Response | Exception]:
     return results
 
 
+@pytest.fixture
+def _native_xtts_transport_model_acquisition(request: pytest.FixtureRequest) -> None:
+    params = request.node.callspec.params
+    if params.get("provider") == "xtts" and params.get("mode") != "cancel_before_request":
+        request.getfixturevalue("host_model_acquisition")
+
+
 @pytest.mark.parametrize(
     "provider",
     (
@@ -153,7 +160,10 @@ def script(mode: str) -> list[requests.Response | Exception]:
     ),
 )
 def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder(
-    monkeypatch: pytest.MonkeyPatch, provider: str, mode: str
+    monkeypatch: pytest.MonkeyPatch,
+    _native_xtts_transport_model_acquisition: None,
+    provider: str,
+    mode: str,
 ):
     request_settings = settings(provider, monkeypatch)
     original_settings = copy.deepcopy(request_settings)

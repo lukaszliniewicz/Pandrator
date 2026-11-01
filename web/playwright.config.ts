@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
   testDir: './tests',
@@ -23,7 +24,8 @@ export default defineConfig({
     video: 'retain-on-failure'
   },
   webServer: {
-    command: 'python ../scripts/run_web_e2e_server.py',
+    command: 'python -m scripts.run_web_e2e_server',
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
     url: 'http://127.0.0.1:8098/api/v1/health',
     reuseExistingServer: !process.env.CI,
     timeout: 45_000

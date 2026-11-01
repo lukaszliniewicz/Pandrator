@@ -105,8 +105,93 @@ def test_same_job_adjustment_replaces_estimate_and_excludes_its_old_reservation(
     facts = admission.reserve(lease, [StorageRequirement(tmp_path, 75 * MIB)])
     assert facts[0]["reserved_bytes"] == 0
     assert _rows(database) == [(lease.job_id, lease.owner_id, 1, 75 * MIB)]
+    admission.reserve(lease, [StorageRequirement(tmp_path, 30 * MIB)])
+    assert _rows(database) == [(lease.job_id, lease.owner_id, 1, 30 * MIB)]
     admission.release(lease)
     assert _rows(database) == []
+
+
+@pytest.mark.parametrize("requested", [30, 60, 75])
+def test_preserve_existing_retains_same_lease_grouped_floor(
+    database, monkeypatch, tmp_path, requested,
+):
+    _fake_device(monkeypatch)
+    lease = _job(database, "job")
+    admission = StorageAdmission(database)
+    admission.reserve(lease, [StorageRequirement(tmp_path, 60 * MIB)])
+    # Only the newly requested bytes must fit: parent work may already exist.
+    _fake_device(monkeypatch, free=(requested + 16) * MIB)
+    facts = admission.reserve(lease, [
+        StorageRequirement(tmp_path, (requested - 10) * MIB),
+        StorageRequirement(tmp_path / "nested", 10 * MIB),
+    ], preserve_existing=True)
+    assert facts[0]["estimated_bytes"] == requested * MIB
+    assert facts[0]["reserved_bytes"] == 0
+    assert _rows(database) == [(lease.job_id, lease.owner_id, 1, max(60, requested) * MIB)]
+
+
+@pytest.mark.parametrize("changed", ["owner", "generation", "both"])
+def test_preserve_existing_does_not_inherit_obsolete_lease_floor(
+    database, monkeypatch, tmp_path, changed,
+):
+    _fake_device(monkeypatch)
+    old = _job(database, "job")
+    admission = StorageAdmission(database)
+    admission.reserve(old, [StorageRequirement(tmp_path, 60 * MIB)])
+    successor = StorageJobLease(
+        old.job_id, "successor" if changed != "generation" else old.owner_id,
+        2 if changed != "owner" else old.generation,
+    )
+    with database.session() as unit:
+        job = unit.get(Job, old.job_id)
+        assert job is not None
+        job.lease_owner, job.lease_generation = successor.owner_id, successor.generation
+    admission.reserve(successor, [StorageRequirement(tmp_path, 20 * MIB)], preserve_existing=True)
+    assert _rows(database) == [(
+        old.job_id, successor.owner_id, successor.generation, 20 * MIB,
+    )]
+
+
+def test_preserve_existing_failed_growth_keeps_old_reservation(database, monkeypatch, tmp_path):
+    _fake_device(monkeypatch)
+    lease = _job(database, "job")
+    admission = StorageAdmission(database)
+    admission.reserve(lease, [StorageRequirement(tmp_path, 60 * MIB)])
+    with pytest.raises(StoragePressure):
+        admission.reserve(lease, [StorageRequirement(tmp_path, 85 * MIB)], preserve_existing=True)
+    assert _rows(database) == [(lease.job_id, lease.owner_id, 1, 60 * MIB)]
+
+
+@pytest.mark.parametrize("revocation", ["expired", "owner", "generation", "cancel_requested"])
+def test_preserve_existing_cannot_bypass_lease_fences(
+    database, monkeypatch, tmp_path, revocation,
+):
+    _fake_device(monkeypatch)
+    lease = _job(database, "job")
+    admission = StorageAdmission(database)
+    admission.reserve(lease, [StorageRequirement(tmp_path, 60 * MIB)])
+    with database.session() as unit:
+        job = unit.get(Job, lease.job_id)
+        assert job is not None
+        if revocation == "expired":
+            job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        elif revocation == "owner":
+            job.lease_owner = "successor"
+        elif revocation == "generation":
+            job.lease_generation += 1
+        else:
+            job.status = revocation
+    with pytest.raises(StorageLeaseLost):
+        admission.reserve(lease, [StorageRequirement(tmp_path, 20 * MIB)], preserve_existing=True)
+    assert _rows(database) == [(lease.job_id, lease.owner_id, 1, 60 * MIB)]
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "true"])
+def test_invalid_preserve_existing_rejected_before_io(database, monkeypatch, invalid):
+    monkeypatch.setattr(core, "os", SimpleNamespace(stat=lambda _path: pytest.fail("stat")))
+    monkeypatch.setattr(database, "run_immediate", lambda _callback: pytest.fail("writer"))
+    with pytest.raises(TypeError, match="preserve_existing must be a boolean"):
+        StorageAdmission(database).reserve(None, [], preserve_existing=invalid)
 
 
 @pytest.mark.parametrize("stale_reason", ["expired", "generation", "owner", "finished"])

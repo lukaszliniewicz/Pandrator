@@ -618,7 +618,9 @@ def fake_normalization(command, **_kwargs):
     return subprocess.CompletedProcess(command, 0, "", "")
 
 
-def test_normalization_owner_runs_with_explicit_standalone_context(normalization_case):
+def test_normalization_owner_runs_with_explicit_standalone_context(
+    normalization_case, host_execution_actor
+):
     from pandrator.web.workflow_handlers import _scaled_progress_callback
     from pandrator.web.workflow_voice import VoiceWorkflowContext, normalize_voice_recording
 

@@ -310,7 +310,7 @@ test('manual annotations preserve words, support phrase directions and protect a
   await workspace
     .getByRole('link', { name: 'Speech plan', exact: true })
     .click();
-  const guard = page.getByRole('dialog');
+  const guard = page.getByRole('dialog', { name: /^Save your changes before/ });
   await expect(guard).toBeVisible();
   await guard.getByRole('button', { name: 'Stay here', exact: true }).click();
   await workspace
@@ -333,6 +333,11 @@ test('manual annotations preserve words, support phrase directions and protect a
     await page.request.get(`/api/v1/sessions/${id}/performance-plans`)
   ).json();
   expect(listing.items[0].status).toBe('adopted');
+  const blocks = workspace.getByRole('navigation', { name: 'Speech blocks' });
+  await expect(blocks.getByRole('button').first()).toBeDisabled();
+  await expect(blocks).toHaveAttribute('tabindex', '0');
+  await blocks.focus();
+  await expect(blocks).toBeFocused();
   expect(unexpected).toEqual([]);
   expect(errors).toEqual([]);
   const audit = await new AxeBuilder({ page })

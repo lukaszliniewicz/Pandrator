@@ -29,6 +29,21 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install browser build dependencies
+        run: npm ci --prefix web
+
+      - name: Rebuild and verify committed browser assets
+        run: |
+          npm --prefix web run build
+          npm --prefix web run check:assets
+          git diff --exit-code -- pandrator/web/static pandrator_manager/recovery_ui/static/model-groups.js
+
       - name: Install packaging tools
         run: python -m pip install --disable-pip-version-check "build>=1.6,<2" "twine==7.0.0"
 

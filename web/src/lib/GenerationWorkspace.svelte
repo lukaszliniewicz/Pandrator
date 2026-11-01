@@ -3601,7 +3601,9 @@
           >
           <div class="min-w-64 flex-1">
             <AudioPlayer
-              src={projectLinkUrl(`/api/v1/artifacts/${mixedAssemblyArtifactId ?? selectedAssembly.artifact_id}/content`)}
+              src={projectLinkUrl(
+                `/api/v1/artifacts/${mixedAssemblyArtifactId ?? selectedAssembly.artifact_id}/content`
+              )}
               label={mixedAssemblyArtifactId
                 ? 'Speech with sound effects'
                 : 'Assembled speech'}
@@ -3611,8 +3613,9 @@
           <a
             class="action"
             download
-            href={projectLinkUrl(`/api/v1/artifacts/${mixedAssemblyArtifactId ?? selectedAssembly.artifact_id}/content`)}
-            ><Download size={14} /> Download</a
+            href={projectLinkUrl(
+              `/api/v1/artifacts/${mixedAssemblyArtifactId ?? selectedAssembly.artifact_id}/content`
+            )}><Download size={14} /> Download</a
           >
         </div>
       {:else if selectedAssembly?.status === 'stale'}

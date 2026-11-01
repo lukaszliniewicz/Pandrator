@@ -23,7 +23,9 @@ def application(tmp_path: Path) -> Iterator[tuple[Flask, FlaskClient, dict[str, 
     prepare_web_test_data_root(tmp_path)
     app = create_app(data_root=tmp_path, testing=True)
     _, token = app.extensions["pandrator"]["auth"].create_api_token(
-        "Preview fixture", scopes=["app.run"], principal_kind="automation_client"
+        "Preview fixture",
+        scopes=["app.read", "app.write", "app.run"],
+        principal_kind="automation_client",
     )
     try:
         yield app, app.test_client(), {"Authorization": f"Bearer {token}"}
@@ -58,10 +60,12 @@ def test_preview_replay_precedes_catalogue_lookup_and_keeps_one_owned_job(
         assert len(jobs) == len(reservations) == 1
         assert jobs[0].id == first.get_json()["id"] == reservations[0].resource_id
         assert jobs[0].kind == "tts.preview"
-        assert jobs[0].max_attempts == 2
+        assert jobs[0].max_attempts == 1
         assert jobs[0].resource_keys_json == ["service:tts:xtts"]
         assert jobs[0].payload_json == {
             "text": BODY["text"], "settings": SETTINGS, "workspace_id": jobs[0].workspace_id,
+            "speech_input": None,
+            "tts_settings_revisions": {"defaults.tts": 0, "services.tts": 0},
         }
 
 

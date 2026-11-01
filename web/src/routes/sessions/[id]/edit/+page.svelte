@@ -1251,11 +1251,15 @@
                   <div class="mt-3 flex flex-wrap gap-2">
                     <a
                       class="secondary"
-                      href={projectLinkUrl(`/api/v1/artifacts/${activeJob.result_json.media_artifact_id}/content`)}
+                      href={projectLinkUrl(
+                        `/api/v1/artifacts/${activeJob.result_json.media_artifact_id}/content`
+                      )}
                       download><Download size={15} /> Media</a
                     ><a
                       class="secondary"
-                      href={projectLinkUrl(`/api/v1/artifacts/${activeJob.result_json.subtitle_artifact_id}/content`)}
+                      href={projectLinkUrl(
+                        `/api/v1/artifacts/${activeJob.result_json.subtitle_artifact_id}/content`
+                      )}
                       download><Download size={15} /> Subtitles</a
                     >
                   </div>

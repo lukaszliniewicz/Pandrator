@@ -11,7 +11,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import Engine, event, inspect, select
+from sqlalchemy import Engine, MetaData, Table, event, inspect, select
 from sqlalchemy.orm import Session as SQLAlchemySession
 
 from pandrator.web import database
@@ -26,7 +26,6 @@ from pandrator.web.model_base import Base, new_id, utcnow
 from pandrator.web.models import (
     AppSetting,
     Artifact,
-    Job,
     ProjectFolder,
     ProjectFolderMembership,
     SessionRecord,
@@ -227,15 +226,6 @@ def _make_fixture(
                     updated_at=now + timedelta(hours=5),
                 ),
                 AppSetting(key="legacy.setting", value_json={"kept": True}),
-                Job(
-                    id="legacy-queued-job",
-                    kind="test.queued",
-                    session_id=standalone.id,
-                    status="queued",
-                    payload_json={"retained": "verbatim"},
-                    created_at=now + timedelta(hours=6),
-                    updated_at=now + timedelta(hours=6),
-                ),
                 ProjectFolder(
                     id="legacy-folder",
                     name="Folder order",
@@ -254,6 +244,24 @@ def _make_fixture(
             ]
         )
         session.flush()
+        # Seed the predecessor table without importing columns from the current ORM.
+        legacy_jobs = Table("jobs", MetaData(), autoload_with=session.connection())
+        session.execute(
+            legacy_jobs.insert().values(
+                id="legacy-queued-job",
+                kind="test.queued",
+                session_id=standalone.id,
+                status="queued",
+                payload_json={"retained": "verbatim"},
+                resource_keys_json=[],
+                progress=0.0,
+                lease_generation=0,
+                attempts=0,
+                max_attempts=1,
+                created_at=now + timedelta(hours=6),
+                updated_at=now + timedelta(hours=6),
+            )
+        )
         memberships = [
             ProjectFolderMembership(
                 folder_id="legacy-folder",
@@ -408,7 +416,10 @@ def test_migration_adopts_legacy_groups_and_preserves_workflow_rows(tmp_path: Pa
             ]
 
             setting = session.get(SessionSetting, (ids["standalone"], "tts"))
-            job = session.get(Job, "legacy-queued-job")
+            legacy_jobs = Table("jobs", MetaData(), autoload_with=session.connection())
+            job = session.execute(
+                select(legacy_jobs).where(legacy_jobs.c.id == "legacy-queued-job")
+            ).one_or_none()
             checkpoint = session.get(Artifact, ids["checkpoint"])
             app_setting = session.get(AppSetting, "legacy.setting")
             assert setting is not None and setting.value_json == {"voice": "preserved"}

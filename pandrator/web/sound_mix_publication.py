@@ -133,7 +133,7 @@ def render_prepared(
     duration_bound = (prepared.base_frames + sum(source_frames.values())) * 1000 / prepared.rate
     reserve_output_space(database, staging_root, 3 * estimated_pcm_bytes(
         duration_bound, sample_rate=prepared.rate, channels=prepared.channels, sample_width=2,
-    ), label="sound mix")
+    ), label="sound mix", preserve_existing=True)
     staging_root.mkdir(parents=True, exist_ok=True)
     if before_io is not None:
         before_io()
@@ -209,7 +209,7 @@ def render_prepared(
             reserve_output_space(database, temp_dir, estimated_pcm_bytes(
                 frame_plan["total_frames"] * 1000 / prepared.rate, sample_rate=prepared.rate,
                 channels=prepared.channels, sample_width=2,
-            ), label="sound mix output")
+            ), label="sound mix output", preserve_existing=True)
             render_result = render_sound_mix(
                 normalized_base,
                 normalized_clips,

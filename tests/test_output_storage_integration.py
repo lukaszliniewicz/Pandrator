@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import threading
 import wave
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy import func, select
 
-from pandrator.web import audio_assembly, storage_admission
+from pandrator.web import audio_assembly, export_video, soundtrack_export, storage_admission
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
+from pandrator.web.export_inputs import ExportInputs, MediaExportSelection
+from pandrator.web.job_execution import current_job_lease
 from pandrator.web.jobs import JobQueue, Worker
 from pandrator.web.models import (
     Artifact,
@@ -26,9 +30,21 @@ from pandrator.web.models import (
     StorageReservation,
     utcnow,
 )
-from pandrator.web.output_storage import estimated_pcm_bytes, estimated_video_bytes
+from pandrator.web.output_storage import (
+    estimated_pcm_bytes,
+    estimated_video_bytes,
+    reserve_output_space,
+    storage_effect_scope,
+)
 from pandrator.web.sessions import SessionService
+from pandrator.web.storage_admission import (
+    StorageAdmission,
+    StorageJobLease,
+    StoragePressure,
+    StorageRequirement,
+)
 from pandrator.web.workflow_handlers import WorkflowHandlers
+from pandrator.web.workflow_output_context import OutputWorkflowContext
 from pandrator.web.workflows import WorkflowService
 from pandrator.web.workspace import GenerationService
 from pandrator.web.workspace_settings import WorkspaceSettingsService
@@ -250,3 +266,164 @@ def test_estimates_distinguish_pcm_copy_and_quality_encode():
     )
     with pytest.raises(ValueError):
         estimated_pcm_bytes(float("nan"))
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "true"])
+def test_output_helper_validates_preserve_existing_even_for_zero_bytes(runtime, invalid):
+    with pytest.raises(TypeError, match="preserve_existing must be a boolean"):
+        reserve_output_space(runtime.database, runtime.paths.root, 0, preserve_existing=invalid)
+
+
+@pytest.mark.parametrize("audio_mode", ["mixed", "dubbed"])
+def test_video_preparation_retains_envelope_through_uncached_soundtrack(
+    runtime, monkeypatch, audio_mode,
+):
+    case = runtime
+    sessions = SessionService(case.database)
+    record = sessions.create("Nested storage", workflow_kind="voiceover")
+    directory = case.paths.sessions / record.storage_key
+    directory.mkdir()
+    source, speech = directory / "source.mp4", directory / "speech.wav"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25:d=2",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "0", "-c:a", "aac", str(source),
+    ], check=True, capture_output=True, timeout=45)
+    with wave.open(str(speech), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(48000)
+        output.writeframes(b"\x01\x00" * 96000)
+    source_artifact = case.artifacts.register(
+        source, kind="source", role="upload", session_id=record.id,
+    )
+    speech_artifact = case.artifacts.register(
+        speech, kind="audio", role="assembled_audio", session_id=record.id,
+    )
+    leases = []
+    for name in ("video", "competitor"):
+        job = case.queue.enqueue("export.create", {}, session_id=record.id)
+        lease = StorageJobLease(job.id, name, 1)
+        with case.database.session() as unit:
+            row = unit.get(Job, job.id)
+            assert row is not None
+            row.status, row.lease_owner, row.lease_generation = "running", name, 1
+            row.lease_expires_at = utcnow() + timedelta(minutes=5)
+        leases.append(lease)
+    video_lease, competitor = leases
+
+    def operation_dir(_session_id, stage):
+        result = directory / stage
+        result.mkdir(exist_ok=True)
+        return result
+
+    def unexpected_mix(*_args, **_kwargs):
+        pytest.fail("No sound cues should invoke the sound-mix renderer")
+
+    context = OutputWorkflowContext(
+        case.database, case.paths, case.artifacts, case.artifacts.resolve,
+        lambda _session_id: directory, sessions.get, operation_dir,
+        _render_sound_mix=unexpected_mix,
+    )
+    inputs = ExportInputs(
+        record.id, {"audio_match_source_duration": True}, record, {}, None,
+        [source_artifact], {"upload": source_artifact}, speech_artifact, (), None, None,
+    )
+    selection = MediaExportSelection(
+        source_artifact, None, [], speech_artifact, "media", "srt", "none", audio_mode,
+    )
+    events = []
+
+    def reserved_bytes(stage):
+        with case.database.snapshot_session() as unit:
+            rows = list(unit.scalars(select(StorageReservation)))
+            assert len(rows) == 1
+            row = rows[0]
+            assert (row.job_id, row.lease_owner, row.lease_generation) == (
+                video_lease.job_id, video_lease.owner_id, video_lease.generation,
+            )
+            events.append((stage, row.reserved_bytes))
+            return row.reserved_bytes
+
+    original_reserve = export_video.reserve_output_space
+    original_master = soundtrack_export.ensure_soundtrack_master
+    original_mux = export_video.run_video_command
+
+    def reserve_video(*args, **kwargs):
+        original_reserve(*args, **kwargs)
+        assert kwargs["label"] == "video preparation"
+        reserved_bytes("parent reservation")
+
+    def ensure_uncached_master(*args, **kwargs):
+        parent_bytes = reserved_bytes("before soundtrack")
+        with case.database.snapshot_session() as unit:
+            assert unit.scalar(select(func.count()).select_from(Artifact).where(
+                Artifact.role == "soundtrack_master",
+            )) == 0
+        # Simulate parent bytes already materialized. Only the new soundtrack
+        # estimate plus metadata and headroom fits this free-space reading.
+        leaf_bytes = estimated_pcm_bytes(2000) + 65536
+        assert parent_bytes > leaf_bytes
+        case.disk.free = 16 * 1024**2 + leaf_bytes
+        try:
+            master = original_master(*args, **kwargs)
+        finally:
+            case.disk.free = 10**12
+        assert reserved_bytes("after soundtrack") == parent_bytes
+        assert case.artifacts.resolve(master.id)[1].is_file()
+        return master
+
+    def mux_video(command, *args, **kwargs):
+        parent_bytes = reserved_bytes("before mux")
+        assert parent_bytes == events[0][1]
+        leaf_bytes = estimated_pcm_bytes(2000) + 65536
+        competitor_bytes = 4 * 1024**2
+        # A reduced leaf reservation would admit this competing job, while
+        # retaining the full video envelope must reject it.
+        case.disk.free = 16 * 1024**2 + competitor_bytes + (parent_bytes + leaf_bytes) // 2
+        other = Database(case.database.path)
+        try:
+            with pytest.raises(StoragePressure) as failure:
+                StorageAdmission(other).reserve(competitor, [
+                    StorageRequirement(directory, competitor_bytes),
+                ])
+            assert failure.value.reserved_bytes == parent_bytes
+            assert reserved_bytes("after rejected competitor") == parent_bytes
+        finally:
+            other.dispose()
+            case.disk.free = 10**12
+        original_mux(command, *args, **kwargs)
+        assert Path(command[-1]).stat().st_size > 0
+
+    monkeypatch.setattr(export_video, "reserve_output_space", reserve_video)
+    monkeypatch.setattr(soundtrack_export, "ensure_soundtrack_master", ensure_uncached_master)
+    monkeypatch.setattr(export_video, "run_video_command", mux_video)
+    scratch = directory / "scratch"
+    scratch.mkdir()
+    token = current_job_lease.set({
+        "job_id": video_lease.job_id, "owner_id": video_lease.owner_id,
+        "lease_generation": video_lease.generation,
+    })
+    try:
+        with storage_effect_scope(case.database):
+            prepared = export_video._prepare_video_audio(
+                context, inputs, selection, media_path=source, scratch_dir=scratch,
+                ffmpeg_executable="ffmpeg", video_encoder="libx264", video_audio_bitrate="192k",
+                progress=lambda *_args: None, cancel_event=threading.Event(),
+            )
+            assert prepared.path.is_file()
+            assert reserved_bytes("completed preparation") == events[0][1]
+    finally:
+        current_job_lease.reset(token)
+    stages = [stage for stage, _bytes in events]
+    if audio_mode == "mixed":
+        assert stages == [
+            "parent reservation", "before soundtrack", "after soundtrack", "before mux",
+            "after rejected competitor", "completed preparation",
+        ]
+    else:
+        assert stages == [
+            "parent reservation", "before mux", "after rejected competitor", "completed preparation",
+        ]
+    with case.database.snapshot_session() as unit:
+        assert unit.scalar(select(func.count()).select_from(StorageReservation)) == 0

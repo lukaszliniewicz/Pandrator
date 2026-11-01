@@ -251,7 +251,9 @@
                         aria-label={`Preview revision ${revision.revision_number}`}
                         ><Eye size={15} /></button
                       ><a
-                        href={projectLinkUrl(`/api/v1/artifacts/${revision.artifact.id}/content`)}
+                        href={projectLinkUrl(
+                          `/api/v1/artifacts/${revision.artifact.id}/content`
+                        )}
                         download={artifactFilename(revision.artifact)}
                         class="tool"
                         title="Download revision"

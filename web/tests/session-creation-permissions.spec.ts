@@ -30,7 +30,7 @@ async function replacementWizard(page: Page) {
   const dialog = page.getByRole('dialog');
   await dialog
     .getByRole('button', {
-      name: 'Skip guidance and open a fully customizable workspace'
+      name: 'Skip guidance and open a fully customizable project'
     })
     .click();
   await dialog.getByRole('button', { name: 'Add later', exact: true }).click();
@@ -164,12 +164,12 @@ test('a later setup conflict preserves the replacement and offers its saved proj
   await expect(
     dialog.getByText('The workflow plan changed during setup.', { exact: true })
   ).toBeVisible();
-  const saved = dialog.getByRole('link', { name: 'Open saved workspace' });
+  const saved = dialog.getByRole('link', { name: 'Open saved project' });
   await expect(saved).toHaveAttribute('href', `/sessions/${replacement.id}`);
   await expect(dialog.getByText(/before it could be replaced/)).toHaveCount(0);
   await expect(
     dialog.getByRole('button', {
-      name: /^(Choose an option above|Create workspace)$/
+      name: /^(Choose an option above|Create project)$/
     })
   ).toBeDisabled();
   const old = await (

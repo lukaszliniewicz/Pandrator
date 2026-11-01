@@ -78,6 +78,16 @@ include = [
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+  "/web/node_modules/**",
+  "/web/.svelte-kit/**",
+  "/web/playwright-report/**",
+  "/web/test-results/**",
+  "/.svelte-kit/**",
+  "/.vite/**",
+  "/pandrator_manager/build/**",
+  "/pandrator_manager/*.egg-info/**",
+  "/pandrator_mcp/build/**",
+  "/pandrator_mcp/*.egg-info/**",
   "/AGENTS.md",
   "/tmp/**",
   "/.local-notes/**",

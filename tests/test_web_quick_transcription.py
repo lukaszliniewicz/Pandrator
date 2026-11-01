@@ -1044,7 +1044,7 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         self.assertEqual(202, started.status_code, started.get_json())
         job = self.extension["jobs"].get(started.get_json()["job_id"])
         self.assertEqual(sorted(stt_resource_keys(settings)), job.resource_keys_json)
-        self.assertIn("gpu:cuda", job.resource_keys_json)
+        self.assertIn("gpu:default", job.resource_keys_json)
         self.assertIn("service:tts:audio_cpp", job.resource_keys_json)
 
     def test_qwen_resolved_backend_uses_saved_qwen_backend_precedence(self):

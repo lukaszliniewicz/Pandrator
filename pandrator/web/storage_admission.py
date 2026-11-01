@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
@@ -119,7 +119,10 @@ class StorageAdmission:
 
     def reserve(
         self, lease: StorageJobLease | None, requirements: Sequence[StorageRequirement],
+        *, preserve_existing: bool = False,
     ) -> list[dict[str, int | str]]:
+        if not isinstance(preserve_existing, bool):
+            raise TypeError("preserve_existing must be a boolean")
         groups = _group_requirements(requirements)
         if not groups:
             return []
@@ -163,7 +166,18 @@ class StorageAdmission:
                     set_={
                         "lease_owner": lease.owner_id,
                         "lease_generation": lease.generation,
-                        "reserved_bytes": group.estimated_bytes,
+                        # Nested output work must not release its parent's envelope.
+                        # Admission still checks only the newly requested work above:
+                        # some of the parent estimate may already be materialized.
+                        "reserved_bytes": case(
+                            (and_(
+                                StorageReservation.lease_owner == lease.owner_id,
+                                StorageReservation.lease_generation == lease.generation,
+                            ), func.max(
+                                StorageReservation.reserved_bytes, group.estimated_bytes,
+                            )),
+                            else_=group.estimated_bytes,
+                        ) if preserve_existing else group.estimated_bytes,
                         "updated_at": now,
                     },
                 ))

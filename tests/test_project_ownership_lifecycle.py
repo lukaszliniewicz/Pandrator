@@ -428,11 +428,23 @@ def test_failed_bundle_import_removes_its_session_and_empty_root(harness):
     with harness.database.session() as db:
         before_roots = set(db.scalars(select(Project.id)))
         before_sessions = set(db.scalars(select(SessionRecord.id)))
+    before_directories = set(harness.paths.sessions.iterdir())
+
+    def fail_registration(unit, _destination, **kwargs):
+        imported = unit.get(SessionRecord, kwargs["session_id"])
+        assert imported is not None and imported.id not in before_sessions
+        assert imported.project_id not in before_roots
+        assert unit.get(Project, imported.project_id) is not None
+        assert (harness.paths.sessions / imported.storage_key).is_dir()
+        raise RuntimeError("injected import failure")
+
     with patch.object(
-        bundles.artifacts, "register", side_effect=RuntimeError("injected import failure")
-    ):
+        bundles.artifacts, "register_in_session", side_effect=fail_registration
+    ) as registration:
         with pytest.raises(RuntimeError, match="injected import failure"):
             bundles.import_bundle(bundle_path, name="Failed copy")
+    registration.assert_called_once()
+    assert set(harness.paths.sessions.iterdir()) == before_directories
     with harness.database.session() as db:
         assert set(db.scalars(select(Project.id))) == before_roots
         assert set(db.scalars(select(SessionRecord.id))) == before_sessions

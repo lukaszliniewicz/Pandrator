@@ -183,6 +183,8 @@ def downgrade() -> None:
         .first()
     ):
         raise RuntimeError("Cannot discard staged upload attachment modes.")
+    if op.get_bind().execute(sa.text("SELECT 1 FROM project_link_submissions LIMIT 1")).first():
+        raise RuntimeError("Cannot discard retained translation submissions.")
     if (
         op.get_bind()
         .execute(

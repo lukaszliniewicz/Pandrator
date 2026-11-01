@@ -282,7 +282,9 @@
               ></button
             ><a
               class="btn btn-secondary"
-              href={projectLinkUrl(`/api/v1/artifacts/${encodeURIComponent(file.id)}/content?download=1`)}
+              href={projectLinkUrl(
+                `/api/v1/artifacts/${encodeURIComponent(file.id)}/content?download=1`
+              )}
               download
               ><Download size={16} />Download<span class="sr-only">
                 {artifactRoleLabel(file.role)}</span

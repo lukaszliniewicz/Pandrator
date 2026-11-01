@@ -1831,7 +1831,7 @@ class OptionalDesktopIntegrationTests(unittest.TestCase):
                     clear=True,
                 ),
                 mock.patch(
-                    "pandrator_manager.tray._tray_command",
+                    "pandrator_manager.tray_autostart._tray_command",
                     return_value=(
                         "/opt/pandrator/PandratorManager",
                         "tray",
@@ -1867,11 +1867,11 @@ class OptionalDesktopIntegrationTests(unittest.TestCase):
             with (
                 mock.patch("pandrator_manager.tray.sys.platform", "win32"),
                 mock.patch(
-                    "pandrator_manager.tray._tray_autostart_path",
+                    "pandrator_manager.tray_autostart._tray_autostart_path",
                     return_value=legacy,
                 ),
                 mock.patch(
-                    "pandrator_manager.tray._tray_command",
+                    "pandrator_manager.tray_autostart._tray_command",
                     return_value=(
                         r"C:\Program Files\Pandrator\manager.exe",
                         "tray",

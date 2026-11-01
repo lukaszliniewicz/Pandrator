@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "status": "complete",
+  "database": "pandrator.sqlite3",
+  "backup": "backups/pre-web-20261101T161329389337Z",
+  "sessions": 0,
+  "segments": 0,
+  "artifacts": 0,
+  "providers": 0,
+  "web_schema": "0058_project_folders",
+  "generation_promotion_version": 1,
+  "completed_at": "2026-11-01T16:13:34.989320+00:00"
+}
