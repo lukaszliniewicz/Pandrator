@@ -12,7 +12,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
   "anyio>=4,<5",
-  "authlib>=1.7,<2",
+  "authlib>=1.9.1,<2",
   "mcp==2.2.0",
   "pydantic>=2.10,<3",
   "requests>=2.32,<3",
@@ -26,9 +26,9 @@ manager = [
   "pandrator-manager>=0.9,<1",
 ]
 dev = [
-  "cryptography>=44,<46",
-  "pytest>=8.3,<9",
-  "ruff==0.16.6",
+  "cryptography>=50.0.2,<51",
+  "pytest>=9.2,<10",
+  "ruff==0.17.3",
 ]
 
 [project.scripts]

@@ -21,7 +21,7 @@ from .audio_cpp_inventory_data import family_metadata, inventory
 
 _AUDIO_CPP_SOURCE = (
     "https://github.com/0xShug0/audio.cpp/blob/"
-    "0097d365a00b52a6991ad7618f0a04e8d2935e47/docs/models/"
+    "41c1f8ffa0d13a1b7e366e30ea5fe5ab8d169d48/docs/models/"
 )
 _LANGUAGES = {
     "ar": "Arabic",
@@ -167,6 +167,16 @@ def _info(
 def preset_voice_info(family: str, model: str, voice: str) -> dict[str, Any]:
     """Return sourced preset metadata, or nothing for an unknown identity."""
     key = voice.lower()
+    if family == "gradium_phonon" and key == "default":
+        return _info("Default", language="en")
+    if family in {"ming3_tts", "ming3_audio"}:
+        if voice.startswith(("US_", "UK_")):
+            return _info(
+                voice.split("_", 1)[1], language="en",
+                accent="American" if voice.startswith("US_") else "British",
+            )
+        if family == "ming3_audio":
+            return _info(voice, label="Voice language not documented")
     if family == "voxtral_tts":
         if key in {
             "casual_female",
@@ -231,10 +241,19 @@ def preset_voice_info(family: str, model: str, voice: str) -> dict[str, Any]:
             "portuguese": "pt",
             "russian": "ru",
             "spanish": "es",
+            "dutch": "nl",
+            "indonesian": "id",
+            "japanese": "ja",
+            "korean": "ko",
+            "polish": "pl",
+            "turkish": "tr",
         }
         if key == "preparedbruno":
             return _info("Prepared Bruno", label="Language not documented")
-        return _info(voice, language=language_presets.get(key, "en"))
+        language = next(
+            (code for name, code in language_presets.items() if key.startswith(name)), "en"
+        )
+        return _info(voice, language=language)
     if family == "kugelaudio":
         if key in {"default", "clear"}:
             return _info(
@@ -303,6 +322,12 @@ def _family(service: Mapping[str, Any], model: Mapping[str, Any]) -> str:
 
 
 def _preferred(family: str) -> dict[str, str]:
+    if family == "gradium_phonon":
+        return {"en": "default"}
+    if family == "ming3_tts":
+        return {"en": "US_Emma"}
+    if family == "ming3_audio":
+        return {"en": "US_James", "zh": "灵小柔"}
     if family == "voxtral_tts":
         return {
             "en": "casual_male",
@@ -331,6 +356,9 @@ def _preferred(family: str) -> dict[str, str]:
     if family == "kitten_tts2":
         return {
             "en": "Bruno",
+            "ja": "JapaneseTrainConductor", "ko": "KoreanNewsAnchor",
+            "pl": "PolishNewsAnchor", "nl": "DutchWeatherPresenter",
+            "id": "IndonesianNewsAnchor", "tr": "TurkishNewsAnchor",
             **{
                 code: name.title()
                 for code, name in _LANGUAGES.items()

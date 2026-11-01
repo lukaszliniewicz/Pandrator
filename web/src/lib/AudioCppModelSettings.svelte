@@ -46,6 +46,14 @@
     s3gen_cfg_rate: 'Audio decoder guidance',
     stop_on_eos: 'Stop at end-of-speech token',
     speed: 'Speed',
+    pitch: 'Pitch',
+    volume: 'Volume',
+    emotion: 'Emotion',
+    dialect: 'Dialect',
+    instruction_schema: 'Control language',
+    max_audio_tokens: 'Maximum audio patches',
+    max_mel_tokens: 'Maximum mel tokens',
+    sigma: 'Flow noise',
     duration: 'Target duration (seconds)',
     t_shift: 'Time shift',
     denoise: 'Denoise reference',
@@ -63,6 +71,14 @@
     stop_threshold: 'Stop threshold',
     depth_temperature: 'Depth temperature'
   };
+  const enumLabels: Record<string, string> = {
+    慢速: 'Slow',
+    中速: 'Medium',
+    快速: 'Fast',
+    低: 'Low',
+    中: 'Medium',
+    高: 'High'
+  };
   const map = $derived(modelTuningMap(settings.audio_cpp_model_settings));
   const modelValues = $derived(map[model]);
   const tuningSource = $derived(
@@ -74,15 +90,23 @@
   );
   function current(key: string) {
     if (modelValues === null) return undefined;
-    if (modelValues && typeof modelValues === 'object') return modelValues[key];
     const raw = (settings.audio_cpp_options ??
       settings.options ??
       {}) as Record<string, unknown>;
-    return (
-      raw[key] ??
-      settings[`audio_cpp_${key}`] ??
-      (['seed', 'speed'].includes(key) ? settings[key] : undefined)
-    );
+    const value =
+      modelValues && typeof modelValues === 'object'
+        ? modelValues[key]
+        : (raw[key] ??
+          settings[`audio_cpp_${key}`] ??
+          (['seed', 'speed'].includes(key) ? settings[key] : undefined));
+    // A global numeric rate cannot initialize Ming's categorical pace control.
+    if (
+      parameters[key]?.type === 'string' &&
+      parameters[key]?.enum &&
+      typeof value !== 'string'
+    )
+      return undefined;
+    return value;
   }
   function change(key: string, next: unknown) {
     const values =
@@ -154,7 +178,7 @@
           {#if parameter.type === 'boolean'}<option value="true">Enabled</option
             ><option value="false">Disabled</option>
           {:else}{#each parameter.enum ?? [] as option}<option value={option}
-                >{option.replaceAll('_', ' ')}</option
+                >{enumLabels[option] ?? option.replaceAll('_', ' ')}</option
               >{/each}{/if}
         </select>
       {:else if parameter.type === 'string'}

@@ -1,6 +1,6 @@
 # Local model navigation and audio preprocessing
 
-Pandrator can use the installed audio.cpp runtime for model inference without installing a separate Python machine-learning environment. The managed catalogue targets audio.cpp 0.9.2-drama3-base-small.
+Pandrator can use the installed audio.cpp runtime for model inference without installing a separate Python machine-learning environment. The managed catalogue targets audio.cpp 0.9.3.
 
 ## Finding a speech model
 

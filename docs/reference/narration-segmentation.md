@@ -133,7 +133,7 @@ For sentence packing, patch `audiobook_sentence_packing` with `auto`, `sentences
 or `clauses`, and `audiobook_sentence_packing_threshold` with an integer from 1
 through 8,192. These settings apply to newly prepared audiobook narration.
 
-## audio.cpp 0.9.2-drama3-base-small defaults
+## audio.cpp 0.9.3 defaults
 
 The following are automatic audiobook targets in characters for ordinary Latin
 script text. Language-specific targets are listed below. Quantizations of the
@@ -157,6 +157,7 @@ preference, not necessarily a hard model input limit.
 | `fireredtts3` | 540 | 600 |
 | `fish_audio` | 270 | 200 |
 | `fish_drama3` | 540 | 128 |
+| `gradium_phonon` | 180 | Token-based unless a character override is supplied |
 | `glm_tts` | 270 | Not a fixed request character default |
 | `higgs_audio_tts` | 921 | 1024 |
 | `index_tts2` | 270 | Not a fixed request character default |
@@ -170,6 +171,8 @@ preference, not necessarily a hard model input limit.
 | `plapre` | 270 | 300 |
 | `magpie_tts` | 270 | 300 |
 | `maya1` | 270 | 300 |
+| `ming3_tts` | 270 | 300 |
+| `ming3_audio` | 90 | 100 |
 | `miotts` | 270 | Not a fixed request character default |
 | `moss_tts_local` | 1,843 | 2048 |
 | `moss_tts_nano` | 230 | 256 |
@@ -190,6 +193,7 @@ preference, not necessarily a hard model input limit.
 | `voxcpm1` | 1,800 | 2048 |
 | `voxcpm2` | 1,800 | 2048 |
 | `voxtral_tts` | 1,152 | 300 |
+| `xtts_v2` | 230 | 256 |
 | `zipvoice` | 180 | 128 |
 
 Voxtral also has a **240-word** automatic target, below Mistral's recommendation
@@ -209,7 +213,8 @@ These policies do not establish measured maximum durations.
 
 Drama 3 uses 270 characters for Chinese, Japanese, and Korean.
 Qwen also uses 350 characters for Chinese, Japanese, and Korean; VoxCPM uses 450;
-Breeze 324; Higgs 270; MOSS Local 450; and MOSS Nano 72. Supertonic uses 108 for
+Breeze 324; Higgs 270; MOSS Local 450; and MOSS Nano 45. FireRedTTS3 uses 72 for
+Chinese, Japanese and Korean; Magpie uses 90 for Chinese and Korean. Supertonic uses 108 for
 Japanese and Korean. Confucius uses 72 for Chinese, Japanese, and Korean.
 Korean Chatterbox uses 63: its default 384 speech tokens allow only about
 15 seconds at the multilingual decoder's 25 tokens per second.
@@ -237,7 +242,11 @@ Soprano exposes chunk size only when its session is created. Manager configures
 same setting. This only bypasses text splitting and does not enlarge the model's
 output-frame or context window.
 
-F5 and OuteTTS are available for narration, with a limitation: audio.cpp 0.9.2
+Kokoro uses a 90-character target for Chinese and Japanese. Ming speech routes
+use 45 for CJK text. These are conservative application targets, not hard model
+context limits.
+
+F5 and OuteTTS are available for narration, with a limitation: audio.cpp 0.9.3
 exposes no way to disable F5's reference-dependent splitter or OuteTTS's
 context/output retry splitting. Pandrator still prepares and saves its own
 segments, and uses a full-segment character budget where supported, but the
@@ -250,7 +259,7 @@ With other families, model-native context checks and output ceilings still apply
 Use a representative multi-sentence audition before preparing a long book,
 especially after changing language, speed, reference audio, or output budgets.
 
-Sources: [pinned model specs](https://github.com/0xShug0/audio.cpp/tree/507495611b22dc4590e0e5609e05e8096384e33f/model_specs),
-[Plapre long-text guidance](https://github.com/0xShug0/audio.cpp/blob/507495611b22dc4590e0e5609e05e8096384e33f/docs/models/plapre.md),
+Sources: [pinned model specs](https://github.com/0xShug0/audio.cpp/tree/41c1f8ffa0d13a1b7e366e30ea5fe5ab8d169d48/model_specs),
+[Plapre long-text guidance](https://github.com/0xShug0/audio.cpp/blob/41c1f8ffa0d13a1b7e366e30ea5fe5ab8d169d48/docs/models/plapre.md),
 [framework splitter](https://github.com/0xShug0/audio.cpp/blob/0097d365a00b52a6991ad7618f0a04e8d2935e47/src/framework/text/chunking.cpp),
 [Voxtral guidance](https://docs.mistral.ai/studio/audio/text_to_speech/speech).

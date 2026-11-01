@@ -159,6 +159,10 @@ def _audio_cpp_model_preset(model: dict) -> list[str] | None:
     family = str(model.get("family") or "")
     if str(model.get("voice_mode") or "") not in {"prebuilt", "hybrid"}:
         return None
+    if isinstance(model.get("preset_voices"), list):
+        return list(model["preset_voices"])
+    if family == "gradium_phonon":
+        return ["default"]
     if family == "kokoro_tts":
         return list(AUDIO_CPP_KOKORO_VOICES)
     if family == "qwen3_tts" and "customvoice" in model_id:
@@ -185,7 +189,7 @@ def _audio_cpp_model_preset(model: dict) -> list[str] | None:
             if "_jp_" in model_id
             else ["us_male", "us_female", "uk_male", "uk_female"]
         )
-    if family in {"kitten_tts2", "kugelaudio", "neutts", "plapre", "voxtral_tts"}:
+    if family in {"kitten_tts2", "kugelaudio", "neutts", "plapre", "voxtral_tts", "ming3_tts", "ming3_audio"}:
         options = family_metadata(family).get("options", {}).get("request", [])
         return next(
             (

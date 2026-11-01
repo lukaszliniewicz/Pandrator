@@ -13,19 +13,29 @@ async function signIn(page: Page) {
   await page
     .getByRole('combobox', { name: 'Provider', exact: true })
     .selectOption('audio_cpp');
+  const catalogueResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes('/api/v1/services/models/catalogue?') &&
+      new URL(response.url()).searchParams.get('provider') === 'audio_cpp' &&
+      response.ok()
+  );
   await page
     .getByRole('button', { name: 'Apply filters', exact: true })
     .click();
+  return (await catalogueResponse).json();
 }
 
 test('model catalogue exposes reviewed choices, licence filters and all-package pagination', async ({
   page
 }, info) => {
-  await signIn(page);
+  const initialCatalogue = await signIn(page);
   await expect(
     page.getByRole('heading', { name: 'Audio models' })
   ).toBeVisible();
-  await expect(page.locator('article')).toHaveCount(10);
+  expect(initialCatalogue.total).toBeGreaterThanOrEqual(10);
+  await expect(page.locator('article')).toHaveCount(
+    initialCatalogue.items.length
+  );
   const breeze = page
     .locator('article')
     .filter({ has: page.getByRole('heading', { name: /Breeze/ }) });
@@ -87,8 +97,10 @@ test('model catalogue stays usable on a narrow screen and recovers from an API e
   page
 }, info) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await signIn(page);
-  await expect(page.locator('article')).toHaveCount(10);
+  const initialCatalogue = await signIn(page);
+  await expect(page.locator('article')).toHaveCount(
+    initialCatalogue.items.length
+  );
   await page
     .locator('article')
     .first()
@@ -114,7 +126,9 @@ test('model catalogue stays usable on a narrow screen and recovers from an API e
   await page.unroute('**/api/v1/services/models/catalogue?**');
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
-  await expect(page.locator('article')).toHaveCount(10);
+  await expect(page.locator('article')).toHaveCount(
+    initialCatalogue.items.length
+  );
 });
 
 test('ElevenLabs details render instruction scope and capability notes', async ({

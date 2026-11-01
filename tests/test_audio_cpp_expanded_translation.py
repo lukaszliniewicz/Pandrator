@@ -106,9 +106,9 @@ def test_unknown_model_does_not_silently_gain_cloning():
 
 
 def test_catalogue_covers_inventory_without_claiming_editing_or_installation():
-    assert len(inventory()["families"]) == 125
+    assert len(inventory()["families"]) == 130
     packages = inventory()["packages"]
-    assert len(packages) == 392
+    assert len(packages) == 413
 
     # Component rows are excluded from the ordinary paginated catalogue.
     component_ids = {
@@ -121,6 +121,9 @@ def test_catalogue_covers_inventory_without_claiming_editing_or_installation():
         "vocos_mel_24khz",
         "yue2_vae_f16",
         "yue2_vae_f32",
+        "kokoro_82m_generator_rk3588",
+        "piper_lessac_medium_decoder_rk3588",
+        "qwen3_tts_0_6b_base_speech_decoder_rk3588",
     }
 
     ordinary_page = catalogue_page(limit=100, offset=0)
@@ -129,7 +132,7 @@ def test_catalogue_covers_inventory_without_claiming_editing_or_installation():
         ordinary_rows.extend(catalogue_page(limit=100, offset=offset)["items"])
     ordinary_ids = {item["id"] for item in ordinary_rows}
     inventory_ids = {package["id"] for package in packages}
-    assert ordinary_page["total"] == 386
+    assert ordinary_page["total"] == 404
     assert ordinary_ids == inventory_ids - component_ids
     assert ordinary_ids.isdisjoint(component_ids)
     qwen = package_metadata("qwen3_tts_1_7b_customvoice_q8_0")

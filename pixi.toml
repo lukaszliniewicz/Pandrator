@@ -2,7 +2,7 @@
 name = "pandrator"
 channels = ["conda-forge"]
 platforms = ["win-64", "linux-64"]
-requires-pixi = "==0.80.0"
+requires-pixi = "==0.83.0"
 
 [dependencies]
 python = "3.11.*"

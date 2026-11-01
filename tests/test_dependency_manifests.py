@@ -15,6 +15,7 @@ class DependencyManifestTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         manifest = tomllib.loads((root / "pixi.toml").read_text(encoding="utf-8"))
 
+        self.assertEqual(manifest["workspace"]["requires-pixi"], "==0.83.0")
         self.assertEqual(
             manifest["pypi-dependencies"]["pandrator"],
             {

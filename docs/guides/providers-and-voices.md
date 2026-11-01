@@ -101,22 +101,34 @@ starting generation.
 
 ## audio.cpp runtime versions
 
-The Manager pins audio.cpp **0.9.2-drama3-base-small** for Linux CPU/Vulkan/CUDA and Windows
+The Manager pins audio.cpp **0.9.3** for Linux CPU/Vulkan/CUDA and Windows
 CPU/Vulkan/CUDA, with SHA-256-verified upstream archives. Linux CPU and Vulkan
 use the portable builds. Windows CUDA uses the 12.4 binary plus its bundled
 cudart runtime archive. Linux CUDA uses the upstream
-`audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-cuda12.8-colab.tar.gz` binary best-effort: the
+`audio-v0.9.3-bin-ubuntu-x64-cuda12.8-colab.tar.gz` binary best-effort: the
 colab tag means it was built for Colab (CUDA 12.8), it ships without a bundled
 runtime. It needs a compatible NVIDIA driver and system CUDA 12 libraries
 (including cuBLAS and cuFFT), NCCL 2, and OpenSSL 3. It has not been tested on
 local NVIDIA hardware. Use Vulkan when those dependencies are unavailable. Staging refuses
 an unexpected archive layout instead of installing a broken slot.
 
-Updating the runtime does not replace selected models, voices, or generation
-settings. Model package revisions and digests remain independently pinned.
+Saved model IDs, voices and generation settings stay selected. Download manifests
+are independently pinned; a catalogue refresh can advance weight revisions.
 
-The catalogue contains 125 families and 392 packages, including the retained
-legacy Kitten TTS 2 package. New speech packages include five Drama 3 variants,
+The catalogue contains 130 families and 413 packages, including the retained
+legacy Kitten TTS 2 package. New speech routes include English Phonon, seven-language
+Ming 3.0 TTS, XTTS v2 and experimental English/Chinese Ming 3.0 Audio. XTTS needs
+a linked WAV reference and uses the non-commercial Coqui Public Model License.
+Phonon uses a preset latent voice and cannot clone a reference recording.
+Ming TTS accepts one conditioning mode per request: directions, a preset, basic
+controls, emotion or dialect; its pace control is categorical.
+
+The dated October 21 Kitten checkpoints add sixteen-language coverage and 124
+presets. Older Kitten checkpoints keep their ten-language, 48-preset catalogue.
+Irodori MeanFlow checkpoints use a four-step default; older RF checkpoints keep
+forty. VocalRender Pro is score-conditioned singing and is excluded from narration
+choices. RK3588 decoder/generator packages are components, not standalone voices.
+Other speech packages include five Drama 3 variants,
 Danish Plapre 3 in BF16/F32, and Kitten TTS 2 BF16, Q8-v2 and Q4. Existing speech packages
 include Voxtral 4B TTS and French PocketTTS, alongside KittenTTS2, KugelAudio and
 English/Japanese LFM2.5-Audio checkpoints. Kitten TTS 2 offers native
@@ -132,7 +144,7 @@ new enums, text controls and defaults. Load/session controls remain part of the
 managed package configuration. The catalogue also lists new recognition,
 restoration and other audio models; catalogue membership does not imply a
 corresponding Pandrator workflow or acoustic verification. See the
-[release](https://github.com/0xShug0/audio.cpp/releases/tag/v0.9.2-drama3-base-small).
+[release](https://github.com/0xShug0/audio.cpp/releases/tag/v0.9.3).
 
 ### Drama 3
 

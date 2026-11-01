@@ -17,7 +17,7 @@ from ..context import ManagerContext
 from ..errors import CancellationRequested, ManagerError
 from ..processes import CommandRunner, CommandSpec
 
-PIXI_VERSION = "0.80.0"
+PIXI_VERSION = "0.83.0"
 _PIXI_RELEASE_BASE = (
     f"https://github.com/prefix-dev/pixi/releases/download/v{PIXI_VERSION}"
 )
@@ -49,21 +49,21 @@ _PIXI_ASSETS = {
         system="windows",
         architecture="x86_64",
         url=f"{_PIXI_RELEASE_BASE}/pixi-x86_64-pc-windows-msvc.zip",
-        sha256="7700e558c4abef7d9b12f6caffabef39aec50b86fb76ac86cafa24f7c6c49bf5",
+        sha256="77bed9f9d2795c94f9ab5744353892eb82bd3b1eaa09ecbbe7573e22ef70a2f4",
         member="pixi.exe",
     ),
     ("linux", "x86_64"): PixiAsset(
         system="linux",
         architecture="x86_64",
         url=f"{_PIXI_RELEASE_BASE}/pixi-x86_64-unknown-linux-musl.tar.gz",
-        sha256="6775f5854579bf59a2a1ca8a7adb025f3386a6535d08757779cd358829d64a22",
+        sha256="064f371e692aaa3400ac581c89da2843c91437f20c2d9155395a5d0037f33551",
         member="pixi",
     ),
     ("linux", "aarch64"): PixiAsset(
         system="linux",
         architecture="aarch64",
         url=f"{_PIXI_RELEASE_BASE}/pixi-aarch64-unknown-linux-musl.tar.gz",
-        sha256="98fceb7e66278af239941621f057f54b32099807c01ad29f608305b4b3a2da1f",
+        sha256="d08403d8f048626ec93ba7b7c56e3b747a5f3a95c4e6e0c815ceb264f5f0b9ce",
         member="pixi",
     ),
 }

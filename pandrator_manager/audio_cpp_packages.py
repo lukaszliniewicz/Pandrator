@@ -47,7 +47,7 @@ class AudioCppModelPackage:
 
     @property
     def config_path(self) -> str:
-        if self.family in {"pocket_tts", "minimax_music3", "yue2"}:
+        if self.family in {"pocket_tts", "minimax_music3", "yue2", "xtts_v2"}:
             return f"models/{self.target_directory}"
         if self.family == "minimax_h3":
             dit_file = {

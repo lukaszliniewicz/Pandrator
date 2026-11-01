@@ -722,14 +722,28 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertEqual(platforms.pixi_manifest_platform("Windows", "AMD64"), "win-64")
         self.assertEqual(platforms.pixi_manifest_platform("Linux", "x86_64"), "linux-64")
         self.assertEqual(platforms.pixi_manifest_platform("Linux", "aarch64"), "linux-aarch64")
+        self.assertEqual(platforms.PIXI_VERSION, "0.83.0")
         windows_asset = platforms.pixi_download_asset("Windows", "AMD64")
         linux_asset = platforms.pixi_download_asset("Linux", "x86_64")
+        linux_arm64_asset = platforms.pixi_download_asset("Linux", "aarch64")
         self.assertIn(f"/v{platforms.PIXI_VERSION}/", windows_asset["url"])
         self.assertTrue(windows_asset["url"].endswith("windows-msvc.zip"))
         self.assertEqual(windows_asset["member"], "pixi.exe")
         self.assertEqual(len(windows_asset["sha256"]), 64)
+        self.assertEqual(
+            windows_asset["sha256"],
+            "77bed9f9d2795c94f9ab5744353892eb82bd3b1eaa09ecbbe7573e22ef70a2f4",
+        )
         self.assertIn("linux-musl.tar.gz", linux_asset["url"])
         self.assertEqual(linux_asset["member"], "pixi")
+        self.assertEqual(
+            linux_asset["sha256"],
+            "064f371e692aaa3400ac581c89da2843c91437f20c2d9155395a5d0037f33551",
+        )
+        self.assertEqual(
+            linux_arm64_asset["sha256"],
+            "d08403d8f048626ec93ba7b7c56e3b747a5f3a95c4e6e0c815ceb264f5f0b9ce",
+        )
 
     def test_shutdown_apps_never_scans_or_terminates_unowned_port_listeners(self):
         installer = HeadlessInstaller(working_dir="workspace")

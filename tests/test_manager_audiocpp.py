@@ -20,7 +20,7 @@ from pandrator_manager.components.audiocpp import (
     resolve_assets,
     server_config,
 )
-from pandrator_manager.components.catalog import PRESENTATIONS
+from pandrator_manager.components.catalog import PRESENTATIONS, presentation_for
 from pandrator_manager.components.slots import (
     active_component_path,
     component_container,
@@ -182,7 +182,7 @@ class AudioCppManagerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "requires the CUDA backend"):
                     server_config(backend, [cuda_only_id])
 
-    def test_linux_cuda_resolves_to_the_upstream_drama3_base_small_colab_asset_best_effort(self):
+    def test_linux_cuda_resolves_to_the_upstream_0_9_3_colab_asset_best_effort(self):
         with tempfile.TemporaryDirectory() as directory:
             context = ManagerContext(
                 layout=WorkspaceLayout.from_value(directory),
@@ -197,14 +197,14 @@ class AudioCppManagerTests(unittest.TestCase):
         self.assertEqual(1, len(assets))
         self.assertEqual("cuda_binary", assets[0].kind)
         self.assertEqual(
-            "audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
+            "audio-v0.9.3-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
             assets[0].name,
         )
         self.assertEqual(
-            "fc59545092eab869013c74d11273c17c96a050befe257523b9019d1a5073962c",
+            "5be3e8d515fb244387de87958668ebb729d9442de6a53df12e4c718ea918419d",
             assets[0].sha256,
         )
-        self.assertEqual("0.9.2-drama3-base-small", assets[0].version)
+        self.assertEqual("0.9.3", assets[0].version)
         self.assertEqual(AUDIO_CPP_RELEASE_BASE, assets[0].release_base)
         self.assertEqual(
             f"{assets[0].release_base}/{assets[0].name}", assets[0].url
@@ -291,7 +291,7 @@ class AudioCppManagerTests(unittest.TestCase):
         stage = next(task for task in tasks if task.kind == "stage_audio_cpp")
         breeze = next(
             model
-            for model in PRESENTATIONS["audio_cpp"].models
+            for model in presentation_for("audio_cpp").models
             if model.id == "breeze_tts_2_q8_0"
         )
         expected_bytes = int(breeze.estimated_download_bytes or 0)

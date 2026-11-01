@@ -20,7 +20,15 @@ from pandrator_manager.components.audiocpp import (
 )
 from scripts.snapshot_audio_cpp_catalogue import flatten_packages
 
-COMPONENT_IDS = {"auk_qwen_bf16", "auk_qwen_q8_0", "auk_vae_f32", "vocos_mel_24khz"}
+COMPONENT_IDS = {
+    "auk_qwen_bf16",
+    "auk_qwen_q8_0",
+    "auk_vae_f32",
+    "kokoro_82m_generator_rk3588",
+    "piper_lessac_medium_decoder_rk3588",
+    "qwen3_tts_0_6b_base_speech_decoder_rk3588",
+    "vocos_mel_24khz",
+}
 TASK_VARIANTS = {
     "personaplex_7b_v1_q4_k": ("conversion", ["s2s"], "s2s"),
     "personaplex_7b_v1_q8_0": ("conversion", ["s2s"], "s2s"),
@@ -57,8 +65,12 @@ def test_components_keep_pinned_downloads_but_not_model_choices():
         assert package["weight_manifest"]["revision"]
         assert package["weight_manifest"]["files"]
         assert all(file["sha256"] for file in package["weight_manifest"]["files"])
-        assert package_id in MODEL_PACKAGES
-        assert MODEL_PACKAGES[package_id].role == "component"
+        if package["format"] == "gguf":
+            assert package_id in MODEL_PACKAGES
+            assert MODEL_PACKAGES[package_id].role == "component"
+        else:
+            assert package["format"] == "rknn"
+            assert package_id not in MODEL_PACKAGES
         assert package_id not in SUPPORTED_MODEL_IDS
         assert package_id not in ordinary_ids
         assert package_id not in speech_ids
@@ -69,7 +81,8 @@ def test_components_keep_pinned_downloads_but_not_model_choices():
         assert metadata["capabilities"] == []
         assert metadata["language_support_by_operation"] == {}
         assert metadata["language_support"]["languages"] == []
-        with pytest.raises(ValueError, match="component"):
+        reason = "component" if package["format"] == "gguf" else "does not support model package"
+        with pytest.raises(ValueError, match=reason):
             server_config("cpu", [package_id])
 
 

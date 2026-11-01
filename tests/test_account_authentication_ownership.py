@@ -31,6 +31,14 @@ LEGACY_HASH = "fixture-encoded-password-hash"
 def schema_at_0072(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("account-auth-schema-base") / "at-0072.sqlite"
     command.upgrade(_config(path), PREVIOUS_REVISION)
+    # Bootstrap uses current metadata, including this table added by 0087.
+    # It did not exist at 0072 and must not create an inbound auth reference.
+    with sqlite3.connect(path) as connection:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_link_sessions'"
+        ).fetchone():
+            assert connection.execute("SELECT COUNT(*) FROM project_link_sessions").fetchone() == (0,)
+            connection.execute("DROP TABLE project_link_sessions")
     return path
 
 

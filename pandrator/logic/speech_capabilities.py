@@ -113,6 +113,8 @@ _IRODORI_DESIGN_MODELS = {
     "irodori_tts_600m_v3_voicedesign_q8_0",
     "irodori_tts_v4_small_f16",
     "irodori_tts_v4_small_q8_0",
+    "irodori_tts_v4_1_small_mf_f16",
+    "irodori_tts_v4_1_small_mf_q8_0",
 }
 _IRODORI_500_MODELS = {"irodori_tts_500m_v3_f16", "irodori_tts_500m_v3_q8_0"}
 
@@ -214,6 +216,8 @@ def capabilities_for_model(
         "notes": [],
     }
     audio_cpp = route in {"audio_cpp", "audiocpp", "audio_cpp_server"}
+    if voice_mode.casefold() == "none":
+        return profile
     gemini = route in {"gemini", "google_gemini", "vertex_ai", "google_vertex_ai"}
     elevenlabs = route in {"elevenlabs", "elevenlabs_native"}
     if elevenlabs and model == "eleven_v4":
@@ -335,6 +339,23 @@ def capabilities_for_model(
         )
         profile["notes"].append(
             "Only route-verified legacy vocal tags are compiled; other events remain saved."
+        )
+    elif audio_cpp and family == "ming3_tts":
+        profile.update(
+            status="documented", dialect="instructions", instructions="field",
+            instruction_scope=["request"], instruction_transport="options.instruct",
+            instruction_kind="voice_and_delivery", voice_design=True,
+            emotion={"mode": "open_description", "tags": []},
+        )
+        profile["notes"].append(
+            "Directions describe the whole request through Ming's voice-design template. "
+            "Choose one conditioning mode: directions, a preset, basic controls, emotion, or dialect."
+        )
+    elif audio_cpp and family in {"gradium_phonon", "xtts_v2", "ming3_audio"}:
+        profile["status"] = "documented"
+        profile["notes"].append(
+            "This speech route does not support delivery instructions, phrase controls, "
+            "or numeric speed changes."
         )
     elif audio_cpp and family == "voxtral_tts":
         profile["status"] = "documented"
@@ -555,6 +576,12 @@ def capabilities_for_model(
             status="documented", dialect="instructions", instructions="field",
             instruction_scope=["request"],
             emotion={"mode": "open_description", "tags": []},
+        )
+    elif audio_cpp and normalized == "voxcpm2_vocalrender_pro":
+        profile["status"] = "documented"
+        profile["notes"].append(
+            "VocalRender Pro requires a musical score and a singing reference. "
+            "Its singing workflow is not integrated into Pandrator."
         )
     elif audio_cpp and family == "voxcpm2":
         profile.update(

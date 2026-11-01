@@ -5,7 +5,9 @@ from typing import Any, Protocol, TypeAlias
 
 from .audio_cpp_catalogue import package_metadata as _package_metadata
 from .audio_cpp_model_metadata import ModelCatalog as ModelCatalog
-from .audio_cpp_model_metadata import _audio_cpp_model_metadata as _audio_cpp_model_metadata
+from .audio_cpp_model_metadata import (
+    _audio_cpp_model_metadata as _audio_cpp_model_metadata,
+)
 from .audio_cpp_parameters import (
     FISH_AUDIO_TTS_TEXT_CHUNK_SIZE_DEFAULT,
     _normalize_option_aliases,
@@ -44,6 +46,7 @@ _TTS_FORBIDDEN_LEGACY_OPTIONS = {
         "word_duration_frames", "pronunciations", "edit_start_frame", "edit_end_frame",
         "context_text", "context_audio_file", "same_speaker",
     },
+    "ming3_audio": {"system_prompt", "enable_thinking", "prompt", "max_tokens"},
 }
 # These runtimes reject even a neutral global speed as a style condition.
 # Keep this scoped to verified contracts; other families can consume speed.
@@ -54,7 +57,11 @@ _UNSUPPORTED_SPEED_FAMILIES = {
     "voxtral_tts": "Voxtral",
     "fish_drama3": "Drama 3",
     "plapre": "Plapre 3",
+    "xtts_v2": "XTTS v2",
+    "gradium_phonon": "Gradium Phonon",
+    "ming3_audio": "Ming3 Audio",
 }
+_MING3_TTS_VOICES = frozenset({"US_Emma", "US_James", "UK_George", "UK_Charlotte"})
 _MANAGED_REFERENCE_PATH_OPTIONS = {
     "voice_samples",
     "speaker_embedding_file",
@@ -102,6 +109,43 @@ def _has_managed_wav_reference(reference: Any) -> bool:
         and isinstance(data, str)
         and data.casefold().startswith("data:audio/wav;base64,")
     )
+
+
+def _omit_neutral_speed(fields: dict[str, Any], family_name: str) -> None:
+    speed = fields.pop("speed", None)
+    if speed is not None and (
+        isinstance(speed, bool) or not isinstance(speed, (int, float)) or speed != 1
+    ):
+        raise ValueError(
+            f"{family_name} speed is unsupported; only the neutral value 1 is allowed."
+        )
+
+
+def _ming3_tts_template(
+    options: Mapping[str, Any], voice: str, instructions: str
+) -> str:
+    groups = [
+        name for name, keys in (
+            ("basic", ("speed", "pitch", "volume")),
+            ("emotion", ("emotion",)),
+            ("dialect", ("dialect",)),
+        )
+        if any(str(options.get(key) or "").strip() for key in keys)
+    ]
+    if voice:
+        if voice not in _MING3_TTS_VOICES:
+            raise ValueError(
+                "Ming3 TTS voice must be one of: US_Emma, US_James, UK_George, UK_Charlotte."
+            )
+        groups.append("ip")
+    if instructions.strip():
+        groups.append("voice_design")
+    if len(groups) > 1:
+        raise ValueError(
+            "Ming3 TTS accepts one conditioning mode per request; choose basic controls, "
+            "emotion, dialect, a preset voice, or directions."
+        )
+    return groups[0] if groups else "tts"
 
 
 def _require_auk_duration_without_reference(
@@ -297,6 +341,8 @@ def _audio_cpp_language(
         return str(native_language)
     if family == "kokoro_tts":
         return str(canonical)
+    if family == "xtts_v2" and iso == "zh":
+        return "zh-cn"
     return iso
 
 
@@ -365,6 +411,15 @@ def _build_audio_cpp_audio_payload(
         reference_text = f"[S1] {reference_text}"
     if family == "index_tts2" and not _has_managed_wav_reference(raw_voice_ref):
         raise ValueError("IndexTTS2 requires a linked WAV reference audio file.")
+    if family == "xtts_v2" and not _has_managed_wav_reference(raw_voice_ref):
+        raise ValueError("XTTS v2 requires a linked WAV reference audio file.")
+    if (
+        family in {"ming3_tts", "ming3_audio"}
+        and linked_reference
+        and not _has_managed_wav_reference(raw_voice_ref)
+    ):
+        name = "Ming3 TTS" if family == "ming3_tts" else "Ming3 Audio"
+        raise ValueError(f"{name} requires a linked WAV reference audio file.")
     model_settings = tts_settings.get("audio_cpp_model_settings")
     has_selected_options = isinstance(model_settings, dict) and model in model_settings
     raw_options_value = tts_settings.get("audio_cpp_options")
@@ -376,6 +431,11 @@ def _build_audio_cpp_audio_payload(
         if not has_selected_options
         else ""
     )
+    if family in {"ming3_tts", "ming3_audio"} and not linked_reference and (
+        reference_text or legacy_reference_text
+    ):
+        name = "Ming3 TTS" if family == "ming3_tts" else "Ming3 Audio"
+        raise ValueError(f"{name} reference text requires linked reference audio.")
     if (
         linked_reference
         and not reference_text
@@ -470,7 +530,7 @@ def _build_audio_cpp_audio_payload(
         reference_text
         and not is_prebuilt
         and not is_design
-        and family not in {"pocket_tts", "moss_tts_local"}
+        and family not in {"pocket_tts", "moss_tts_local", "xtts_v2"}
     ):
         payload["reference_text"] = reference_text
     voice_ref = raw_voice_ref
@@ -521,7 +581,16 @@ def _build_audio_cpp_audio_payload(
         options = (
             _normalize_option_aliases(family, raw_options) if isinstance(raw_options, dict) else {}
         )
+        if family == "xtts_v2":
+            # XTTS conditions on the waveform alone, never its transcript.
+            options.pop("reference_text", None)
+        if family in {"xtts_v2", "gradium_phonon", "ming3_audio"}:
+            _omit_neutral_speed(options, _UNSUPPORTED_SPEED_FAMILIES[family])
+        if family == "ming3_tts" and not isinstance(options.get("speed"), str):
+            _omit_neutral_speed(options, "Ming3 TTS")
         _reject_known_unsupported_options(family, model, options)
+        if family in {"xtts_v2", "gradium_phonon", "ming3_tts", "ming3_audio"}:
+            options = validate_options(family, options)
         for key in (
             "speed",
             "seed",
@@ -570,6 +639,15 @@ def _build_audio_cpp_audio_payload(
 
         _reject_known_unsupported_options(family, model, payload)
 
+    if family == "ming3_tts":
+        # The shared rate is numeric; options.speed is a native category.
+        _omit_neutral_speed(payload, "Ming3 TTS")
+        options["template_name"] = _ming3_tts_template(
+            options, str(payload.get("voice") or ""), compiled.instructions
+        )
+        if "voice" in payload:
+            options["voice_id"] = payload.pop("voice")
+
     if is_design:
         cloning_only_options = {
             "audio_sample",
@@ -600,7 +678,7 @@ def _build_audio_cpp_audio_payload(
         # Pocket's reviewed clone transcript is a request option.  It must win
         # over any stale value in a legacy raw option bag.
         options["voice_clone_text"] = reference_text
-    if family in {"irodori_tts", "moss_voicegen"} and language:
+    if family in {"irodori_tts", "moss_voicegen", "ming3_audio"} and language:
         options["language"] = payload.pop("language")
     if family == "moss_voicegen":
         native_seed = options.get("seed", payload.pop("seed", None))
@@ -650,20 +728,14 @@ def _build_audio_cpp_audio_payload(
         "irodori_tts_500m_v3_f16", "irodori_tts_500m_v3_q8_0",
         "irodori_tts_600m_v3_voicedesign_f16", "irodori_tts_600m_v3_voicedesign_q8_0",
         "irodori_tts_v4_small_f16", "irodori_tts_v4_small_q8_0",
+        "irodori_tts_v4_1_small_mf_f16", "irodori_tts_v4_1_small_mf_q8_0",
     }:
         options["no_ref"] = not linked_reference
     if family in _UNSUPPORTED_SPEED_FAMILIES:
         # Ordinary sessions inherit speed=1 even without any delivery direction.
         # Omit that no-op; reject an intentional unsupported speed locally.
         for request_fields in (payload, options):
-            speed = request_fields.pop("speed", None)
-            if speed is not None and (
-                isinstance(speed, bool) or not isinstance(speed, (int, float)) or speed != 1
-            ):
-                raise ValueError(
-                    f"{_UNSUPPORTED_SPEED_FAMILIES[family]} speed is unsupported; "
-                    "only the neutral value 1 is allowed."
-                )
+            _omit_neutral_speed(request_fields, _UNSUPPORTED_SPEED_FAMILIES[family])
     if (
         family == "pocket_tts"
         and model.startswith("pocket_tts_french_")

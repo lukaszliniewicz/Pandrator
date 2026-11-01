@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.80.0
+          pixi-version: v0.83.0
           locked: true
           cache: true
       - name: Lint all Python source and tests

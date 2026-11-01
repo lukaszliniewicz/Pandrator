@@ -134,7 +134,7 @@ class AudioCppParameterTests(unittest.TestCase):
                     or "fireredtts3_instruct" in model["id"]
                 ):
                     settings["generation_prompt"] = "Warm and clear."
-                if model["family"] == "index_tts2":
+                if model["family"] in {"index_tts2", "xtts_v2"}:
                     settings["audio_cpp_voice_ref"] = {
                         "type": "base64",
                         "data": "data:audio/wav;base64,ZmFrZQ==",

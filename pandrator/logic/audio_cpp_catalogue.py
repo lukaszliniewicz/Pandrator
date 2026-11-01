@@ -88,6 +88,8 @@ def _curated(package: dict[str, Any]) -> dict[str, Any]:
         "irodori_tts_600m_v3_voicedesign_q8_0",
         "irodori_tts_v4_small_f16",
         "irodori_tts_v4_small_q8_0",
+        "irodori_tts_v4_1_small_mf_f16",
+        "irodori_tts_v4_1_small_mf_q8_0",
     }:
         result.update(voice_mode="optional_cloning", reference_audio="optional", reference_text="unverified")
         result.setdefault("upstream_features", {}).update(voice_cloning=True, voice_design=True)
@@ -163,9 +165,17 @@ def _package_availability(package: dict[str, Any], speech_route: bool) -> dict[s
     lfm_layout = package.get("family") == "lfm2_audio" and len(backbones) == 1 and set(gguf_files) == {
         backbones[0], *(str(Path(backbones[0]).with_name(prefix + Path(backbones[0]).name)) for prefix in ("mmproj-", "vocoder-", "tokenizer-"))
     }
+    xtts_gpt = {
+        "xtts_v2_gguf_q8_0": "xtts-v2-gpt-q8_0.gguf",
+        "xtts_v2_gguf_q4_k_m": "xtts-v2-gpt-q4_k_m.gguf",
+        "xtts_v2_gguf": "xtts-v2-gpt.gguf",
+    }.get(str(package.get("id")))
+    xtts_layout = package.get("family") == "xtts_v2" and xtts_gpt is not None and len(files) == 3 and {
+        item.get("path") for item in files
+    } == {xtts_gpt, "xtts-v2-vocoder-f16.gguf", "mel_norms.bin"}
     if (
         package.get("format") != "gguf"
-        or (len(gguf_files) != 1 and not lfm_layout)
+        or (len(gguf_files) != 1 and not lfm_layout and not xtts_layout)
     ):
         return {
             "status": "catalogued_only",
@@ -212,6 +222,8 @@ def _operation_specs(package: dict[str, Any], family: dict[str, Any]) -> list[tu
     if package.get("entry_role", "model") == "component":
         return []
     model_id = str(package.get("id", ""))
+    if model_id == "voxcpm2_vocalrender_pro":
+        return [("music", "svs")]
     if model_id.startswith("dots_tts_edit_"):
         return [("audio_edit", "edit")]
 
@@ -425,6 +437,7 @@ def package_metadata(model_id: str) -> dict[str, Any]:
         speech
         and package["family"] not in {"minimax_h3", "vevo2"}
         and not model_id.startswith("dots_tts_edit_")
+        and model_id != "voxcpm2_vocalrender_pro"
     )
     voice_mode = "cloning" if "clone" in tasks else "prebuilt"
     if not speech:

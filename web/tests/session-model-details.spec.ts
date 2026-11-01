@@ -197,7 +197,7 @@ test('native text controls remain text and are persisted per model', async ({
   });
   await settings.getByText('More model controls', { exact: false }).click();
   const dialect = settings.getByRole('textbox', {
-    name: 'dialect',
+    name: 'Dialect',
     exact: true
   });
   await expect(dialect).toHaveAttribute('maxlength', '1200');

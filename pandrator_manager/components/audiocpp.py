@@ -17,7 +17,7 @@ from ..context import ManagerContext
 from ..models import ComputeVariant
 from .host import compute_choices, normalized_architecture, resolve_auto_compute
 
-AUDIO_CPP_VERSION = "0.9.2-drama3-base-small"
+AUDIO_CPP_VERSION = "0.9.3"
 AUDIO_CPP_RELEASE_BASE = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/v{AUDIO_CPP_VERSION}"
 )
@@ -215,22 +215,22 @@ SUPPORTED_MODEL_IDS = MANUAL_MODEL_IDS + tuple(
 )
 
 # Public alias matching the naming used by the other native driver.
-# Digests: upstream v0.9.2-drama3-base-small release assets, published
-# 2026-10-19 from commit 507495611b22dc4590e0e5609e05e8096384e33f. Portable CPU
+# Digests: upstream v0.9.3 release assets, published 2026-10-26 from commit
+# 41c1f8ffa0d13a1b7e366e30ea5fe5ab8d169d48. Portable CPU
 # and Vulkan builds avoid the release runner's CPU instruction set. Windows CUDA
 # stays on the 12.4 binary/runtime pair for driver compatibility.
 ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     ("linux", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-cpu-portable.tar.gz",
-            "d5e6110daae50800429680a277b70557d333d552c4a130a8f1d0e56181fa8697",
+            "audio-v0.9.3-bin-ubuntu-x64-cpu-portable.tar.gz",
+            "02156f7a7bd9924902cec26be35087d3806c7e348be344b1ec28cac0c1af3929",
             ComputeVariant.CPU,
         ),
     ),
     ("linux", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-vulkan-portable.tar.gz",
-            "dfd0ad832829210eb13a03779bdd90f3e6e68f68edf762bf25b3915067beeb73",
+            "audio-v0.9.3-bin-ubuntu-x64-vulkan-portable.tar.gz",
+            "10ac6b5cb72bc9266e5a600407dbcc2a3eaf87139a3e01c064bf3035d11f81b8",
             ComputeVariant.VULKAN,
         ),
     ),
@@ -241,36 +241,36 @@ ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     # archive layout differs from the expected archive-root files.
     ("linux", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
-            "fc59545092eab869013c74d11273c17c96a050befe257523b9019d1a5073962c",
+            "audio-v0.9.3-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
+            "5be3e8d515fb244387de87958668ebb729d9442de6a53df12e4c718ea918419d",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.9.2-drama3-base-small-bin-windows-x64-cpu-portable.zip",
-            "9654c8f66f87bda768196d934059be896399b43703b06e5f2b857430775bec3b",
+            "audio-v0.9.3-bin-windows-x64-cpu-portable.zip",
+            "f5fa4662b7ec323dbe31d37e224e46159b064836a9005da384551a5248771eeb",
             ComputeVariant.CPU,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.9.2-drama3-base-small-bin-windows-x64-vulkan-portable.zip",
-            "9c943d406af3543cc5005d158ed583210cd7a13371bffcd4b7f262f7a6a5ad16",
+            "audio-v0.9.3-bin-windows-x64-vulkan-portable.zip",
+            "51f8d8ce6cc7789bc9dc3d15f35e05f143aaf2ce1cbecc525a4104bcdde82a42",
             ComputeVariant.VULKAN,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.9.2-drama3-base-small-bin-windows-x64-cuda12.4.zip",
-            "48852da40790c40f3285bca6c53ff7829b3963080f0e95b6742f868fc1d7c757",
+            "audio-v0.9.3-bin-windows-x64-cuda12.4.zip",
+            "976b1fe4329407be45b272fc656d91006f081d22706f453f8879bc69dbb4a9b3",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
         AudioCppAsset(
-            "audio-v0.9.2-drama3-base-small-cudart-windows-x64-cuda12.4.zip",
-            "4b1186a525c9ac70a4fbd031b47e0dfca2ebaa36cfcb760d5be1a76eb2b12da5",
+            "audio-v0.9.3-cudart-windows-x64-cuda12.4.zip",
+            "866a2bc12c4d887eb3b1b62f82f7a8fdd93391cb77ea02b63b0f360cfb3bb4d8",
             ComputeVariant.CUDA,
             kind="cuda_runtime",
         ),

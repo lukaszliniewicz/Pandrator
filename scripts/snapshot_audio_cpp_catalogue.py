@@ -24,7 +24,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
-RUNTIME_VERSION = "0.9.2-drama3-base-small"
+RUNTIME_VERSION = "0.9.3"
 SCHEMA_VERSION = 1
 SOURCE_URL = f"https://github.com/0xShug0/audio.cpp/tree/v{RUNTIME_VERSION}/model_specs"
 GITHUB_DOCS_BASE = f"https://github.com/0xShug0/audio.cpp/blob/v{RUNTIME_VERSION}/"
@@ -177,10 +177,19 @@ def _runtime_metadata(package: dict[str, Any]) -> dict[str, Any] | None:
     return selected or None
 
 
-_COMPONENT_IDS = frozenset({
-    "auk_qwen_bf16", "auk_qwen_q8_0", "auk_vae_f32", "vocos_mel_24khz",
-    "yue2_vae_f16", "yue2_vae_f32",
-})
+_COMPONENT_IDS = frozenset(
+    {
+        "auk_qwen_bf16",
+        "auk_qwen_q8_0",
+        "auk_vae_f32",
+        "kokoro_82m_generator_rk3588",
+        "piper_lessac_medium_decoder_rk3588",
+        "qwen3_tts_0_6b_base_speech_decoder_rk3588",
+        "vocos_mel_24khz",
+        "yue2_vae_f16",
+        "yue2_vae_f32",
+    }
+)
 _YUE2_MAIN_PACKAGE_IDS = frozenset(
     {"yue2_main_bf16", "yue2_main_q4_0", "yue2_main_q8_0"}
 )

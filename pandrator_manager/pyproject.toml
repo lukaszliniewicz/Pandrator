@@ -11,13 +11,13 @@ requires-python = ">=3.11,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-  "certifi>=2024.8",
-  "cryptography>=43,<46",
+  "certifi>=2026.10.23",
+  "cryptography>=50.0.2,<51",
   "dbus-next==0.2.3",
-  "dulwich>=0.22,<1",
+  "dulwich>=1.2.20,<2",
   "flask>=3.1,<4",
   "packaging>=26.3,<27",
-  "Pillow>=10,<13",
+  "Pillow>=13,<14",
   "psutil>=6,<8",
   "pystray>=0.19,<1",
   "pydantic>=2.10,<3",
@@ -28,11 +28,11 @@ dependencies = [
 [project.optional-dependencies]
 build = [
   "build>=1.6,<2",
-  "PyInstaller==6.22.2",
+  "PyInstaller==6.22.3",
 ]
 dev = [
-  "pytest>=8.3,<9",
-  "ruff==0.16.6",
+  "pytest>=9.2,<10",
+  "ruff==0.17.3",
 ]
 
 [project.scripts]

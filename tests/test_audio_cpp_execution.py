@@ -213,6 +213,12 @@ def test_tts_endpoint_guard_wraps_existing_endpoint_lock(monkeypatch):
 
 def test_remote_tts_cancellation_interrupts_endpoint_lock_wait(monkeypatch):
     base_url = "http://203.0.113.8:8060"
+    # Measure cancellation at the held lock, independently of catalogue setup.
+    monkeypatch.setattr(
+        tts_handler,
+        "resolve_openai_audio_endpoint",
+        lambda _settings: ({"adapter": "audio_cpp", "base_url": base_url}, None),
+    )
     cancel = threading.Event()
     waiting = threading.Event()
     finished = threading.Event()

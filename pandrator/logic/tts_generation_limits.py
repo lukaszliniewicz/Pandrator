@@ -33,6 +33,9 @@ _RUNTIME_OUTPUT_BUDGETS = {
     "plapre": (500, "audio_tokens"),
     "voxcpm2": (4096, "audio_tokens"),
     "voxtral_tts": (2048, "audio_frames"),
+    "ming3_tts": (1000, "acoustic_patches"),
+    "ming3_audio": (1000, "acoustic_patches"),
+    "xtts_v2": (605, "mel_tokens"),
 }
 
 
@@ -115,7 +118,7 @@ def generation_limit_metadata(
     audio_cpp = _normalised(service) in {"audio_cpp", "audio.cpp", "audiocpp"} or _normalised(adapter) == "audio_cpp"
     runtime_family = family.strip().casefold() or profile
     if audio_cpp:
-        result["checked_at"] = "2026-10-19"
+        result["checked_at"] = "2026-11-01"
         result["segmentation_owner"] = "pandrator"
         result["single_segment_supported"] = runtime_family not in NATIVE_SPLIT_ONLY_FAMILIES
         native_chunk = native_character_chunk_default(runtime_family)
@@ -137,13 +140,17 @@ def generation_limit_metadata(
         if runtime_family == "voxtral_tts":
             result["runtime_output_budget"]["frame_duration_ms"] = 80
             sources.append("https://docs.mistral.ai/studio/audio/text_to_speech/speech")
-        if runtime_family == "pocket_tts":
+        if runtime_family in {"pocket_tts", "gradium_phonon"}:
             result["runtime_chunk_text_tokens"] = 50
         if runtime_family == "confucius4_tts":
             result["runtime_chunk_text_tokens"] = 80
         if runtime_family == "irodori_tts":
             result["input_tokens"] = 256
             result["input_limit_note"] = "The normalized text and BOS must fit the 256-token checkpoint window. Pandrator applies a conservative UTF-8 byte bound to prevent native truncation."
+        if runtime_family == "kokoro_tts":
+            result["runtime_chunk_note"] = "audio.cpp defaults to 100 characters for Chinese and Japanese voices, otherwise 240. Pandrator uses a language-specific target and keeps each authored segment whole."
+        if runtime_family == "ming3_audio":
+            result["runtime_chunk_characters"] = 100
         if runtime_family in {"fish_audio", "fish_audio_s2"}:
             result["application_runtime_chunk_characters"] = 300
             result["runtime_chunk_note"] = "Pandrator supplies at least 300 when unset; audio.cpp's native default is 200. The request budget expands to keep the compiled Pandrator segment whole."

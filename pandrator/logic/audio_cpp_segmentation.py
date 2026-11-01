@@ -12,7 +12,7 @@ from typing import Any
 
 from .audio_cpp_inventory_data import family_metadata
 
-REVIEWED_RUNTIME = "0.9.2-drama3-base-small"
+REVIEWED_RUNTIME = "0.9.3"
 NATIVE_SPLIT_ONLY_FAMILIES = frozenset({"f5_tts", "outetts"})
 NATIVE_SPLIT_NOTE = (
     "audio.cpp may split each Pandrator segment again inside this model. "
@@ -26,11 +26,11 @@ SINGLE_SEGMENT_SESSION_CHARACTERS = 65536
 # tokenizer budget unless an explicit character-size override is supplied.
 CHARACTER_CHUNK_FAMILIES = frozenset({
     "audio8_tts", "breeze_tts", "chatterbox", "chatterbox_turbo", "cosyvoice3",
-    "dots_tts", "echo_tts", "fireredtts3", "fish_audio", "fish_drama3", "higgs_audio_tts",
+    "dots_tts", "echo_tts", "fireredtts3", "fish_audio", "fish_drama3", "gradium_phonon", "higgs_audio_tts",
     "inflect_v2", "kitten_tts", "kitten_tts2", "kokoro_tts", "kugelaudio",
-    "lfm2_audio", "magpie_tts", "maya1", "moss_tts_local", "moss_tts_nano",
+    "lfm2_audio", "magpie_tts", "maya1", "ming3_audio", "ming3_tts", "moss_tts_local", "moss_tts_nano",
     "moss_tts_v15", "moss_voicegen", "neutts", "outetts", "piper_tts",
-    "plapre", "qwen3_tts", "sanotts", "soprano_tts", "voxcpm1", "voxcpm2", "voxtral_tts", "zipvoice",
+    "plapre", "qwen3_tts", "sanotts", "soprano_tts", "voxcpm1", "voxcpm2", "voxtral_tts", "xtts_v2", "zipvoice",
 })
 
 
@@ -60,6 +60,9 @@ def narration_character_policy(family: str, language: str = "en") -> tuple[int, 
         "voxcpm1": 2000,
         "voxcpm2": 2000,
         "fish_audio": 300,
+        "fireredtts3": 600,
+        "magpie_tts": 100 if language.lower().startswith(("zh", "ko")) else 300,
+        "moss_tts_nano": 256,
         # Native 128/380-character defaults select splitting, not input limits.
         # These narration policies keep ordinary passages together; Drama's
         # output/context budgets and Kitten's 1000-character ceiling still apply.
@@ -74,6 +77,10 @@ def narration_character_policy(family: str, language: str = "en") -> tuple[int, 
         "pocket_tts": 200,
         "confucius4_tts": 80 if cjk else 240,
         "irodori_tts": 80,
+        "kokoro_tts": 100 if language.lower().startswith(("zh", "ja")) else 240,
+        "gradium_phonon": 200,
+        "ming3_tts": 50 if cjk else 300,
+        "ming3_audio": 50 if cjk else 100,
         # Mistral recommends fewer than 300 words. The additional word budget
         # is enforced by Pandrator preparation, independently of characters.
         # Q8 Vulkan generation was checked progressively through ~1280 chars
@@ -85,7 +92,8 @@ def narration_character_policy(family: str, language: str = "en") -> tuple[int, 
         # CJK segments because each written character represents more speech.
         cjk_limits = {
             "voxcpm1": 500, "voxcpm2": 500, "breeze_tts": 360,
-            "higgs_audio_tts": 300, "moss_tts_local": 500, "moss_tts_nano": 80,
+            "higgs_audio_tts": 300, "moss_tts_local": 500, "moss_tts_nano": 50,
+            "fireredtts3": 80,
             "fish_drama3": 300,
             # Korean Chatterbox has 384 speech tokens at 25 Hz: about 15 s.
             # A Latin-script character target cannot carry over to Hangul.

@@ -77,6 +77,7 @@ _NATIVE_SCALAR_TYPES = {
 # native family specs combine TTS, ASR, and speech-to-speech controls, so keep
 # controls from those other operations out of the TTS option surface.
 _TTS_UNSUPPORTED_NATIVE_OPTIONS = {
+    "ming3_audio": {"system_prompt", "enable_thinking", "prompt", "max_tokens"},
     "lfm2_audio": {
         "audio_chunk_mode",
         "audio_chunk_seconds",
@@ -116,6 +117,14 @@ _AUK_FLASH_MODEL_IDS = frozenset(
 _AUK_FLASH_BASE_ONLY_OPTIONS = frozenset(
     {"num_inference_steps", "guidance_scale", "sway_sampling_coef"}
 )
+_IRODORI_MF_MODEL_IDS = frozenset({
+    "irodori_tts_v4_1_small_mf_q8_0", "irodori_tts_v4_1_small_mf_f16",
+})
+_IRODORI_RF_MODEL_IDS = frozenset({
+    "irodori_tts_500m_v3_f16", "irodori_tts_500m_v3_q8_0",
+    "irodori_tts_600m_v3_voicedesign_f16", "irodori_tts_600m_v3_voicedesign_q8_0",
+    "irodori_tts_v4_small_f16", "irodori_tts_v4_small_q8_0",
+})
 
 
 def _integer(
@@ -541,6 +550,13 @@ def request_parameters_for_model(
         parameters["max_tokens"]["description"] = (
             "Generated audio frames per segment (80 ms each), not text tokens."
         )
+    if normalized_family == "irodori_tts" and "num_inference_steps" in parameters:
+        steps = parameters["num_inference_steps"]
+        normalized_model = str(model_id or "").strip().casefold()
+        if normalized_model in _IRODORI_MF_MODEL_IDS:
+            steps["default"] = 4
+        elif normalized_model in _IRODORI_RF_MODEL_IDS:
+            steps.setdefault("default", 40)
     return parameters
 
 

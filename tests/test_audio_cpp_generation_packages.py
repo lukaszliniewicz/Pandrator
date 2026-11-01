@@ -254,11 +254,11 @@ def test_yue2_and_minimax_h3_retain_exact_pinned_manifest_layouts():
             for package_id in EXPECTED_GENERATION_IDS["yue2"]
         },
         "minimax_h3_q4_k": (
-            "661a224e9d9adbd49c01626f85e426f5f425d771",
+            "874fcb41ececda20bcbc0782d6b4ea7f7d069ea8",
             h3_fixed_files | {"dit.gguf"},
         ),
         "minimax_h3_q4_k_int8_dit": (
-            "661a224e9d9adbd49c01626f85e426f5f425d771",
+            "874fcb41ececda20bcbc0782d6b4ea7f7d069ea8",
             h3_fixed_files | {"dit_int8.gguf"},
         ),
     }

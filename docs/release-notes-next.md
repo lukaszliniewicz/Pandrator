@@ -62,9 +62,18 @@
   limits; whole-sentence mode keeps its pieces separate from nearby sentences.
 - Qwen's automatic narration target is 350 characters. Custom lengths remain
   available, and lower output-token budgets still reduce the automatic target.
-- audio.cpp moves to `0.9.2-drama3-base-small` with verified runtime pins, five
-  Drama 3 packages, Danish Plapre 3, and updated Kitten TTS 2 variants. Saved
-  selections for the old Kitten Q8 package retain their original ID and weights.
+- audio.cpp moves to `0.9.3`, with all seven runtime archives verified. New speech
+  routes cover Phonon, Ming 3.0 TTS, XTTS v2 and Ming 3.0 Audio. XTTS requires a WAV
+  reference and retains its non-commercial model licence. Ming conditioning modes
+  are validated before synthesis; numeric rates cannot become categorical pace.
+- New Kitten checkpoints advertise sixteen languages and 124 voices; older
+  checkpoints retain their original ten-language, 48-voice catalogue. Irodori
+  MeanFlow uses four inference steps by default. Singing and RK3588 components
+  stay out of narrator choices. Saved legacy Kitten Q8 IDs and weights remain pinned.
+- Pixi moves to 0.83.0. Cryptography, Pillow, Dulwich, Authlib, LiteLLM, Certifi and
+  pytest receive available security fixes, with synchronized manifests and locks.
+  Frontend dependencies advance within compatible lines, retaining Kit 2 and
+  TypeScript 5; Node 24 is the declared build runtime.
 - Drama 3 translates speech XML and legacy pSSML into inline directions,
   model-specific vocal events and paired phrase controls. Cast speakers render
   as separate voice parts; native multi-speaker dialogue, prior-take conditioning

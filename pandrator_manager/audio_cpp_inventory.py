@@ -22,7 +22,17 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SPEECH_TASKS = frozenset({"tts", "clone", "design", "vdes"})
 CATALOGUE_ONLY_FAMILIES = frozenset({"vevo2"})
 COMPONENT_IDS = frozenset(
-    {"auk_qwen_bf16", "auk_qwen_q8_0", "auk_vae_f32", "vocos_mel_24khz", "yue2_vae_f16", "yue2_vae_f32"}
+    {
+        "auk_qwen_bf16",
+        "auk_qwen_q8_0",
+        "auk_vae_f32",
+        "kokoro_82m_generator_rk3588",
+        "piper_lessac_medium_decoder_rk3588",
+        "qwen3_tts_0_6b_base_speech_decoder_rk3588",
+        "vocos_mel_24khz",
+        "yue2_vae_f16",
+        "yue2_vae_f32",
+    }
 )
 GENERATION_FAMILIES = frozenset(
     {
@@ -106,6 +116,12 @@ MINIMAX_H3_FIXED_FILES = frozenset(
         "video_vae.gguf",
     }
 )
+XTTS_V2_VARIANTS = {
+    "xtts_v2_gguf_q8_0": "xtts-v2-gpt-q8_0.gguf",
+    "xtts_v2_gguf_q4_k_m": "xtts-v2-gpt-q4_k_m.gguf",
+    "xtts_v2_gguf": "xtts-v2-gpt.gguf",
+}
+XTTS_V2_FIXED_FILES = frozenset({"xtts-v2-vocoder-f16.gguf", "mel_norms.bin"})
 
 
 class InventoryError(ValueError):
@@ -280,6 +296,20 @@ def _is_exact_minimax_h3_layout(
     return len(manifest_paths) == len(expected_files) and set(manifest_paths) == expected_files
 
 
+def _is_exact_xtts_v2_layout(
+    package_id: str,
+    family_id: str,
+    manifest_paths: tuple[str, ...],
+) -> bool:
+    if family_id != "xtts_v2":
+        return False
+    gpt_file = XTTS_V2_VARIANTS.get(package_id)
+    if gpt_file is None:
+        return False
+    expected_files = XTTS_V2_FIXED_FILES | {gpt_file}
+    return len(manifest_paths) == len(expected_files) and set(manifest_paths) == expected_files
+
+
 def _yue2_session_options(
     package_id: str,
     family_id: str,
@@ -441,6 +471,10 @@ def _parse_package(
         package_id, family, manifest_paths
     ):
         raise InventoryError(f"Package {package_id!r} does not match a reviewed MiniMax-H3 layout.")
+    if family == "xtts_v2" and not _is_exact_xtts_v2_layout(
+        package_id, family, manifest_paths
+    ):
+        raise InventoryError(f"Package {package_id!r} does not match a reviewed XTTS v2 layout.")
     gguf_files = tuple(path for path in manifest_paths if path.casefold().endswith(".gguf"))
     if not gguf_files:
         raise InventoryError(f"Package {package_id!r} has no GGUF file.")
@@ -452,10 +486,15 @@ def _parse_package(
         minimax_music3_layout = _is_exact_minimax_music3_layout(package_id, family, manifest_paths)
         yue2_layout = _is_exact_yue2_main_layout(package_id, family, manifest_paths)
         minimax_h3_layout = _is_exact_minimax_h3_layout(package_id, family, manifest_paths)
-        if not lfm_layout and not minimax_music3_layout and not yue2_layout and not minimax_h3_layout:
+        xtts_v2_layout = _is_exact_xtts_v2_layout(package_id, family, manifest_paths)
+        if not (
+            lfm_layout or minimax_music3_layout or yue2_layout or minimax_h3_layout or xtts_v2_layout
+        ):
             raise InventoryError(f"Package {package_id!r} contains multiple GGUF files.")
     if package_id.startswith("dots_tts_edit_"):
         raise InventoryError(f"Package {package_id!r} is an editing variant, catalogued only.")
+    if package_id == "voxcpm2_vocalrender_pro":
+        raise InventoryError(f"Package {package_id!r} requires a score-conditioned singing workflow.")
     if role == "model" and family not in GENERATION_FAMILIES and (
         not tasks & SPEECH_TASKS or family in CATALOGUE_ONLY_FAMILIES
     ):

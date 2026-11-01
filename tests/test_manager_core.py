@@ -1617,12 +1617,44 @@ class CoreAdapterTests(unittest.TestCase):
         self.assertIn('"requests" = "<3,>=2.32"', manifest)
 
     def test_pixi_bootstrap_selects_qualified_platform_assets(self):
+        windows_asset = pixi_asset_for("Windows", "AMD64")
+        linux_x64_asset = pixi_asset_for("Linux", "x86_64")
+        linux_arm64_asset = pixi_asset_for("Linux", "arm64")
+        self.assertEqual(PIXI_VERSION, "0.83.0")
         self.assertEqual(
-            pixi_asset_for("Windows", "AMD64").member,
+            (windows_asset.url, windows_asset.sha256, windows_asset.member),
+            (
+                "https://github.com/prefix-dev/pixi/releases/download/v0.83.0/pixi-x86_64-pc-windows-msvc.zip",
+                "77bed9f9d2795c94f9ab5744353892eb82bd3b1eaa09ecbbe7573e22ef70a2f4",
+                "pixi.exe",
+            ),
+        )
+        self.assertEqual(
+            (linux_x64_asset.url, linux_x64_asset.sha256, linux_x64_asset.member),
+            (
+                "https://github.com/prefix-dev/pixi/releases/download/v0.83.0/pixi-x86_64-unknown-linux-musl.tar.gz",
+                "064f371e692aaa3400ac581c89da2843c91437f20c2d9155395a5d0037f33551",
+                "pixi",
+            ),
+        )
+        self.assertEqual(
+            (
+                linux_arm64_asset.url,
+                linux_arm64_asset.sha256,
+                linux_arm64_asset.member,
+            ),
+            (
+                "https://github.com/prefix-dev/pixi/releases/download/v0.83.0/pixi-aarch64-unknown-linux-musl.tar.gz",
+                "d08403d8f048626ec93ba7b7c56e3b747a5f3a95c4e6e0c815ceb264f5f0b9ce",
+                "pixi",
+            ),
+        )
+        self.assertEqual(
+            windows_asset.member,
             "pixi.exe",
         )
         self.assertEqual(
-            pixi_asset_for("Linux", "arm64").architecture,
+            linux_arm64_asset.architecture,
             "aarch64",
         )
         with self.assertRaises(ManagerError) as raised:

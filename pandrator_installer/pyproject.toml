@@ -8,9 +8,9 @@ version = "0.5.8"
 description = "Headless lifecycle manager and source-preparation compatibility entry point for Pandrator"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-  "certifi>=2024.8",
-  "cryptography>=43,<46",
-  "dulwich>=0.22,<1",
+  "certifi>=2026.10.23",
+  "cryptography>=50.0.2,<51",
+  "dulwich>=1.2.20,<2",
   "packaging>=26.3,<27",
   "psutil>=6,<8",
   "requests>=2.32,<3",
