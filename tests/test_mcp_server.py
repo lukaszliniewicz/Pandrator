@@ -17,6 +17,8 @@ except ImportError:
 from pandrator_mcp import __version__
 from pandrator_mcp.catalog import ACTION_CATALOG, RiskClass
 from pandrator_mcp.context import build_runtime
+from pandrator_mcp.project_copy_actions import PROJECT_COPY_OPERATIONS
+from pandrator_mcp.project_sharing_actions import PROJECT_SHARING_OPERATIONS
 from pandrator_mcp.schemas.e2e import ListGenerationRunsInput
 from pandrator_mcp.schemas.generation import (
     AssembleGenerationRunInput,
@@ -33,6 +35,7 @@ from pandrator_mcp.schemas.generation_controls import (
 from pandrator_mcp.schemas.voice_metadata import UpdateVoiceMetadataInput
 from pandrator_mcp.server import build_server
 from pandrator_mcp.settings import McpSettings
+from pandrator_mcp.workspace_actions import WORKSPACE_OPERATIONS
 
 
 @unittest.skipIf(Client is None, "The standalone MCP SDK dependency is not installed.")
@@ -63,6 +66,13 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 names = sorted(tool.name for tool in listed.tools)
                 self.assertEqual(
                     sorted([
+                        *(operation.name for operation in WORKSPACE_OPERATIONS),
+                        *(operation.name for operation in PROJECT_SHARING_OPERATIONS),
+                        *(operation.name for operation in PROJECT_COPY_OPERATIONS),
+                        "pandrator_list_users",
+                        "pandrator_create_user",
+                        "pandrator_update_user",
+                        "pandrator_issue_user_password_reset",
                         "pandrator_fork_session",
                         "pandrator_get_translation_project",
                         "pandrator_create_translation_project",
@@ -152,6 +162,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_target_status",
                         "pandrator_get_audio_cpp_catalogue",
                         "pandrator_get_tts_catalog",
+                        "pandrator_refresh_tts_catalog",
                         "pandrator_get_voice_capabilities",
                         "pandrator_get_voice_catalog",
                         "pandrator_get_voice_samples",
@@ -222,6 +233,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_select_take",
                         "pandrator_publish_voice",
                         "pandrator_review_voice_transcript",
+                        "pandrator_unpublish_voice",
                         "pandrator_submit_dispatch_batch",
                         "pandrator_submit_media_edit_dispatch_batch",
                         "pandrator_submit_source_cleaning_dispatch_batch",
@@ -616,6 +628,14 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "token",
                         dispatch_tools[name].input_schema["properties"],
                     )
+                workspace_create_tool = next(
+                    tool for tool in listed.tools if tool.name == "pandrator_create_workspace"
+                )
+                assert workspace_create_tool.meta is not None
+                self.assertEqual(
+                    ["app.read", "app.write", "app.workspaces.enroll"],
+                    workspace_create_tool.meta["pandrator/requiredScopes"],
+                )
                 explain_schema = next(
                     tool.input_schema
                     for tool in listed.tools
@@ -625,6 +645,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     [
                         "artifacts-and-revisions",
                         "audiobooks",
+                        "collaboration",
                         "durable-work",
                         "generation-controls",
                         "manager-and-recovery",

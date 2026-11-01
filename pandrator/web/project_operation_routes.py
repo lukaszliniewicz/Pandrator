@@ -103,7 +103,14 @@ def project_operation_paths() -> dict:
             "operationId": operation_id,
             "description": description,
             "security": [{"cookieAuth": []}, {"bearerToken": []}],
-            "x-required-scopes": [scope],
+            "x-required-scopes": (
+                {
+                    "previewTranslationProjectOperation": ["app.read", "app.run"],
+                    "retryTranslationProjectOperationPreview": ["app.read", "app.run"],
+                    "executeTranslationProjectOperation": ["app.read", "app.write", "app.run"],
+                    "cancelTranslationProjectOperation": ["app.read", "app.write", "app.cancel"],
+                }.get(operation_id, [scope])
+            ),
             "parameters": parameters,
             "responses": {
                 "200": {"description": "Redacted durable operation and live child states"},
@@ -185,7 +192,7 @@ def register_project_operation_routes(app, context) -> None:
         return jsonify(result), status
 
     @app.post("/api/v1/translation-projects/<project_id>/operations/preview")
-    @context.guards.require_scope("app.read")
+    @context.guards.require_scope("app.run")
     def project_operation_preview(project_id):
         return invoke(
             OperationPreviewRequest,
@@ -232,7 +239,7 @@ def register_project_operation_routes(app, context) -> None:
         )
 
     @app.post("/api/v1/translation-project-operations/<operation_id>/cancel")
-    @context.guards.require_scope("app.write")
+    @context.guards.require_scope("app.cancel")
     def project_operation_cancel(operation_id):
         return invoke(
             OperationCancelRequest,
@@ -246,7 +253,7 @@ def register_project_operation_routes(app, context) -> None:
         )
 
     @app.post("/api/v1/translation-project-operations/<operation_id>/retry-preview")
-    @context.guards.require_scope("app.read")
+    @context.guards.require_scope("app.run")
     def project_operation_retry_preview(operation_id):
         return invoke(
             OperationRetryPreviewRequest,

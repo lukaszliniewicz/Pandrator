@@ -3,7 +3,9 @@ import { elevenLabsVoiceSettingsError } from './elevenlabs-settings';
 import { languageSupportProblem } from './language-registry';
 import {
   hasPrebuiltVoices,
-  selectableTtsServices
+  selectableTtsServices,
+  serviceMatches,
+  ttsServiceUsable
 } from './tts-provider-policy';
 import { type TtsCatalogueState } from './tts-catalogue-state.svelte';
 import type { TtsService, XttsModel } from './api-models';
@@ -32,13 +34,11 @@ export class TtsSettingsSelection {
   ttsSwitchReviewed = $state(false);
   selectedTtsService = $derived.by(() =>
     this.speechCatalogues.catalogue.services.find((item) =>
-      [item.id, item.name]
-        .map((value) => String(value ?? '').toLowerCase())
-        .includes(this.draft.ttsService.toLowerCase())
+      serviceMatches(item, this.draft.ttsService)
     )
   );
-  selectedTtsServiceAvailable = $derived.by(
-    () => this.selectedTtsService?.available === true
+  selectedTtsServiceUsable = $derived.by(() =>
+    ttsServiceUsable(this.selectedTtsService)
   );
   compareLabels = (left: string, right: string) =>
     left.localeCompare(right, undefined, { sensitivity: 'base' });

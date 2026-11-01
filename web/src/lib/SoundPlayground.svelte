@@ -1,7 +1,11 @@
 <script lang="ts">
+  import WorkspacePane from './WorkspacePane.svelte';
+  let setupOpen = $state(true);
+  let setupModal = $state(false);
   import { onMount, tick } from 'svelte';
   import { Sparkles, Trash2, Upload } from '@lucide/svelte';
   import { ApiMutationAttempt } from './api';
+  import { appState } from './app-state.svelte';
   import { errorMessage } from './errors';
   import ParameterLabel from './ParameterLabel.svelte';
   import SoundCandidateRow from './SoundCandidateRow.svelte';
@@ -29,8 +33,13 @@
   } from './sound-api';
   let {
     onsaved,
-    saveItemId
-  }: { onsaved: (itemId: string) => void; saveItemId?: string } = $props();
+    saveItemId,
+    workspaceId
+  }: {
+    onsaved: (itemId: string) => void;
+    saveItemId?: string;
+    workspaceId?: string;
+  } = $props();
   let saveItem = $state<SoundItem | null>(null);
   let catalogue = $state<SoundCatalogue | null>(null);
   let prompt = $state('');
@@ -136,6 +145,17 @@
   function canDiscard(item: SoundCandidate) {
     return !item.item_id && !soundPending(item) && item.status !== 'discarded';
   }
+  function canCancel(jobId: string | null) {
+    if (!jobId) return false;
+    if (!appState.collaborationEnabled) return true;
+    return Boolean(
+      appState.principal?.scopes.includes('app.cancel') &&
+      (batch.some((item) => item.job_id === jobId) ||
+        appState.jobs.some(
+          (job) => job.id === jobId && job.kind === 'sound.generate'
+        ))
+    );
+  }
   function checkCandidate(id: string, checked: boolean) {
     const next = new Set(selectedIds);
     if (checked) next.add(id);
@@ -229,14 +249,14 @@
   }
   async function loadRecent(next?: string) {
     const request = ++recentRequest;
-    const result = await soundCandidates(next);
+    const result = await soundCandidates(next, workspaceId);
     if (!alive || request !== recentRequest) return;
     applyRecentPage(result, next);
   }
   async function choose(id: string) {
     const request = ++requestGeneration;
     try {
-      const result = await soundCandidate(id);
+      const result = await soundCandidate(id, workspaceId);
       if (!alive || request !== requestGeneration) return null;
       if (candidate?.id !== result.id) {
         name = result.provenance.display_name ?? '';
@@ -317,7 +337,7 @@
         ? [id]
         : [];
     try {
-      const result = await soundCandidates();
+      const result = await soundCandidates(undefined, workspaceId);
       if (!alive || busy) return;
       updateBatch(result.items);
       if (pageCursor === undefined && pageRequest === recentRequest) {
@@ -329,7 +349,9 @@
         (pendingId) => !result.items.some((item) => item.id === pendingId)
       );
       if (missing.length) {
-        const records = await Promise.all(missing.map(soundCandidate));
+        const records = await Promise.all(
+          missing.map((id) => soundCandidate(id, workspaceId))
+        );
         if (!alive || busy) return;
         updateBatch(records);
       }
@@ -368,7 +390,8 @@
           ...(seed === undefined ? {} : { seed }),
           threads
         },
-        generationAttempt
+        generationAttempt,
+        workspaceId
       );
       // A confirmed admission ends this attempt. Unknown-outcome retries keep
       // its key and omitted seed so the server replays the resolved seed.
@@ -413,7 +436,8 @@
               expected_revision: saveItem.revision
             }
           : { candidate_id: candidate.id, name, tags: soundTags(tags) },
-        saveAttempt
+        saveAttempt,
+        workspaceId
       );
       await choose(savedId);
       checkCandidate(savedId, false);
@@ -433,7 +457,7 @@
     error = '';
     notice = '';
     try {
-      const result = await importSound(file, importAttempt);
+      const result = await importSound(file, importAttempt, workspaceId);
       await choose(result.id);
       name = file.name.replace(/\.[^.]+$/, '');
       await loadRecent();
@@ -456,7 +480,7 @@
     try {
       for (const id of ids) {
         try {
-          await discardSound(id);
+          await discardSound(id, workspaceId);
           discarded.add(id);
         } catch (caught) {
           failures.push(errorMessage(caught));
@@ -490,7 +514,7 @@
     }
   }
   async function cancel() {
-    if (!candidate?.job_id) return;
+    if (!candidate?.job_id || !canCancel(candidate.job_id)) return;
     await cancelJobs([candidate.job_id]);
   }
   async function cancelJobs(ids: string[]) {
@@ -499,7 +523,7 @@
     error = '';
     const failures: string[] = [];
     try {
-      for (const jobId of new Set(ids)) {
+      for (const jobId of new Set(ids.filter(canCancel))) {
         try {
           await cancelSound(jobId);
         } catch (caught) {
@@ -517,7 +541,7 @@
     void Promise.all([
       soundCatalogue(),
       loadRecent(),
-      saveItemId ? soundDetail(saveItemId) : null
+      saveItemId ? soundDetail(saveItemId, undefined, workspaceId) : null
     ])
       .then(([result, , item]) => {
         if (!alive) return;
@@ -527,6 +551,10 @@
         duration = result.defaults.duration_seconds;
         modelId = result.defaults.model_id;
         if (
+          (!appState.isAdministrator &&
+            result.models.some(
+              (model) => model.cached && model.kinds.includes(kind)
+            )) ||
           !result.models.some(
             (model) =>
               model.id === modelId &&
@@ -551,513 +579,569 @@
   });
 </script>
 
-<div class="grid min-w-0 grid-cols-1 items-start gap-5">
-  <section class="surface rounded-2xl p-5">
-    <h2 class="text-lg font-semibold">
-      Create {kind === 'music' ? 'music' : 'a sound'}
-    </h2>
-    {#if saveItem}<p class="mt-2 text-sm">
-        New variant for <strong>{saveItem.name}</strong>.
-      </p>{/if}
-    <p class="muted mb-5 mt-1 text-sm">
-      {kind === 'music'
-        ? 'Describe the mood, instruments and style. Save a track for an intro, transition or background layer.'
-        : 'Describe bells, a boiling kettle, footsteps or another effect. Save it for any project.'}
-    </p>
-    <form
-      class="space-y-4"
-      onsubmit={(event) => {
-        event.preventDefault();
-        void generate();
-      }}
+<div class="sound-workspace">
+  <div
+    class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] px-4 py-3"
+  >
+    <span class="text-sm font-semibold"
+      >{kind === 'music' ? 'Music' : 'Sound'} auditions</span
+    ><button
+      class="btn"
+      aria-expanded={setupOpen}
+      onclick={() => (setupOpen = !setupOpen)}
+      >{setupOpen ? 'Hide' : 'Show'} creation settings</button
     >
-      <div class="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <label class="block text-sm font-medium"
-          >Create
-          <select
-            class="sound-field mt-2"
-            value={kind}
-            onchange={(event) =>
-              selectKind(event.currentTarget.value as SoundKind)}
-          >
-            <option value="sound">Sound effect</option>
-            <option value="music">Music</option>
-          </select>
-        </label>
-        <label class="block text-sm font-medium sm:col-span-1 lg:col-span-2"
-          >Model
-          <select
-            class="sound-field mt-2"
-            value={modelId}
-            onchange={(event) => selectModel(event.currentTarget.value)}
-            disabled={!availableModels.length}
-          >
-            {#if !selectedModel}
-              <option value="" disabled
-                >{availableModels.length
-                  ? 'Choose a model'
-                  : 'No models available'}</option
-              >
-            {/if}
-            {#each availableModels as model (model.id)}
-              <option value={model.id}
-                >{model.label}{model.cached ? ' · Installed' : ''}</option
-              >
-            {/each}
-          </select>
-        </label>
-      </div>
-      {#if catalogue && !availableModels.length}
-        <p role="status" class="text-sm">
-          No models are available for {kind === 'music'
-            ? 'music'
-            : 'sound effects'}.
-        </p>
-      {/if}
-      {#if selectedModel}
-        <p class="muted text-sm">
-          {instrumental
-            ? 'Describe the instruments, style and mood for an instrumental.'
-            : selectedModel.requires_lyrics
-              ? 'This model needs both a music description and lyrics.'
-              : selectedModel.supports_lyrics
-                ? 'Use a music description, with optional lyrics for vocals.'
-                : 'This model generates audio from your description.'}
-        </p>
-        {#if selectedModel.notes}
-          <p class="muted text-xs">{selectedModel.notes}</p>
-        {/if}
-        {#if selectedModel.family === 'minimax_h3'}
-          <a
-            class="inline-block text-xs text-[var(--accent)] underline"
-            href="https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE"
-            target="_blank"
-            rel="noreferrer">H3 licence and territorial restrictions</a
-          >
-        {/if}
-        {#if !selectedModel.cached}
-          <p class="muted text-xs">
-            {(selectedModel.download_bytes / 1e9).toFixed(1)} GB of model files download
-            on the first generation. You can cancel while they download.
-          </p>
-        {/if}
-      {/if}
-      <label class="block text-sm font-medium"
-        >Description
-        <textarea
-          class="sound-field mt-2"
-          bind:this={promptInput}
-          bind:value={prompt}
-          rows="4"
-          maxlength="8000"
-          required
-          placeholder={kind === 'music'
-            ? 'A gentle instrumental piano piece with warm strings, quiet and reflective. No vocals.'
-            : 'A kettle boiling, bubbling water and a rising hiss of steam. No speech or music.'}
-        ></textarea>
-      </label>
-      {#if selectedModel?.instrumental_adapter}
-        <div class="rounded-lg border border-[var(--line)] p-3">
-          <label class="flex items-center gap-2 text-sm font-medium">
-            <input
-              type="checkbox"
-              checked={instrumental}
-              onchange={(event) => setInstrumental(event.currentTarget.checked)}
-              aria-describedby="yue2-instrumental-help"
-            />
-            Instrumental
-          </label>
-          <p id="yue2-instrumental-help" class="muted mt-2 text-xs">
-            Uses the instrumental adapter with full score planning. First use
-            downloads about {Math.ceil(
-              selectedModel.instrumental_adapter.size_bytes / 1_000_000
-            )} MB, shared across YuE2 models.
-            <a
-              class="text-[var(--accent)] underline"
-              href={selectedModel.instrumental_adapter.source_url}
-              target="_blank"
-              rel="noreferrer">Adapter licence: CC BY-NC 4.0 (noncommercial).</a
-            >
-          </p>
-        </div>
-      {/if}
-      {#if selectedModel?.supports_lyrics && !instrumental}
-        <label class="block text-sm font-medium"
-          >Lyrics {#if !selectedModel.requires_lyrics}<span
-              class="muted font-normal">(optional)</span
-            >{/if}
-          <textarea
-            class="sound-field mt-2"
-            bind:value={lyrics}
-            rows="5"
-            maxlength="16000"
-            required={selectedModel.requires_lyrics}
-            placeholder="[Verse]&#10;Your lyrics here…"></textarea>
-        </label>
-      {/if}
-      <div class="flex flex-wrap items-end gap-4">
-        <label class="block text-sm"
-          >{selectedModel?.family === 'yue2'
-            ? 'Maximum length (seconds)'
-            : selectedModel?.family === 'minimax_h3'
-              ? 'Approximate duration (seconds)'
-              : 'Duration (seconds)'}<input
-            class="sound-field mt-1 max-w-32"
-            type="number"
-            bind:value={duration}
-            min={selectedModel?.duration.minimum ?? 1}
-            max={selectedModel?.duration.maximum ?? 30}
-            step="0.1"
-            disabled={!selectedModel}
-            required
-          /></label
+  </div>
+  {#if error && !setupModal}<p
+      role="alert"
+      class="sound-error mt-4 rounded-lg border p-3 text-sm"
+    >
+      {error}
+    </p>{/if}
+  {#if notice && !setupModal}<p role="status" class="muted mt-3 text-sm">
+      {notice}
+    </p>{/if}
+  <WorkspacePane
+    bind:open={setupOpen}
+    bind:modal={setupModal}
+    title="Creation settings"
+    >{#snippet tools()}
+      {#if setupModal && error}<p
+          role="alert"
+          class="sound-error mb-4 rounded-lg border p-3 text-sm"
         >
-        <label class="block text-sm"
-          >Candidates<input
-            class="sound-field mt-1 max-w-24"
-            type="number"
-            bind:value={candidateCount}
-            min="1"
-            max="8"
-            step="1"
-            required
-          /></label
-        >
-        <label class="block text-sm"
-          >Run on
-          <select
-            class="sound-field mt-1"
-            bind:value={backend}
-            disabled={!selectedModel}
-          >
-            {#if selectedModel && !selectedModel.backends.includes(backend)}
-              <option value={backend} disabled
-                >{backend.toUpperCase()} · unavailable</option
-              >
-            {/if}
-            {#each selectedModel?.backends ?? ['cpu'] as choice}
-              <option value={choice}
-                >{choice === 'cpu'
-                  ? 'CPU'
-                  : choice === 'cuda'
-                    ? 'GPU · CUDA'
-                    : 'GPU · Vulkan'}</option
-              >
-            {/each}
-          </select>
-        </label>
-      </div>
-      {#if candidateCount > 1}
-        <p class="muted text-xs">
-          Same description and settings, with a different seed for each take.
-          They run in sequence on the selected backend.
+          {error}
+        </p>{/if}
+      {#if setupModal && notice}<p role="status" class="muted mb-3 text-sm">
+          {notice}
+        </p>{/if}
+      <section class="min-w-0">
+        <h2 class="text-lg font-semibold">
+          Create {kind === 'music' ? 'music' : 'a sound'}
+        </h2>
+        {#if saveItem}<p class="mt-2 text-sm">
+            New variant for <strong>{saveItem.name}</strong>.
+          </p>{/if}
+        <p class="muted mb-5 mt-1 text-sm">
+          {kind === 'music'
+            ? 'Describe the mood, instruments and style. Save a track for an intro, transition or background layer.'
+            : 'Describe bells, a boiling kettle, footsteps or another effect. Save it for any project.'}
         </p>
-      {/if}
-      {#if selectedModel}
-        <p class="muted text-xs">
-          Length: {selectedModel.duration.minimum}–{selectedModel.duration
-            .maximum} seconds.
-          {#if selectedModel.duration.description}
-            {selectedModel.duration.description}
-          {:else if kind === 'music'}
-            The finished track may be shorter than requested.
+        <form
+          class="space-y-4"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void generate();
+          }}
+        >
+          <div class="grid items-start gap-4">
+            <label class="block text-sm font-medium"
+              >Create
+              <select
+                class="sound-field mt-2"
+                value={kind}
+                onchange={(event) =>
+                  selectKind(event.currentTarget.value as SoundKind)}
+              >
+                <option value="sound">Sound effect</option>
+                <option value="music">Music</option>
+              </select>
+            </label>
+            <label class="block text-sm font-medium sm:col-span-1 lg:col-span-2"
+              >Model
+              <select
+                class="sound-field mt-2"
+                value={modelId}
+                onchange={(event) => selectModel(event.currentTarget.value)}
+                disabled={!availableModels.length}
+              >
+                {#if !selectedModel}
+                  <option value="" disabled
+                    >{availableModels.length
+                      ? 'Choose a model'
+                      : 'No models available'}</option
+                  >
+                {/if}
+                {#each availableModels as model (model.id)}
+                  <option value={model.id}
+                    >{model.label}{model.cached ? ' · Installed' : ''}</option
+                  >
+                {/each}
+              </select>
+            </label>
+          </div>
+          {#if catalogue && !availableModels.length}
+            <p role="status" class="text-sm">
+              No models are available for {kind === 'music'
+                ? 'music'
+                : 'sound effects'}.
+            </p>
           {/if}
-        </p>
-      {/if}
-      <details class="rounded-lg border border-[var(--line)] p-3">
-        <summary class="cursor-pointer text-sm">Advanced settings</summary>
-        <div class="mt-3 grid gap-3 sm:grid-cols-2">
-          <label class="text-sm"
-            ><ParameterLabel
-              section="sound_generation"
-              name="seed"
-              label="Seed"
-              description="Leave blank for a random seed. Several candidates use one random base and distinct following seeds. Set a seed to compare or repeat the same settings; changing the model, backend or software can change the result."
-            /> <span class="muted">(optional)</span><input
-              class="sound-field mt-1"
-              type="number"
-              bind:value={seed}
-              min="0"
-              max={selectedModel?.seed_maximum ?? 4294967295}
-              step="1"
-              placeholder="Random for each generation"
-            /></label
-          >
-          <label class="text-sm"
-            ><ParameterLabel
-              section="sound_generation"
-              name="threads"
-              label="CPU threads"
-              description="CPU workers used by local audio generation, including CPU work on a GPU backend. Start with Pandrator’s default and increase gradually if needed; too many threads can compete with other applications. This controls computation, not the intended sound or style."
-            /><input
-              class="sound-field mt-1"
-              type="number"
-              bind:value={threads}
-              min="1"
-              step="1"
+          {#if selectedModel}
+            <p class="muted text-sm">
+              {instrumental
+                ? 'Describe the instruments, style and mood for an instrumental.'
+                : selectedModel.requires_lyrics
+                  ? 'This model needs both a music description and lyrics.'
+                  : selectedModel.supports_lyrics
+                    ? 'Use a music description, with optional lyrics for vocals.'
+                    : 'This model generates audio from your description.'}
+            </p>
+            {#if selectedModel.notes}
+              <p class="muted text-xs">{selectedModel.notes}</p>
+            {/if}
+            {#if selectedModel.family === 'minimax_h3'}
+              <a
+                class="inline-block text-xs text-[var(--accent)] underline"
+                href="https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE"
+                target="_blank"
+                rel="noreferrer">H3 licence and territorial restrictions</a
+              >
+            {/if}
+            {#if !selectedModel.cached}
+              <p class="muted text-xs">
+                {#if appState.isAdministrator}
+                  Missing model files download on first generation, up to
+                  {(selectedModel.download_bytes / 1e9).toFixed(1)} GB. You can cancel
+                  the download.
+                {:else}
+                  An administrator must prepare missing model files before
+                  generation. Files already installed by the Manager can be
+                  reused.
+                {/if}
+              </p>
+            {/if}
+          {/if}
+          <label class="block text-sm font-medium"
+            >Description
+            <textarea
+              class="sound-field mt-2"
+              bind:this={promptInput}
+              bind:value={prompt}
+              rows="4"
+              maxlength="8000"
               required
-            /></label
-          >
-        </div>
-        {#if Object.keys(advancedControls).length}
-          <div class="mt-4 border-t border-[var(--line)] pt-4">
-            <SoundModelControls
-              controls={advancedControls}
-              bind:values={parameters}
+              placeholder={kind === 'music'
+                ? 'A gentle instrumental piano piece with warm strings, quiet and reflective. No vocals.'
+                : 'A kettle boiling, bubbling water and a rising hiss of steam. No speech or music.'}
+            ></textarea>
+          </label>
+          {#if selectedModel?.instrumental_adapter}
+            <div class="rounded-lg border border-[var(--line)] p-3">
+              <label class="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={instrumental}
+                  onchange={(event) =>
+                    setInstrumental(event.currentTarget.checked)}
+                  aria-describedby="yue2-instrumental-help"
+                />
+                Instrumental
+              </label>
+              <p id="yue2-instrumental-help" class="muted mt-2 text-xs">
+                Uses the instrumental adapter with full score planning.
+                {#if appState.isAdministrator}First use downloads about {Math.ceil(
+                    selectedModel.instrumental_adapter.size_bytes / 1_000_000
+                  )} MB, shared across YuE2 models.
+                {:else}Ask an administrator to prepare the adapter if it is
+                  missing.{/if}
+                <a
+                  class="text-[var(--accent)] underline"
+                  href={selectedModel.instrumental_adapter.source_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  >Adapter licence: CC BY-NC 4.0 (noncommercial).</a
+                >
+              </p>
+            </div>
+          {/if}
+          {#if selectedModel?.supports_lyrics && !instrumental}
+            <label class="block text-sm font-medium"
+              >Lyrics {#if !selectedModel.requires_lyrics}<span
+                  class="muted font-normal">(optional)</span
+                >{/if}
+              <textarea
+                class="sound-field mt-2"
+                bind:value={lyrics}
+                rows="5"
+                maxlength="16000"
+                required={selectedModel.requires_lyrics}
+                placeholder="[Verse]&#10;Your lyrics here…"></textarea>
+            </label>
+          {/if}
+          <div class="flex flex-wrap items-end gap-4">
+            <label class="block text-sm"
+              >{selectedModel?.family === 'yue2'
+                ? 'Maximum length (seconds)'
+                : selectedModel?.family === 'minimax_h3'
+                  ? 'Approximate duration (seconds)'
+                  : 'Duration (seconds)'}<input
+                class="sound-field mt-1 max-w-32"
+                type="number"
+                bind:value={duration}
+                min={selectedModel?.duration.minimum ?? 1}
+                max={selectedModel?.duration.maximum ?? 30}
+                step="0.1"
+                disabled={!selectedModel}
+                required
+              /></label
+            >
+            <label class="block text-sm"
+              >Candidates<input
+                class="sound-field mt-1 max-w-24"
+                type="number"
+                bind:value={candidateCount}
+                min="1"
+                max="8"
+                step="1"
+                required
+              /></label
+            >
+            <label class="block text-sm"
+              >Run on
+              <select
+                class="sound-field mt-1"
+                bind:value={backend}
+                disabled={!selectedModel}
+              >
+                {#if selectedModel && !selectedModel.backends.includes(backend)}
+                  <option value={backend} disabled
+                    >{backend.toUpperCase()} · unavailable</option
+                  >
+                {/if}
+                {#each selectedModel?.backends ?? ['cpu'] as choice}
+                  <option value={choice}
+                    >{choice === 'cpu'
+                      ? 'CPU'
+                      : choice === 'cuda'
+                        ? 'GPU · CUDA'
+                        : 'GPU · Vulkan'}</option
+                  >
+                {/each}
+              </select>
+            </label>
+          </div>
+          {#if candidateCount > 1}
+            <p class="muted text-xs">
+              Same description and settings, with a different seed for each
+              take. They run in sequence on the selected backend.
+            </p>
+          {/if}
+          {#if selectedModel}
+            <p class="muted text-xs">
+              Length: {selectedModel.duration.minimum}–{selectedModel.duration
+                .maximum} seconds.
+              {#if selectedModel.duration.description}
+                {selectedModel.duration.description}
+              {:else if kind === 'music'}
+                The finished track may be shorter than requested.
+              {/if}
+            </p>
+          {/if}
+          <details class="rounded-lg border border-[var(--line)] p-3">
+            <summary class="cursor-pointer text-sm">Advanced settings</summary>
+            <div class="mt-3 grid gap-3">
+              <label class="text-sm"
+                ><ParameterLabel
+                  section="sound_generation"
+                  name="seed"
+                  label="Seed"
+                  description="Leave blank for a random seed. Several candidates use one random base and distinct following seeds. Set a seed to compare or repeat the same settings; changing the model, backend or software can change the result."
+                /> <span class="muted">(optional)</span><input
+                  class="sound-field mt-1"
+                  type="number"
+                  bind:value={seed}
+                  min="0"
+                  max={selectedModel?.seed_maximum ?? 4294967295}
+                  step="1"
+                  placeholder="Random for each generation"
+                /></label
+              >
+              <label class="text-sm"
+                ><ParameterLabel
+                  section="sound_generation"
+                  name="threads"
+                  label="CPU threads"
+                  description="CPU workers used by local audio generation, including CPU work on a GPU backend. Start with Pandrator’s default and increase gradually if needed; too many threads can compete with other applications. This controls computation, not the intended sound or style."
+                /><input
+                  class="sound-field mt-1"
+                  type="number"
+                  bind:value={threads}
+                  min="1"
+                  step="1"
+                  required
+                /></label
+              >
+            </div>
+            {#if Object.keys(advancedControls).length}
+              <div class="mt-4 border-t border-[var(--line)] pt-4">
+                <SoundModelControls
+                  controls={advancedControls}
+                  bind:values={parameters}
+                />
+              </div>
+            {/if}
+            <p class="muted mt-2 text-xs">
+              Leave the seed blank for a new random seed each generation. Set
+              one to repeat the same request. Local speech generation may wait
+              while audio is being created.
+            </p>
+            {#if selectedModel?.source_url}<a
+                class="mt-2 inline-block text-xs text-[var(--accent)] underline"
+                href={selectedModel.source_url}
+                target="_blank"
+                rel="noreferrer">Model documentation</a
+              >{/if}
+          </details>
+          {#if catalogue?.unavailable_models?.length}
+            <details class="rounded-lg border border-[var(--line)] p-3">
+              <summary class="cursor-pointer text-sm"
+                >Unavailable models</summary
+              >
+              <ul class="muted mt-3 space-y-2 text-xs">
+                {#each catalogue.unavailable_models as model (model.id)}
+                  <li><strong>{model.label}</strong> · {model.reason}</li>
+                {/each}
+              </ul>
+            </details>
+          {/if}
+          {#if catalogue && !catalogue.runtime.available}<p
+              role="status"
+              class="text-sm"
+            >
+              {catalogue.runtime.reason ??
+                'audio.cpp 0.9.1 or newer is required.'}
+            </p>{/if}
+          {#if selectedModel?.available === false && selectedModel.reason}
+            <p role="status" class="text-sm">{selectedModel.reason}</p>
+          {/if}
+          <div class="flex flex-wrap gap-2">
+            <button
+              class="btn btn-primary"
+              disabled={busy || generationActive || generationUnavailable}
+              ><Sparkles size={16} /> {busy ? 'Working…' : 'Generate'}</button
+            >
+            <button
+              class="btn btn-secondary"
+              type="button"
+              disabled={busy}
+              onclick={() => fileInput.click()}
+              ><Upload size={16} /> Import audio</button
+            >
+            <input
+              class="hidden"
+              bind:this={fileInput}
+              type="file"
+              accept="audio/*,.wav,.flac,.mp3,.ogg,.m4a"
+              onchange={() => upload(fileInput.files?.[0])}
+              aria-label="Import sound audio"
             />
           </div>
-        {/if}
-        <p class="muted mt-2 text-xs">
-          Leave the seed blank for a new random seed each generation. Set one to
-          repeat the same request. Local speech generation may wait while audio
-          is being created.
-        </p>
-        {#if selectedModel?.source_url}<a
-            class="mt-2 inline-block text-xs text-[var(--accent)] underline"
-            href={selectedModel.source_url}
-            target="_blank"
-            rel="noreferrer">Model documentation</a
-          >{/if}
-      </details>
-      {#if catalogue?.unavailable_models?.length}
-        <details class="rounded-lg border border-[var(--line)] p-3">
-          <summary class="cursor-pointer text-sm">Unavailable models</summary>
-          <ul class="muted mt-3 space-y-2 text-xs">
-            {#each catalogue.unavailable_models as model (model.id)}
-              <li><strong>{model.label}</strong> · {model.reason}</li>
-            {/each}
-          </ul>
-        </details>
-      {/if}
-      {#if catalogue && !catalogue.runtime.available}<p
-          role="status"
-          class="text-sm"
-        >
-          {catalogue.runtime.reason ?? 'audio.cpp 0.9.1 or newer is required.'}
-        </p>{/if}
-      {#if selectedModel?.available === false && selectedModel.reason}
-        <p role="status" class="text-sm">{selectedModel.reason}</p>
-      {/if}
-      <div class="flex flex-wrap gap-2">
-        <button
-          class="btn btn-primary"
-          disabled={busy || generationActive || generationUnavailable}
-          ><Sparkles size={16} /> {busy ? 'Working…' : 'Generate'}</button
-        >
-        <button
-          class="btn btn-secondary"
-          type="button"
-          disabled={busy}
-          onclick={() => fileInput.click()}
-          ><Upload size={16} /> Import audio</button
-        >
-        <input
-          class="hidden"
-          bind:this={fileInput}
-          type="file"
-          accept="audio/*,.wav,.flac,.mp3,.ogg,.m4a"
-          onchange={() => upload(fileInput.files?.[0])}
-          aria-label="Import sound audio"
-        />
-      </div>
-      <p class="muted text-xs">
-        Imported clips: up to 50 MB and 5 minutes. The original audio is
-        preserved.
-      </p>
-    </form>
-    {#if error}<p
-        role="alert"
-        class="sound-error mt-4 rounded-lg border p-3 text-sm"
-      >
-        {error}
-      </p>{/if}
-    {#if notice}<p role="status" class="muted mt-3 text-sm">{notice}</p>{/if}
-  </section>
-  <section class="surface min-w-0 rounded-2xl p-5" aria-label="Candidates">
-    <header class="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h2 class="text-lg font-semibold">Candidates</h2>
-        <p class="muted mt-1 text-sm">
-          Play takes, inspect their settings and save the versions you like.
-        </p>
-      </div>
-      <button
-        class="btn btn-secondary"
-        disabled={busy}
-        onclick={() =>
-          loadRecent().catch((caught) => (error = errorMessage(caught)))}
-        >Refresh</button
-      >
-    </header>
-    {#if batch.length > 1}
-      <div
-        class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--line)] p-3"
-      >
-        <p role="status" class="text-sm">
-          {readyBatch} of {batch.length} ready{#if pendingBatch.length}
-            · {pendingBatch.length} generating or queued{:else if readyBatch < batch.length}
-            · {batch.length - readyBatch} cancelled, discarded or failed{/if}
-        </p>
-        {#if pendingBatch.some((item) => item.job_id)}
-          <button
-            class="btn btn-secondary"
-            disabled={busy}
-            onclick={() =>
-              cancelJobs(
-                pendingBatch.flatMap((item) =>
-                  item.job_id ? [item.job_id] : []
-                )
-              )}>Cancel remaining</button
-          >
-        {/if}
-      </div>
-    {/if}
-    {#if candidateRows.length}
-      <div
-        class="mb-4 flex flex-wrap items-center gap-3 border-b border-[var(--line)] pb-3"
-      >
-        <label class="flex items-center gap-2 text-sm"
-          ><input
-            type="checkbox"
-            checked={allSelected}
-            disabled={busy || !discardableRows.length}
-            onchange={(event) =>
-              (selectedIds = event.currentTarget.checked
-                ? new Set(discardableRows.map((item) => item.id))
-                : new Set())}
-          />Select unsaved</label
-        >
-        <button
-          class="btn btn-secondary"
-          disabled={busy || !selectedIds.size}
-          onclick={() => discard([...selectedIds])}
-          ><Trash2 size={14} /> Discard selected{#if selectedIds.size}
-            ({selectedIds.size}){/if}</button
-        >
-        <span class="muted text-xs">Saved and active takes stay protected.</span
-        >
-      </div>
-      <ul class="space-y-3">
-        {#each candidateRows as item (item.id)}
-          {@const model = catalogue?.models.find(
-            (entry) => entry.id === item.provenance.model_id
-          )}
-          <li>
-            <SoundCandidateRow
-              candidate={item}
-              {model}
-              expanded={expandedId === item.id}
-              checked={selectedIds.has(item.id)}
-              {busy}
-              generationBusy={generationActive}
-              canDiscard={canDiscard(item)}
-              onexpand={() => expand(item.id)}
-              oncheck={(checked) => checkCandidate(item.id, checked)}
-              onreuse={() => void reuseSettings(item.id)}
-              onregenerate={() => void regenerate(item.id)}
-              onsave={() => void prepareSave(item.id)}
-              ondiscard={() => void discard([item.id])}
-              onopen={() => item.item_id && onsaved(item.item_id)}
-            >
-              {#if candidate?.id === item.id}
-                <div bind:this={activeTake} class="space-y-4">
-                  <SoundCandidateSettings {candidate} {model} />
-                  {#if candidate.provenance.seed !== undefined && model}
-                    <button
-                      type="button"
-                      class="btn btn-secondary"
-                      disabled={busy}
-                      onclick={() => reuseSettings(item.id, true)}
-                      >Use settings and seed</button
-                    >
-                  {/if}
-                  {#if soundPending(candidate)}
-                    <p role="status" class="muted text-sm">
-                      Generation continues if you leave this page. This take
-                      will appear here when it finishes.
-                    </p>
-                    <button
-                      class="btn btn-secondary"
-                      disabled={busy}
-                      onclick={cancel}>Cancel generation</button
-                    >
-                  {:else if candidate.status === 'ready' && !candidate.item_id}
-                    <form
-                      class="space-y-3 border-t border-[var(--line)] pt-4"
-                      onsubmit={(event) => {
-                        event.preventDefault();
-                        void save();
-                      }}
-                    >
-                      {#if saveItem}
-                        <p class="text-sm">
-                          Save as the preferred variant of <strong
-                            >{saveItem.name}</strong
-                          >. Existing project cues keep their chosen variant.
-                        </p>
-                      {:else}
-                        <div class="grid gap-3 sm:grid-cols-2">
-                          <label class="block text-sm"
-                            >Name<input
-                              class="sound-field mt-1"
-                              bind:this={nameInput}
-                              bind:value={name}
-                              required
-                              maxlength="255"
-                              placeholder={candidate.provenance.kind === 'music'
-                                ? 'Quiet piano intro'
-                                : 'Kitchen kettle'}
-                            /></label
-                          >
-                          <label class="block text-sm"
-                            >Tags <span class="muted">(comma separated)</span
-                            ><input
-                              class="sound-field mt-1"
-                              bind:value={tags}
-                              placeholder="kitchen, steam"
-                            /></label
-                          >
-                        </div>
-                      {/if}
-                      <button
-                        class="btn btn-primary"
-                        disabled={busy || Boolean(saveItemId && !saveItem)}
-                        >Save</button
-                      >
-                    </form>
-                  {:else if candidate.status !== 'ready'}
-                    <p role="status" class="muted text-sm">
-                      Generation {candidate.status}. Job details are available
-                      in Activity.
-                    </p>
-                  {/if}
-                </div>
-              {/if}
-            </SoundCandidateRow>
-          </li>
-        {/each}
-      </ul>
-    {:else}
-      <p class="muted text-sm">
-        No candidates on this page. Generate or import audio to start.
-      </p>
-    {/if}
-    {#if cursor}
-      <div class="mt-4">
+          <p class="muted text-xs">
+            Imported clips: up to 50 MB and 5 minutes. The original audio is
+            preserved.
+          </p>
+        </form>
+      </section>
+    {/snippet}
+    <section
+      class="min-h-0 min-w-0 flex-1 overflow-auto p-4"
+      aria-label="Candidates"
+    >
+      <header class="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-semibold">Candidates</h2>
+          <p class="muted mt-1 text-sm">
+            Play takes, inspect their settings and save the versions you like.
+          </p>
+        </div>
         <button
           class="btn btn-secondary"
           disabled={busy}
           onclick={() =>
-            loadRecent(cursor ?? undefined).catch(
-              (caught) => (error = errorMessage(caught))
-            )}>Older candidates</button
+            loadRecent().catch((caught) => (error = errorMessage(caught)))}
+          >Refresh</button
         >
-      </div>
-    {/if}
-  </section>
+      </header>
+      {#if batch.length > 1}
+        <div
+          class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--line)] p-3"
+        >
+          <p role="status" class="text-sm">
+            {readyBatch} of {batch.length} ready{#if pendingBatch.length}
+              · {pendingBatch.length} generating or queued{:else if readyBatch < batch.length}
+              · {batch.length - readyBatch} cancelled, discarded or failed{/if}
+          </p>
+          {#if pendingBatch.some((item) => canCancel(item.job_id))}
+            <button
+              class="btn btn-secondary"
+              disabled={busy}
+              onclick={() =>
+                cancelJobs(
+                  pendingBatch.flatMap((item) =>
+                    item.job_id ? [item.job_id] : []
+                  )
+                )}>Cancel remaining</button
+            >
+          {/if}
+        </div>
+      {/if}
+      {#if candidateRows.length}
+        <div
+          class="mb-4 flex flex-wrap items-center gap-3 border-b border-[var(--line)] pb-3"
+        >
+          <label class="flex items-center gap-2 text-sm"
+            ><input
+              type="checkbox"
+              checked={allSelected}
+              disabled={busy || !discardableRows.length}
+              onchange={(event) =>
+                (selectedIds = event.currentTarget.checked
+                  ? new Set(discardableRows.map((item) => item.id))
+                  : new Set())}
+            />Select unsaved</label
+          >
+          <button
+            class="btn btn-secondary"
+            disabled={busy || !selectedIds.size}
+            onclick={() => discard([...selectedIds])}
+            ><Trash2 size={14} /> Discard selected{#if selectedIds.size}
+              ({selectedIds.size}){/if}</button
+          >
+          <span class="muted text-xs"
+            >Saved and active takes stay protected.</span
+          >
+        </div>
+        <ul class="space-y-3">
+          {#each candidateRows as item (item.id)}
+            {@const model = catalogue?.models.find(
+              (entry) => entry.id === item.provenance.model_id
+            )}
+            <li>
+              <SoundCandidateRow
+                candidate={item}
+                {model}
+                expanded={expandedId === item.id}
+                checked={selectedIds.has(item.id)}
+                {busy}
+                generationBusy={generationActive}
+                canDiscard={canDiscard(item)}
+                onexpand={() => expand(item.id)}
+                oncheck={(checked) => checkCandidate(item.id, checked)}
+                onreuse={() => void reuseSettings(item.id)}
+                onregenerate={() => void regenerate(item.id)}
+                onsave={() => void prepareSave(item.id)}
+                ondiscard={() => void discard([item.id])}
+                onopen={() => item.item_id && onsaved(item.item_id)}
+              >
+                {#if candidate?.id === item.id}
+                  <div bind:this={activeTake} class="space-y-4">
+                    <SoundCandidateSettings {candidate} {model} />
+                    {#if candidate.provenance.seed !== undefined && model}
+                      <button
+                        type="button"
+                        class="btn btn-secondary"
+                        disabled={busy}
+                        onclick={() => reuseSettings(item.id, true)}
+                        >Use settings and seed</button
+                      >
+                    {/if}
+                    {#if soundPending(candidate)}
+                      <p role="status" class="muted text-sm">
+                        Generation continues if you leave this page. This take
+                        will appear here when it finishes.
+                      </p>
+                      {#if canCancel(candidate.job_id)}<button
+                          class="btn btn-secondary"
+                          disabled={busy}
+                          onclick={cancel}>Cancel generation</button
+                        >{/if}
+                    {:else if candidate.status === 'ready' && !candidate.item_id}
+                      <form
+                        class="space-y-3 border-t border-[var(--line)] pt-4"
+                        onsubmit={(event) => {
+                          event.preventDefault();
+                          void save();
+                        }}
+                      >
+                        {#if saveItem}
+                          <p class="text-sm">
+                            Save as the preferred variant of <strong
+                              >{saveItem.name}</strong
+                            >. Existing project cues keep their chosen variant.
+                          </p>
+                        {:else}
+                          <div class="grid gap-3 sm:grid-cols-2">
+                            <label class="block text-sm"
+                              >Name<input
+                                class="sound-field mt-1"
+                                bind:this={nameInput}
+                                bind:value={name}
+                                required
+                                maxlength="255"
+                                placeholder={candidate.provenance.kind ===
+                                'music'
+                                  ? 'Quiet piano intro'
+                                  : 'Kitchen kettle'}
+                              /></label
+                            >
+                            <label class="block text-sm"
+                              >Tags <span class="muted">(comma separated)</span
+                              ><input
+                                class="sound-field mt-1"
+                                bind:value={tags}
+                                placeholder="kitchen, steam"
+                              /></label
+                            >
+                          </div>
+                        {/if}
+                        <button
+                          class="btn btn-primary"
+                          disabled={busy || Boolean(saveItemId && !saveItem)}
+                          >Save</button
+                        >
+                      </form>
+                    {:else if candidate.status !== 'ready'}
+                      <p role="status" class="muted text-sm">
+                        Generation {candidate.status}. Job details are available
+                        in Activity.
+                      </p>
+                    {/if}
+                  </div>
+                {/if}
+              </SoundCandidateRow>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="muted text-sm">
+          No candidates on this page. Generate or import audio to start.
+        </p>
+      {/if}
+      {#if cursor}
+        <div class="mt-4">
+          <button
+            class="btn btn-secondary"
+            disabled={busy}
+            onclick={() =>
+              loadRecent(cursor ?? undefined).catch(
+                (caught) => (error = errorMessage(caught))
+              )}>Older candidates</button
+          >
+        </div>
+      {/if}
+    </section>
+  </WorkspacePane>
 </div>
 
 <style>
+  .sound-workspace {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: max(34rem, 72dvh);
+  }
+
   .sound-field {
     display: block;
     width: 100%;

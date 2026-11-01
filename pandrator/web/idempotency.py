@@ -99,6 +99,65 @@ class IdempotencyService:
             )
         return key
 
+    def _replay_existing(
+        self,
+        existing: ApiIdempotency | None,
+        *,
+        operation_id: str,
+        digest: str,
+        now: datetime,
+        legacy_payload: Callable[[ApiIdempotency], dict[str, Any] | None] | None,
+    ) -> IdempotencyReservation | None:
+        if existing is None or _aware(existing.expires_at) <= now:
+            return None
+        if existing.request_digest != digest:
+            fallback = legacy_payload(existing) if legacy_payload is not None else None
+            if fallback is None or self.request_digest(operation_id, fallback) != existing.request_digest:
+                raise IdempotencyConflict(
+                    "This idempotency key was already used with different arguments."
+                )
+        if existing.state in {"completed", "failed"}:
+            return IdempotencyReservation(existing, replayed=True)
+        stale_after = _aware(existing.created_at) + timedelta(minutes=self.in_progress_minutes)
+        if stale_after > now:
+            raise IdempotencyInProgress("The original request is still in progress.")
+        if existing.resource_id:
+            raise IdempotencyInProgress(
+                "The original request is recovering from its recorded resource."
+            )
+        return None
+
+    def replay_if_present(
+        self,
+        session: Session,
+        *,
+        principal: Principal,
+        operation_id: str,
+        idempotency_key: object,
+        payload: Any,
+        legacy_payload: Callable[[ApiIdempotency], dict[str, Any] | None] | None = None,
+    ) -> IdempotencyReservation | None:
+        """Inspect a retry without reserving, expiring or deleting any row.
+
+        The caller must prove access to a recorded resource before this lookup.
+        A fresh request can then stage files before its atomic final reservation.
+        """
+        key = self.validate_key(idempotency_key)
+        existing = session.scalar(
+            select(ApiIdempotency).where(
+                ApiIdempotency.principal_subject == principal.subject,
+                ApiIdempotency.operation_id == operation_id,
+                ApiIdempotency.idempotency_key == key,
+            )
+        )
+        return self._replay_existing(
+            existing,
+            operation_id=operation_id,
+            digest=self.request_digest(operation_id, payload),
+            now=utcnow(),
+            legacy_payload=legacy_payload,
+        )
+
     def begin(
         self,
         session: Session,
@@ -119,33 +178,13 @@ class IdempotencyService:
             )
         )
         now = utcnow()
-        if existing is not None and _aware(existing.expires_at) <= now:
-            session.delete(existing)
-            session.flush()
-            existing = None
+        replay = self._replay_existing(
+            existing, operation_id=operation_id, digest=digest, now=now,
+            legacy_payload=legacy_payload,
+        )
+        if replay is not None:
+            return replay
         if existing is not None:
-            if existing.request_digest != digest:
-                fallback = legacy_payload(existing) if legacy_payload is not None else None
-                if (
-                    fallback is None
-                    or self.request_digest(operation_id, fallback) != existing.request_digest
-                ):
-                    raise IdempotencyConflict(
-                        "This idempotency key was already used with different arguments."
-                    )
-            if existing.state in {"completed", "failed"}:
-                return IdempotencyReservation(existing, replayed=True)
-            stale_after = _aware(existing.created_at) + timedelta(
-                minutes=self.in_progress_minutes
-            )
-            if stale_after > now:
-                raise IdempotencyInProgress(
-                    "The original request is still in progress."
-                )
-            if existing.resource_id:
-                raise IdempotencyInProgress(
-                    "The original request is recovering from its recorded resource."
-                )
             session.delete(existing)
             session.flush()
 

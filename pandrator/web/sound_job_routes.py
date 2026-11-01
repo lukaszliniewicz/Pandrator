@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
+from .access.contracts import ProjectAction
+from .access.generation_resource_policy import require_generation_resource_access
 from .domain_blueprints import DomainBlueprints
+from .http_session_access import require_session_action
 from .route_context import RouteContext
 from .settings_policy import RevisionConflict
 from .sound_http_mutations import SoundHttpMutations
@@ -18,6 +21,7 @@ def register_sound_job_routes(app: DomainBlueprints, context: RouteContext) -> N
 
     @app.get(base + "/mix")
     @guards.require_scope("app.read")
+    @require_session_action(context, ProjectAction.READ)
     def get_project_sound_mix(session_id: str):
         try:
             return jsonify(services.sound_mixes.get_status(
@@ -28,6 +32,10 @@ def register_sound_job_routes(app: DomainBlueprints, context: RouteContext) -> N
 
     def admit(session_id: str, action: str):
         operation = "renderProjectSounds" if action == "render" else "resolveProjectSounds"
+
+        def authorize(session):
+            require_generation_resource_access(session, "session", session_id, ProjectAction.RUN)
+
         try:
             schema = SoundMixRequest if action == "render" else SoundResolveRequest
             body = schema.model_validate(request.get_json(silent=True) or {}).model_dump(mode="json")
@@ -35,7 +43,7 @@ def register_sound_job_routes(app: DomainBlueprints, context: RouteContext) -> N
             key = request.headers.get("Idempotency-Key", "").strip()
             if not key:
                 return guards.error_response("idempotency_key_required", "Idempotency-Key is required.", 400)
-            replay = mutations.retry.inspect(operation, key, accepted)
+            replay = mutations.retry.inspect(operation, key, accepted, authorize=authorize)
             if replay is not None:
                 return replay
             if action == "render":
@@ -44,20 +52,26 @@ def register_sound_job_routes(app: DomainBlueprints, context: RouteContext) -> N
                     timeline_artifact_id=body.get("timeline_artifact_id"),
                     expected_revision=body["expected_revision"],
                 )
-                return mutations.mutate(operation, accepted, lambda session: services.sound_mixes.admit_in_session(session, prepared), 202)
+                return mutations.mutate(operation, accepted,
+                    lambda session: services.sound_mixes.admit_in_session(session, prepared),
+                    202, authorize=authorize)
             resolution = services.sound_resolution.prepare(
                 session_id, expected_revision=body["expected_revision"], cue_ids=body.get("cue_ids"),
             )
-            return mutations.mutate(operation, accepted, lambda session: services.sound_resolution.admit_in_session(session, resolution), 202)
+            return mutations.mutate(operation, accepted,
+                lambda session: services.sound_resolution.admit_in_session(session, resolution),
+                202, authorize=authorize)
         except (ValueError, KeyError, RevisionConflict) as error:
             return mutations.failure(error)
 
     @app.post(base + "/render")
     @guards.require_scope("app.run")
+    @require_session_action(context, ProjectAction.RUN)
     def render_project_sounds(session_id: str):
         return admit(session_id, "render")
 
     @app.post(base + "/resolve")
     @guards.require_scope("app.run")
+    @require_session_action(context, ProjectAction.RUN)
     def resolve_project_sounds(session_id: str):
         return admit(session_id, "resolve")

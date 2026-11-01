@@ -6,7 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Artifact, ArtifactEdge, SessionSource, SourceAsset
-from .source_resolution import classify_source, resolve_media_source
+from .source_resolution import (
+    PrimarySourceResolution,
+    classify_source,
+    resolve_media_source,
+)
 
 
 def _media_identity(artifact: Artifact) -> tuple[str, str] | None:
@@ -122,8 +126,13 @@ def resolve_subtitle_media(
     session: Session,
     session_id: str,
     source: Artifact,
+    *,
+    fallback_cache: dict[str, PrimarySourceResolution] | None = None,
 ) -> Artifact:
-    """Resolve media without allowing a cut subtitle to drift to another edit."""
+    """Resolve media without allowing a cut subtitle to drift to another edit.
+
+    The optional caller-owned cache is valid only for the supplied read snapshot.
+    """
 
     cut_ancestors, explicit_media = _lineage_artifacts(session, session_id, source)
     if cut_ancestors:
@@ -175,7 +184,13 @@ def resolve_subtitle_media(
             key=lambda item: (item.created_at, item.id),
         )
 
-    primary = resolve_media_source(session, session_id)
+    primary = (
+        fallback_cache.get(session_id) if fallback_cache is not None else None
+    )
+    if primary is None:
+        primary = resolve_media_source(session, session_id)
+        if fallback_cache is not None:
+            fallback_cache[session_id] = primary
     media = primary.artifact
     if media is None or not primary.has_audio:
         raise ValueError("Attach a managed audio or video recording to this subtitle source.")

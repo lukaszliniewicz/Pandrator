@@ -45,10 +45,12 @@ def run_migrations_online() -> None:
             connection.commit()
 
         try:
-            # SQLAlchemy 2 starts an outer transaction for the first statement.
-            # Keep Alembic's version write and SQLite DDL in that same explicit
-            # transaction so a failed migration rolls back as one unit.
+            # SQLite's legacy driver does not emit BEGIN for DDL, even inside
+            # SQLAlchemy's transaction object. Start the physical transaction
+            # before any migration reads/DDL so rollback also removes new tables.
             with connection.begin():
+                if is_sqlite:
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
                 context.configure(
                     connection=connection,
                     target_metadata=target_metadata,

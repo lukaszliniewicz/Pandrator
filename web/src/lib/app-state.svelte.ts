@@ -3,6 +3,7 @@ import { errorMessage } from './errors';
 import { exchangeBootstrapToken, setCsrfToken } from './api';
 import { appApi } from './domain-api';
 import type {
+  AuthStatus,
   JobRecord,
   LoadState,
   RuntimeCapabilities,
@@ -17,12 +18,20 @@ import {
   type PandratorServerEvent
 } from './invalidation';
 import { ResourceState } from './resource-state.svelte';
+import { browserStorageKey, setBrowserIdentity } from './browser-identity';
+import type { WorkspaceRecord } from './workspace-api';
+import {
+  activeProjectLink,
+  clearProjectLink,
+  projectLinkUrl
+} from './project-link-context';
 
 const EVENT_TYPES = [
   'job.queued',
   'job.started',
   'job.reclaimed',
   'job.waiting_for_resource',
+  'job.waiting_for_storage',
   'job.progress',
   'job.succeeded',
   'job.failed',
@@ -35,6 +44,20 @@ const KNOWN_INVALIDATIONS = new Set<string>(INVALIDATION_RESOURCES);
 
 class AppState {
   authenticated = $state(false);
+  instanceId = $state('');
+  collaborationEnabled = $state(false);
+  collaborationAvailable = $state(false);
+  installationRevision = $state(0);
+  publicLinksEnabled = $state(false);
+  publicLinksConfigured = $state(false);
+  linkContext = $state<ReturnType<typeof activeProjectLink>>(null);
+  administratorPasswordConfigured = $state(false);
+  workspaces = $state<WorkspaceRecord[]>([]);
+  activeWorkspaceId = $state('');
+  workspacesReady = $state(false);
+  workspaceSwitching = $state(false);
+  workspaceError = $state('');
+  principal = $state<AuthStatus['principal']>(null);
   initialized = $state(false);
   loading = $state(true);
   snapshotLoading = $state(false);
@@ -64,7 +87,11 @@ class AppState {
   );
 
   get sessions() {
-    return this.sessionsResource.value;
+    return this.collaborationEnabled && this.activeWorkspaceId
+      ? this.sessionsResource.value.filter(
+          (item) => item.workspace_id === this.activeWorkspaceId
+        )
+      : this.sessionsResource.value;
   }
 
   get sessionsState(): LoadState {
@@ -87,6 +114,178 @@ class AppState {
     return this.capabilitiesResource.status;
   }
 
+  get isAdministrator() {
+    return (
+      this.authenticated &&
+      this.principal?.kind !== 'project_link' &&
+      this.principal?.role === 'administrator' &&
+      this.principal.scopes.includes('app.admin')
+    );
+  }
+
+  get activeWorkspace() {
+    return this.workspaces.find((item) => item.id === this.activeWorkspaceId);
+  }
+
+  canManageWorkspace(workspaceId?: string) {
+    if (!this.collaborationEnabled) return this.authenticated;
+    return Boolean(
+      workspaceId &&
+      this.workspaces
+        .find((item) => item.id === workspaceId)
+        ?.allowed_actions.includes('manage')
+    );
+  }
+
+  get identityKey() {
+    const identity = `${this.instanceId}:${this.principal?.user_id ?? ''}:${this.principal?.auth_revision ?? 0}`;
+    return this.projectLink
+      ? `${identity}:link:${this.projectLink.id}`
+      : identity;
+  }
+
+  get projectLink() {
+    return this.linkContext;
+  }
+
+  get contentKey() {
+    return `${this.identityKey}:${this.collaborationEnabled ? this.activeWorkspaceId : 'solo'}`;
+  }
+
+  async refreshWorkspaces(deferReady = false) {
+    if (this.projectLink) {
+      this.workspacesReady = true;
+      return;
+    }
+    if (!this.collaborationEnabled || !this.authenticated) return;
+    const revision = this.authenticationRevision;
+    this.workspaceError = '';
+    try {
+      const { workspaceApi } = await import('./workspace-api');
+      const result = await workspaceApi.list();
+      if (revision !== this.authenticationRevision || !this.authenticated)
+        return;
+      this.workspaces = result.items;
+      const remembered = (() => {
+        try {
+          return (
+            localStorage.getItem(browserStorageKey('active-workspace')) ?? ''
+          );
+        } catch {
+          return '';
+        }
+      })();
+      const requested =
+        location.pathname === '/sessions'
+          ? new URLSearchParams(location.search).get('workspace')
+          : null;
+      const selected = requested || this.activeWorkspaceId || remembered;
+      this.activeWorkspaceId =
+        result.items.find((item) => item.id === selected)?.id ??
+        result.items.find((item) => item.kind === 'personal')?.id ??
+        '';
+      if (!deferReady) this.workspacesReady = true;
+      this.adoptSessionWorkspace(location.pathname.split('/')[2] ?? '');
+    } catch (caught) {
+      if (revision === this.authenticationRevision)
+        this.workspaceError = errorMessage(caught);
+      throw caught;
+    }
+  }
+
+  selectWorkspace(id: string) {
+    if (
+      !this.workspaces.some((item) => item.id === id && item.state === 'active')
+    )
+      return;
+    this.activeWorkspaceId = id;
+    try {
+      localStorage.setItem(browserStorageKey('active-workspace'), id);
+    } catch {
+      /* Optional preference. */
+    }
+    this.mobileSessionNavigation = null;
+  }
+
+  workspaceForSession(sessionId: string) {
+    return this.sessionsResource.value.find((item) => item.id === sessionId)
+      ?.workspace_id;
+  }
+
+  adoptSessionWorkspace(sessionId: string) {
+    if (!this.collaborationEnabled) return;
+    const item = this.sessionsResource.value.find(
+      (item) => item.id === sessionId
+    );
+    if (item?.workspace_id) this.selectWorkspace(item.workspace_id);
+  }
+
+  private applyIdentity(status: AuthStatus) {
+    const next = status.authenticated ? (status.principal ?? null) : null;
+    this.linkContext = activeProjectLink();
+    if (
+      this.principal?.user_id !== next?.user_id ||
+      this.principal?.kind !== next?.kind ||
+      this.principal?.auth_revision !== next?.auth_revision
+    ) {
+      this.authenticationRevision += 1;
+      this.disconnectEvents();
+      this.sessionsResource.reset([]);
+      this.jobsResource.reset([]);
+      this.capabilitiesResource.reset({});
+      this.workspaces = [];
+      this.activeWorkspaceId = '';
+      this.workspacesReady = false;
+      this.workspaceSwitching = false;
+      this.mobileSessionNavigation = null;
+    }
+    this.instanceId = status.instance_id ?? this.instanceId;
+    this.collaborationEnabled = Boolean(
+      status.installation?.collaboration_enabled
+    );
+    this.collaborationAvailable = Boolean(
+      status.installation?.collaboration_available
+    );
+    this.installationRevision = status.installation?.revision ?? 0;
+    this.publicLinksEnabled = Boolean(status.public_links?.enabled);
+    this.publicLinksConfigured = Boolean(status.public_links?.configured);
+    this.administratorPasswordConfigured = Boolean(status.initialized);
+    setBrowserIdentity(
+      this.instanceId,
+      this.projectLink ? `link:${this.projectLink.id}` : (next?.user_id ?? ''),
+      next?.auth_revision ?? 0
+    );
+    this.authenticated = status.authenticated;
+    this.principal = status.authenticated ? (status.principal ?? null) : null;
+    this.remoteAccess = Boolean(status.remote_access);
+    this.securityWarning = String(status.security_warning ?? '');
+    setCsrfToken(status.csrf_token);
+  }
+
+  async refreshIdentity() {
+    const revision = this.authenticationRevision;
+    const before = this.identityKey;
+    const wasCollaboration = this.collaborationEnabled;
+    const status = await appApi.authStatus();
+    if (revision !== this.authenticationRevision) return;
+    this.applyIdentity(status);
+    if (
+      this.authenticated &&
+      (before !== this.identityKey ||
+        (!wasCollaboration && this.collaborationEnabled))
+    ) {
+      await this.synchronizeAuthenticatedState(this.authenticationRevision);
+    }
+    if (!this.authenticated) {
+      this.disconnectEvents();
+      this.authenticationRevision += 1;
+      this.snapshotLoading = false;
+      this.sessionsResource.reset([]);
+      this.jobsResource.reset([]);
+      this.capabilitiesResource.reset({});
+    }
+  }
+
   async initialize() {
     if (this.initialized) return;
     this.loading = true;
@@ -98,11 +297,8 @@ class AppState {
         history.replaceState({}, '', location.pathname + location.search);
       }
       const status = await appApi.authStatus();
-      this.authenticated = status.authenticated;
+      this.applyIdentity(status);
       this.authenticationRevision += 1;
-      this.remoteAccess = Boolean(status.remote_access);
-      this.securityWarning = String(status.security_warning ?? '');
-      setCsrfToken(status.csrf_token);
       if (this.authenticated) {
         void this.synchronizeAuthenticatedState(this.authenticationRevision);
       }
@@ -114,19 +310,42 @@ class AppState {
     }
   }
 
-  async login(password: string) {
-    const result = await appApi.login(password);
+  async login(password: string, loginName?: string) {
+    const result = await appApi.login(password, loginName);
     setCsrfToken(result.csrf_token);
+    this.applyIdentity(await appApi.authStatus());
+    if (!this.authenticated)
+      throw new Error(
+        'The sign-in session is no longer valid. Please sign in again.'
+      );
     this.error = '';
-    this.authenticated = true;
     this.authenticationRevision += 1;
     await this.synchronizeAuthenticatedState(this.authenticationRevision);
   }
 
   async logout() {
-    await appApi.logout();
+    const leavingLink = Boolean(this.projectLink);
+    if (this.projectLink) {
+      const { publicLinkApi } = await import('./public-link-api');
+      await publicLinkApi.leave(this.projectLink.id);
+      clearProjectLink();
+    } else await appApi.logout();
+    this.suspendIdentity();
+    if (leavingLink) await this.initialize();
+  }
+
+  suspendIdentity() {
     this.disconnectEvents();
+    this.initialized = false;
     this.authenticated = false;
+    this.linkContext = null;
+    this.principal = null;
+    this.workspaces = [];
+    this.activeWorkspaceId = '';
+    this.workspacesReady = false;
+    this.mobileSessionNavigation = null;
+    setBrowserIdentity(this.instanceId, '', 0);
+    setCsrfToken(null);
     this.authenticationRevision += 1;
     this.snapshotLoading = false;
     this.sessionsResource.reset([]);
@@ -135,11 +354,13 @@ class AppState {
   }
 
   async refresh() {
+    const revision = this.authenticationRevision;
     const [sessions, jobs, capabilities] = await Promise.all([
       appApi.sessions(),
       appApi.jobs(),
       appApi.capabilities()
     ]);
+    if (revision !== this.authenticationRevision || !this.authenticated) return;
     this.sessionsResource.replace(sessions.items, sessions.items.length === 0);
     this.jobsResource.replace(jobs.items, jobs.items.length === 0);
     this.capabilitiesResource.replace(capabilities);
@@ -167,8 +388,11 @@ class AppState {
 
   upsertSession(record: SessionRecord) {
     const sessions = [
-      record,
-      ...this.sessions.filter((item) => item.id !== record.id)
+      {
+        ...this.sessionsResource.value.find((item) => item.id === record.id),
+        ...record
+      },
+      ...this.sessionsResource.value.filter((item) => item.id !== record.id)
     ].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
     this.sessionsResource.replace(sessions);
   }
@@ -199,14 +423,29 @@ class AppState {
     return true;
   }
 
+  async retryWorkspaceLoad() {
+    await this.synchronizeAuthenticatedState(this.authenticationRevision);
+  }
+
   private async synchronizeAuthenticatedState(authenticationRevision: number) {
     this.snapshotLoading = true;
     try {
-      if (await this.loadEventSnapshot(authenticationRevision))
+      const [loaded] = await Promise.all([
+        this.loadEventSnapshot(authenticationRevision),
+        this.collaborationEnabled
+          ? this.refreshWorkspaces(true)
+          : Promise.resolve()
+      ]);
+      if (loaded) {
+        if (this.collaborationEnabled)
+          this.adoptSessionWorkspace(location.pathname.split('/')[2] ?? '');
+        if (this.collaborationEnabled) this.workspacesReady = true;
         this.connectEvents(this.eventCursor);
+      }
     } catch (caught) {
       if (authenticationRevision !== this.authenticationRevision) return;
       this.error = errorMessage(caught);
+      if (this.collaborationEnabled) this.workspaceError = this.error;
       this.eventsHealthy = false;
       this.scheduleFallbackRefresh();
     } finally {
@@ -246,15 +485,16 @@ class AppState {
   }
 
   private flushInvalidations(batch: InvalidationBatch) {
-    const terminal = batch.events.some((event) =>
+    const refreshJobSnapshot = batch.events.some((event) =>
       [
         'job.succeeded',
         'job.failed',
         'job.retry_scheduled',
+        'job.waiting_for_storage',
         'job.canceled'
       ].includes(event.type)
     );
-    if (terminal && batch.resources.includes('jobs')) {
+    if (refreshJobSnapshot && batch.resources.includes('jobs')) {
       this.refreshJobs().catch(() => undefined);
     }
     if (batch.resources.includes('sessions')) {
@@ -285,10 +525,16 @@ class AppState {
     this.fallbackTimer = window.setTimeout(async () => {
       this.fallbackTimer = undefined;
       if (!this.authenticated || this.eventsHealthy) return;
-      await Promise.all([
-        this.refreshSessions().catch(() => undefined),
-        this.refreshJobs().catch(() => undefined)
-      ]);
+      try {
+        await this.refreshIdentity();
+        if (this.authenticated)
+          await Promise.all([
+            this.refreshSessions().catch(() => undefined),
+            this.refreshJobs().catch(() => undefined)
+          ]);
+      } catch {
+        /* Resume when authentication can be checked again. */
+      }
       this.scheduleFallbackRefresh();
     }, 15000);
   }
@@ -322,7 +568,7 @@ class AppState {
   private connectEvents(cursor: number) {
     this.events?.close();
     const source = new EventSource(
-      `/api/v1/events?after=${encodeURIComponent(cursor)}`
+      projectLinkUrl(`/api/v1/events?after=${encodeURIComponent(cursor)}`)
     );
     this.events = source;
     source.onopen = () => this.markEventsHealthy();

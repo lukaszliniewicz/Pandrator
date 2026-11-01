@@ -11,13 +11,18 @@ from sqlalchemy import select
 from pandrator.logic.llm_handler import strip_output_limit_options
 from pandrator.runtime import DataPaths
 
+from .credential_identity import CredentialNamespace
 from .credentials import (
+    DATABASE_REFERENCE_PREFIX,
     DEFAULT_PROVIDER_ENVS,
     is_sensitive_field,
+    reference_key,
     resolve_provider_credential,
+    validate_vertex_service_account_json,
 )
 from .database import Database
 from .models import Provider, ProviderModel
+from .provider_identity import NONINITIAL_LLM_PROVIDER_KEYS, provider_namespace
 
 LLM_PROVIDER_PROFILES: tuple[dict[str, Any], ...] = (
     {
@@ -148,6 +153,178 @@ def _request_options(options: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+class _SecretValue(str):
+    def __repr__(self) -> str:
+        return "'<redacted>'"
+
+
+_NONINITIAL_PROVIDER_ERROR = (
+    "This provider requires a host-approved binding before it can be used in this workspace."
+)
+_NONINITIAL_CREDENTIAL_ERROR = (
+    "Configure a database credential for this workspace before running this provider."
+)
+
+
+def _model_record(row: ProviderModel) -> dict[str, Any]:
+    modalities_in = row.input_modalities_json or ["text"]
+    return {
+        "id": row.model_id,
+        "default_temperature": row.default_temperature,
+        "default_reasoning_effort": row.default_reasoning_effort or "",
+        "input_cost_per_million": row.input_cost_per_million,
+        "cached_input_cost_per_million": row.cached_input_cost_per_million,
+        "output_cost_per_million": row.output_cost_per_million,
+        "context_window_tokens": row.context_window_tokens,
+        "max_output_tokens": row.max_output_tokens,
+        "input_modalities": list(modalities_in),
+        "output_modalities": list(row.output_modalities_json or ["text"]),
+        "supports_audio_input": "audio" in modalities_in,
+    }
+
+
+def _select_scoped_provider_model(
+    providers: list[Provider],
+    model_rows: list[ProviderModel],
+    requested_model: str,
+    *,
+    legacy_compatibility: bool = False,
+) -> tuple[Provider, ProviderModel]:
+    models_by_provider: dict[str, list[ProviderModel]] = {}
+    for row in model_rows:
+        models_by_provider.setdefault(row.provider_id, []).append(row)
+
+    if requested_model:
+        matches: list[tuple[Provider, ProviderModel]] = []
+        for provider in providers:
+            provider_key = str(provider.provider_key or "").strip()
+            legacy_alias = ""
+            if legacy_compatibility:
+                options = provider.options_json or {}
+                if options.get("is_custom") or provider.provider_key not in {
+                    "openai",
+                    "gemini",
+                    "anthropic",
+                }:
+                    legacy_alias = str(options.get("provider_id") or "")
+            for row in models_by_provider.get(provider.id, []):
+                if not (row.is_active or row.is_default):
+                    continue
+                selectors = {
+                    row.model_id,
+                    f"{provider_key}/{row.model_id}",
+                    f"custom:{provider.id}/{row.model_id}",
+                }
+                if legacy_alias:
+                    selectors.update(
+                        {
+                            f"custom:{legacy_alias}/{row.model_id}",
+                            f"{row.model_id}@{legacy_alias}",
+                            f"{legacy_alias}/{row.model_id}",
+                        }
+                    )
+                if requested_model in selectors:
+                    matches.append((provider, row))
+        if len(matches) != 1:
+            raise ValueError("The requested LLM model is unavailable or ambiguous.")
+        return matches[0]
+
+    defaults = [
+        (provider, row)
+        for provider in providers
+        for row in models_by_provider.get(provider.id, [])
+        if row.is_default
+    ]
+    if not legacy_compatibility:
+        defaults.sort(
+            key=lambda item: (item[0].created_at, item[0].id, item[1].created_at, item[1].id)
+        )
+    if not defaults:
+        raise ValueError(
+            "Configure an enabled LLM provider and select a default model before running this stage."
+        )
+    return defaults[0]
+
+
+def _build_scoped_settings(
+    database: Database,
+    paths: DataPaths,
+    provider: Provider,
+    selected_row: ProviderModel,
+    model_rows: list[ProviderModel],
+    namespace: CredentialNamespace,
+    request_timeout_seconds: int | None,
+) -> tuple[SimpleNamespace, str]:
+    provider_key = str(provider.provider_key or "").strip().lower()
+    if provider_key not in NONINITIAL_LLM_PROVIDER_KEYS:
+        raise ValueError(_NONINITIAL_PROVIDER_ERROR)
+
+    secret_ref = str(provider.secret_ref or "").strip()
+    if not secret_ref.startswith(DATABASE_REFERENCE_PREFIX) or not reference_key(secret_ref):
+        raise ValueError(_NONINITIAL_CREDENTIAL_ERROR)
+
+    options = provider.options_json or {}
+    profile_id = str(options.get("profile_id") or "").strip().lower()
+    explicitly_custom = bool(
+        options.get("is_custom") or profile_id in {"custom-openai", "lm-studio", "ollama"}
+    )
+    credential = resolve_provider_credential(
+        database,
+        paths,
+        provider_key,
+        secret_ref,
+        shared=not explicitly_custom,
+        workspace_id=namespace.workspace_id,
+    )
+    if credential.source != "database" or not credential.value:
+        raise ValueError(_NONINITIAL_CREDENTIAL_ERROR)
+
+    request_options = _request_options(options)
+    credential_value = credential.value
+    api_key = credential_value
+    if provider_key == "vertex_ai":
+        credential_payload = validate_vertex_service_account_json(credential_value)
+        request_options["vertex_credentials"] = _SecretValue(credential_value)
+        project_id = credential_payload.get("project_id")
+        if project_id:
+            request_options.setdefault("vertex_project", str(project_id))
+        request_options.setdefault("vertex_location", "global")
+        api_key = ""
+
+    api_base = str(provider.base_url or "").strip()
+    if provider_key == "openai" and not api_base and not explicitly_custom:
+        api_base = next(
+            str(profile["base_url"])
+            for profile in LLM_PROVIDER_PROFILES
+            if profile["id"] == "openai"
+        )
+
+    rows = [row for row in model_rows if row.is_active or row.is_default]
+    resolved_model = f"custom:{provider.id}/{selected_row.model_id}"
+    config = {
+        "id": provider.id,
+        "name": provider.label,
+        "provider": provider_key,
+        "api_base": api_base,
+        "api_key_env": "",
+        "api_key": _SecretValue(api_key) if api_key else "",
+        "is_custom": True,
+        "models": [_model_record(row) for row in rows],
+        "models_explicit": True,
+        "request_options": request_options,
+    }
+    return (
+        SimpleNamespace(
+            provider_configs=[config],
+            default_model=resolved_model,
+            request_timeout_seconds=max(1, int(request_timeout_seconds or 600)),
+            provider_binding_id=provider.id,
+            workspace_id=namespace.workspace_id,
+        ),
+        resolved_model,
+    )
+
+
 def build_llm_settings(
     database: Database,
     paths: DataPaths,
@@ -155,6 +332,8 @@ def build_llm_settings(
     requested_model: str | None = None,
     requested_provider_id: str | None = None,
     request_timeout_seconds: int | None = None,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> tuple[SimpleNamespace, str]:
     """Build worker settings or scope a diagnostic to one database provider.
 
@@ -163,23 +342,55 @@ def build_llm_settings(
     """
 
     provider_scope = str(requested_provider_id or "").strip()
-    with database.session() as session:
-        provider_statement = select(Provider).where(Provider.kind == "llm")
-        model_statement = select(ProviderModel)
+    selected_model = str(requested_model or "").strip()
+    with database.snapshot_session() as session:
+        namespace = provider_namespace(session, session_id=session_id, workspace_id=workspace_id)
+        provider_statement = select(Provider).where(
+            Provider.kind == "llm",
+            Provider.workspace_id == namespace.workspace_id,
+        )
         if provider_scope:
             provider_statement = provider_statement.where(Provider.id == provider_scope)
-            model_statement = model_statement.where(ProviderModel.provider_id == provider_scope)
         else:
             provider_statement = provider_statement.where(Provider.enabled.is_(True))
-        providers = list(
-            session.scalars(
-                provider_statement.order_by(Provider.created_at)
-            ).all()
+        provider_order: list[Any] = [Provider.created_at]
+        model_order: list[Any] = [ProviderModel.created_at]
+        if not namespace.legacy_host_access:
+            provider_order.append(Provider.id)
+            model_order = [
+                Provider.created_at,
+                Provider.id,
+                ProviderModel.created_at,
+                ProviderModel.id,
+            ]
+        providers = list(session.scalars(provider_statement.order_by(*provider_order)).all())
+        if provider_scope and not providers:
+            raise ValueError("The requested LLM provider is unavailable.")
+        model_statement = (
+            select(ProviderModel)
+            .join(Provider, ProviderModel.provider_id == Provider.id)
+            .where(
+                Provider.workspace_id == namespace.workspace_id,
+                Provider.id.in_([provider.id for provider in providers]),
+            )
         )
-        model_rows = list(
-            session.scalars(
-                model_statement.order_by(ProviderModel.created_at)
-            ).all()
+        model_rows = list(session.scalars(model_statement.order_by(*model_order)).all())
+
+    if not namespace.host_credentials_allowed:
+        provider, selected_row = _select_scoped_provider_model(
+            providers,
+            model_rows,
+            selected_model,
+            legacy_compatibility=namespace.legacy_host_access,
+        )
+        return _build_scoped_settings(
+            database,
+            paths,
+            provider,
+            selected_row,
+            [row for row in model_rows if row.provider_id == provider.id],
+            namespace,
+            request_timeout_seconds,
         )
 
     if provider_scope and not providers:
@@ -190,7 +401,6 @@ def build_llm_settings(
         models_by_provider.setdefault(model.provider_id, []).append(model)
 
     provider_configs: list[dict[str, Any]] = []
-    selected_model = str(requested_model or "").strip()
     default_model = ""
     for provider in providers:
         # A default model is necessarily usable. Treat legacy/directly-created
@@ -202,22 +412,17 @@ def build_llm_settings(
             if row.is_active or row.is_default
         ]
         if provider_scope and (
-            not rows
-            or (selected_model and not any(row.model_id == selected_model for row in rows))
+            not rows or (selected_model and not any(row.model_id == selected_model for row in rows))
         ):
             raise ValueError("Activate the selected model on this provider before testing it.")
         if not rows:
             continue
-        fallback_env = str(
-            (provider.options_json or {}).get("api_key_env") or ""
-        ).strip()
+        fallback_env = str((provider.options_json or {}).get("api_key_env") or "").strip()
         if not fallback_env:
             fallback_env = DEFAULT_PROVIDER_ENVS.get(
                 str(provider.provider_key or "").strip().lower(), ""
             )
-        profile_id = (
-            str((provider.options_json or {}).get("profile_id") or "").strip().lower()
-        )
+        profile_id = str((provider.options_json or {}).get("profile_id") or "").strip().lower()
         share_credential = not bool(
             (provider.options_json or {}).get("is_custom")
             or profile_id in {"custom-openai", "lm-studio", "ollama"}
@@ -229,49 +434,28 @@ def build_llm_settings(
             provider.secret_ref,
             fallback_environment_variable=fallback_env,
             shared=share_credential,
+            workspace_id=namespace.workspace_id,
         )
         is_custom = bool(
             (provider.options_json or {}).get("is_custom")
             or provider.provider_key not in {"openai", "gemini", "anthropic"}
         )
         provider_id = str(
-            (provider.options_json or {}).get("provider_id")
-            or provider.provider_key
-            or provider.id
+            (provider.options_json or {}).get("provider_id") or provider.provider_key or provider.id
         )
         if is_custom:
-            provider_id = str(
-                (provider.options_json or {}).get("provider_id") or provider.id
-            )
-        records = [
-            {
-                "id": row.model_id,
-                "default_temperature": row.default_temperature,
-                "default_reasoning_effort": row.default_reasoning_effort or "",
-                "input_cost_per_million": row.input_cost_per_million,
-                "cached_input_cost_per_million": row.cached_input_cost_per_million,
-                "output_cost_per_million": row.output_cost_per_million,
-                "context_window_tokens": row.context_window_tokens,
-                "max_output_tokens": row.max_output_tokens,
-                "input_modalities": list(row.input_modalities_json or ["text"]),
-                "output_modalities": list(row.output_modalities_json or ["text"]),
-                "supports_audio_input": "audio"
-                in (row.input_modalities_json or ["text"]),
-            }
-            for row in rows
-        ]
+            provider_id = str((provider.options_json or {}).get("provider_id") or provider.id)
+        records = [_model_record(row) for row in rows]
         request_options = _request_options(provider.options_json)
         credential_value = credential.value
         if str(provider.provider_key or "").strip().lower() == "vertex_ai":
             if credential_value:
-                request_options["vertex_credentials"] = credential_value
+                request_options["vertex_credentials"] = _SecretValue(credential_value)
                 try:
                     credential_payload = json.loads(credential_value)
                 except (TypeError, ValueError):
                     credential_payload = {}
-                if isinstance(credential_payload, dict) and credential_payload.get(
-                    "project_id"
-                ):
+                if isinstance(credential_payload, dict) and credential_payload.get("project_id"):
                     request_options.setdefault(
                         "vertex_project", str(credential_payload["project_id"])
                     )
@@ -284,7 +468,7 @@ def build_llm_settings(
                 "provider": provider.provider_key,
                 "api_base": provider.base_url or "",
                 "api_key_env": credential.environment_variable,
-                "api_key": credential_value,
+                "api_key": _SecretValue(credential_value) if credential_value else "",
                 "is_custom": is_custom,
                 "models": records,
                 "models_explicit": True,
@@ -292,9 +476,7 @@ def build_llm_settings(
             }
         )
         default_row = next((row for row in rows if row.is_default), None)
-        matching_row = next(
-            (row for row in rows if row.model_id == selected_model), None
-        )
+        matching_row = next((row for row in rows if row.model_id == selected_model), None)
         if matching_row is not None:
             selected_model = (
                 f"custom:{provider_id}/{matching_row.model_id}"
@@ -318,6 +500,8 @@ def build_llm_settings(
             provider_configs=provider_configs,
             default_model=resolved_model,
             request_timeout_seconds=max(1, int(request_timeout_seconds or 600)),
+            provider_binding_id=None,
+            workspace_id=namespace.workspace_id,
         ),
         resolved_model,
     )

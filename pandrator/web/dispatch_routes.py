@@ -6,11 +6,13 @@ from typing import Any
 
 from flask import g, jsonify, request
 
-from .dispatch import TERMINAL_DISPATCH_RUN_STATUSES, DispatchError
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .dispatch import DispatchError
 from .domain_blueprints import DomainBlueprints
 from .http_idempotency import MutationIdempotency
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
-from .models import DispatchRun
+from .models import DispatchBatch, DispatchRun
 from .route_context import RouteContext
 from .schemas import (
     DispatchBatchClaimRequest,
@@ -365,110 +367,108 @@ def register_dispatch_routes(app: DomainBlueprints, context: RouteContext) -> No
     @app.post("/api/v1/dispatch-batches/<batch_id>/submit")
     @require_scope("app.run")
     def submit_dispatch_batch(batch_id: str):
-        payload = DispatchBatchSubmitRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
+        payload = DispatchBatchSubmitRequest.model_validate(request.get_json(silent=True) or {})
         key, key_error = request_key(required=True)
         if key_error is not None:
             return key_error
         assert key is not None
         body = payload.model_dump(mode="json")
-        try:
-            with database.immediate_session() as db_session:
-                try:
-                    reservation = services.idempotency.begin(
+        principal = idempotency.principal()
+        arguments = {"batch_id": batch_id, **body}
+
+        def require_batch_access(db_session):
+            batch = db_session.get(DispatchBatch, batch_id)
+            if batch is None:
+                raise DispatchError("not_found", "Dispatch batch not found.", 404)
+            run = db_session.get(DispatchRun, batch.dispatch_run_id)
+            if run is None:
+                raise DispatchError("not_found", "Dispatch run not found.", 404)
+            require_current_session_access(db_session, run.session_id, ProjectAction.RUN)
+            return run
+
+        def begin(db_session):
+            return services.idempotency.begin(
+                db_session,
+                principal=principal,
+                operation_id="submitDispatchBatch",
+                idempotency_key=key,
+                payload=arguments,
+            )
+
+        def complete(db_session, result, status_code):
+            require_batch_access(db_session)
+            # Reservations belong to this fresh SQL unit, never to the
+            # detached ORM object from the acceptance transaction.
+            reservation = begin(db_session)
+            services.idempotency.complete(
+                db_session,
+                reservation,
+                response=result,
+                status_code=status_code,
+                resource_kind="dispatch_batch",
+                resource_id=batch_id,
+            )
+
+        def accept(db_session):
+            run = require_batch_access(db_session)
+            reservation = begin(db_session)
+            replay = reservation.response
+            if replay is not None:
+                result, status_code = replay
+                if run.status in {"finalizing", "completed"} and result.get("run_id") == run.id:
+                    result, status_code = dispatch.retry_finalization_in_session(
                         db_session,
-                        principal=idempotency.principal(),
-                        operation_id="submitDispatchBatch",
-                        idempotency_key=key,
-                        payload={"batch_id": batch_id, **body},
+                        run_id=run.id,
+                        defer_finalization=True,
                     )
-                except (
-                    IdempotencyConflict,
-                    IdempotencyInProgress,
-                    ValueError,
-                ) as error:
-                    return idempotency_error(error)
-                replay = reservation.response
-                if replay is not None:
-                    replay_payload, replay_status = replay
-                    if isinstance(replay_payload, dict) and isinstance(
-                        replay_payload.get("run_id"), str
-                    ):
-                        replayed_run = db_session.get(
-                            DispatchRun,
-                            replay_payload["run_id"],
-                        )
-                        if (
-                            replayed_run is not None
-                            and replayed_run.status
-                            not in TERMINAL_DISPATCH_RUN_STATUSES
-                        ):
-                            try:
-                                result, retry_status = (
-                                    dispatch.retry_finalization_in_session(
-                                        db_session,
-                                        run_id=replay_payload["run_id"],
-                                    )
-                                )
-                                if (
-                                    retry_status != replay_status
-                                    or result != replay_payload
-                                ):
-                                    services.idempotency.complete(
-                                        db_session,
-                                        reservation,
-                                        response=result,
-                                        status_code=retry_status,
-                                        resource_kind="dispatch_batch",
-                                        resource_id=batch_id,
-                                    )
-                                    replay_payload, replay_status = result, retry_status
-                            except DispatchError as error:
-                                services.idempotency.complete(
-                                    db_session,
-                                    reservation,
-                                    response=error_body(error),
-                                    status_code=error.status,
-                                    resource_kind="dispatch_batch",
-                                    resource_id=batch_id,
-                                )
-                                return dispatch_error(error)
-                    response = jsonify(replay_payload)
-                    response.status_code = replay_status
-                    response.headers["Idempotency-Replayed"] = "true"
-                    return response
-                try:
-                    result, status_code = dispatch.submit_in_session(
+                    services.idempotency.complete(
                         db_session,
-                        batch_id=batch_id,
-                        submission_key=key,
-                        **body,
+                        reservation,
+                        response=result,
+                        status_code=status_code,
+                        resource_kind="dispatch_batch",
+                        resource_id=batch_id,
                     )
-                except DispatchError as error:
-                    if isinstance(error.details, dict) and error.details.get(
-                        "batch_accepted"
-                    ):
-                        services.idempotency.complete(
-                            db_session,
-                            reservation,
-                            response=error_body(error),
-                            status_code=error.status,
-                            resource_kind="dispatch_batch",
-                            resource_id=batch_id,
-                        )
-                    else:
-                        db_session.delete(reservation.record)
-                        db_session.flush()
-                    return dispatch_error(error)
-                services.idempotency.complete(
+                return result, status_code, True, None
+            try:
+                result, status_code = dispatch.submit_in_session(
                     db_session,
-                    reservation,
-                    response=result,
-                    status_code=status_code,
-                    resource_kind="dispatch_batch",
-                    resource_id=batch_id,
+                    batch_id=batch_id,
+                    submission_key=key,
+                    defer_finalization=True,
+                    **body,
                 )
-            return jsonify(result), status_code
+            except DispatchError as error:
+                db_session.delete(reservation.record)
+                db_session.flush()
+                return None, error.status, False, error
+            services.idempotency.complete(
+                db_session,
+                reservation,
+                response=result,
+                status_code=status_code,
+                resource_kind="dispatch_batch",
+                resource_id=batch_id,
+            )
+            return result, status_code, False, None
+
+        try:
+            result, status_code, replayed, error = database.run_immediate(accept)
+            if error is not None:
+                return dispatch_error(error)
+            assert result is not None
+            if result.get("status") == "finalizing":
+                result, status_code = dispatch.finalize_pending(
+                    result["run_id"],
+                    complete=complete,
+                    error_payload=error_body,
+                )
+            response = jsonify(result)
+            response.status_code = status_code
+            if replayed:
+                response.headers["Idempotency-Replayed"] = "true"
+            return response
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_error(error)
         except DispatchError as error:
             return dispatch_error(error)

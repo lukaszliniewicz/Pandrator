@@ -2,6 +2,8 @@
 
 from flask import jsonify, request
 
+from .access.contracts import ProjectAction
+from .access.generation_resource_policy import require_generation_resource_access
 from .generation_audio_versions import preview_audio_version_undo
 from .generation_recast_schemas import (
     AudioVersionUndoRequest,
@@ -9,13 +11,19 @@ from .generation_recast_schemas import (
     GenerationRecastStartRequest,
 )
 from .generation_recast_workspace import start_recast_in_session, undo_recast_in_session
+from .http_session_access import require_session_action
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .models import GenerationRun
+from .project_settings_policy import public_project_settings
 from .settings_policy import RevisionConflict
 
 
 def register_generation_recast_routes(app, context):
     services, guards = context.services, context.guards
+
+    def public_response(value):
+        return jsonify(public_project_settings(value))
+
 
     def failure(error):
         if isinstance(error, KeyError):
@@ -33,17 +41,19 @@ def register_generation_recast_routes(app, context):
 
     @app.post("/api/v1/sessions/<session_id>/generation-recast/preview")
     @guards.require_scope("app.read")
+    @require_session_action(context, ProjectAction.READ)
     def generation_recast_preview(session_id):
         try:
             body = GenerationRecastPreviewRequest.model_validate(
                 request.get_json(silent=True) or {}
             ).model_dump()
-            return jsonify(prepare(session_id, body)["preview"])
+            return public_response(prepare(session_id, body)["preview"])
         except (KeyError, ValueError) as error:
             return failure(error)
 
     @app.post("/api/v1/sessions/<session_id>/generation-recast")
     @guards.require_scope("app.write")
+    @require_session_action(context, ProjectAction.RUN)
     def generation_recast_start(session_id):
         reservation_id = None
         principal = guards.principal()
@@ -71,6 +81,7 @@ def register_generation_recast_routes(app, context):
                 return guards.error_response("idempotency_key_required", str(error), 400)
             expected_hash = body.pop("expected_selection_hash")
             with services.database.immediate_session() as session:
+                require_generation_resource_access(session, "session", session_id, ProjectAction.RUN)
                 reservation = services.idempotency.begin(
                     session, principal=principal, operation_id="startGenerationRecast",
                     idempotency_key=key,
@@ -78,7 +89,7 @@ def register_generation_recast_routes(app, context):
                 )
                 if reservation.response is not None:
                     result, status = reservation.response
-                    response = jsonify(result)
+                    response = public_response(result)
                     response.status_code = status
                     response.headers["Idempotency-Replayed"] = "true"
                     return response
@@ -87,6 +98,7 @@ def register_generation_recast_routes(app, context):
             # before inspecting mutable casting or active audio.
             prepared = prepare(session_id, body)
             with services.database.immediate_session() as session:
+                require_generation_resource_access(session, "session", session_id, ProjectAction.RUN)
                 reservation = services.idempotency.load_in_progress(
                     session, reservation_id, principal=principal
                 )
@@ -97,7 +109,7 @@ def register_generation_recast_routes(app, context):
                     session, reservation, response=result, status_code=201,
                     resource_kind="generation_run", resource_id=result["id"],
                 )
-            return jsonify(result), 201
+            return public_response(result), 201
         except (KeyError, ValueError, RevisionConflict, IdempotencyConflict, IdempotencyInProgress) as error:
             abandon()
             return failure(error)
@@ -107,15 +119,18 @@ def register_generation_recast_routes(app, context):
 
     @app.post("/api/v1/generation-runs/<run_id>/audio-version/undo-preview")
     @guards.require_scope("app.read")
+    @require_session_action(context, ProjectAction.READ, resource="run")
     def generation_audio_version_undo_preview(run_id):
         try:
             with services.database.session() as session:
-                return jsonify(preview_audio_version_undo(session, run_id))
+                require_generation_resource_access(session, "run", run_id, ProjectAction.READ)
+                return public_response(preview_audio_version_undo(session, run_id))
         except (KeyError, ValueError) as error:
             return failure(error)
 
     @app.post("/api/v1/generation-runs/<run_id>/audio-version/undo")
     @guards.require_scope("app.write")
+    @require_session_action(context, ProjectAction.EDIT, resource="run")
     def generation_audio_version_undo(run_id):
         try:
             body = AudioVersionUndoRequest.model_validate(request.get_json(silent=True) or {})
@@ -125,6 +140,7 @@ def register_generation_recast_routes(app, context):
             except ValueError as error:
                 return guards.error_response("idempotency_key_required", str(error), 400)
             with services.database.immediate_session() as session:
+                require_generation_resource_access(session, "run", run_id, ProjectAction.EDIT)
                 if session.get(GenerationRun, run_id) is None:
                     raise KeyError(run_id)
                 reservation = services.idempotency.begin(
@@ -133,7 +149,7 @@ def register_generation_recast_routes(app, context):
                 )
                 if reservation.response is not None:
                     result, status = reservation.response
-                    response = jsonify(result)
+                    response = public_response(result)
                     response.status_code = status
                     response.headers["Idempotency-Replayed"] = "true"
                     return response
@@ -144,6 +160,6 @@ def register_generation_recast_routes(app, context):
                     session, reservation, response=result, status_code=200,
                     resource_kind="generation_run", resource_id=run_id,
                 )
-            return jsonify(result)
+            return public_response(result)
         except (KeyError, ValueError, RevisionConflict, IdempotencyConflict, IdempotencyInProgress) as error:
             return failure(error)

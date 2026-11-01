@@ -10,6 +10,25 @@ connection supplies access; this skill supplies workflow guidance. Inspect
 live capabilities and returned `next_action` values rather than inventing
 tool arguments, roots, providers, model IDs, voices, or revisions.
 
+## Collaborate under the correct account
+
+Pandrator starts in Solo. Before team/account work, read
+`pandrator_explain_system(topic="collaboration", detail="full")` and inspect
+`pandrator_get_target_status`. Each teammate enrolls their own account through
+browser PKCE and explicitly approves the needed resources; never share the
+installation's Owner/managed HTTP bearer. Instance Administrator governs users
+and missing-model acquisition; workspace Manager governs membership. A Member
+can create, edit, run and export ordinary team content.
+
+Creating or joining a workspace needs `app.read`, `app.write` and
+`app.workspaces.enroll`. Request additional scopes only through human enrollment;
+include the complete desired set when re-enrolling. Pass the intended
+`workspace_id` where the tool supports it, then keep the returned IDs. There is
+no persistent workspace selection, `list_sessions` workspace filter or folder
+MCP tool; organize folders in the browser. Use preview/copy for existing private
+work, including explicit destination connections. A copy is independent; private
+credentials and personal folders do not become shared. Can view is read-only.
+
 ## Choose the smallest matching workflow
 
 - **Just a transcript:** use `pandrator_transcribe`; no session is needed.

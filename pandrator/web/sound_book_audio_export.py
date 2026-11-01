@@ -26,7 +26,14 @@ from .job_execution import current_job_lease
 from .media_process import MediaProcessCancelled
 from .models import Artifact, Job, utcnow
 from .output_settings_snapshot import build_output_settings_snapshot
-from .workflow_output_context import OutputWorkflowContext
+from .output_storage import estimated_assembly_bytes, reserve_output_space
+from .workflow_output_context import (
+    OutputWorkflowContext,
+    authorize_output_input,
+    check_output_io,
+    output_io_options,
+    require_output_access,
+)
 
 _FORMATS = {"wav", "mp3", "m4b", "flac", "opus"}
 
@@ -48,6 +55,8 @@ def _current_audio(
     session_id: str,
 ) -> tuple[Artifact, Path, dict[str, Any], dict[str, Any], int, int, int]:
     with context.database.session() as session:
+        require_output_access(context, session)
+        authorize_output_input(context, session, audio.id)
         current = session.get(Artifact, audio.id)
         if (
             current is None
@@ -64,6 +73,7 @@ def _current_audio(
     path = context.paths.managed_path(current.relative_path)
     if path.is_symlink() or not path.is_file():
         raise ValueError("The selected sound-mixed audio is not a regular managed file.")
+    check_output_io(context)
     if not current.content_hash or sha256_file(path) != current.content_hash:
         raise ValueError("The selected sound-mixed audio content hash changed.")
 
@@ -98,6 +108,7 @@ def _current_audio(
     ):
         raise ValueError("The sound-mix timeline does not match its frozen frame plan.")
 
+    check_output_io(context)
     try:
         with wave.open(str(path), "rb") as reader:
             if (
@@ -181,6 +192,7 @@ def _cover_path(
     managed = context.paths.managed_path(cover.relative_path)
     if managed.is_symlink() or not managed.is_file() or managed != resolved.resolve():
         raise ValueError("The selected cover is not a valid managed image file.")
+    check_output_io(context)
     if cover.content_hash and sha256_file(managed) != cover.content_hash:
         raise ValueError("The selected cover image content hash changed.")
     return cover, managed
@@ -207,11 +219,15 @@ def _validate_active_lease(
     ):
         raise InterruptedError("The active export worker lease does not match its payload.")
     with context.database.session() as session:
+        require_output_access(context, session)
+        allowed_kinds = ("export.create", "export.variant")
+        if getattr(context, "_authorization_guard", None) is not None:
+            allowed_kinds += ("workflow.continue",)
         current_job = session.scalar(
             select(Job.id).where(
                 Job.id == job_id,
                 Job.session_id == session_id,
-                Job.kind.in_(("export.create", "export.variant")),
+                Job.kind.in_(allowed_kinds),
                 Job.status == "running",
                 Job.lease_owner == lease.get("owner_id"),
                 Job.lease_generation == generation,
@@ -251,7 +267,8 @@ def export_mixed_book_audio(
     _cancel(cancel_event)
 
     detected_rate, detected_channels = preferred_pcm_format(
-        source_path, cancel_event=cancel_event
+        source_path, cancel_event=cancel_event,
+        **output_io_options(context),
     )
     if (detected_rate, detected_channels) != (rate, channels):
         raise ValueError("The sound-mixed PCM format changed after timeline validation.")
@@ -272,6 +289,10 @@ def export_mixed_book_audio(
 
     exports_dir = context._session_dir(session_id) / "exports"
     staging_parent = exports_dir / ".staging"
+    check_output_io(context)
+    reserve_output_space(context, staging_parent,
+                         estimated_assembly_bytes(frames * 1000 / rate, rate, channels, copies=3)
+                         + (cover_path.stat().st_size if cover_path else 0), label="audiobook export")
     staging_parent.mkdir(parents=True, exist_ok=True)
     requested_destination = exports_dir / "audio" / f"{filename}.{output_format}"
     metadata_settings = build_output_settings_snapshot(
@@ -292,6 +313,7 @@ def export_mixed_book_audio(
     with tempfile.TemporaryDirectory(prefix="sound-book-audio-", dir=staging_parent) as temp:
         scratch_output = Path(temp) / f"mixed.{output_format}"
         progress(0.1, "Encoding sound-mixed audiobook")
+        check_output_io(context)
         result = assemble_audio_plan(
             plan,
             scratch_output,
@@ -299,6 +321,7 @@ def export_mixed_book_audio(
             work_dir=Path(temp),
             cancel_event=cancel_event,
             progress=lambda fraction, detail: progress(0.1 + 0.62 * fraction, detail),
+            **output_io_options(context),
         )
         _cancel(cancel_event)
         if result.total_frames != frames or result.sample_rate_hz != rate:
@@ -311,6 +334,7 @@ def export_mixed_book_audio(
             _save_metadata_and_cover,
         )
 
+        check_output_io(context)
         _save_metadata_and_cover(
             str(scratch_output),
             output_format,
@@ -320,12 +344,14 @@ def export_mixed_book_audio(
         )
         _cancel(cancel_event)
         if output_format == "m4b" and chapters:
+            check_output_io(context)
             _add_chapters_to_m4b(
                 str(scratch_output),
                 chapters,
                 total_duration_sec=frames / rate,
                 raise_on_error=True,
             )
+            check_output_io(context)
             _save_metadata_and_cover(
                 str(scratch_output),
                 output_format,

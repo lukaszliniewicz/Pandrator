@@ -38,7 +38,7 @@ const bundle = await build({
           (args) => ({
             contents: args.path.includes('domain-api')
               ? 'export const sessionApi = {discoverTts: () => {throw new Error("Unexpected discovery")} };'
-              : 'export const getTtsCompactCatalogue = (...args) => globalThis.catalogueFixture.catalogue(...args); export const getVoiceLibrary = (...args) => globalThis.catalogueFixture.voices(...args); export const getTtsServiceDetail = (...args) => globalThis.catalogueFixture.detail(...args);',
+              : 'export const speechCatalogueKey = (scope = {}) => JSON.stringify([globalThis.catalogueFixture.identity ?? "account-a", scope]); export const getTtsCompactCatalogue = (...args) => globalThis.catalogueFixture.catalogue(...args); export const getVoiceLibrary = (...args) => globalThis.catalogueFixture.voices(...args); export const getTtsServiceDetail = (...args) => globalThis.catalogueFixture.detail(...args);',
             loader: 'js'
           })
         );
@@ -59,7 +59,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function fixture() {
+function fixture(getScope = () => ({})) {
   const calls = { catalogue: [], voices: [], detail: [] };
   globalThis.catalogueFixture = Object.fromEntries(
     Object.keys(calls).map((name) => [
@@ -71,9 +71,11 @@ function fixture() {
       }
     ])
   );
-  return { state: new TtsCatalogueState(), calls };
+  return { state: new TtsCatalogueState(getScope), calls };
 }
 const catalogue = {
+  workspace_id: 'workspace-a',
+  can_refresh: true,
   services: [
     {
       id: 'vertex_ai',
@@ -87,7 +89,7 @@ const catalogue = {
 test('cached models become available while the saved voice library is still pending', async () => {
   const { state, calls } = fixture();
   const load = state.load();
-  assert.deepEqual(calls.catalogue[0].args, [false, false]);
+  assert.deepEqual(calls.catalogue[0].args, [false, false, {}]);
   calls.catalogue[0].resolve(catalogue);
   const receipt = await load;
   assert.equal(state.finishLoad(receipt), true);
@@ -122,7 +124,10 @@ test('selected-provider checks coalesce and cannot repopulate an invalidated mod
   state.catalogue = catalogue;
   const check = state.refreshService('vertex_ai');
   assert.equal(state.refreshService('vertex_ai'), check);
-  assert.deepEqual(calls.detail[0].args, ['vertex_ai', { refresh: true }]);
+  assert.deepEqual(calls.detail[0].args, [
+    'vertex_ai',
+    { refresh: true, workspaceId: 'workspace-a' }
+  ]);
   assert.deepEqual(state.checkingServices, ['vertex_ai']);
   state.invalidate();
   calls.detail[0].resolve({
@@ -175,12 +180,12 @@ test('a failed provider check keeps cached models and exposes a retryable error'
   assert.equal(state.catalogue.services[0].available, true);
 });
 
-test('an explicit catalogue refresh clears superseded provider loading state', async () => {
+test('a passive catalogue reload clears superseded provider loading state', async () => {
   const { state, calls } = fixture();
   state.catalogue = catalogue;
   const oldCheck = state.refreshService('vertex_ai');
   const load = state.load(true);
-  assert.deepEqual(calls.catalogue[0].args, [true, true]);
+  assert.deepEqual(calls.catalogue[0].args, [false, true, {}]);
   assert.deepEqual(state.checkingServices, []);
   calls.catalogue[0].resolve({
     services: [{ ...catalogue.services[0], available: true }]
@@ -194,4 +199,38 @@ test('an explicit catalogue refresh clears superseded provider loading state', a
   assert.deepEqual(state.checkingServices, []);
   calls.voices[0].resolve({ items: [] });
   await calls.voices[0].promise;
+});
+
+test('workspace changes discard pending catalogue and voice responses', async () => {
+  let scope = { workspaceId: 'team-a' };
+  const { state, calls } = fixture(() => scope);
+  const older = state.load();
+  scope = { workspaceId: 'team-b' };
+  const newer = state.load();
+  assert.deepEqual(
+    calls.catalogue.map((call) => call.args),
+    [
+      [false, false, { workspaceId: 'team-a' }],
+      [false, false, { workspaceId: 'team-b' }]
+    ]
+  );
+  calls.catalogue[0].resolve({ ...catalogue, workspace_id: 'team-a' });
+  calls.voices[0].resolve({ items: [{ id: 'old-reference' }] });
+  assert.equal(await older, undefined);
+  await calls.voices[0].promise;
+  assert.deepEqual(state.catalogue.services, []);
+  assert.deepEqual(state.voices, []);
+  calls.catalogue[1].resolve({ ...catalogue, workspace_id: 'team-b' });
+  state.finishLoad(await newer);
+  calls.voices[1].resolve({ items: [{ id: 'team-b-reference' }] });
+  await calls.voices[1].promise;
+  assert.equal(state.catalogue.workspace_id, 'team-b');
+  assert.equal(state.voices[0].id, 'team-b-reference');
+});
+
+test('approved readers cannot trigger a provider refresh', async () => {
+  const { state, calls } = fixture();
+  state.catalogue = { ...catalogue, can_refresh: false };
+  await state.refreshService('vertex_ai');
+  assert.deepEqual(calls.detail, []);
 });

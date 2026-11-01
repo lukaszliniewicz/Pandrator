@@ -11,13 +11,23 @@ import hashlib
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
 
 from . import models as m
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .access.source_management_policy import (
+    require_source_change_access,
+    require_source_session_creation_access,
+)
+from .accounts.execution_actor import UserActor, current_execution_actor
 from .artifact_selection import select_source_path
 from .artifacts import sha256_file
+from .projects.identity import session_project
+from .projects.source_identity import validate_source_attachment
 from .settings_policy import RevisionConflict
 from .source_resolution import (
     classify_source,
@@ -120,6 +130,11 @@ def _source_payload(source) -> dict[str, Any] | None:
 
 
 def source_status(session, session_id: str) -> dict[str, Any]:
+    require_current_session_access(session, session_id, ProjectAction.READ)
+    return _source_status(session, session_id)
+
+
+def _source_status(session, session_id: str) -> dict[str, Any]:
     record = session.get(m.SessionRecord, session_id)
     if record is None or record.trashed_at is not None:
         raise KeyError(session_id)
@@ -218,7 +233,12 @@ def _protected_artifacts(session, session_id: str) -> set[str]:
 def _impact(
     session, session_id: str, role: str, new_source_asset_id: str | None
 ) -> dict[str, Any]:
-    status = source_status(session, session_id)
+    if new_source_asset_id is not None:
+        asset = session.get(m.SourceAsset, new_source_asset_id)
+        if asset is None:
+            raise KeyError(new_source_asset_id)
+        validate_source_attachment(session, session_id, asset)
+    status = _source_status(session, session_id)
     artifacts = list(
         session.scalars(
             select(m.Artifact).where(
@@ -303,6 +323,7 @@ def _impact(
 def preview_source_change(
     session, session_id: str, role: str, new_source_asset_id: str | None
 ) -> dict[str, Any]:
+    require_source_change_access(session, session_id, source_asset_id=new_source_asset_id)
     if role not in {"primary", "media"}:
         raise ValueError(
             "Source changes support the primary source or associated media."
@@ -475,7 +496,8 @@ def change_source_in_session(
     expected_revision: int,
     impact_token: str,
 ) -> dict[str, Any]:
-    status = source_status(session, session_id)
+    require_source_change_access(session, session_id, source_asset_id=new_source_asset_id)
+    status = _source_status(session, session_id)
     if status["session_revision"] != expected_revision:
         raise RevisionConflict(
             "The session changed. Review the source-change warning again."
@@ -537,7 +559,7 @@ def change_source_in_session(
     record.status = "idle"
     session.flush()
     return {
-        **source_status(session, session_id),
+        **_source_status(session, session_id),
         "unchanged": False,
         "removed": impact["counts"],
     }
@@ -554,6 +576,8 @@ def start_new_source_session_in_session(
     impact_token: str,
 ) -> dict[str, Any]:
     """Start a clean session with the same configuration; never alter old work."""
+    require_source_change_access(session, session_id, source_asset_id=new_source_asset_id)
+    selected_workspace_id = require_source_session_creation_access(session, session_id)
     from copy import deepcopy
 
     if role != "primary":
@@ -569,6 +593,8 @@ def start_new_source_session_in_session(
             "The source selection changed. Review the source-change dialog again."
         )
     asset = _validate_source(services, session, new_source_asset_id, role)
+    workspace_id = session_project(session, session_id).workspace_id
+    assert selected_workspace_id is None or selected_workspace_id == workspace_id
     created = services.sessions.create(
         f"{original.name[:240]} — new source",
         workflow_kind=original.workflow_kind,
@@ -579,7 +605,12 @@ def start_new_source_session_in_session(
         included_stages=list(original.included_stages_json or []),
         db_session=session,
         seed_voice_mode=False,
+        workspace_id=workspace_id,
     )
+    actor = current_execution_actor.get()
+    if type(actor) is UserActor:
+        project = session.get(m.Project, created.project_id)
+        project.created_by_user_id = actor.user_id
     for setting in session.scalars(
         select(m.SessionSetting).where(m.SessionSetting.session_id == session_id)
     ):
@@ -652,7 +683,8 @@ def cleanup_reset_files(services, session_id: str) -> dict[str, int]:
 def confirm_recording_timing(
     session, session_id: str, *, expected_revision: int, media_artifact_id: str
 ) -> dict[str, Any]:
-    status = source_status(session, session_id)
+    require_source_change_access(session, session_id)
+    status = _source_status(session, session_id)
     assert_session_idle(session, session_id)
     if (
         status["session_revision"] != expected_revision
@@ -678,7 +710,9 @@ def confirm_recording_timing(
 
 
 def require_recording_timing_review(
-    database, session_id: str, settings: dict[str, Any]
+    database, session_id: str, settings: dict[str, Any], *,
+    authorization_guard: Callable[[Session], None] | None = None,
+    authorize_input: Callable[[Session, str], None] | None = None,
 ) -> None:
     if (
         str(settings.get("export_mode") or "media") not in {"media", "audio"}
@@ -686,11 +720,15 @@ def require_recording_timing_review(
     ):
         return
     with database.session() as session:
+        if authorization_guard is not None:
+            authorization_guard(session)
         timing = session.get(m.SessionSetting, (session_id, "_recording_timing_review"))
         if (
             timing
             and (timing.value_json or {}).get("required")
-            and resolve_media_source(session, session_id).has_audio
+            and resolve_media_source(
+                session, session_id, authorize_input=authorize_input
+            ).has_audio
         ):
             raise ValueError(
                 "The associated recording changed. Verify speech timing against it in the Source card before exporting a synchronized soundtrack."

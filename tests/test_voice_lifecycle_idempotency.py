@@ -89,7 +89,9 @@ class VoiceLifecycleIdempotencyTests(unittest.TestCase):
         sample_path.write_bytes(silent_wav())
         artifact = extension["artifacts"].register(sample_path, kind="audio", role="voice_sample")
         with extension["database"].session() as session:
-            sample = VoiceSample(voice_id=voice["id"], artifact_id=artifact.id)
+            parent = session.get(Voice, voice["id"])
+            assert parent is not None
+            sample = VoiceSample(voice_id=parent.id, artifact_id=artifact.id, workspace_id=parent.workspace_id)
             session.add(sample)
             session.flush()
             sample_id = sample.id
@@ -184,7 +186,9 @@ class VoiceLifecycleIdempotencyTests(unittest.TestCase):
             sample_path, kind="audio", role="voice_sample"
         )
         with extension["database"].session() as session:
-            sample = VoiceSample(voice_id=voice["id"], artifact_id=artifact.id)
+            parent = session.get(Voice, voice["id"])
+            assert parent is not None
+            sample = VoiceSample(voice_id=parent.id, artifact_id=artifact.id, workspace_id=parent.workspace_id)
             session.add(sample)
             session.flush()
             sample_id = sample.id
@@ -241,7 +245,9 @@ class VoiceLifecycleIdempotencyTests(unittest.TestCase):
             sample_path, kind="audio", role="voice_sample"
         )
         with extension["database"].session() as session:
-            sample = VoiceSample(voice_id=voice["id"], artifact_id=artifact.id)
+            parent = session.get(Voice, voice["id"])
+            assert parent is not None
+            sample = VoiceSample(voice_id=parent.id, artifact_id=artifact.id, workspace_id=parent.workspace_id)
             session.add(sample)
             session.flush()
             sample_id = sample.id

@@ -14,6 +14,7 @@ from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.generation_summary import get_generation_summary
 from pandrator.web.openapi import build_openapi_document
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.usage import usage_summary
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -28,8 +29,7 @@ def summary_case(tmp_path):
     services = app.extensions["pandrator"]["services"]
     with services.database.session() as db:
         record = m.SessionRecord(name="Generation summary")
-        db.add(record)
-        db.flush()
+        create_session_project(db, record)
         session_id = record.id
     yield services, client, session_id
     services.database.dispose()
@@ -207,8 +207,7 @@ def test_invalid_or_foreign_active_plan_source_has_no_role(summary_case, referen
     else:
         with services.database.session() as db:
             foreign = m.SessionRecord(name="Foreign source")
-            db.add(foreign)
-            db.flush()
+            create_session_project(db, foreign)
             foreign_session_id = foreign.id
         artifact_id = add_source_artifact(
             summary_case,
@@ -397,8 +396,7 @@ def test_active_run_usage_matches_usage_summary_and_refreshes(summary_case):
     )
     with services.database.session() as db:
         foreign_session = m.SessionRecord(name="Foreign usage session")
-        db.add(foreign_session)
-        db.flush()
+        create_session_project(db, foreign_session)
         foreign_session_id = foreign_session.id
     foreign_revision_id, _ = add_plan(
         summary_case, session_id=foreign_session_id
@@ -582,8 +580,7 @@ def test_latest_assembly_and_cross_session_isolation(summary_case):
     run_id = add_run(summary_case, revision_id)
     with services.database.session() as db:
         foreign = m.SessionRecord(name="Foreign")
-        db.add(foreign)
-        db.flush()
+        create_session_project(db, foreign)
         foreign_id = foreign.id
         foreign_job = m.Job(
             session_id=foreign_id, kind="generation.assemble", status="running",

@@ -26,6 +26,7 @@
   let {
     sessionId,
     workflowKind,
+    workspaceId,
     editable,
     baseArtifactId,
     onmixchange,
@@ -33,6 +34,7 @@
   }: {
     sessionId: string;
     workflowKind: string;
+    workspaceId?: string;
     editable: boolean;
     baseArtifactId?: string | null;
     onmixchange?: (status: SoundMixStatus | null) => void;
@@ -368,6 +370,7 @@
 {#if target}{#key target}<SoundCuePicker
       {sessionId}
       {workflowKind}
+      {workspaceId}
       {...target}
       onclose={() => (target = null)}
       onchanged={refresh}

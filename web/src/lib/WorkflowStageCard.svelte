@@ -21,6 +21,11 @@
     isCollapsibleCompletedStage
   } from './completed-stage-disclosure';
   import StageArtifactHistory from './StageArtifactHistory.svelte';
+  import RunMetrics from './RunMetrics.svelte';
+  import {
+    formatRunCost as formatCost,
+    formatRunDuration as formatDuration
+  } from './run-metrics';
   import type { Snippet } from 'svelte';
   import type { StageArtifact } from './stage-artifacts';
 
@@ -88,42 +93,7 @@
     );
   };
 
-  const formatCost = (cost: number | null) => {
-    if (cost == null) return 'not metered';
-    if (cost === 0) return '$0.00';
-    return cost < 0.01 ? `$${cost.toFixed(6)}` : `$${cost.toFixed(4)}`;
-  };
-
-  const formatDuration = (seconds: number) => {
-    const rounded = Math.max(0, Math.round(seconds));
-    if (rounded < 60) return `${rounded}s`;
-    const minutes = Math.floor(rounded / 60);
-    const remainingSeconds = rounded % 60;
-    if (minutes < 60)
-      return remainingSeconds
-        ? `${minutes}m ${remainingSeconds}s`
-        : `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-  };
-
-  let nowMs = $state(Date.now());
-  $effect(() => {
-    if (!stage.run_metrics?.started_at || stage.run_metrics.finished_at) return;
-    nowMs = Date.now();
-    const timer = window.setInterval(() => (nowMs = Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  });
-  const elapsedSeconds = $derived.by(() => {
-    const metrics = stage.run_metrics;
-    if (!metrics?.started_at) return metrics?.duration_seconds ?? null;
-    if (metrics.finished_at) return metrics.duration_seconds;
-    const started = Date.parse(metrics.started_at);
-    return Number.isFinite(started)
-      ? Math.max(0, (nowMs - started) / 1000)
-      : metrics.duration_seconds;
-  });
+  const elapsedSeconds = $derived(stage.run_metrics?.duration_seconds ?? null);
   const costAware = $derived(
     ['correct', 'translate', 'optimize_tts', 'generate_audio'].includes(
       stage.key
@@ -355,6 +325,7 @@
         ></progress>
         <p class="muted mt-1 text-xs">{stage.detail || 'Working…'}</p>
       </div>{/if}
+    <RunMetrics {stage} />
     {#if stage.status === 'failed' && stage.detail}<p
         class="mt-3 text-sm text-red-500"
         role="alert"
@@ -584,32 +555,7 @@
             {/if}
 
             {#if elapsedSeconds != null || stage.usage || (costAware && stage.run_metrics)}
-              <div
-                class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"
-                aria-label={`${stage.title} run metrics`}
-              >
-                {#if elapsedSeconds != null}
-                  <span
-                    class="muted inline-flex items-center gap-1.5 tabular-nums"
-                  >
-                    <Clock3 size={13} aria-hidden="true" />
-                    {stage.status === 'running' ? 'Elapsed' : 'Duration'}
-                    <strong class="text-[var(--ink)]"
-                      >{formatDuration(elapsedSeconds)}</strong
-                    >
-                  </span>
-                {/if}
-                {#if stage.usage || (costAware && stage.run_metrics)}
-                  <span class="muted"
-                    >{stage.usage?.estimated ? 'Est. cost' : 'Cost'}
-                    <strong class="text-[var(--ink)]"
-                      >{formatCost(stage.usage?.cost_usd ?? null)}</strong
-                    >{stage.usage?.has_unpriced_usage
-                      ? ' + unpriced usage'
-                      : ''}</span
-                  >
-                {/if}
-              </div>
+              <RunMetrics {stage} />
               {#if stage.usage}
                 <details
                   class="muted mt-2 text-xs"

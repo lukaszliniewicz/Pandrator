@@ -18,6 +18,7 @@ from .sound_project_commands import (
     latest_cues,
     normalize_placement,
     require_variant,
+    validate_sound_cue_workspaces,
 )
 from .sound_project_queries import current_header
 from .sound_project_schemas import SoundAnchor, SoundPlayback
@@ -96,7 +97,9 @@ def load_source_state(session, session_id: str) -> tuple[Any, Any, str | None, l
     """Read the current sound header and cues once for a caller-local batch."""
 
     record, plan, active = current_header(session, session_id)
-    return record, plan, active, latest_cues(session, plan)
+    cues = latest_cues(session, plan)
+    validate_sound_cue_workspaces(session, session_id, cues)
+    return record, plan, active, cues
 
 
 def propose(
@@ -135,7 +138,7 @@ def propose(
         old = by_id.get(marker.cue)
         if old is not None and marker.cue not in represented_ids:
             raise ValueError("A sound marker cannot edit a cue outside this representable segment.")
-        require_variant(session, marker.variant)
+        require_variant(session, marker.variant, session_id=session_id)
         if old is not None:
             previous_marker = marker_for_cue(old, segment_id, text)
             anchor = (

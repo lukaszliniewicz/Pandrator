@@ -10,6 +10,11 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from .access.artifact_visibility import resource_visibility_clause
+from .access.contracts import AccessContext, ProjectAction
+from .access.job_policy import JobAction, JobNotFound, require_job_access
+from .access.session_policy import require_session_access
+from .accounts.execution_actor import UserActor, current_execution_actor, execution_actor_scope
 from .artifact_selection import (
     STAGE_OUTPUT_ROLES,
     canonical_stage_key,
@@ -23,6 +28,7 @@ from .export_contract import (
     normalize_export_mode,
 )
 from .generation_subtitles import capture_display_subtitle_snapshot
+from .job_identity import job_ownership
 from .jobs import JobQueue
 from .models import (
     Artifact,
@@ -34,6 +40,7 @@ from .models import (
     SourceAsset,
     utcnow,
 )
+from .resource_keys import tts_resource_keys
 from .source_resolution import (
     PrimarySourceResolution,
     classify_source,
@@ -56,6 +63,16 @@ from .workflow_stage_types import StageDefinition as StageDefinition
 
 WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
 MAX_CORRECTION_ANCESTRY_EDGES = 512
+
+
+def _workflow_primary_source(session: Session, session_id: str) -> PrimarySourceResolution:
+    actor = current_execution_actor.get()
+    if type(actor) is UserActor:
+        return resolve_primary_source(
+            session, session_id,
+            metadata_visibility=resource_visibility_clause(Artifact, actor),
+        )
+    return resolve_primary_source(session, session_id)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -647,7 +664,7 @@ class WorkflowService:
             and self._usable_input(definition, artifact, workflow_kind)
         )
 
-    def snapshot(self, session_id: str) -> dict[str, Any]:
+    def snapshot(self, session_id: str, *, access_context: AccessContext | None = None) -> dict[str, Any]:
         context = WorkflowSnapshotContext(
             database=self.database,
             definitions=lambda record, artifacts: self.definitions(record, artifacts),
@@ -662,7 +679,7 @@ class WorkflowService:
                     definition, artifact, workflow_kind, session_id, attached_source_ids
                 )
             ),
-            resolve_primary_source=lambda session, session_id: resolve_primary_source(
+            resolve_primary_source=lambda session, session_id: _workflow_primary_source(
                 session, session_id
             ),
             current_artifacts_by_role=lambda session, session_id, roles: (
@@ -693,7 +710,10 @@ class WorkflowService:
                 subtitle_source_status_in_session(session, session_id, primary=primary)
             ),
         )
-        return build_workflow_snapshot(context, session_id)
+        if access_context is not None:
+            with execution_actor_scope(access_context.actor):
+                return build_workflow_snapshot(context, session_id, access_context=access_context)
+        return build_workflow_snapshot(context, session_id, access_context=access_context)
 
     def resolve_stage(
         self,
@@ -702,9 +722,16 @@ class WorkflowService:
         settings: dict[str, Any] | None = None,
         *,
         continuation: bool = False,
+        access_context: AccessContext | None = None,
     ) -> ResolvedWorkflowStage:
         """Capture coherent queue input; later edits affect only future runs."""
         with self.database.snapshot_session() as session:
+            if access_context is not None:
+                require_session_access(session, access_context, session_id, ProjectAction.RUN)
+                with execution_actor_scope(access_context.actor):
+                    return self._resolve_stage_in_session(
+                        session, session_id, stage_key, settings, continuation=continuation,
+                    )
             return self._resolve_stage_in_session(
                 session, session_id, stage_key, settings, continuation=continuation,
             )
@@ -736,7 +763,7 @@ class WorkflowService:
             selected_artifacts=lambda session, session_id, artifacts: selected_artifacts(
                 session, session_id, artifacts
             ),
-            resolve_primary_source=lambda session, session_id: resolve_primary_source(
+            resolve_primary_source=lambda session, session_id: _workflow_primary_source(
                 session, session_id
             ),
             attached_source_artifact_ids=lambda session, session_id: _attached_source_artifact_ids(
@@ -856,58 +883,108 @@ class WorkflowService:
             resource_keys=list(resolved.resource_keys),
         )
 
-    def decide_video_tail(self, job_id: str, action: str) -> Job:
-        """Stop, or continue the captured export after its duration warning.
+    def run_stage_for_user(
+        self, context: AccessContext, session_id: str, stage_key: str,
+        settings: dict[str, Any] | None = None,
+    ) -> Job:
+        """Resolve before the writer, then recheck current RUN at enqueue."""
+        if type(context) is not AccessContext:
+            raise TypeError("An access context is required.")
+        resolved = self.resolve_stage(
+            session_id, stage_key, settings, access_context=context,
+        )
+        with self.database.immediate_session() as session:
+            require_session_access(session, context, session_id, ProjectAction.RUN)
+            with execution_actor_scope(context.actor):
+                if resolved.job_kind == "text.optimize_tts":
+                    from .access.source_preparation_policy import require_speech_optimization_access
 
-        The decision and continuation are committed together, so repeated clicks
-        cannot enqueue duplicate exports or pick up subsequently edited settings.
-        """
-        if action not in ("stop", "extend"):
-            raise ValueError("Choose stop or extend for the video duration warning.")
+                    require_speech_optimization_access(
+                        session,
+                        session_id,
+                        str(resolved.payload.get("source_artifact_id") or ""),
+                        payload=resolved.payload,
+                    )
+                return self.jobs.enqueue_in_session(
+                    session, resolved.job_kind, resolved.payload, session_id=session_id,
+                    resource_keys=list(resolved.resource_keys),
+                )
+
+    def decide_video_tail(self, job_id: str, action: str) -> Job:
+        """Trusted internal decision; HTTP callers use the required-context entry."""
         with self.database.immediate_session() as session:
             previous = session.get(Job, job_id)
             if previous is None:
                 raise KeyError(job_id)
-            if (
-                previous.kind not in {"export.create", "export.variant"}
-                or previous.status != "failed"
-                or previous.error_code != "VideoTailExtensionRequired"
-            ):
-                raise ValueError("This export is not waiting for a video duration decision.")
-            result = dict(previous.result_json or {})
-            decision = result.get("video_tail_decision")
-            if decision and decision != action:
-                raise ValueError("This video duration warning has already been handled.")
-            continued_id = result.get("continuation_job_id")
-            if continued_id:
-                continued = session.get(Job, continued_id)
-                if continued is None:
-                    raise ValueError("The continued export is no longer available.")
-                session.expunge(continued)
-                return continued
-            result["video_tail_decision"] = action
-            if action == "stop":
-                previous.result_json = result
-                session.flush()
-                session.expunge(previous)
-                return previous
-            payload = deepcopy(previous.payload_json or {})
-            payload.setdefault("settings", {})["video_tail_extension_policy"] = "extend"
-            snapshot = payload.get("resolved_settings_snapshot")
-            if isinstance(snapshot, dict):
-                snapshot.setdefault("output", {})["video_tail_extension_policy"] = "extend"
-            continued = self.jobs.enqueue_in_session(
-                session,
-                previous.kind,
-                payload,
-                session_id=previous.session_id,
-                resource_keys=list(previous.resource_keys_json or []),
+            return self._decide_video_tail_in_session(session, previous, action)
+
+    def decide_video_tail_for_user(self, context: AccessContext, job_id: str, action: str) -> Job:
+        """Recheck RUN in the actual writer before state or continuation replay."""
+        if type(context) is not AccessContext:
+            raise TypeError("An access context is required.")
+        with self.database.immediate_session() as session, execution_actor_scope(context.actor):
+            previous = require_job_access(session, context, job_id, JobAction.RUN)
+            if previous.project_id is None or previous.session_id is None:
+                raise JobNotFound()
+            return self._decide_video_tail_in_session(session, previous, action, context=context)
+
+    def _decide_video_tail_in_session(
+        self, session: Session, previous: Job, action: str, *, context: AccessContext | None = None,
+    ) -> Job:
+        if action not in ("stop", "extend"):
+            raise ValueError("Choose stop or extend for the video duration warning.")
+        if (
+            previous.kind not in {"export.create", "export.variant"}
+            or previous.status != "failed"
+            or previous.error_code != "VideoTailExtensionRequired"
+        ):
+            raise ValueError("This export is not waiting for a video duration decision.")
+        owner = job_ownership(session, previous)
+        result = dict(previous.result_json or {})
+        decision = result.get("video_tail_decision")
+        if decision and decision != action:
+            raise ValueError("This video duration warning has already been handled.")
+        continued_id = result.get("continuation_job_id")
+        if continued_id:
+            continued = (
+                require_job_access(session, context, continued_id, JobAction.RUN)
+                if context is not None else session.get(Job, continued_id)
             )
-            result["continuation_job_id"] = continued.id
-            previous.result_json = result
-            session.flush()
+            if continued is None:
+                raise ValueError("The continued export is no longer available.")
+            if (
+                job_ownership(session, continued) != owner
+                or continued.kind != previous.kind
+                or continued.session_id != previous.session_id
+            ):
+                raise ValueError("The continued export belongs to another project or session.")
             session.expunge(continued)
             return continued
+        result["video_tail_decision"] = action
+        if action == "stop":
+            previous.result_json = result
+            session.flush()
+            session.expunge(previous)
+            return previous
+        payload = deepcopy(previous.payload_json or {})
+        payload.setdefault("settings", {})["video_tail_extension_policy"] = "extend"
+        snapshot = payload.get("resolved_settings_snapshot")
+        if isinstance(snapshot, dict):
+            snapshot.setdefault("output", {})["video_tail_extension_policy"] = "extend"
+        continued = self.jobs.enqueue_in_session(
+            session,
+            previous.kind,
+            payload,
+            session_id=previous.session_id,
+            workspace_id=owner.workspace_id,
+            project_id=owner.project_id,
+            resource_keys=list(previous.resource_keys_json or []),
+        )
+        result["continuation_job_id"] = continued.id
+        previous.result_json = result
+        session.flush()
+        session.expunge(continued)
+        return continued
 
     @staticmethod
     def _resource_keys(
@@ -922,15 +999,32 @@ class WorkflowService:
         } or (stage_key == "clean_source" and bool(settings.get("agentic", False))):
             keys.append("service:llm")
         if stage_key == "generate_audio":
-            service = str(settings.get("service") or "tts").lower().replace(" ", "_")
-            keys.append(f"service:tts:{service}")
+            return list(dict.fromkeys([*keys, *tts_resource_keys(settings)]))
         if stage_key == "transcribe":
             from .stt_resources import stt_resource_keys
 
-            return keys + stt_resource_keys(settings)
+            return list(dict.fromkeys([*keys, *stt_resource_keys(settings)]))
         compute = str(
             settings.get("compute_backend") or settings.get("device") or "auto"
-        ).lower()
-        if compute in {"cuda", "vulkan", "metal", "gpu"}:
-            keys.append(f"gpu:{compute}")
-        return keys
+        ).strip().lower()
+        if stage_key != "export" and compute in {
+            "cuda",
+            "vulkan",
+            "metal",
+            "gpu",
+            "mps",
+            "rocm",
+            "hip",
+            "dml",
+        }:
+            keys.append("gpu:default")
+        if stage_key == "export":
+            export_mode = str(settings.get("export_mode") or "media").strip().lower()
+            hardware_encoder = str(
+                settings.get("burn_video_encoder") or "libx264"
+            ).strip().lower()
+            if export_mode in {"media", "video_book"} and hardware_encoder.endswith(
+                ("_nvenc", "_qsv", "_vaapi", "_amf", "_videotoolbox")
+            ):
+                keys.append("gpu:default")
+        return list(dict.fromkeys(keys))

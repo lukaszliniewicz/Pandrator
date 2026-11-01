@@ -188,12 +188,12 @@ Wrong.
             "original.wav",
             ffmpeg_executable="ffmpeg-bin",
         )
-        self.assertEqual(extract[:4], ["ffmpeg-bin", "-y", "-i", "video.mp4"])
+        self.assertEqual(extract[:8], ["ffmpeg-bin", "-y", *audio_sync.LOCAL_MEDIA_INPUT_OPTIONS, "-i", "video.mp4"])
         self.assertEqual(extract[-1], "original.wav")
         self.assertIn("pcm_s16le", extract)
 
         analyze = audio_sync.build_volume_analysis_command("dub.wav", ffmpeg_executable="ffmpeg-bin")
-        self.assertEqual(analyze[:4], ["ffmpeg-bin", "-y", "-i", "dub.wav"])
+        self.assertEqual(analyze[:8], ["ffmpeg-bin", "-y", *audio_sync.LOCAL_MEDIA_INPUT_OPTIONS, "-i", "dub.wav"])
         self.assertIn("volumedetect", analyze)
         self.assertEqual(analyze[-2:], ["null", os.devnull])
 
@@ -863,11 +863,12 @@ Wrong.
         self.assertTrue(result.amplified_dubbed_audio_path.endswith("amplified_dubbed_audio.wav"))
         self.assertTrue(result.mixed_audio_path.endswith("mixed_audio.wav"))
         self.assertEqual(len(commands), 4)
-        self.assertEqual(commands[0][:4], ["ffmpeg-bin", "-y", "-i", "video.mp4"])
+        prefix = ["ffmpeg-bin", "-y", *audio_sync.LOCAL_MEDIA_INPUT_OPTIONS, "-i", "video.mp4"]
+        self.assertEqual(commands[0][:len(prefix)], prefix)
         self.assertTrue(any("loudnorm=I=-16.0" in str(item) for item in commands[1]))
         self.assertTrue(any("sidechaincompress" in str(item) for item in commands[2]))
         self.assertIn("mixed_audio.wav", commands[2][-1])
-        self.assertEqual(commands[3][:4], ["ffmpeg-bin", "-y", "-i", "video.mp4"])
+        self.assertEqual(commands[3][:len(prefix)], prefix)
         self.assertTrue(any(str(item).endswith("mixed_audio.wav") for item in commands[3]))
         self.assertTrue(str(commands[3][-1]).endswith("final_output.mp4"))
 

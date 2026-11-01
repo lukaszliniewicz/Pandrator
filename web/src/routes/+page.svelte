@@ -37,6 +37,7 @@
     detectedSpeechComponentCount(appState.capabilities)
   );
   onMount(async () => {
+    if (!appState.isAdministrator) return;
     if (sessionStorage.getItem('pandrator-guided-creation-shown')) return;
     try {
       const setting = await settingApi.get<WebPreferences>('web.preferences');
@@ -175,7 +176,7 @@
             <FolderClock size={18} />
             <div>
               <strong>Projects</strong><span
-                >{appState.sessions.length} available workspaces</span
+                >{appState.sessions.length} available projects</span
               >
             </div>
           </div>

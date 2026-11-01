@@ -114,6 +114,8 @@ async function mockVoices(page: Page) {
       json: {
         items,
         total: items.length,
+        workspace_id: params.get('workspace_id') || 'voice-fixture-workspace',
+        can_edit: true,
         next_cursor: null,
         facets: { language: { en: 2 } },
         taxonomy: {
@@ -205,10 +207,16 @@ test('canceling voice design keeps the brief and completed candidates', async ({
   await login(page);
   let submitted = 0;
   let canceled = false;
-  await page.route('**/api/v1/services/tts/audio_cpp/preview', (route) => {
+  await page.route('**/api/v1/services/tts/audio_cpp/preview**', (route) => {
     submitted++;
     return route.fulfill({
-      json: { id: `design-${submitted}`, status: 'queued' }
+      json: {
+        id: `design-${submitted}`,
+        status: 'queued',
+        workspace_id: new URL(route.request().url()).searchParams.get(
+          'workspace_id'
+        )
+      }
     });
   });
   await page.route('**/api/v1/jobs/design-1', (route) =>
@@ -371,8 +379,11 @@ test('comparison has its own renderer, reference playback, and per-voice results
     exact: true
   });
   await expect(
-    comparison.getByText('Existing reference · original recording')
+    comparison.getByText('Saved reference', { exact: true })
   ).toHaveCount(2);
+  await comparison
+    .getByRole('button', { name: 'Audition settings', exact: true })
+    .click();
   await comparison.getByLabel('Audition service').selectOption('audio_cpp');
   await comparison.getByLabel('Audition model').selectOption('clone-model');
   await expect(
@@ -381,9 +392,13 @@ test('comparison has its own renderer, reference playback, and per-voice results
   let calls = 0;
   let inheritDirections = true;
   await page.route(
-    '**/api/v1/services/tts/audio_cpp/preview',
+    '**/api/v1/services/tts/audio_cpp/preview**',
     async (route) => {
       const body = route.request().postDataJSON();
+      const workspace = new URL(route.request().url()).searchParams.get(
+        'workspace_id'
+      );
+      expect(workspace).toBeTruthy();
       expect(body.model).toBe('clone-model');
       if (inheritDirections)
         expect(body).not.toHaveProperty('generation_prompt');
@@ -403,6 +418,7 @@ test('comparison has its own renderer, reference playback, and per-voice results
         json: {
           id: 'audition-success',
           status: 'queued',
+          workspace_id: workspace,
           preview: {
             directions: {
               source: inheritDirections ? 'inherited' : 'cleared',
@@ -841,13 +857,22 @@ test('queued auditions explain the blocking generation and update when it clears
     name: 'Compare voices',
     exact: true
   });
+  await comparison
+    .getByRole('button', { name: 'Audition settings', exact: true })
+    .click();
   await comparison.getByLabel('Audition service').selectOption('audio_cpp');
   await comparison.getByLabel('Audition model').selectOption('clone-model');
   let state = 'queued';
   let submitted = 0;
-  await page.route('**/api/v1/services/tts/audio_cpp/preview', (route) => {
+  await page.route('**/api/v1/services/tts/audio_cpp/preview**', (route) => {
     submitted++;
-    return route.fulfill({ json: { id: 'audition-wait', status: 'queued' } });
+    const workspace = new URL(route.request().url()).searchParams.get(
+      'workspace_id'
+    );
+    expect(workspace).toBeTruthy();
+    return route.fulfill({
+      json: { id: 'audition-wait', status: 'queued', workspace_id: workspace }
+    });
   });
   await page.route('**/api/v1/jobs/audition-wait', (route) =>
     route.fulfill({

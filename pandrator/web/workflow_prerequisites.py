@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
@@ -35,9 +36,13 @@ class WorkflowPrerequisiteService:
         self.paths = paths
 
     def _latest_stage_input(
-        self, session_id: str, prerequisite_roles: tuple[str, ...]
+        self, session_id: str, prerequisite_roles: tuple[str, ...], *,
+        authorization_guard: Callable[[Session], None] | None = None,
+        authorize_input: Callable[[Session, str], None] | None = None,
     ) -> Artifact | None:
         with self.database.session() as session:
+            if authorization_guard is not None:
+                authorization_guard(session)
             candidates = list(
                 session.scalars(
                     select(Artifact)
@@ -53,7 +58,11 @@ class WorkflowPrerequisiteService:
             for item in selected.values():
                 if item.role in prerequisite_roles:
                     by_role.setdefault(item.role, item)
-            primary_source = resolve_primary_source(session, session_id).artifact
+            primary_source = (
+                resolve_primary_source(session, session_id, authorize_input=authorize_input)
+                if authorize_input is not None
+                else resolve_primary_source(session, session_id)
+            ).artifact
             if primary_source and primary_source.role in prerequisite_roles:
                 by_role.setdefault(primary_source.role, primary_source)
             for item in candidates:
@@ -64,7 +73,11 @@ class WorkflowPrerequisiteService:
                 session.expunge(result)
             return result
 
-    def _persisted_translation_input(self, session_id: str, artifact_id: str) -> Artifact | None:
+    def _persisted_translation_input(
+        self, session_id: str, artifact_id: str, *,
+        authorization_guard: Callable[[Session], None] | None = None,
+        authorize_input: Callable[[Session, str], None] | None = None,
+    ) -> Artifact | None:
         """Return a safe persisted translation input, never a foreign artifact.
 
         Forked sessions may use a source attached from the source library, but
@@ -76,6 +89,10 @@ class WorkflowPrerequisiteService:
         if not artifact_id:
             return None
         with self.database.session() as session:
+            if authorization_guard is not None:
+                authorization_guard(session)
+            if authorize_input is not None:
+                authorize_input(session, artifact_id)
             candidate = session.get(Artifact, artifact_id)
             attached_ids = set(
                 session.scalars(
@@ -179,7 +196,11 @@ class WorkflowPrerequisiteService:
         return required
 
     def _current_stage_fingerprint(
-        self, stage_key: str, settings: dict[str, Any]
+        self,
+        stage_key: str,
+        settings: dict[str, Any],
+        *,
+        session_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Fingerprint of the settings a stage would run with right now.
 
@@ -197,7 +218,9 @@ class WorkflowPrerequisiteService:
             return _stage_settings_fingerprint(stage_key, settings)
         stage_alias = "correction" if stage_key == "correct" else "translation"
         try:
-            hydrated = self._with_database_llm_settings(dict(settings), stage_alias)
+            hydrated = self._with_database_llm_settings(
+                dict(settings), stage_alias, session_id=session_id
+            )
         except ValueError:
             return None
         return _stage_settings_fingerprint(stage_key, hydrated)
@@ -239,7 +262,9 @@ class WorkflowPrerequisiteService:
         if not raw_settings_match and stage_key in {"correct", "translate"}:
             stage_alias = "correction" if stage_key == "correct" else "translation"
             try:
-                hydrated = self._with_database_llm_settings(dict(settings), stage_alias)
+                hydrated = self._with_database_llm_settings(
+                    dict(settings), stage_alias, session_id=session_id
+                )
             except ValueError:
                 hydrated = None
             if hydrated is not None:
@@ -264,7 +289,9 @@ class WorkflowPrerequisiteService:
         settings_match = fallback
         settings_reason = None
         if stage_key in {"correct", "translate"} and isinstance(stored, dict) and stored:
-            current = self._current_stage_fingerprint(stage_key, settings)
+            current = self._current_stage_fingerprint(
+                stage_key, settings, session_id=session_id
+            )
             if current is None:
                 # Keep the current artifact if the old provider configuration
                 # cannot be reconstructed. This is the continuation behavior
@@ -459,7 +486,13 @@ class WorkflowPrerequisiteService:
             session.expunge(record)
             return record
 
-    def _with_database_llm_settings(self, settings: dict[str, Any], stage: str) -> dict[str, Any]:
+    def _with_database_llm_settings(
+        self,
+        settings: dict[str, Any],
+        stage: str,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         from .provider_settings import build_llm_settings
 
         aliases = {
@@ -477,6 +510,7 @@ class WorkflowPrerequisiteService:
             self.paths,
             requested_model=requested,
             request_timeout_seconds=int(settings.get("request_timeout_seconds") or 600),
+            session_id=session_id,
         )
         hydrated = {
             **settings,
@@ -484,5 +518,8 @@ class WorkflowPrerequisiteService:
             "llm_default_model": llm_settings.default_model,
             "request_timeout_seconds": llm_settings.request_timeout_seconds,
         }
-        hydrated[aliases[stage][0]] = requested or resolved_model
+        provider_binding_id = str(getattr(llm_settings, "provider_binding_id", "") or "").strip()
+        hydrated[aliases[stage][0]] = (
+            resolved_model if provider_binding_id else requested or resolved_model
+        )
         return hydrated

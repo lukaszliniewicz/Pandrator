@@ -28,6 +28,7 @@ from pandrator.web.models import (
     GenerationRun,
     OutputAssembly,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import output_assembly_settings_hash
@@ -92,8 +93,11 @@ class ExportAssemblyPlanSelectionTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def _artifact(self, session, name):
+        ownership = resolve_artifact_ownership(session, session_id=self.record.id)
         artifact = Artifact(
             session_id=self.record.id,
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             kind="audio",
             role="assembled_audio",
             relative_path=name,

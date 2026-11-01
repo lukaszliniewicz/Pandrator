@@ -155,7 +155,7 @@ def test_resolved_capability_cache_is_input_complete_and_mutation_isolated(monke
     first["notes"].append("caller mutation")
     assert resolve_capabilities(base, _service_config_cache=cache) == resolve_capabilities(base)
     assert "caller mutation" not in resolve_capabilities(base, _service_config_cache=cache)["notes"]
-    assert calls == 2  # one cached computation and one uncached comparison
+    assert calls == 3  # cached endpoint/metadata lookups plus uncached comparison
 
     variants = [
         {**base, "model": "unrecognized"},
@@ -165,7 +165,7 @@ def test_resolved_capability_cache_is_input_complete_and_mutation_isolated(monke
     for variant in variants:
         before = calls
         cached = resolve_capabilities(variant, _service_config_cache=cache)
-        assert calls == before + 1
+        assert calls == before + 2
         assert cached == resolve_capabilities(variant)
         assert resolve_capabilities(variant, _service_config_cache=cache) == cached
     assert resolve_capabilities(variants[1], _service_config_cache=cache)["instructions"] == "none"

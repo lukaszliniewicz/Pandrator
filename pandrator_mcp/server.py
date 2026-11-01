@@ -96,7 +96,7 @@ from .schemas.delegation import (
     DelegationContextCapsuleInput,
     native_execution_policy_json_schema,
 )
-from .schemas.e2e import AudioCppCatalogueInput
+from .schemas.e2e import AudioCppCatalogueInput, TtsCatalogRefreshInput
 from .schemas.subtitle_evidence import GetSubtitleEvidenceRoutesInput
 from .schemas.voice_lifecycle import VoiceCatalogField
 from .schemas.workflow_inputs import (
@@ -145,7 +145,7 @@ from .tools import (
     tts_catalog,
     voice_catalog,
 )
-from .tools.e2e import audio_cpp_catalogue
+from .tools.e2e import audio_cpp_catalogue, refresh_tts_catalog
 from .tools.subtitle_evidence import get_subtitle_evidence_routes
 from .tools.workflow_inputs import (
     configure_speech_optimization,
@@ -317,7 +317,9 @@ def build_server(runtime: McpRuntime):
         extensions=[create_argument_validation_extension(registered_tool_schema, _tool_failure)],
         instructions=(
             "Use only the configured target and approved roots. Read recommend_next_steps "
-            "for unfamiliar workflows; follow next_actions."
+            "for unfamiliar workflows; follow next_actions. In collaboration, use each "
+            "person's enrolled identity and approved workspace IDs. Read the collaboration "
+            "guide for account roles, resource approval and scopes; never share an Owner bearer."
         ),
     )
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -347,12 +349,16 @@ def build_server(runtime: McpRuntime):
     )
 
     from .registrations.generation_recast import register_generation_recast_tools
+    from .tools.accounts import register_account_tools
     from .tools.audiobook import register_audiobook_tools
     from .tools.comparison_exports import register_comparison_export_tools
     from .tools.generation_controls import register_generation_controls_tools
     from .tools.generation_operations import register_generation_operation_tools
     from .tools.performance import register_performance_tools
+    from .tools.project_copy import register_project_copy_tools
+    from .tools.project_sharing import register_project_sharing_tools
     from .tools.pronunciations import register_pronunciation_tools
+    from .tools.public_links import register_public_link_tools
     from .tools.session_branches import register_session_branch_tools
     from .tools.session_purge import register_session_purge_tools
     from .tools.sounds import register_sound_tools
@@ -360,9 +366,45 @@ def build_server(runtime: McpRuntime):
     from .tools.voice_lifecycle import register_voice_lifecycle_tools
     from .tools.voice_metadata import register_voice_metadata_tools
     from .tools.voice_setup import register_voice_setup_tools
+    from .tools.workspaces import register_workspace_tools
 
     register_generation_operation_tools(server, runtime, _call_with_validated_input, _response,
                                         read_only=read_only)
+    register_workspace_tools(server, runtime, _call_with_validated_input, _response, read_only=read_only, write_action=write_action)
+    register_project_sharing_tools(
+        server,
+        runtime,
+        _call_with_validated_input,
+        _response,
+        read_only=read_only,
+        write_action=write_action,
+    )
+    register_public_link_tools(
+        server,
+        runtime,
+        _call_with_validated_input,
+        _response,
+        read_only=read_only,
+        write_action=write_action,
+    )
+    register_project_copy_tools(
+        server,
+        runtime,
+        _call_with_validated_input,
+        _response,
+        read_only=read_only,
+        write_action=write_action,
+    )
+    register_account_tools(
+        server,
+        runtime,
+        _call_with_validated_input,
+        _response,
+        read_only=read_only,
+        write_action=write_action,
+        execute_action=execute_action,
+        destructive_action=destructive_action,
+    )
     register_pronunciation_tools(server, runtime, _call_with_validated_input, _response,
                                  read_only=read_only, revisioned_write_action=revisioned_write_action,
                                  destructive_action=destructive_action)
@@ -606,10 +648,14 @@ def build_server(runtime: McpRuntime):
     )
 
     @server.tool(name="pandrator_get_subtitle_evidence_routes", title="Inspect available audio evidence engines", annotations=read_only)
-    def subtitle_evidence_routes_tool(language: Annotated[NativeNullableString, Field(min_length=2, max_length=40)] = None, include_languages: bool = False) -> dict[str, Any]:
-        """Read the live shared engine catalogue; language arrays are opt-in."""
+    def subtitle_evidence_routes_tool(language: Annotated[NativeNullableString, Field(min_length=2, max_length=40)] = None, include_languages: bool = False, session_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None) -> dict[str, Any]:
+        """Inspect evidence engines; pass session_id for project workspace readiness and authorized audio models.
+
+        Without session_id, collaboration mode returns static engine descriptions.
+        Language arrays are opt-in.
+        """
         return _call_with_validated_input(get_subtitle_evidence_routes, runtime, GetSubtitleEvidenceRoutesInput,
-            {"language": language, "include_languages": include_languages})
+            {"language": language, "include_languages": include_languages, "session_id": session_id})
 
     register_media_edit_tools(
         server,
@@ -825,13 +871,15 @@ def build_server(runtime: McpRuntime):
         kind: Annotated[NativeNullableString, Field(max_length=80)] = None,
         mime_type: Annotated[NativeNullableString, Field(max_length=160)] = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        workspace_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
     ) -> dict[str, Any]:
-        """List bounded source metadata without paths or source contents."""
+        """List sources in a workspace, defaulting to your personal workspace."""
 
         return _call_with_input_factory(
             list_sources,
             runtime,
             lambda: ListSourcesInput(
+                workspace_id=workspace_id,
                 state=state,
                 query=query,
                 kind=kind,
@@ -859,14 +907,19 @@ def build_server(runtime: McpRuntime):
         ],
         filename: Annotated[str, Field(min_length=1, max_length=255)] = "inline.txt",
         role: Literal["primary", "reference", "transcript", "media"] = "primary",
+        workspace_id: Annotated[NativeNullableString, Field(
+            min_length=1, max_length=80,
+            description="Source library workspace, matching the target project. Omit for a personal project.",
+        )] = None,
     ) -> dict[str, Any]:
-        """Store supplied UTF-8 text as a managed source and attach it once."""
+        """Create text in the personal or selected team source library and attach it once."""
 
         return _call_with_input_factory(
             create_text_source,
             runtime,
             lambda: CreateTextSourceInput(
                 session_id=session_id,
+                workspace_id=workspace_id,
                 text=text,
                 filename=filename,
                 role=role,
@@ -894,14 +947,19 @@ def build_server(runtime: McpRuntime):
             ),
         ],
         role: Literal["primary", "reference", "transcript", "media"] = "primary",
+        workspace_id: Annotated[NativeNullableString, Field(
+            min_length=1, max_length=80,
+            description="Source library workspace, matching the target project. Omit for a personal project.",
+        )] = None,
     ) -> dict[str, Any]:
-        """Stream one approved local file via resumable upload and attach it once."""
+        """Import an approved local file to the personal or selected team library and attach it once."""
 
         return _call_with_input_factory(
             import_local_source,
             runtime,
             lambda: ImportLocalSourceInput(
                 session_id=session_id,
+                workspace_id=workspace_id,
                 root=root,
                 relative_path=relative_path,
                 role=role,
@@ -996,8 +1054,9 @@ def build_server(runtime: McpRuntime):
         ] = None,
         text: Annotated[NativeNullableString, Field(max_length=16_000)] = None,
         note: Annotated[str, Field(max_length=4_000)] = "",
+        expected_revision: Annotated[NativeNullableString, Field(pattern=r"^[0-9a-f]{64}$")] = None,
     ) -> dict[str, Any]:
-        """Record the explicit editorial disposition of an evidence request."""
+        """Record an evidence decision. Use the latest record revision when collaboration is enabled."""
 
         return _call_with_input_factory(
             resolve_subtitle_evidence,
@@ -1009,6 +1068,7 @@ def build_server(runtime: McpRuntime):
                 candidate_id=candidate_id,
                 text=text,
                 note=note,
+                expected_revision=expected_revision,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -1142,8 +1202,8 @@ def build_server(runtime: McpRuntime):
         export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media",
         audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
         subtitle_mode: Literal["none", "soft", "burned"] = "none",
-        subtitle_text_source: Literal["current", "generation_run"] = "current",
-        subtitle_selection: Literal["source", "translation", "dual"] = "translation",
+        subtitle_text_source: Literal["current", "generation_run", "selected_artifact"] = "current",
+        subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None,
         subtitle_format: Literal["srt", "vtt"] = "srt",
         execution_mode: Literal["serial", "parallel"] = "serial",
         max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
@@ -1183,8 +1243,8 @@ def build_server(runtime: McpRuntime):
         export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media",
         audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
         subtitle_mode: Literal["none", "soft", "burned"] = "none",
-        subtitle_text_source: Literal["current", "generation_run"] = "current",
-        subtitle_selection: Literal["source", "translation", "dual"] = "translation",
+        subtitle_text_source: Literal["current", "generation_run", "selected_artifact"] = "current",
+        subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None,
         subtitle_format: Literal["srt", "vtt"] = "srt",
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
         response_mode: Literal["standard", "structured"] = "standard",
@@ -1284,13 +1344,14 @@ def build_server(runtime: McpRuntime):
     )
     def providers_tool(
         include_disabled: bool = True,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
-        """Inspect providers without credential references or values."""
+        """Inspect approved providers in a workspace; omitted scope uses your personal workspace."""
 
         return _call_with_input_factory(
             provider_status,
             runtime,
-            lambda: ProviderStatusInput(include_disabled=include_disabled),
+            lambda: ProviderStatusInput(include_disabled=include_disabled, workspace_id=workspace_id),
         )
 
     @server.tool(
@@ -1300,6 +1361,8 @@ def build_server(runtime: McpRuntime):
     )
     def tts_catalog_tool(
         service_id: Annotated[NativeNullableString, Field(max_length=160)] = None,
+        workspace_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
+        session_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
         include_compatibility: bool = False,
         model: Annotated[NativeNullableString, Field(max_length=300)] = None,
         query: Annotated[NativeNullableString, Field(max_length=160)] = None,
@@ -1309,13 +1372,15 @@ def build_server(runtime: McpRuntime):
         refresh: bool = False,
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
-        """Resolve current TTS choices without exposing credentials or endpoints."""
+        """Inspect current TTS choices without refreshing service connections."""
 
         envelope = _call_with_input_factory(
             tts_catalog,
             runtime,
             lambda: TtsCatalogInput(
                 service_id=service_id,
+                workspace_id=workspace_id,
+                session_id=session_id,
                 include_compatibility=include_compatibility,
                 model=model,
                 query=query,
@@ -1324,6 +1389,26 @@ def build_server(runtime: McpRuntime):
                 include_managed_voices=include_managed_voices,
                 refresh=refresh,
             ),
+        )
+        return _response(envelope, response_mode)
+
+    @server.tool(
+        name="pandrator_refresh_tts_catalog",
+        title="Refresh TTS connections",
+        annotations=execute_action,
+    )
+    def tts_catalog_refresh_tool(
+        workspace_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
+        service_id: Annotated[NativeNullableString, Field(min_length=1, max_length=160)] = None,
+        response_mode: Literal["standard", "structured"] = "standard",
+    ) -> dict[str, Any]:
+        """Probe configured TTS connections for health and catalogues in a workspace."""
+
+        envelope = _call_with_validated_input(
+            refresh_tts_catalog,
+            runtime,
+            TtsCatalogRefreshInput,
+            {"workspace_id": workspace_id, "service_id": service_id},
         )
         return _response(envelope, response_mode)
 
@@ -1431,6 +1516,8 @@ def build_server(runtime: McpRuntime):
         annotations=read_only,
     )
     def voices_tool(
+        workspace_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
+        session_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
         query: Annotated[str, Field(max_length=300)] = "",
         language: Annotated[str, Field(max_length=40)] = "",
         accent: Annotated[str, Field(max_length=80)] = "",
@@ -1461,6 +1548,8 @@ def build_server(runtime: McpRuntime):
             voice_catalog,
             runtime,
             lambda: VoiceCatalogInput(
+                workspace_id=workspace_id,
+                session_id=session_id,
                 query=query,
                 language=language,
                 accent=accent,

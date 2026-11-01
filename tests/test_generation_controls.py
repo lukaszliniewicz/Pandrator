@@ -13,6 +13,7 @@ from pandrator.web.generation_controls import (
     save_generation_controls,
 )
 from pandrator.web.models import KnowledgeLedger, Voice
+from pandrator.web.projects.identity import session_project
 from pandrator.web.sessions import SessionService
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -194,7 +195,13 @@ class GenerationControlsTests(unittest.TestCase):
                     expected_revision=0,
                     cast={"narrator": {"voice_id": "voice-missing"}},
                 )
-            session.add(Voice(id="voice-known", name="Known"))
+            session.add(
+                Voice(
+                    workspace_id=session_project(session, self.record.id).workspace_id,
+                    id="voice-known",
+                    name="Known",
+                )
+            )
             valid = save_generation_controls(
                 session,
                 self.record.id,

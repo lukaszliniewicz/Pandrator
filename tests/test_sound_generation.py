@@ -173,7 +173,10 @@ def test_strict_request_and_seeded_admission_cache_and_resource_keys(domain, mon
         assert job.session_id is None
         assert job.max_attempts == 1
         assert job.resource_keys_json == ["service:tts:audio_cpp"]
-        assert set(job.payload_json) == {"candidate_id", "request", "runtime_identity"}
+        assert set(job.payload_json) == {
+            "candidate_id", "request", "runtime_identity", "workspace_id"
+        }
+        assert job.payload_json["workspace_id"] == candidate.workspace_id
         assert job.payload_json["request"]["num_inference_steps"] == 8
         assert job.payload_json["request"]["guidance_scale"] == 1.0
         assert candidate.fingerprint is not None and len(candidate.fingerprint) == 64
@@ -327,7 +330,10 @@ def test_default_candidate_count_preserves_single_candidate_receipt_and_payload(
         job = session.get(Job, receipt["job_id"])
         candidate = session.get(SoundVariant, receipt["candidate_id"])
         assert job is not None and candidate is not None
-        assert set(job.payload_json) == {"candidate_id", "request", "runtime_identity"}
+        assert set(job.payload_json) == {
+            "candidate_id", "request", "runtime_identity", "workspace_id"
+        }
+        assert job.payload_json["workspace_id"] == candidate.workspace_id
         assert "candidate_count" not in job.payload_json["request"]
         assert "candidate_count" not in candidate.provenance_json
 

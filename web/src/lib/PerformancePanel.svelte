@@ -1,13 +1,16 @@
 <script lang="ts">
-  import { onDestroy, onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack, tick } from 'svelte';
   import { beforeNavigate, goto } from '$app/navigation';
   import { apiJson } from './api';
   import { sessionApi } from './domain-api';
   import type { SettingsPayload } from './api-models';
   import { errorMessage } from './errors';
-  import { modalFocus } from './modal-focus';
+  import { modalDialog } from './modal-dialog';
+  import WorkspacePane from './WorkspacePane.svelte';
+  let blocksOpen = $state(false);
   import { invalidationBus, invalidates } from './invalidation';
   import GenerationCastPanel from './GenerationCastPanel.svelte';
+  import ParameterLabel from './ParameterLabel.svelte';
   import type { Character, CastDraftController } from './generation-controls';
   import {
     controlFields,
@@ -16,6 +19,8 @@
     clearMarkupDirections,
     markupSummary,
     markSpokenRange,
+    directSpokenRange,
+    annotatedTextRuns,
     readMarkup,
     type ControlField
   } from './speech-markup-editor';
@@ -124,6 +129,7 @@
     sessionId,
     revisionId,
     initialOpen = false,
+    workspace = false,
     initialSegmentId = '',
     initialOrdinal = 0,
     showCasting = true,
@@ -134,6 +140,7 @@
     sessionId: string;
     revisionId: string;
     initialOpen?: boolean;
+    workspace?: boolean;
     initialSegmentId?: string;
     initialOrdinal?: number;
     showCasting?: boolean;
@@ -157,7 +164,9 @@
     casting = $state(false),
     vocalizations = $state(false),
     settingsBaseline = $state('');
-  let analysisPurpose = $state<AnalysisPurpose>('delivery');
+  let analysisPurpose = $state<AnalysisPurpose>(
+    untrack(() => (workspace ? 'speakers' : 'delivery'))
+  );
   let analysisPreferences = $state<
     Record<AnalysisPurpose, AnalysisPreferences>
   >({
@@ -187,6 +196,12 @@
   let textArea = $state<HTMLTextAreaElement>(),
     selectionStart = $state(0),
     selectionEnd = $state(0);
+  let defaultsOpen = $state(untrack(() => !workspace));
+  let analysisOpen = $state(false);
+  let analysisSection = $state<HTMLDetailsElement>();
+  let phraseDirection = $state('');
+  let selectionHistory = $state<string[]>([]);
+  const textRuns = $derived(annotatedTextRuns(xml));
   let navigation = $state<(() => void | Promise<void>) | null>(null),
     acceptMissing = $state(false);
   let routeNavigation = $state(false);
@@ -365,8 +380,14 @@
     advanced = false;
     selectionStart = 0;
     selectionEnd = 0;
+    phraseDirection = '';
+    selectionHistory = [];
   }
-  function navigate(next: () => void | Promise<void>) {
+  async function navigate(next: () => void | Promise<void>) {
+    if (blocksOpen && window.matchMedia('(max-width: 900px)').matches) {
+      blocksOpen = false;
+      await tick();
+    }
     routeNavigation = false;
     if (editorDirty) navigation = next;
     else void next();
@@ -511,6 +532,7 @@
     }
   }
   function setControl(field: ControlField, value: string) {
+    selectionHistory = [];
     try {
       if (xmlMode) xml = setMarkupControl(xml, field, value);
       else {
@@ -533,6 +555,7 @@
     }
   }
   function editAdvanced(value: string) {
+    selectionHistory = [];
     try {
       if (xmlMode) {
         xml = value;
@@ -594,7 +617,9 @@
         mode,
         purpose: copy
           ? (selected?.settings.purpose ?? 'delivery')
-          : analysisPurpose,
+          : mode === 'manual'
+            ? 'combined'
+            : analysisPurpose,
         annotation_format: copy
           ? (selected?.settings.annotation_format ?? 'pssml')
           : 'xml',
@@ -685,6 +710,7 @@
     }
   }
   function clearDirections() {
+    selectionHistory = [];
     if (xmlMode) xml = clearMarkupDirections(xml);
     else {
       draft = { decision: 'none', locked };
@@ -694,18 +720,71 @@
   }
   function markSelection() {
     try {
-      xml = markSpokenRange(
+      const updated = markSpokenRange(
         xml,
         selectionStart,
         selectionEnd,
         speaker,
         category
       );
+      selectionHistory = [...selectionHistory.slice(-19), xml];
+      xml = updated;
       parseError = '';
+      error = '';
     } catch (caught) {
       error = errorMessage(caught);
     }
   }
+  function directSelection() {
+    try {
+      const updated = directSpokenRange(
+        xml,
+        selectionStart,
+        selectionEnd,
+        phraseDirection
+      );
+      selectionHistory = [...selectionHistory.slice(-19), xml];
+      xml = updated;
+      phraseDirection = '';
+      parseError = '';
+      error = '';
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
+  }
+  function selectTextRun(start: number, end: number) {
+    if (!textArea) return;
+    selectionStart = start;
+    selectionEnd = end;
+    textArea.focus();
+    textArea.setSelectionRange(start, end);
+    updateSelection();
+  }
+  function updateSelection() {
+    selectionStart = textArea?.selectionStart ?? 0;
+    selectionEnd = textArea?.selectionEnd ?? 0;
+    const runs = textRuns.filter(
+      (run) => run.start < selectionEnd && run.end > selectionStart
+    );
+    if (runs.length && runs.every((run) => run.speaker === runs[0].speaker)) {
+      speaker = runs[0].speaker;
+      category = runs[0].category;
+    }
+  }
+  function namedSummary(summary: string) {
+    const character = characters.find((item) =>
+      summary.startsWith(`Speaker: ${item.id}`)
+    );
+    return character
+      ? summary.replace(
+          `Speaker: ${character.id}`,
+          `Speaker: ${character.display_name}`
+        )
+      : summary;
+  }
+  onMount(() => {
+    blocksOpen = window.matchMedia('(min-width: 901px)').matches;
+  });
 </script>
 
 <svelte:window
@@ -716,6 +795,7 @@
 />
 <details
   open={opened}
+  class:annotation-workspace={workspace}
   class="speech-controls mt-5 border-t border-[var(--line)] pt-5 sm:rounded-2xl sm:border sm:p-4"
   ontoggle={(event) => {
     opened = event.currentTarget.open;
@@ -727,252 +807,303 @@
       >Optional analysis and draft review</span
     ></summary
   >
-  <div class="mt-4 space-y-5">
+  <div class="panel-body mt-4 space-y-5">
     <p class="muted text-sm">
-      Add speakers and directions manually in <a
-        class="underline"
-        href={`/sessions/${encodeURIComponent(sessionId)}/generation?inspect=speech`}
-        >Generation’s speech inspector</a
-      >, or use optional AI analysis here. Keep accepted wording and segment
-      boundaries while directing delivery and assigning voices. {selected
-        ?.settings.workflow_kind === 'voiceover'
-        ? 'Voiceover parts share their segment’s timing window; fit is assessed after assembly.'
-        : 'For long-form narration, dialogue turns can flow without paragraph-length pauses.'}
+      {#if workspace}Select words in a block to label dialogue, choose a speaker
+        or direct a phrase. Save each block, then adopt the reviewed draft for
+        future audio. To change the spoken wording, open <a
+          class="underline"
+          href={`/sessions/${encodeURIComponent(sessionId)}/generation?inspect=speech`}
+          >Generation</a
+        >.
+      {:else}Add speakers and directions here, or open the <a
+          class="underline"
+          href={`/sessions/${encodeURIComponent(sessionId)}/speech`}
+          >annotation workspace</a
+        > for a larger editing view.{/if}
+      {selected?.settings.workflow_kind === 'voiceover'
+        ? ' Voiceover parts share their block’s timing window.'
+        : ''}
     </p>
     {#if error}<p class="text-sm text-red-700" role="alert">{error}</p>{/if}
     {#if message}<p class="muted text-sm" role="status">{message}</p>{/if}
-    {#if showCasting}<GenerationCastPanel
-        bind:this={castPanel}
-        {sessionId}
-        {service}
-        {model}
-        sessionVoice={String(stored?.effective.voice ?? '')}
-        {busy}
-        onchanged={(items) => {
-          characters = items;
-          preview = null;
-          onchanged?.();
-        }}
-      />{/if}
-    <fieldset disabled={blocked} class="space-y-3">
-      <legend class="mb-2 font-semibold">Generation defaults</legend>
-      <label class="block text-sm"
-        >General speech direction<textarea
-          class="input mt-1 w-full"
-          rows="2"
-          maxlength="4000"
-          bind:value={general}
-          placeholder="Natural, restrained narration."></textarea></label
+    {#snippet options()}
+      {#if showCasting}<GenerationCastPanel
+          bind:this={castPanel}
+          {sessionId}
+          {service}
+          {model}
+          sessionVoice={String(stored?.effective.voice ?? '')}
+          {busy}
+          onchanged={(items) => {
+            characters = items;
+            preview = null;
+            onchanged?.();
+          }}
+        />{/if}
+      <details
+        bind:open={defaultsOpen}
+        class="rounded-xl border border-[var(--line)] p-4"
       >
-      <div class="grid gap-3 sm:grid-cols-2">
-        <label class="text-sm"
-          >Context sent to speech model<select
-            class="input mt-1 w-full"
-            bind:value={contextMode}
-            ><option value="off">Off</option><option value="before"
-              >Preceding text</option
-            ><option value="both">Preceding and following text</option></select
-          ></label
+        <summary class="cursor-pointer font-semibold"
+          >Generation defaults</summary
         >
-        <p class="muted text-xs self-center">
-          Only supporting models receive semantic context. Preview shows what
-          the selected model can encode or approximate.
-        </p>
-      </div>
-      <div class="grid gap-3 sm:grid-cols-3">
-        <label class="text-sm"
-          >Before (blocks)<input
-            class="input mt-1 w-full"
-            type="number"
-            min="0"
-            max="20"
-            bind:value={before}
-          /></label
-        ><label class="text-sm"
-          >After (blocks)<input
-            class="input mt-1 w-full"
-            type="number"
-            min="0"
-            max="20"
-            bind:value={after}
-          /></label
-        ><label class="text-sm"
-          >Context character limit<input
-            class="input mt-1 w-full"
-            type="number"
-            min="0"
-            max="16000"
-            bind:value={maxChars}
-          /></label
-        >
-      </div>
-      <label class="flex items-center gap-2 text-sm"
-        ><input type="checkbox" bind:checked={enabled} />Use adopted speech
-        directions</label
-      >
-      <p class="muted text-sm">
-        Voice mode: {casting ? 'Multiple voices' : 'One voice'}.
-        <a class="underline" href={`/sessions/${sessionId}/voice#voice-setup`}
-          >Change voice mode</a
-        >
-      </p>
-      <label class="flex items-center gap-2 text-sm"
-        ><input type="checkbox" bind:checked={vocalizations} />Allow explicitly
-        requested vocalizations</label
-      >
-      <div class="flex flex-wrap items-center gap-2">
-        <button
-          class="btn"
-          disabled={!stored ||
-            !validWindows ||
-            !validAnalysis ||
-            !settingsDirty}
-          onclick={() => void saveSettings()}>Save generation defaults</button
-        >{#if settingsDirty}<span class="text-xs text-amber-700"
-            >Unsaved settings</span
-          ><button
-            class="btn"
-            onclick={() => {
-              if (stored) applySettings(stored);
-            }}>Discard settings changes</button
-          >{/if}
-      </div>
-    </fieldset>
-    <details class="rounded-xl border border-[var(--line)] p-3">
-      <summary class="cursor-pointer font-semibold"
-        >Speaker and delivery analysis <span class="muted ml-2 text-xs"
-          >Optional</span
-        ></summary
-      >
-      <fieldset disabled={blocked || !validWindows} class="mt-3 space-y-3">
-        <label class="block text-sm"
-          >Analysis pass<select
-            class="input mt-1 w-full"
-            bind:value={analysisPurpose}
+        <fieldset disabled={blocked} class="mt-4 space-y-3">
+          <legend class="mb-2 font-semibold">Generation defaults</legend>
+          <label class="block text-sm"
+            ><ParameterLabel
+              section="speech"
+              name="general-direction"
+              label="General speech direction"
+              description="Project-wide narration guidance for future recordings. Local block or phrase directions add more specific guidance. Preview model request explains what the selected speech model can actually use."
+            /><textarea
+              aria-label="General speech direction"
+              class="input mt-1 w-full"
+              rows="2"
+              maxlength="4000"
+              bind:value={general}
+              placeholder="Natural, restrained narration."></textarea></label
           >
-            <option value="speakers">Identify speakers</option>
-            <option value="delivery">Add delivery directions</option>
-            <option value="combined"
-              >Identify speakers and add directions together</option
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="text-sm"
+              ><ParameterLabel
+                section="speech"
+                name="speech-context"
+                label="Context sent to speech model"
+                description="Sends neighbouring accepted text as background to speech models that support semantic context. Only the current block should be spoken. This is separate from the context used by AI analysis. Preview model request shows what your model receives."
+              /><select class="input mt-1 w-full" bind:value={contextMode}
+                ><option value="off">Off</option><option value="before"
+                  >Preceding text</option
+                ><option value="both">Preceding and following text</option
+                ></select
+              ></label
             >
-          </select></label
+            <p class="muted text-xs self-center">
+              Only supporting models receive semantic context. Preview shows
+              what the selected model can encode or approximate.
+            </p>
+          </div>
+          {#if contextMode !== 'off'}
+            <div class="grid gap-3 sm:grid-cols-3">
+              <label class="text-sm"
+                >Before (blocks)<input
+                  class="input mt-1 w-full"
+                  type="number"
+                  min="0"
+                  max="20"
+                  bind:value={before}
+                /></label
+              ><label class="text-sm"
+                >After (blocks)<input
+                  class="input mt-1 w-full"
+                  type="number"
+                  min="0"
+                  max="20"
+                  bind:value={after}
+                /></label
+              ><label class="text-sm"
+                >Context character limit<input
+                  class="input mt-1 w-full"
+                  type="number"
+                  min="0"
+                  max="16000"
+                  bind:value={maxChars}
+                /></label
+              >
+            </div>{/if}
+          <label class="flex items-center gap-2 text-sm"
+            ><input type="checkbox" bind:checked={enabled} />Use adopted speech
+            directions</label
+          >
+          <p class="muted text-sm">
+            Voice mode: {casting ? 'Multiple voices' : 'One voice'}.
+            <a
+              class="underline"
+              href={`/sessions/${sessionId}/voice#voice-setup`}
+              >Change voice mode</a
+            >
+          </p>
+          <label class="flex items-center gap-2 text-sm"
+            ><input type="checkbox" bind:checked={vocalizations} />Allow
+            explicitly requested vocalizations</label
+          >
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              class="btn btn-secondary"
+              disabled={!stored ||
+                !validWindows ||
+                !validAnalysis ||
+                !settingsDirty}
+              onclick={() => void saveSettings()}
+              >Save generation defaults</button
+            >{#if settingsDirty}<span class="text-xs text-amber-700"
+                >Unsaved settings</span
+              ><button
+                class="btn btn-secondary"
+                onclick={() => {
+                  if (stored) applySettings(stored);
+                }}>Discard settings changes</button
+              >{/if}
+          </div>
+        </fieldset>
+      </details>
+      <details
+        bind:this={analysisSection}
+        bind:open={analysisOpen}
+        class="rounded-xl border border-[var(--line)] p-3"
+      >
+        <summary class="cursor-pointer font-semibold"
+          >AI &amp; passive analysis <span class="muted ml-2 text-xs"
+            >Optional</span
+          ></summary
         >
-        <p class="muted text-xs">
-          {analysisPurpose === 'speakers'
-            ? 'Keep every spoken word and existing delivery direction. Use existing source labels or assign speakers manually when no analysis is needed.'
-            : analysisPurpose === 'combined'
-              ? 'One call uses the model and settings below for both tasks. Separate pass settings stay saved. Spoken words remain unchanged.'
-              : 'Keep every spoken word and speaker assignment. Add delivery directions for the selected speech model.'}
+        <p class="muted mt-3 text-sm">
+          Analyse uses the configured LLM to propose speaker labels or delivery
+          directions. Review its draft here before adopting it. For manual work,
+          use Create manual draft below. Prepare passive analysis waits for an
+          MCP client.
         </p>
-        <label class="block text-sm"
-          >Analysis guidance<textarea
-            class="input mt-1 w-full"
-            rows="2"
-            maxlength="6000"
-            bind:value={analysisPreferences[analysisPurpose].instructions}
-            placeholder={analysisPurpose === 'speakers'
-              ? 'Identify speakers only where the text and context support them.'
-              : 'Direct only where context changes how a line should be spoken.'}
-          ></textarea></label
-        >
-        <label class="block text-sm"
-          >Analysis model <span class="muted text-xs"
-            >Blank uses the configured default</span
-          ><input
-            class="input mt-1 w-full"
-            bind:value={analysisPreferences[analysisPurpose].model_name}
-            maxlength="255"
-          /></label
-        >
-        <p class="muted text-xs">
-          Analysis uses the model above, or the configured default. Passive
-          analysis lets an MCP client claim and submit work without starting a
-          model. Both produce a draft for review and leave the words unchanged.
-        </p>
-        <div class="grid gap-3 sm:grid-cols-2">
-          <label class="text-sm"
-            >Preceding blocks<input
-              class="input mt-1 w-full"
-              type="number"
-              min="0"
-              max="20"
-              bind:value={analysisPreferences[analysisPurpose].context_before}
-            /></label
+        <fieldset disabled={blocked || !validWindows} class="mt-3 space-y-3">
+          <label class="block text-sm"
+            ><ParameterLabel
+              section="speech"
+              name="analysis-pass"
+              label="Analysis pass"
+              description="Analyse starts your configured LLM, or the named model override, and may use a paid provider. It proposes a draft for this task; you review and adopt it separately. Prepare passive analysis creates a task for an MCP client without starting a model in Pandrator. Manual drafts need neither."
+            /><select class="input mt-1 w-full" bind:value={analysisPurpose}>
+              <option value="speakers">Identify speakers</option>
+              <option value="delivery">Add delivery directions</option>
+              <option value="combined"
+                >Identify speakers and add directions together</option
+              >
+            </select></label
           >
-          <label class="text-sm"
-            >Following blocks<input
-              class="input mt-1 w-full"
-              type="number"
-              min="0"
-              max="20"
-              bind:value={analysisPreferences[analysisPurpose].context_after}
-            /></label
-          >
-          <label class="text-sm"
-            >Context character limit<input
-              class="input mt-1 w-full"
-              type="number"
-              min="0"
-              max="16000"
-              bind:value={
-                analysisPreferences[analysisPurpose].context_max_chars
-              }
-            /></label
-          >
-          <label class="text-sm"
-            >Blocks per request<input
-              class="input mt-1 w-full"
-              type="number"
-              min="1"
-              max="32"
-              bind:value={analysisPreferences[analysisPurpose].batch_size}
-            /></label
-          >
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button
-            class="btn btn-primary"
-            disabled={!validAnalysis}
-            onclick={() => navigate(() => create('llm'))}
-            >Analyse {analysisPurpose === 'speakers'
-              ? 'speakers'
+          <p class="muted text-xs">
+            {analysisPurpose === 'speakers'
+              ? 'Keep every spoken word and existing delivery direction. Use existing source labels or assign speakers manually when no analysis is needed.'
               : analysisPurpose === 'combined'
-                ? 'speakers and delivery'
-                : 'delivery'}</button
-          ><button
-            class="btn"
-            disabled={!validAnalysis}
-            onclick={() => navigate(() => create('passive'))}
-            >Prepare passive analysis</button
+                ? 'One call uses the model and settings below for both tasks. Separate pass settings stay saved. Spoken words remain unchanged.'
+                : 'Keep every spoken word and speaker assignment. Add delivery directions for the selected speech model.'}
+          </p>
+          <label class="block text-sm"
+            >Analysis guidance<textarea
+              class="input mt-1 w-full"
+              rows="2"
+              maxlength="6000"
+              bind:value={analysisPreferences[analysisPurpose].instructions}
+              placeholder={analysisPurpose === 'speakers'
+                ? 'Identify speakers only where the text and context support them.'
+                : 'Direct only where context changes how a line should be spoken.'}
+            ></textarea></label
           >
-        </div>
-      </fieldset>
-    </details>
+          <label class="block text-sm"
+            >Analysis model <span class="muted text-xs"
+              >Blank uses the configured default</span
+            ><input
+              class="input mt-1 w-full"
+              bind:value={analysisPreferences[analysisPurpose].model_name}
+              maxlength="255"
+            /></label
+          >
+          <p class="muted text-xs">
+            Analysis uses the model above, or the configured default. Passive
+            analysis lets an MCP client claim and submit work without starting a
+            model. Both produce a draft for review and leave the words
+            unchanged.
+          </p>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="text-sm"
+              >Preceding blocks<input
+                class="input mt-1 w-full"
+                type="number"
+                min="0"
+                max="20"
+                bind:value={analysisPreferences[analysisPurpose].context_before}
+              /></label
+            >
+            <label class="text-sm"
+              >Following blocks<input
+                class="input mt-1 w-full"
+                type="number"
+                min="0"
+                max="20"
+                bind:value={analysisPreferences[analysisPurpose].context_after}
+              /></label
+            >
+            <label class="text-sm"
+              >Context character limit<input
+                class="input mt-1 w-full"
+                type="number"
+                min="0"
+                max="16000"
+                bind:value={
+                  analysisPreferences[analysisPurpose].context_max_chars
+                }
+              /></label
+            >
+            <label class="text-sm"
+              >Blocks per request<input
+                class="input mt-1 w-full"
+                type="number"
+                min="1"
+                max="32"
+                bind:value={analysisPreferences[analysisPurpose].batch_size}
+              /></label
+            >
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button
+              class="btn btn-primary"
+              disabled={!validAnalysis}
+              onclick={() => navigate(() => create('llm'))}
+              >Analyse {analysisPurpose === 'speakers'
+                ? 'speakers'
+                : analysisPurpose === 'combined'
+                  ? 'speakers and delivery'
+                  : 'delivery'}</button
+            ><button
+              class="btn btn-secondary"
+              disabled={!validAnalysis}
+              onclick={() => navigate(() => create('passive'))}
+              >Prepare passive analysis</button
+            >
+          </div>
+        </fieldset>
+      </details>
+    {/snippet}
+    {#if !workspace}{@render options()}{/if}
     <div
       class="flex flex-wrap items-end gap-2 border-t border-[var(--line)] pt-4"
     >
-      <h4 class="mr-auto font-semibold">Speaker and delivery review</h4>
+      <h4 class="mr-auto font-semibold">Annotation drafts</h4>
+
       <button
-        class="btn"
+        class="btn btn-secondary"
         disabled={blocked}
         onclick={() => navigate(() => create('manual'))}
         >Create manual draft</button
-      >{#if selected && !selected.stale}<button
-          class="btn"
+      >
+      {#if workspace}<button
+          class="btn btn-secondary"
+          onclick={() => {
+            if (analysisSection) {
+              analysisSection.open = true;
+              analysisSection.scrollIntoView({ block: 'start' });
+            }
+          }}>AI / MCP analysis</button
+        >{/if}{#if selected && !selected.stale}<button
+          class="btn btn-secondary"
           disabled={blocked}
           onclick={() => navigate(() => create('manual', true))}
           >Copy for editing</button
-        >{/if}<button class="btn" disabled={blocked} onclick={() => void load()}
-        >Refresh</button
+        >{/if}<button
+        class="btn btn-secondary"
+        disabled={blocked}
+        onclick={() => void load()}>Refresh</button
       >
     </div>
-    {#if capability}<p class="muted text-xs">
-        Model: {capability.model || 'not selected'} · Directions: {capability.instructions}
-        · Context: {capability.semantic_context}. Encoded controls still need an
-        audio listening check.
-      </p>{/if}
     {#if history.length}<label class="block text-sm"
-        >Analysis version<select
+        >{workspace ? 'Annotation draft' : 'Analysis version'}<select
           class="input mt-1 w-full"
           disabled={blocked}
           value={selected?.id ?? ''}
@@ -990,7 +1121,8 @@
       >{/if}
     {#if selected}
       <p class="muted text-sm">
-        {selected.analysed_count} of {selected.total} analysed · {selected.locked_count}
+        {selected.analysed_count} of {selected.total}
+        {workspace ? 'annotated' : 'analysed'} · {selected.locked_count}
         protected{selected.job_status
           ? ` · Analysis ${selected.job_status}`
           : ''}.
@@ -998,286 +1130,385 @@
       {#if selected.job_id}<a class="text-sm underline" href="/activity"
           >Open analysis job</a
         >{/if}
-      <details class="text-xs muted">
-        <summary class="cursor-pointer">Saved analysis configuration</summary>
-        <p class="mt-2 whitespace-pre-wrap">
-          {purposeLabel(selected.settings.purpose)} · {selected.settings.mode ??
-            'manual'} · Model: {selected.settings.effective_model_name ||
-            selected.settings.model_name ||
-            'Configured default'} · {selected.settings.context_before ?? 2} before
-          / {selected.settings.context_after ?? 1} after. {selected.settings
-            .instructions || 'No extra analysis guidance.'}
-        </p>
-      </details>
       {#if selected.stale}<p role="status" class="text-sm text-amber-700">
           Accepted speech changed. Create a new matching draft before adopting
           directions.
         </p>{/if}
-      <label class="block text-sm"
-        >Show blocks<select
-          class="input mt-1 w-full"
-          disabled={blocked}
-          value={filter}
-          onchange={(event) => {
-            const value = event.currentTarget.value;
-            navigate(() => {
-              filter = value;
-              return load(selected?.id, 0, false);
-            });
-          }}
-          ><option value="all">All blocks</option><option value="directed"
-            >Directed</option
-          ><option value="unreviewed">Unanalysed</option><option value="locked"
-            >Protected</option
-          ><option value="dialogue">Dialogue</option><option value="unresolved"
-            >Unresolved speakers</option
-          ></select
-        ></label
-      >
-      <nav
-        aria-label="Speech blocks"
-        class="max-h-48 overflow-auto rounded-xl border border-[var(--line)] divide-y divide-[var(--line)]"
-      >
-        {#each selected.items ?? [] as unit}<button
-            class="block w-full p-3 text-left text-sm hover:bg-[var(--accent-soft)]"
-            class:bg-[var(--accent-soft)]={unitId === unit.id}
-            aria-current={unitId === unit.id ? 'true' : undefined}
+      {#snippet blockNavigation()}
+        <label class="block text-sm"
+          >Show blocks<select
+            class="input mt-1 w-full"
             disabled={blocked}
-            onclick={() => navigate(() => selectUnit(unit.id))}
-            ><span class="font-medium">#{unit.ordinal + 1}</span> · {unit
-              .annotation?.decision === 'steer'
-              ? 'Directed'
-              : unit.annotation
-                ? 'Reviewed'
-                : 'Unanalysed'}{unit.annotation?.locked
-              ? ' · Protected'
-              : ''}<span class="block truncate">{unit.spoken_text}</span
-            ></button
-          >{/each}
-      </nav>
-      <div class="flex flex-wrap items-center gap-2 text-xs">
-        <button
-          class="btn"
-          disabled={blocked || !offset}
-          onclick={() =>
-            navigate(() => load(selected?.id, Math.max(0, offset - 20), false))}
-          >Previous blocks</button
-        ><span
-          >{total ? offset + 1 : 0}–{Math.min(offset + 20, total)} of {total}</span
-        ><button
-          class="btn"
-          disabled={blocked || offset + 20 >= total}
-          onclick={() => navigate(() => load(selected?.id, offset + 20, false))}
-          >Next blocks</button
+            value={filter}
+            onchange={(event) => {
+              const value = event.currentTarget.value;
+              navigate(() => {
+                filter = value;
+                return load(selected?.id, 0, false);
+              });
+            }}
+            ><option value="all">All blocks</option><option value="directed"
+              >Directed</option
+            ><option value="unreviewed">Unannotated</option><option
+              value="locked">Protected</option
+            ><option value="dialogue">Dialogue</option><option
+              value="unresolved">Unresolved speakers</option
+            ></select
+          ></label
         >
-      </div>
-      {#if currentUnit}
-        <label class="block text-sm font-medium"
-          >Accepted spoken text <span class="muted text-xs font-normal"
-            >Select words below to mark dialogue</span
-          ><textarea
-            class="input mt-1 w-full whitespace-pre-wrap"
-            rows="4"
-            readonly
-            value={currentUnit.spoken_text}
-            bind:this={textArea}
-            onselect={() => {
-              selectionStart = textArea?.selectionStart ?? 0;
-              selectionEnd = textArea?.selectionEnd ?? 0;
-            }}></textarea></label
+        <nav
+          aria-label="Speech blocks"
+          class:workspace-blocks={workspace}
+          class="max-h-48 overflow-auto rounded-xl border border-[var(--line)] divide-y divide-[var(--line)]"
         >
-        {#if draft.reason}<p class="muted text-xs">
-            Rationale: {draft.reason}
-          </p>{/if}
-        {#if xmlMode && editable}<fieldset
-            disabled={blocked}
-            class="flex flex-wrap items-end gap-2"
-          >
-            <label class="min-w-40 flex-1 text-sm"
-              >Selected words belong to<select
-                class="input mt-1 w-full"
-                bind:value={speaker}
-                ><option value="">Unnamed dialogue</option><option
-                  value="__narrator">Narrator</option
-                >{#each characters as character}<option value={character.id}
-                    >{character.display_name}</option
-                  >{/each}</select
-              ></label
-            >{#if !speaker}<label class="text-sm"
-                >Voice category<select
-                  class="input mt-1 w-full"
-                  bind:value={category}
-                  ><option value="unspecified">Unknown</option><option
-                    value="male">Male</option
-                  ><option value="female">Female</option><option
-                    value="androgynous">Androgynous</option
-                  ></select
-                ></label
-              >{/if}<button
-              class="btn"
-              disabled={selectionEnd <= selectionStart}
-              onclick={markSelection}>Mark selected text</button
-            >
-          </fieldset>{/if}
-        <fieldset
-          disabled={blocked || !editable || Boolean(parseError)}
-          class="grid gap-3 sm:grid-cols-2"
-        >
-          <label class="block text-sm sm:col-span-2"
-            >Block delivery direction<textarea
-              class="input mt-1 w-full"
-              rows="2"
-              maxlength="1200"
-              value={controls.instruction ?? ''}
-              oninput={(event) =>
-                setControl('instruction', event.currentTarget.value)}
-              placeholder="Add a local direction; other controls remain active."
-            ></textarea></label
-          >
-          {#each controlFields.filter((field) => field !== 'instruction') as field}<label
-              class="block text-sm"
-              >{field[0].toUpperCase() +
-                field.slice(1)}{#if field === 'emotion'}<input
-                  class="input mt-1 w-full"
-                  maxlength="120"
-                  value={controls[field] ?? ''}
-                  oninput={(event) =>
-                    setControl(field, event.currentTarget.value)}
-                  placeholder="No local emotion"
-                />{:else}<select
-                  class="input mt-1 w-full"
-                  value={controls[field] ?? ''}
-                  onchange={(event) =>
-                    setControl(field, event.currentTarget.value)}
-                  ><option value="">No local override</option
-                  >{#each field === 'pace' ? ['natural', 'slower', 'brisk'] : field === 'cadence' ? ['continuing', 'concluding', 'questioning', 'contrast'] : ['light', 'moderate', 'strong'] as option}<option
-                      value={option}>{option}</option
-                    >{/each}</select
-                >{/if}</label
+          {#each selected?.items ?? [] as unit}<button
+              class="block w-full p-3 text-left text-sm hover:bg-[var(--accent-soft)]"
+              class:bg-[var(--accent-soft)]={unitId === unit.id}
+              aria-current={unitId === unit.id ? 'true' : undefined}
+              disabled={blocked}
+              onclick={() => navigate(() => selectUnit(unit.id))}
+              ><span class="font-medium">#{unit.ordinal + 1}</span> · {unit
+                .annotation?.decision === 'steer'
+                ? 'Directed'
+                : unit.annotation
+                  ? 'Reviewed'
+                  : 'Unannotated'}{unit.annotation?.locked
+                ? ' · Protected'
+                : ''}<span class="block truncate">{unit.spoken_text}</span
+              ></button
             >{/each}
-          <div class="sm:col-span-2 flex flex-wrap gap-3 items-center">
-            <label class="flex items-center gap-2 text-sm"
-              ><input type="checkbox" bind:checked={locked} />Protect this block
-              from analysis</label
-            ><button class="btn" onclick={clearDirections}
-              >Clear block directions</button
-            >
-          </div>
-        </fieldset>
-        <p class="muted text-xs">
-          Clearing local directions keeps speaker assignments and the general
-          narration guidance.
-        </p>
-        {#if summaries.length}<ul
-            class="rounded-xl bg-[var(--accent-soft)] p-3 text-xs space-y-1"
-            aria-label="Active phrase, dialogue and event controls"
-          >
-            {#each summaries as summary}<li class="break-words">
-                {summary}
-              </li>{/each}
-          </ul>{/if}
-        <details bind:open={advanced} class="text-sm">
-          <summary class="cursor-pointer"
-            >{xmlMode ? 'XML annotation' : 'Advanced pSSML JSON'}
-            {editable ? '' : '· read only'}</summary
-          ><textarea
-            class="input mt-2 w-full font-mono text-xs"
-            aria-label={xmlMode ? 'XML annotation' : 'Annotation JSON'}
-            rows="10"
-            readonly={!editable}
-            disabled={blocked}
-            value={xmlMode ? xml : jsonBuffer}
-            oninput={(event) => editAdvanced(event.currentTarget.value)}
-            spellcheck="false"></textarea>
-          <p class="muted mt-1 text-xs">
-            {xmlMode
-              ? '<ins> and <em> contain directions, never spoken words. Keep the segment ID and extracted transcript unchanged.'
-              : 'This legacy annotation shares its state with the controls above.'}
-          </p>
-        </details>
-        {#if parseError}<p role="alert" class="text-sm text-red-700">
-            {parseError}
-          </p>{/if}
-        {#if currentUnit.annotation?.locked && editable}<label
-            class="flex items-center gap-2 text-sm"
-            ><input type="checkbox" bind:checked={unlock} />Authorize changing
-            this protected annotation</label
-          >{/if}
-        <div class="flex flex-wrap items-center gap-2">
-          {#if editable}<button
-              class="btn btn-primary"
-              disabled={blocked ||
-                Boolean(parseError) ||
-                (Boolean(currentUnit.annotation?.locked) && !unlock)}
-              onclick={() => void saveAnnotation()}
-              >Save block directions</button
-            >{/if}<button
+        </nav>
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <button
             class="btn"
-            disabled={blocked || !validWindows || Boolean(parseError)}
-            onclick={() => void compilePreview()}>Preview model request</button
-          >{#if editorDirty}<span class="text-xs text-amber-700"
-              >Unsaved block changes</span
-            >{/if}
-        </div>
-        {#if preview}<section
-            aria-label="Compiled model request"
-            class="rounded-xl border border-[var(--line)] p-3 space-y-3"
+            disabled={blocked || !offset}
+            onclick={() =>
+              navigate(() =>
+                load(selected?.id, Math.max(0, offset - 20), false)
+              )}>Previous blocks</button
+          ><span
+            >{total ? offset + 1 : 0}–{Math.min(offset + 20, total)} of {total}</span
+          ><button
+            class="btn"
+            disabled={blocked || offset + 20 >= total}
+            onclick={() =>
+              navigate(() => load(selected?.id, offset + 20, false))}
+            >Next blocks</button
           >
-            <p class="font-medium text-sm">
-              {previewStale
-                ? 'Preview is out of date — compile it again.'
-                : 'Preview of these editor settings · no audio generated'}
-            </p>
-            {#if !previewStale}{#each preview.report ?? [] as item}<p
-                  class="text-xs"
+        </div>
+      {/snippet}
+      {#snippet blockEditor()}
+        <div
+          class="annotation-editor min-h-0 min-w-0 flex-1 space-y-4 overflow-auto p-4"
+        >
+          {#if currentUnit}
+            <h4 class="font-semibold">
+              Block {currentUnit.ordinal + 1}
+              <span class="muted text-xs font-normal"
+                >{editable
+                  ? 'Editable draft'
+                  : 'Read only · copy for editing'}</span
+              >
+            </h4>
+            <label class="block text-sm font-medium"
+              >Accepted spoken text <span class="muted text-xs font-normal"
+                >Select words to mark dialogue or direct a phrase</span
+              ><textarea
+                class="input mt-1 w-full whitespace-pre-wrap"
+                rows={workspace ? 8 : 4}
+                readonly
+                value={currentUnit.spoken_text}
+                bind:this={textArea}
+                onselect={() => {
+                  updateSelection();
+                }}></textarea></label
+            >
+            {#if workspace && xmlMode && textRuns.length}
+              <section
+                class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4"
+                aria-label="Annotated text preview"
+              >
+                <h5 class="muted mb-3 text-xs font-semibold">
+                  ANNOTATION PREVIEW · select a marked phrase to locate its
+                  words
+                </h5>
+                <p class="whitespace-pre-wrap text-base leading-loose">
+                  {#each textRuns as run}{#if run.dialogue || run.speaker || run.direction}<button
+                        class="annotation-phrase"
+                        class:dialogue={run.dialogue}
+                        title={`${run.speaker ? (characters.find((item) => item.id === run.speaker)?.display_name ?? (run.speaker === '__narrator' ? 'Narrator' : run.speaker)) : run.dialogue ? 'Dialogue' : 'Phrase'}${run.direction ? ` · ${run.direction}` : ''}`}
+                        onclick={() => selectTextRun(run.start, run.end)}
+                        >{run.text}</button
+                      >{:else}{run.text}{/if}{/each}
+                </p>
+              </section>
+            {/if}
+            {#if draft.reason}<p class="muted text-xs">
+                Rationale: {draft.reason}
+              </p>{/if}
+            {#if xmlMode && editable}<fieldset
+                disabled={blocked}
+                class="rounded-xl border border-[var(--line)] p-4 flex flex-wrap items-end gap-3"
+              >
+                <legend class="px-1 text-sm font-semibold"
+                  ><ParameterLabel
+                    section="speech"
+                    name="selection"
+                    label="Selected words"
+                    description="Select words in the accepted text above, then mark them as dialogue, assign a speaker or add a phrase direction. To change an existing speaker, select the complete marked turn. Saving annotations preserves the accepted wording."
+                  /></legend
                 >
-                  <strong>{item.status}</strong> · {item.message}
-                </p>{/each}{#each preview.parts ?? [] as part, index}<div
-                  class="text-xs rounded-lg bg-[var(--accent-soft)] p-2"
+                <p class="w-full text-sm muted" aria-live="polite">
+                  {selectionEnd > selectionStart
+                    ? `“${currentUnit.spoken_text.slice(selectionStart, selectionEnd)}”`
+                    : 'Select some words above to enable these tools.'}
+                </p>
+                <label class="min-w-40 flex-1 text-sm"
+                  >Selected words belong to<select
+                    class="input mt-1 w-full"
+                    bind:value={speaker}
+                    ><option value="">Unnamed dialogue</option><option
+                      value="__narrator">Narrator</option
+                    >{#each characters as character}<option value={character.id}
+                        >{character.display_name}</option
+                      >{/each}</select
+                  ></label
+                >{#if !speaker}<label class="text-sm"
+                    >Voice category<select
+                      class="input mt-1 w-full"
+                      bind:value={category}
+                      ><option value="unspecified">Unknown</option><option
+                        value="male">Male</option
+                      ><option value="female">Female</option><option
+                        value="androgynous">Androgynous</option
+                      ></select
+                    ></label
+                  >{/if}<button
+                  class="btn btn-secondary"
+                  disabled={selectionEnd <= selectionStart}
+                  onclick={markSelection}>Mark selected text</button
                 >
-                  <strong
-                    >Part {index + 1}: {part.voice || 'project voice'}</strong
+                {#if selectionHistory.length}<button
+                    class="btn btn-secondary"
+                    onclick={() => {
+                      xml = selectionHistory.at(-1)!;
+                      selectionHistory = selectionHistory.slice(0, -1);
+                      parseError = '';
+                      error = '';
+                    }}>Undo selection change</button
+                  >{/if}
+                <div
+                  class="flex w-full flex-wrap items-end gap-3 border-t border-[var(--line)] pt-3"
+                >
+                  <label class="min-w-40 flex-1 text-sm"
+                    >Direction for selected words<textarea
+                      class="input mt-1 w-full"
+                      rows="2"
+                      maxlength="1200"
+                      bind:value={phraseDirection}
+                      placeholder="For example: quietly, as an aside."
+                    ></textarea></label
                   >
-                  · {voiceSourceLabels[part.voice_source ?? 'base'] ??
-                    part.voice_source}{part.fallback ? ' · fallback' : ''}
-                  <p class="mt-1 whitespace-pre-wrap">{part.text}</p>
-                </div>{/each}
-              <details>
-                <summary class="cursor-pointer text-xs"
-                  >Exact provider input</summary
+                  <button
+                    class="btn btn-secondary"
+                    disabled={selectionEnd <= selectionStart ||
+                      !phraseDirection.trim()}
+                    onclick={directSelection}>Direct selected words</button
+                  >
+                </div>
+              </fieldset>{/if}
+            <fieldset
+              disabled={blocked || !editable || Boolean(parseError)}
+              class="grid gap-3 sm:grid-cols-2"
+            >
+              <label class="block text-sm sm:col-span-2"
+                >Block delivery direction<textarea
+                  class="input mt-1 w-full"
+                  rows="2"
+                  maxlength="1200"
+                  value={controls.instruction ?? ''}
+                  oninput={(event) =>
+                    setControl('instruction', event.currentTarget.value)}
+                  placeholder="Add a local direction; other controls remain active."
+                ></textarea></label
+              >
+              {#each controlFields.filter((field) => field !== 'instruction') as field}<label
+                  class="block text-sm"
+                  >{field[0].toUpperCase() +
+                    field.slice(1)}{#if field === 'emotion'}<input
+                      class="input mt-1 w-full"
+                      maxlength="120"
+                      value={controls[field] ?? ''}
+                      oninput={(event) =>
+                        setControl(field, event.currentTarget.value)}
+                      placeholder="No local emotion"
+                    />{:else}<select
+                      class="input mt-1 w-full"
+                      value={controls[field] ?? ''}
+                      onchange={(event) =>
+                        setControl(field, event.currentTarget.value)}
+                      ><option value="">No local override</option
+                      >{#each field === 'pace' ? ['natural', 'slower', 'brisk'] : field === 'cadence' ? ['continuing', 'concluding', 'questioning', 'contrast'] : ['light', 'moderate', 'strong'] as option}<option
+                          value={option}>{option}</option
+                        >{/each}</select
+                    >{/if}</label
+                >{/each}
+              <div class="sm:col-span-2 flex flex-wrap gap-3 items-center">
+                <label class="flex items-center gap-2 text-sm"
+                  ><input type="checkbox" bind:checked={locked} />Protect this
+                  block from analysis</label
+                ><button class="btn btn-secondary" onclick={clearDirections}
+                  >Clear block directions</button
                 >
-                {#each preview.parts?.length ? preview.parts : [preview] as request, index}
-                  {#if (preview.parts?.length ?? 0) > 1}<p
-                      class="mt-3 text-xs font-semibold"
+              </div>
+            </fieldset>
+            <p class="muted text-xs">
+              Clearing local directions keeps speaker assignments and the
+              general narration guidance.
+            </p>
+            {#if summaries.length}<ul
+                class="rounded-xl bg-[var(--accent-soft)] p-3 text-xs space-y-1"
+                aria-label="Active phrase, dialogue and event controls"
+              >
+                {#each summaries as summary}<li class="break-words">
+                    {namedSummary(summary)}
+                  </li>{/each}
+              </ul>{/if}
+            <details bind:open={advanced} class="text-sm">
+              <summary class="cursor-pointer"
+                >{xmlMode ? 'XML annotation' : 'Advanced pSSML JSON'}
+                {editable ? '' : '· read only'}</summary
+              ><textarea
+                class="input mt-2 w-full font-mono text-xs"
+                aria-label={xmlMode ? 'XML annotation' : 'Annotation JSON'}
+                rows="10"
+                readonly={!editable}
+                disabled={blocked}
+                value={xmlMode ? xml : jsonBuffer}
+                oninput={(event) => editAdvanced(event.currentTarget.value)}
+                spellcheck="false"></textarea>
+              <p class="muted mt-1 text-xs">
+                {xmlMode
+                  ? '<ins> and <em> contain directions, never spoken words. Keep the segment ID and extracted transcript unchanged.'
+                  : 'This legacy annotation shares its state with the controls above.'}
+              </p>
+            </details>
+            {#if parseError}<p role="alert" class="text-sm text-red-700">
+                {parseError}
+              </p>{/if}
+            {#if currentUnit.annotation?.locked && editable}<label
+                class="flex items-center gap-2 text-sm"
+                ><input type="checkbox" bind:checked={unlock} />Authorize
+                changing this protected annotation</label
+              >{/if}
+            <div class="flex flex-wrap items-center gap-2">
+              {#if editable}<button
+                  class="btn btn-primary"
+                  disabled={blocked ||
+                    Boolean(parseError) ||
+                    (Boolean(currentUnit.annotation?.locked) && !unlock)}
+                  onclick={() => void saveAnnotation()}
+                  >Save block annotations</button
+                >{#if editorDirty}<button
+                    class="btn btn-secondary"
+                    disabled={blocked}
+                    onclick={() => selectUnit(unitId)}
+                    >Discard block changes</button
+                  >{/if}{/if}<button
+                class="btn btn-secondary"
+                disabled={blocked || !validWindows || Boolean(parseError)}
+                onclick={() => void compilePreview()}
+                >Preview model request</button
+              >{#if editorDirty}<span class="text-xs text-amber-700"
+                  >Unsaved block changes</span
+                >{/if}
+            </div>
+            {#if preview}<section
+                aria-label="Compiled model request"
+                class="rounded-xl border border-[var(--line)] p-3 space-y-3"
+              >
+                <p class="font-medium text-sm">
+                  {previewStale
+                    ? 'Preview is out of date — compile it again.'
+                    : 'Preview of these editor settings · no audio generated'}
+                </p>
+                {#if !previewStale}{#each preview.report ?? [] as item}<p
+                      class="text-xs"
                     >
-                      Part {index + 1}
-                    </p>{/if}
-                  {#if request.instructions}<p
-                      class="mt-2 text-xs font-semibold"
+                      <strong>{item.status}</strong> · {item.message}
+                    </p>{/each}{#each preview.parts ?? [] as part, index}<div
+                      class="text-xs rounded-lg bg-[var(--accent-soft)] p-2"
                     >
-                      Instructions
-                    </p>
-                    <pre
-                      class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{request.instructions}</pre>{/if}
-                  <p class="mt-2 text-xs font-semibold">Input</p>
-                  <pre
-                    class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{request.input}</pre>
-                  {#if request.request_options && Object.keys(request.request_options).length}<p
-                      class="mt-2 text-xs font-semibold"
+                      <strong
+                        >Part {index + 1}: {part.voice ||
+                          'project voice'}</strong
+                      >
+                      · {voiceSourceLabels[part.voice_source ?? 'base'] ??
+                        part.voice_source}{part.fallback ? ' · fallback' : ''}
+                      <p class="mt-1 whitespace-pre-wrap">{part.text}</p>
+                    </div>{/each}
+                  <details>
+                    <summary class="cursor-pointer text-xs"
+                      >Exact provider input</summary
                     >
-                      Request options
-                    </p>
-                    <pre
-                      class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(
-                        request.request_options,
-                        null,
-                        2
-                      )}</pre>{/if}
-                {/each}
-              </details>{/if}
-          </section>{/if}
-      {/if}
+                    {#each preview.parts?.length ? preview.parts : [preview] as request, index}
+                      {#if (preview.parts?.length ?? 0) > 1}<p
+                          class="mt-3 text-xs font-semibold"
+                        >
+                          Part {index + 1}
+                        </p>{/if}
+                      {#if request.instructions}<p
+                          class="mt-2 text-xs font-semibold"
+                        >
+                          Instructions
+                        </p>
+                        <pre
+                          class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{request.instructions}</pre>{/if}
+                      <p class="mt-2 text-xs font-semibold">Input</p>
+                      <pre
+                        class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{request.input}</pre>
+                      {#if request.request_options && Object.keys(request.request_options).length}<p
+                          class="mt-2 text-xs font-semibold"
+                        >
+                          Request options
+                        </p>
+                        <pre
+                          class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(
+                            request.request_options,
+                            null,
+                            2
+                          )}</pre>{/if}
+                    {/each}
+                  </details>{/if}
+              </section>{/if}
+          {/if}
+        </div>
+      {/snippet}
+      {#if workspace}<div class="flex justify-end">
+          <button
+            class="btn"
+            aria-expanded={blocksOpen}
+            onclick={() => (blocksOpen = !blocksOpen)}
+            >{blocksOpen ? 'Hide' : 'Show'} blocks & filters</button
+          >
+        </div>
+        <div class="annotation-workspace-area">
+          <WorkspacePane
+            bind:open={blocksOpen}
+            title="Blocks & filters"
+            side="left"
+            >{#snippet tools()}{@render blockNavigation()}{/snippet}{@render blockEditor()}</WorkspacePane
+          >
+        </div>
+      {:else}<div>
+          <aside class="space-y-3 min-w-0">{@render blockNavigation()}</aside>
+          {@render blockEditor()}
+        </div>{/if}
       {#if editable}<div class="border-t border-[var(--line)] pt-4 space-y-3">
+          <p class="muted text-sm">
+            Adopting applies this draft to future recordings. Existing takes
+            stay available; changed blocks can be regenerated from Generation.
+          </p>
           {#if selected.analysed_count < selected.total}<label
               class="flex items-center gap-2 text-sm"
               ><input type="checkbox" bind:checked={acceptMissing} />Accept {selected.total -
@@ -1308,70 +1539,128 @@
         Create a manual draft, analyse speakers or delivery, or prepare work for
         a passive MCP client.
       </p>{/if}
+    {#if workspace}<section
+        class="border-t border-[var(--line)] pt-5 space-y-4"
+        aria-label="Workspace options"
+      >
+        <h4 class="font-semibold">Workspace options</h4>
+        {@render options()}
+      </section>{/if}
+    {#if capability}<p class="muted text-xs">
+        Model: {capability.model || 'not selected'} · Directions: {capability.instructions}
+        · Context: {capability.semantic_context}. Encoded controls still need an
+        audio listening check.
+      </p>{/if}
+    {#if selected}
+      <details class="text-xs muted">
+        <summary class="cursor-pointer">Saved analysis configuration</summary>
+        <p class="mt-2 whitespace-pre-wrap">
+          {purposeLabel(selected.settings.purpose)} · {selected.settings.mode ??
+            'manual'} · Model: {selected.settings.effective_model_name ||
+            selected.settings.model_name ||
+            'Configured default'} · {selected.settings.context_before ?? 2} before
+          / {selected.settings.context_after ?? 1} after. {selected.settings
+            .instructions || 'No extra analysis guidance.'}
+        </p>
+      </details>
+    {/if}
   </div>
 </details>
-{#if navigation}<div
-    class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4"
+{#if navigation}<dialog
+    use:modalDialog={{
+      onclose: () => {
+        if (!pending) navigation = null;
+      }
+    }}
+    aria-labelledby="speech-draft-title"
+    class="compact-confirmation m-auto w-[calc(100vw-2rem)] max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-lg space-y-4"
   >
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="speech-draft-title"
-      tabindex="-1"
-      use:modalFocus={{ onclose: () => (navigation = null) }}
-      class="compact-confirmation w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-lg space-y-4"
-    >
-      <h3 id="speech-draft-title" class="font-semibold">
-        {routeNavigation
-          ? 'Save your changes before leaving?'
-          : 'Save this block before leaving?'}
-      </h3>
-      <p class="muted text-sm">
-        {routeNavigation
-          ? 'You have unsaved speech directions, generation defaults, or character assignments. Save them or discard the changes before switching sections.'
-          : 'The block has unsaved directions or speaker assignments. Generation-default changes stay in their own draft.'}
-      </p>
-      <div class="flex flex-wrap gap-2">
-        <button
-          class="btn btn-primary"
-          disabled={blocked ||
-            Boolean(parseError) ||
-            (routeNavigation &&
-              (!validWindows ||
-                castDraft?.blocked ||
-                castDraft?.valid === false))}
-          onclick={async () => {
-            const next = navigation;
-            if (
-              routeNavigation &&
-              castDraft?.dirty &&
-              !(await activeCastPanel?.saveChanges())
-            )
-              return;
-            if (editorDirty && !(await saveAnnotation())) return;
-            if (routeNavigation && settingsDirty && !(await saveSettings()))
-              return;
-            navigation = null;
-            await next?.();
-          }}>Save and continue</button
-        ><button
-          class="btn"
-          disabled={blocked}
-          onclick={() => {
-            const next = navigation;
-            selectUnit(unitId);
-            if (routeNavigation) {
-              if (stored) applySettings(stored);
-              activeCastPanel?.discardChanges();
-            }
-            navigation = null;
-            void next?.();
-          }}>Discard and continue</button
-        ><button
-          class="btn"
-          disabled={blocked}
-          onclick={() => (navigation = null)}>Stay here</button
-        >
-      </div>
+    <h3 id="speech-draft-title" class="font-semibold">
+      {routeNavigation
+        ? 'Save your changes before leaving?'
+        : 'Save this block before leaving?'}
+    </h3>
+    <p class="muted text-sm">
+      {routeNavigation
+        ? 'You have unsaved speech directions, generation defaults, or character assignments. Save them or discard the changes before switching sections.'
+        : 'The block has unsaved directions or speaker assignments. Generation-default changes stay in their own draft.'}
+    </p>
+    {#if error}<p role="alert" class="text-sm text-red-600">{error}</p>{/if}
+    <div class="flex flex-wrap gap-2">
+      <button
+        class="btn btn-primary"
+        disabled={blocked ||
+          Boolean(parseError) ||
+          (routeNavigation &&
+            (!validWindows ||
+              castDraft?.blocked ||
+              castDraft?.valid === false))}
+        onclick={async () => {
+          const next = navigation;
+          if (
+            routeNavigation &&
+            castDraft?.dirty &&
+            !(await activeCastPanel?.saveChanges())
+          )
+            return;
+          if (editorDirty && !(await saveAnnotation())) return;
+          if (routeNavigation && settingsDirty && !(await saveSettings()))
+            return;
+          navigation = null;
+          await next?.();
+        }}>Save and continue</button
+      ><button
+        class="btn"
+        disabled={blocked}
+        onclick={() => {
+          const next = navigation;
+          selectUnit(unitId);
+          if (routeNavigation) {
+            if (stored) applySettings(stored);
+            activeCastPanel?.discardChanges();
+          }
+          navigation = null;
+          void next?.();
+        }}>Discard and continue</button
+      ><button
+        class="btn"
+        disabled={blocked}
+        onclick={() => (navigation = null)}>Stay here</button
+      >
     </div>
-  </div>{/if}
+  </dialog>{/if}
+
+<style>
+  .annotation-workspace {
+    margin-top: 0;
+    padding: 0;
+    border: 0;
+  }
+  .annotation-workspace > summary {
+    display: none;
+  }
+  .annotation-workspace > .panel-body {
+    margin-top: 0;
+  }
+  .annotation-workspace-area {
+    display: flex;
+    height: max(30rem, 65dvh);
+    min-height: 0;
+  }
+  .annotation-phrase {
+    border-radius: 0.3rem;
+    text-align: left;
+    background: var(--accent-soft);
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 0.25rem;
+  }
+  .annotation-phrase.dialogue {
+    box-shadow: inset 0 -0.15rem
+      color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  .annotation-phrase:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+</style>

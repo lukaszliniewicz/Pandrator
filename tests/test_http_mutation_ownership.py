@@ -7,16 +7,17 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import event, func, select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.models import (
     AgentRun,
     AgentStep,
     ApiIdempotency,
-    AppSetting,
-    AppSettingHistory,
     Artifact,
     DocumentRevision,
     Job,
     JobEvent,
+    WorkspaceSetting,
+    WorkspaceSettingHistory,
 )
 from tests import test_subtitle_passage_review as passage_review_tests
 
@@ -31,9 +32,17 @@ def route_case():
         case.tearDown()
 
 
-def _counts(case, models):
+def _counts(case, models, *, workspace_id=None, setting_key=None):
     with case.services.database.session() as session:
-        return tuple(session.scalar(select(func.count()).select_from(model)) for model in models)
+        counts = []
+        for model in models:
+            query = select(func.count()).select_from(model)
+            if model in (WorkspaceSetting, WorkspaceSettingHistory) and workspace_id is not None:
+                query = query.where(model.workspace_id == workspace_id)
+                if setting_key is not None:
+                    query = query.where(model.key == setting_key)
+            counts.append(session.scalar(query))
+        return tuple(counts)
 
 
 @contextmanager
@@ -323,19 +332,29 @@ def test_subtitle_cleanup_failure_preserves_commit_error(route_case, canonical, 
 def test_global_stt_migration_and_history_roll_back_with_replacement(route_case):
     case = route_case
     with case.services.database.session() as session:
+        workspace_id = initial_personal_workspace(session).id
         session.add(
-            AppSetting(
+            WorkspaceSetting(
+                workspace_id=workspace_id,
                 key="defaults.stt",
                 revision=1,
                 value_json={"stt_language": "en", "subtitle_max_chars_per_line": 39},
             )
         )
-    before = _counts(case, (AppSetting, AppSettingHistory))
+    before = _counts(
+        case,
+        (WorkspaceSetting, WorkspaceSettingHistory),
+        workspace_id=workspace_id,
+        setting_key="defaults.stt",
+    )
     injected = []
 
     def commit_failure(connection):
         if (
-            connection.scalar(select(AppSetting.revision).where(AppSetting.key == "defaults.stt"))
+            connection.scalar(select(WorkspaceSetting.revision).where(
+                WorkspaceSetting.workspace_id == workspace_id,
+                WorkspaceSetting.key == "defaults.stt",
+            ))
             == 2
         ):
             injected.append("commit")
@@ -349,14 +368,19 @@ def test_global_stt_migration_and_history_roll_back_with_replacement(route_case)
         failed.status_code == 422 and failed.get_json()["error"]["code"] == "credential_unavailable"
     )
     assert injected == ["commit"]
-    assert _counts(case, (AppSetting, AppSettingHistory)) == before
+    assert _counts(
+        case,
+        (WorkspaceSetting, WorkspaceSettingHistory),
+        workspace_id=workspace_id,
+        setting_key="defaults.stt",
+    ) == before
     with case.services.database.session() as session:
-        record = session.get(AppSetting, "defaults.stt")
+        record = session.get(WorkspaceSetting, (workspace_id, "defaults.stt"))
         assert record.revision == 1 and record.value_json == {
             "stt_language": "en",
             "subtitle_max_chars_per_line": 39,
         }
-        assert session.get(AppSetting, "defaults.subtitles") is None
+        assert session.get(WorkspaceSetting, (workspace_id, "defaults.subtitles")) is None
     saved = case.client.put("/api/v1/settings/defaults.stt", json=body, headers=headers)
     assert saved.status_code == 200 and saved.headers["ETag"] == '"2"'
 

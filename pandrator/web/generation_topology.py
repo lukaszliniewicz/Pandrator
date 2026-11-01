@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .access.generation_resource_policy import require_generation_content_write
 from .database import Database
 from .jobs import JobQueue
 from .models import (
@@ -21,7 +22,92 @@ from .models import (
     utcnow,
 )
 from .output_assembly_lifecycle import mark_output_assemblies_stale
+from .project_speech_references import (
+    clone_segment_speech_references,
+    list_project_speech_references,
+    normalize_speech_reference_slot,
+    segment_speech_reference_identity,
+)
+from .projects.speech_reference_models import ProjectSpeechReference
 from .settings_policy import RevisionConflict, stable_hash
+
+
+def _propagate_segment_speech_references(
+    session: Session,
+    session_id: str,
+    lineage: dict[str, list[str]],
+) -> None:
+    """Copy only saved segment selections along validated topology lineage."""
+
+    slots_by_source: dict[str, str] = {}
+    for source_id, target_ids in lineage.items():
+        if not target_ids:
+            continue
+        try:
+            slots_by_source[source_id] = normalize_speech_reference_slot(
+                "segment:" + source_id
+            )
+        except ValueError:
+            # Old non-UUID generation IDs never had a valid saved segment slot.
+            continue
+    if not slots_by_source:
+        return
+
+    source_slots = list(slots_by_source.values())
+    existing_slots: set[str] = set()
+    with session.no_autoflush:
+        for start in range(0, len(source_slots), 500):
+            existing_slots.update(
+                session.scalars(
+                    select(ProjectSpeechReference.slot_key).where(
+                        ProjectSpeechReference.session_id == session_id,
+                        ProjectSpeechReference.slot_key.in_(
+                            source_slots[start : start + 500]
+                        ),
+                    )
+                )
+            )
+    if not existing_slots:
+        return
+
+    def required_current_generation_content_write(
+        guarded_session: Session,
+    ) -> None:
+        require_generation_content_write(guarded_session, "session", session_id)
+
+    references = list_project_speech_references(
+        session,
+        session_id,
+        authorization_guard=required_current_generation_content_write,
+        slot_keys=source_slots,
+    )
+    references_by_source = {
+        reference.slot_key[len("segment:") :]: reference for reference in references
+    }
+
+    sources_by_target: dict[str, list[str]] = {}
+    for source_id, target_ids in lineage.items():
+        for target_id in target_ids:
+            sources_by_target.setdefault(target_id, []).append(source_id)
+    for source_ids in sources_by_target.values():
+        identities = {
+            segment_speech_reference_identity(references_by_source.get(source_id))
+            for source_id in dict.fromkeys(source_ids)
+        }
+        if len(identities) > 1:
+            raise ValueError(
+                "These segments use different saved voice selections. Keep their boundary or choose one voice before merging."
+            )
+
+    clone_segment_speech_references(
+        session,
+        session_id,
+        {
+            source_id: lineage[source_id]
+            for source_id in slots_by_source
+        },
+        authorization_guard=required_current_generation_content_write,
+    )
 
 
 class GenerationTopologyService:
@@ -50,6 +136,7 @@ class GenerationTopologyService:
             "settings": settings or {},
         }
         with self.database.immediate_session() as session:
+            require_generation_content_write(session, "session", session_id)
             if session.get(SessionRecord, session_id) is None:
                 raise KeyError(session_id)
             if (
@@ -750,6 +837,7 @@ class GenerationTopologyService:
     ) -> dict[str, Any]:
         """Create one immutable typed topology revision in a caller transaction."""
 
+        require_generation_content_write(session, "session", session_id)
         expected_revision_id = str(expected_revision_id or "").strip()
         if not expected_revision_id:
             raise ValueError("An expected plan revision ID is required.")
@@ -1258,16 +1346,6 @@ class GenerationTopologyService:
                     take_copy_pairs.append((source.id, new_segments[new_index].id))
                 new_index += 1
         self._clone_available_takes_batch(session, take_copy_pairs)
-        if activate:
-            plan.active_revision_id = revision.id
-            plan.updated_at = utcnow()
-            mark_output_assemblies_stale(
-                session,
-                session_id,
-                cancel_active=True,
-                jobs=self.jobs,
-            )
-        session.flush()
         lineage: dict[str, list[str]] = {}
         affected_ids: list[str] = []
         new_index = 0
@@ -1290,6 +1368,17 @@ class GenerationTopologyService:
         operation_json["lineage"] = lineage
         revision.operation_json = deepcopy(operation_json)
         revision.content_hash = stable_hash({"parent_revision_id": current.id, "operation": operation_json, "segments": persisted_values})
+        session.flush()
+        _propagate_segment_speech_references(session, session_id, lineage)
+        if activate:
+            plan.active_revision_id = revision.id
+            plan.updated_at = utcnow()
+            mark_output_assemblies_stale(
+                session,
+                session_id,
+                cancel_active=True,
+                jobs=self.jobs,
+            )
         session.flush()
         if activate:
             boundary_mapping: dict[tuple[str, str], str | None] = {}

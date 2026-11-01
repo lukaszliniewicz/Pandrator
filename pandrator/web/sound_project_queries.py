@@ -5,9 +5,17 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
-from .models import Artifact, GenerationPlan, SessionRecord, SoundItem, SoundVariant
+from .models import (
+    Artifact,
+    GenerationPlan,
+    Project,
+    SessionRecord,
+    SoundItem,
+    SoundVariant,
+    Workspace,
+)
 from .sound_project_models import ProjectSoundCue, ProjectSoundPlan
 
 MAX_CUES = 1000
@@ -44,8 +52,17 @@ def cue_rows(
     limit: int | None = None,
     segment_ids: list[str] | None = None,
 ) -> list[tuple[Any, ...]]:
+    root = aliased(SessionRecord)
     statement = (
-        select(ProjectSoundCue, SoundVariant, SoundItem, Artifact)
+        select(
+            ProjectSoundCue, SoundVariant, SoundItem, Artifact,
+            Project.id, Workspace.id, Workspace.state, root.project_id,
+        )
+        .join(ProjectSoundPlan, ProjectSoundPlan.id == ProjectSoundCue.plan_id)
+        .join(SessionRecord, SessionRecord.id == ProjectSoundPlan.session_id)
+        .outerjoin(Project, Project.id == SessionRecord.project_id)
+        .outerjoin(Workspace, Workspace.id == Project.workspace_id)
+        .outerjoin(root, root.id == Project.source_session_id)
         .join(SoundVariant, SoundVariant.id == ProjectSoundCue.variant_id)
         .outerjoin(SoundItem, SoundItem.id == SoundVariant.item_id)
         .outerjoin(Artifact, Artifact.id == SoundVariant.artifact_id)
@@ -62,9 +79,16 @@ def cue_rows(
     statement = statement.order_by(ProjectSoundCue.logical_id)
     if limit is not None:
         statement = statement.limit(limit)
-    return [
-        (row[0], row[1], row[2], row[3]) for row in session.execute(statement).all()
-    ]
+    rows = session.execute(statement).all()
+    for _cue, variant, item, artifact, project_id, workspace_id, state, root_project_id in rows:
+        if (
+            project_id is None or workspace_id is None or state != "active"
+            or root_project_id != project_id or variant.workspace_id != workspace_id
+            or (variant.item_id is not None and (item is None or item.workspace_id != workspace_id))
+            or (variant.artifact_id is not None and (artifact is None or artifact.workspace_id != workspace_id))
+        ):
+            raise ValueError("The sound cue has inconsistent workspace ownership.")
+    return [(row[0], row[1], row[2], row[3]) for row in rows]
 
 
 def cue_summary(row: tuple[Any, ...]) -> dict[str, Any]:

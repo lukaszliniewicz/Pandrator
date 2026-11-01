@@ -24,6 +24,7 @@ from .cjk_words import word_boundaries as cjk_word_boundaries
 from .languages import normalize_language_code
 from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
+from .subtitle_integrity import subtitle_text_integrity
 from .text_units import (
     clean_text,
     contains_cjk,
@@ -447,7 +448,10 @@ def _split_words_to_capacity(
     ]
 
 
-def _split_segment(segment: SubtitleSegment, config: SubtitleFinalizationConfig) -> list[SubtitleSegment]:
+def _split_segment(
+    segment: SubtitleSegment, config: SubtitleFinalizationConfig,
+    *, preserve_timing: bool = False,
+) -> list[SubtitleSegment]:
     text = _clean_text(segment.text)
     if not text:
         return []
@@ -466,6 +470,11 @@ def _split_segment(segment: SubtitleSegment, config: SubtitleFinalizationConfig)
     )
     if not chunks:
         return []
+
+    # An indivisible word may exceed the nominal maximum. In preservation
+    # mode the source envelope takes precedence over presentation limits.
+    if preserve_timing:
+        max_duration_ms = max(max_duration_ms, span_ms)
 
     chunk_count = len(chunks)
     max_gap_ms = max(0, int(config.min_gap_ms))
@@ -605,12 +614,15 @@ def _adjust_durations(
     return adjusted
 
 
-def finalize_segments(segments: list[SubtitleSegment], config: SubtitleFinalizationConfig) -> list[SubtitleSegment]:
+def finalize_segments(
+    segments: list[SubtitleSegment], config: SubtitleFinalizationConfig,
+    *, preserve_timing: bool = False,
+) -> list[SubtitleSegment]:
     output: list[SubtitleSegment] = []
     for segment in segments:
-        for item in _split_segment(segment, config):
+        for item in _split_segment(segment, config, preserve_timing=preserve_timing):
             next_start = item.start_ms
-            next_end = min(item.end_ms, next_start + config.max_duration_ms)
+            next_end = item.end_ms if preserve_timing else min(item.end_ms, next_start + config.max_duration_ms)
             output.append(
                 SubtitleSegment(
                     index=0,
@@ -620,13 +632,18 @@ def finalize_segments(segments: list[SubtitleSegment], config: SubtitleFinalizat
                     speaker=item.speaker,
                 )
             )
+    if preserve_timing:
+        return [replace(cue, index=index) for index, cue in enumerate(output, start=1)]
     return _adjust_durations(output, config)
 
 
-def finalize_srt_content(content: str, settings: dict[str, Any] | None = None) -> str:
-    segments = parse_srt(content)
+def finalize_srt_content(
+    content: str, settings: dict[str, Any] | None = None,
+    *, preserve_timing: bool = False,
+) -> str:
+    segments = parse_srt(content, infer_speakers=False)
     config = SubtitleFinalizationConfig.from_settings(settings, text=join_fragments(cue.text for cue in segments))
-    return compose_srt(finalize_segments(segments, config))
+    return compose_srt(finalize_segments(segments, config, preserve_timing=preserve_timing))
 
 
 def diagnose_srt_content(
@@ -640,7 +657,7 @@ def diagnose_srt_content(
     """
     from .srt_utils import parse_srt_timestamp
 
-    cues = parse_srt(content)
+    cues = parse_srt(content, infer_speakers=False)
     config = SubtitleFinalizationConfig.from_settings(
         settings, text=join_fragments(cue.text for cue in cues)
     )
@@ -663,6 +680,8 @@ def diagnose_srt_content(
             pass
         accepted_ordinal += 1
     invalid_durations = len(invalid_ordinals)
+    below_minimum_durations = 0
+    above_maximum_durations = 0
     violating_lines = 0
     line_cues = 0
     speed_cues = 0
@@ -696,6 +715,12 @@ def diagnose_srt_content(
         duration_ms = cue.end_ms - cue.start_ms
         cps = None
         if ordinal not in invalid_ordinals and duration_ms > 0:
+            if duration_ms < config.min_duration_ms:
+                below_minimum_durations += 1
+                reasons.append("duration_below_minimum")
+            if duration_ms > config.max_duration_ms:
+                above_maximum_durations += 1
+                reasons.append("duration_above_maximum")
             cps = config.character_count(cue.text) * 1000.0 / duration_ms
             maximum_cps = max(maximum_cps, cps)
             too_fast = config.character_count(cue.text) * 1000 > config.max_chars_per_second * duration_ms
@@ -714,6 +739,8 @@ def diagnose_srt_content(
         "reading_speed_violating_cues": speed_cues,
         "max_lines_violating_cues": max_lines_cues,
         "invalid_duration_cues": invalid_durations,
+        "min_duration_violating_cues": below_minimum_durations,
+        "max_duration_violating_cues": above_maximum_durations,
         "observed_max_units_per_line": maximum_line,
         "observed_max_cps": maximum_cps,
         "overlapping_cues": overlapping_cues,
@@ -728,11 +755,16 @@ def finalize_srt_file(
     source: str | Path,
     destination: str | Path,
     settings: dict[str, Any] | None = None,
+    *, preserve_timing: bool = True,
 ) -> str:
     source_path, destination_path = Path(source), Path(destination)
+    content = source_path.read_text(encoding="utf-8-sig")
+    finalized = finalize_srt_content(content, settings, preserve_timing=preserve_timing)
+    if not subtitle_text_integrity(content, finalized)["matches"]:
+        raise ValueError("Subtitle finalization failed text preservation verification")
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     destination_path.write_text(
-        finalize_srt_content(source_path.read_text(encoding="utf-8-sig"), settings),
+        finalized,
         encoding="utf-8",
     )
     return str(destination_path)

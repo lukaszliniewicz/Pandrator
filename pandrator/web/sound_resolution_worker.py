@@ -6,13 +6,21 @@ import tempfile
 import threading
 from datetime import UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
 from pandrator.logic.book_timing import AlignedBookText
+from pandrator.logic.model_acquisition import ModelAcquisitionDenied
 from pandrator.logic.sound_boundary_refinement import BOUNDARY_REFINEMENT_VERSION
 
+from .access.artifact_policy import ArtifactNotFound
+from .access.session_policy import SessionNotFound
+from .access.sound_execution_policy import (
+    require_sound_input_access,
+    require_sound_processing_session,
+)
+from .accounts.execution_actor import current_execution_actor
 from .artifacts import sha256_file
 from .job_execution import current_job_lease
 from .models import Job, utcnow
@@ -28,6 +36,10 @@ from .sound_resolution_snapshot import (
     capture,
     digest,
 )
+
+
+class SoundResolutionLeaseLost(RuntimeError):
+    """The registered resolution worker no longer owns its lease."""
 
 
 def _lease(session: Session, payload: dict[str, Any], cancel_event: threading.Event) -> Job:
@@ -55,7 +67,7 @@ def _lease(session: Session, payload: dict[str, Any], cancel_event: threading.Ev
         <= utcnow()
         or cancel_event.is_set()
     ):
-        raise RuntimeError("Sound resolution lease or cancellation changed.")
+        raise SoundResolutionLeaseLost("Sound resolution lease or cancellation changed.")
     return job
 
 
@@ -80,18 +92,26 @@ def _pins(service, session: Session, payload: dict[str, Any]) -> SoundResolution
     return snapshot
 
 
-def _verify_take(item: WorkItem) -> None:
+def _verify_take(item: WorkItem, *, before_io: Callable[[], None] | None = None) -> None:
     if item.reason is not None:
         return
+    if before_io is not None:
+        before_io()
     try:
         valid = (
             item.path is not None
             and item.take_hash is not None
             and item.path.is_file()
-            and sha256_file(item.path) == item.take_hash
         )
     except OSError:
         valid = False
+    if valid and item.path is not None:
+        if before_io is not None:
+            before_io()
+        try:
+            valid = sha256_file(item.path) == item.take_hash
+        except OSError:
+            valid = False
     if not valid:
         raise RuntimeError("Selected audio take content changed; submit sound resolution again.")
 
@@ -135,20 +155,39 @@ def run_resolution(
     service, payload: dict[str, Any], progress, cancel_event: threading.Event
 ) -> dict[str, Any]:
     with service.database.snapshot_session() as session:
-        snapshot = _pins(service, session, payload)
         _lease(session, payload, cancel_event)
+        snapshot = _pins(service, session, payload)
+        before_io: Callable[[], None] | None = None
+        if current_execution_actor.get() is not None:
+            def check_io() -> None:
+                with service.database.snapshot_session() as unit:
+                    _lease(unit, payload, cancel_event)
+                    require_sound_processing_session(unit, snapshot.session_id)
+                    for artifact_id in sorted({
+                        item.artifact_id for item in snapshot.items
+                        if item.reason is None and item.artifact_id is not None
+                    }):
+                        require_sound_input_access(
+                            unit, snapshot.session_id, artifact_id, session_bound=True
+                        )
+            before_io = check_io
+        io_kwargs = {"before_io": before_io} if before_io is not None else {}
         cached: dict[str, AlignedBookText] = {}
         for item in snapshot.items:
             if item.reason is None and item.take_id is not None and item.take_id not in cached:
-                found = find_cache(session, service.paths, snapshot.session_id, item)
+                found = find_cache(session, service.paths, snapshot.session_id, item, **io_kwargs)
                 if found is not None:
                     cached[item.take_id] = found
     for item in snapshot.items:
-        _verify_take(item)
+        _verify_take(item, **io_kwargs)
     results: dict[str, dict[str, Any]] = {}
     staged: dict[str, tuple[WorkItem, Path]] = {}
     alignments = dict(cached)
+    if before_io is not None:
+        before_io()
     service.paths.temporary.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if before_io is not None:
+        before_io()
     with tempfile.TemporaryDirectory(
         prefix="sound-resolution-", dir=service.paths.temporary
     ) as temporary:
@@ -162,11 +201,18 @@ def run_resolution(
                 continue
             assert item.take_id is not None
             take_dir = workroot / item.take_id
+            if before_io is not None:
+                before_io()
             take_dir.mkdir(exist_ok=True)
             aligned = alignments.get(item.take_id)
             if aligned is None:
                 try:
-                    aligned = align_take(item, snapshot.settings, take_dir, cancel_event)
+                    aligned = align_take(item, snapshot.settings, take_dir, cancel_event, **io_kwargs)
+                except (
+                    PermissionError, SessionNotFound, ArtifactNotFound, ModelAcquisitionDenied,
+                    SoundResolutionLeaseLost, RevisionConflict,
+                ):
+                    raise
                 except Exception:
                     if cancel_event.is_set():
                         raise RuntimeError("Sound resolution was canceled.") from None
@@ -179,14 +225,21 @@ def run_resolution(
                 ):
                     raise RuntimeError("Alignment identity changed; submit sound resolution again.")
                 alignments[item.take_id] = aligned
-                staged[item.take_id] = (item, stage_cache(service.paths, item, aligned, take_dir))
+                staged[item.take_id] = (item, stage_cache(service.paths, item, aligned, take_dir, **io_kwargs))
             normalized = take_dir / "book-alignment.wav"
             direct_overlay = (
                 item.anchor.get("kind") == "after_word" and item.playback.get("mode") == "overlay"
             )
+            if before_io is not None:
+                before_io()
             if not direct_overlay and not normalized.is_file():
                 try:
-                    normalize_take(item, normalized, snapshot.settings, cancel_event)
+                    normalize_take(item, normalized, snapshot.settings, cancel_event, **io_kwargs)
+                except (
+                    PermissionError, SessionNotFound, ArtifactNotFound, ModelAcquisitionDenied,
+                    SoundResolutionLeaseLost, RevisionConflict,
+                ):
+                    raise
                 except Exception:
                     if cancel_event.is_set():
                         raise RuntimeError("Sound resolution was canceled.") from None
@@ -195,8 +248,14 @@ def run_resolution(
                     ) from None
             try:
                 results[item.cue_id] = resolve_boundary(
-                    item, aligned, normalized, take_dir, snapshot.settings, cancel_event
+                    item, aligned, normalized, take_dir, snapshot.settings, cancel_event,
+                    **io_kwargs,
                 )
+            except (
+                PermissionError, SessionNotFound, ArtifactNotFound, ModelAcquisitionDenied,
+                SoundResolutionLeaseLost, RevisionConflict,
+            ):
+                raise
             except Exception:
                 if cancel_event.is_set():
                     raise RuntimeError("Sound resolution was canceled.") from None
@@ -206,11 +265,12 @@ def run_resolution(
         # Check files before opening SQLite's writer. The final DB pin/lease
         # fence below prevents any stale plan or selection from being published.
         for item in snapshot.items:
-            _verify_take(item)
-        registrations = {
-            take_id: service.artifacts.prepare_registration(path)
-            for take_id, (_item, path) in staged.items()
-        }
+            _verify_take(item, **io_kwargs)
+        registrations = {}
+        for take_id, (_item, path) in staged.items():
+            if before_io is not None:
+                before_io()
+            registrations[take_id] = service.artifacts.prepare_registration(path)
         with service.database.immediate_session() as session:
             job = _lease(session, payload, cancel_event)
             _pins(service, session, payload)
@@ -223,9 +283,9 @@ def run_resolution(
                     item,
                     path,
                     registrations[take_id],
+                    **io_kwargs,
                 )
             _lease(session, payload, cancel_event)
-            _pins(service, session, payload)
             _record, old, active = current_header(session, snapshot.session_id)
             if old is None or old.id != snapshot.plan_id:
                 raise RevisionConflict("Sound plan changed before publication.")
@@ -240,6 +300,7 @@ def run_resolution(
                     "resolution": _resolution(item, measured),
                 }
                 cue["placement_status"] = measured["status"]
+            _pins(service, session, payload)
             plan = write_version(session, snapshot.session_id, old, active, cues)
             receipt = {
                 "job_id": job.id,
@@ -258,4 +319,13 @@ def run_resolution(
                 ],
             }
             _lease(session, payload, cancel_event)
+            if current_execution_actor.get() is not None:
+                require_sound_processing_session(session, snapshot.session_id)
+                for artifact_id in sorted({
+                    item.artifact_id for item in snapshot.items
+                    if item.reason is None and item.artifact_id is not None
+                }):
+                    require_sound_input_access(
+                        session, snapshot.session_id, artifact_id, session_bound=True
+                    )
             return receipt

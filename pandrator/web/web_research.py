@@ -15,11 +15,13 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from pandrator.logic import llm_handler
 
 from .database import Database
 from .models import ResearchCacheEntry, utcnow
+from .projects.artifact_identity import resolve_artifact_ownership
 
 SEARCH_ROOT = "https://s.jina.ai/"
 READER_ROOT = "https://r.jina.ai/"
@@ -256,9 +258,23 @@ def _trim(value: object, limit: int) -> tuple[str, bool]:
     return text[: max(0, limit - 28)].rstrip() + "\n\n[Result truncated]", True
 
 
-def _cache_key(provider: str, operation: str, payload: dict[str, Any]) -> str:
+def _cache_key(
+    provider: str,
+    operation: str,
+    payload: dict[str, Any],
+    *,
+    workspace_id: str,
+    project_id: str | None,
+) -> str:
     material = json.dumps(
-        {"provider": provider, "operation": operation, "payload": payload},
+        {
+            "namespace": "pandrator-research-v2",
+            "workspace_id": workspace_id,
+            "project_id": project_id,
+            "provider": provider,
+            "operation": operation,
+            "payload": payload,
+        },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -267,8 +283,42 @@ def _cache_key(provider: str, operation: str, payload: dict[str, Any]) -> str:
 
 
 class PersistentResearchCache:
-    def __init__(self, database: Database):
+    def __init__(
+        self,
+        database: Database,
+        *,
+        session_id: str | None = None,
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+    ):
         self.database = database
+        self._session_id = session_id
+        with database.snapshot_session() as session:
+            self._ownership = resolve_artifact_ownership(
+                session,
+                session_id=session_id,
+                project_id=project_id,
+                workspace_id=workspace_id,
+            )
+
+    def _validate_owner(self, session: Session) -> None:
+        owner = resolve_artifact_ownership(
+            session,
+            session_id=self._session_id,
+            project_id=self._ownership.project_id,
+            workspace_id=self._ownership.workspace_id,
+        )
+        if owner != self._ownership:
+            raise ValueError("The research cache ownership changed.")
+
+    def _key(self, provider: str, operation: str, payload: dict[str, Any]) -> str:
+        return _cache_key(
+            provider,
+            operation,
+            payload,
+            workspace_id=self._ownership.workspace_id,
+            project_id=self._ownership.project_id,
+        )
 
     def get(
         self,
@@ -276,11 +326,14 @@ class PersistentResearchCache:
         operation: str,
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
-        key = _cache_key(provider, operation, payload)
-        with self.database.session() as session:
+        key = self._key(provider, operation, payload)
+        with self.database.snapshot_session() as session:
+            self._validate_owner(session)
             entry = session.scalar(
                 select(ResearchCacheEntry).where(
                     ResearchCacheEntry.cache_key == key,
+                    ResearchCacheEntry.workspace_id == self._ownership.workspace_id,
+                    ResearchCacheEntry.project_id == self._ownership.project_id,
                     ResearchCacheEntry.expires_at > utcnow(),
                 )
             )
@@ -297,14 +350,30 @@ class PersistentResearchCache:
         *,
         ttl_days: int,
     ) -> None:
-        key = _cache_key(provider, operation, payload)
+        key = self._key(provider, operation, payload)
         now = utcnow()
-        with self.database.session() as session:
-            entry = session.get(ResearchCacheEntry, key)
+        with self.database.immediate_session() as session:
+            self._validate_owner(session)
+            entry = session.scalar(
+                select(ResearchCacheEntry).where(
+                    ResearchCacheEntry.cache_key == key,
+                    ResearchCacheEntry.workspace_id == self._ownership.workspace_id,
+                    ResearchCacheEntry.project_id == self._ownership.project_id,
+                )
+            )
             if entry is None:
+                if (
+                    session.scalar(
+                        select(ResearchCacheEntry.cache_key).where(ResearchCacheEntry.cache_key == key)
+                    )
+                    is not None
+                ):
+                    raise ValueError("The research cache entry has inconsistent ownership.")
                 session.add(
                     ResearchCacheEntry(
                         cache_key=key,
+                        workspace_id=self._ownership.workspace_id,
+                        project_id=self._ownership.project_id,
                         provider=provider,
                         operation=operation,
                         request_json=payload,

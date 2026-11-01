@@ -20,6 +20,7 @@ from .dubbing.text_units import (
     fragment_separator,
     strip_latin_diacritics,
 )
+from .narration_packing import preserve_sentence_boundaries
 
 CHUNK_SIZE = 20000
 CHAPTER_MARKER = "[[Chapter]]"
@@ -145,6 +146,16 @@ def _split_structural_text_blocks(text: str) -> list[dict]:
     return blocks
 
 
+def _ends_with_terminal_punctuation(text: str) -> bool:
+    terminal_index = len(text)
+    while terminal_index > 0 and (
+        text[terminal_index - 1] in CLOSING_TERMINAL_PUNCTUATION
+        or text[terminal_index - 1].isspace()
+    ):
+        terminal_index -= 1
+    return terminal_index > 0 and text[terminal_index - 1] in TERMINAL_PUNCTUATION
+
+
 def _ensure_line_terminal_punctuation(text: str) -> str:
     """Treat one newline as wrapping and two or more as a paragraph break."""
     normalized = re.sub(r"\r\n?", "\n", text)
@@ -155,19 +166,7 @@ def _ensure_line_terminal_punctuation(text: str) -> str:
         if not paragraph:
             continue
 
-        terminal_index = len(paragraph)
-        while (
-            terminal_index > 0
-            and (
-                paragraph[terminal_index - 1] in CLOSING_TERMINAL_PUNCTUATION
-                or paragraph[terminal_index - 1].isspace()
-            )
-        ):
-            terminal_index -= 1
-        if (
-            terminal_index == 0
-            or paragraph[terminal_index - 1] not in TERMINAL_PUNCTUATION
-        ):
+        if not _ends_with_terminal_punctuation(paragraph):
             paragraph += "."
         paragraphs.append(paragraph)
     return "\n\n".join(paragraphs)
@@ -585,6 +584,7 @@ def _process_audiobook_chunk(chunk: str, settings: dict) -> list[dict]:
     disable_paragraph_detection = settings.get('disable_paragraph_detection', False)
     language = normalize_language_code(settings.get('language', 'en'))
     max_sentence_length = settings.get('max_sentence_length', 160)
+    preserve_sentences = preserve_sentence_boundaries(settings, max_sentence_length)
     enable_sentence_appending = settings.get('enable_sentence_appending', True)
     remove_diacritics = settings.get('remove_diacritics', False)
     remove_quotation_marks = settings.get('remove_quotation_marks', False)
@@ -684,6 +684,8 @@ def _process_audiobook_chunk(chunk: str, settings: dict) -> list[dict]:
                     body_text, language, tts_service
                 ) if sentence.strip()
             ]
+            if preserve_sentences:
+                sentences = _coalesce_nonterminal_sentence_splits(sentences)
 
             dialogue_annotation = dialogue_annotations[paragraph_index]
             for sentence_index, sentence in enumerate(sentences):
@@ -753,9 +755,21 @@ def _process_audiobook_chunk(chunk: str, settings: dict) -> list[dict]:
             dialogue_merge_allowed=(
                 settings.get("audiobook_dialogue_merge_allowed") is True
             ),
+            preserve_sentence_boundaries=preserve_sentences,
             audiobook_preparation=True,
         )
     return split_sentences
+
+
+def _coalesce_nonterminal_sentence_splits(sentences: list[str]) -> list[str]:
+    """Keep neural clause cuts inside their source sentence before budget checks."""
+    complete = []
+    for sentence in sentences:
+        if complete and not _ends_with_terminal_punctuation(complete[-1]):
+            complete[-1] = _join_narration_fragments((complete[-1], sentence))
+        else:
+            complete.append(sentence)
+    return complete
 
 
 def _limit_segment_words(
@@ -1245,6 +1259,7 @@ def append_short_sentences(
     max_segment_words=None,
     max_segment_tokenizer_bytes=None,
     dialogue_merge_allowed=False,
+    preserve_sentence_boundaries=False,
     audiobook_preparation=False,
 ):
     if audiobook_preparation:
@@ -1254,6 +1269,7 @@ def append_short_sentences(
             max_segment_words=max_segment_words,
             max_segment_tokenizer_bytes=max_segment_tokenizer_bytes,
             dialogue_merge_allowed=dialogue_merge_allowed,
+            preserve_sentence_boundaries=preserve_sentence_boundaries,
         )
 
     appended_sentences = []
@@ -1340,6 +1356,7 @@ def _append_audiobook_sentences(
     max_segment_words=None,
     max_segment_tokenizer_bytes=None,
     dialogue_merge_allowed=False,
+    preserve_sentence_boundaries=False,
 ):
     """Greedily pack complete source sentences without crossing paragraphs."""
     groups = []
@@ -1373,6 +1390,7 @@ def _append_audiobook_sentences(
                 max_sentence_length,
                 max_segment_words=max_segment_words,
                 max_segment_tokenizer_bytes=max_segment_tokenizer_bytes,
+                preserve_sentence_boundaries=preserve_sentence_boundaries,
             ),
         ))
 
@@ -1390,6 +1408,13 @@ def _append_audiobook_sentences(
             and result
             and result[-1].get("paragraph") == "yes"
             and len(packed) == 1
+            and (
+                not preserve_sentence_boundaries
+                or (
+                    result[-1].get("split_part") is None
+                    and packed[0].get("split_part") is None
+                )
+            )
             and _can_merge_dialogue_turns(
                 result[-1],
                 packed[0],
@@ -1427,10 +1452,18 @@ def _pack_audiobook_paragraph(
     *,
     max_segment_words=None,
     max_segment_tokenizer_bytes=None,
+    preserve_sentence_boundaries=False,
 ):
     packed = []
     current = None
     for row in rows:
+        if preserve_sentence_boundaries and row.get("split_part") is not None:
+            if current is not None:
+                packed.append(current)
+                current = None
+            packed.append(row.copy())
+            continue
+
         if current is None:
             current = row.copy()
             continue

@@ -7,14 +7,17 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, event, inspect, select
+from sqlalchemy import MetaData, Table, create_engine, event, inspect, select
 
 from pandrator.logic.audio_cpp_generation_models import get_model as get_audio_cpp_generation_model
 from pandrator.runtime import DataPaths
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database, sqlite_url
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, Job, SessionRecord, SoundItem, SoundVariant
+from pandrator.web.models import Artifact, Job, SessionRecord, SoundItem, SoundVariant, utcnow
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.settings_policy import RevisionConflict
 from pandrator.web.sound_library_queries import MAX_PAGE_SIZE, _provenance
 from pandrator.web.sound_project_models import ProjectSoundCue, ProjectSoundPlan
@@ -54,6 +57,7 @@ def _ready_candidate(database, paths, artifacts, *, name="sample", job=None):
     )
     with database.immediate_session() as session:
         candidate = SoundVariant(
+            workspace_id=artifact.workspace_id,
             artifact_id=artifact.id,
             job_id=job.id if job is not None else None,
             state="ready",
@@ -112,18 +116,28 @@ def test_migration_adds_global_records_without_touching_existing_rows(tmp_path: 
             row = session.get(SessionRecord, existing_id)
             assert row is not None
             assert row.name == "Existing before sound library"
-            item = SoundItem(name="global item", tags_json=["weather"])
-            candidate = SoundVariant(state="discarded", provenance_json={})
-            session.add_all([item, candidate])
-            session.flush()
-            candidate.item_id = item.id
-            item.preferred_variant_id = candidate.id
+            metadata = MetaData()
+            items = Table("sound_items", metadata, autoload_with=session.connection())
+            variants = Table("sound_variants", metadata, autoload_with=session.connection())
+            item_id, candidate_id = "historical-item", "historical-candidate"
+            timestamp = utcnow()
+            session.execute(items.insert().values(
+                id=item_id, name="global item", tags_json=["weather"], revision=1,
+                archived=False, created_at=timestamp, updated_at=timestamp,
+            ))
+            session.execute(variants.insert().values(
+                id=candidate_id, item_id=item_id, state="discarded",
+                provenance_json={}, created_at=timestamp,
+            ))
+            session.execute(items.update().where(items.c.id == item_id).values(
+                preferred_variant_id=candidate_id,
+            ))
 
         with engine.session() as session:
             session.delete(session.get(SessionRecord, existing_id))
         with engine.session() as session:
-            assert session.get(SoundItem, item.id) is not None
-            assert session.get(SoundVariant, candidate.id) is not None
+            assert session.scalar(select(items.c.id).where(items.c.id == item_id)) == item_id
+            assert session.scalar(select(variants.c.id).where(variants.c.id == candidate_id)) == candidate_id
     finally:
         engine.dispose()
 
@@ -217,6 +231,9 @@ def test_save_attach_update_revision_and_soft_discard(domain):
         error_message="failed generation",
     )
     with database.immediate_session() as session:
+        ownership = job_creation_ownership(session)
+        failed_job.workspace_id = ownership.workspace_id
+        failed_job.project_id = ownership.project_id
         session.add(failed_job)
         session.flush()
         failed_job_id = failed_job.id
@@ -241,8 +258,7 @@ def test_candidate_pinned_by_project_cue_cannot_be_discarded(domain):
     )
     with database.immediate_session() as session:
         owner = SessionRecord(name="Sound cue owner")
-        session.add(owner)
-        session.flush()
+        create_session_project(session, owner)
         plan = ProjectSoundPlan(session_id=owner.id, revision=1)
         session.add(plan)
         session.flush()
@@ -276,6 +292,7 @@ def test_queued_candidate_status_comes_from_its_durable_job(domain):
     expected = {"queued": "queued", "running": "running", "failed": "failed", "canceled": "canceled"}
     candidate_ids = {}
     with database.immediate_session() as session:
+        ownership = job_creation_ownership(session)
         for status in expected:
             job = Job(
                 kind="sound.generate",
@@ -283,9 +300,12 @@ def test_queued_candidate_status_comes_from_its_durable_job(domain):
                 payload_json={},
                 resource_keys_json=[],
             )
+            job.workspace_id = ownership.workspace_id
+            job.project_id = ownership.project_id
             session.add(job)
             session.flush()
             candidate = SoundVariant(
+                workspace_id=initial_personal_workspace(session).id,
                 job_id=job.id,
                 state="queued",
                 provenance_json={"operation": "gen"},
@@ -303,6 +323,7 @@ def test_paged_queries_are_bounded_exact_tagged_and_compact(domain):
     for index in range(5):
         with database.immediate_session() as session:
             item = SoundItem(
+                workspace_id=initial_personal_workspace(session).id,
                 name=f"Sound {index}",
                 tags_json=["exact" if index % 2 == 0 else "other"],
                 revision=1,
@@ -313,6 +334,7 @@ def test_paged_queries_are_bounded_exact_tagged_and_compact(domain):
             if index == 0:
                 session.add(
                     SoundVariant(
+                        workspace_id=item.workspace_id,
                         item_id=item.id,
                         state="discarded",
                         provenance_json={"provider": "local", "secret": "omit"},
@@ -341,7 +363,8 @@ def test_paged_queries_are_bounded_exact_tagged_and_compact(domain):
         assert candidate_page["items"][0]["provenance"] == {"provider": "local"}
     finally:
         event.remove(database.engine, "before_cursor_execute", count_query)
-    assert len(queries) == 5  # one per list page; item detail uses two.
+    # Each call resolves its active workspace once; pages remain independent of row count.
+    assert len(queries) == 9  # four owner reads, three list pages and two detail reads.
 
     with database.snapshot_session() as session:
         with pytest.raises(ValueError, match="cursor"):
@@ -405,7 +428,9 @@ def test_detail_provenance_is_allowlisted_while_lists_stay_compact(domain, monke
     assert item["variants"]["items"][0]["provenance"] == expected
     assert "threads" not in listed["items"][0]["preferred_variant"]["provenance"]
     assert "runtime_identity" not in candidates["items"][0]["provenance"]
-    assert len(queries) == 5
+    # Fixed owner/link validation reads are added to direct detail lookups;
+    # list pages still do no per-row queries or audio probes.
+    assert len(queries) == 14
     invalid = _provenance({
         "threads": True, "num_inference_steps": -2, "guidance_scale": float("nan"),
         "runtime_identity": {"path": "/private", "model_sha256": 12},

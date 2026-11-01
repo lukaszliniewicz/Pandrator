@@ -1,0 +1,17 @@
+name: pandrator/auth-json
+description: Parse the fixed Pandrator authentication security event stream
+filter: "evt.Line.Labels.type == 'pandrator' && evt.Line.Raw startsWith '{\"timestamp\":'"
+onsuccess: next_stage
+statics:
+  - parsed: pandrator_event
+    expression: JsonExtract(evt.Line.Raw, 'event')
+  - parsed: source_ip
+    expression: JsonExtract(evt.Line.Raw, 'client_ip')
+  - meta: source_ip
+    expression: evt.Parsed.source_ip
+  - meta: log_type
+    expression: evt.Parsed.pandrator_event
+  - meta: service
+    value: pandrator
+  - target: evt.StrTime
+    expression: JsonExtract(evt.Line.Raw, 'timestamp')

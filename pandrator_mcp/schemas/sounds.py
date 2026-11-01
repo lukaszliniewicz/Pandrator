@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     ConfigDict,
@@ -11,6 +11,7 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StrictStr,
+    field_validator,
     model_validator,
 )
 
@@ -19,12 +20,25 @@ from .project_sounds import ProjectSoundsInput, SoundAnchorInput, SoundPlaybackI
 
 _IDEMPOTENCY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
 _UINT32_MAX = 2**32 - 1
+_SCOPE_ROOT_MAX_LENGTH = 80
 _Tag = Annotated[StrictStr, Field(max_length=64)]
+_WorkspaceId = Annotated[
+    StrictStr,
+    Field(min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH),
+]
 _IdempotencyKey = Annotated[
     StrictStr,
     Field(min_length=8, max_length=200, pattern=_IDEMPOTENCY_PATTERN),
 ]
 DEFAULT_SOUND_MODEL_ID = "stable_audio_3_small_sfx_q8_0"
+
+
+def _validate_normalized_workspace_id(value: Any) -> Any:
+    if isinstance(value, str) and (not value.strip() or value != value.strip()):
+        raise ValueError(
+            "workspace_id must be a normalized nonblank string of at most 80 characters."
+        )
+    return value
 
 
 class _StrictInput(ToolInput):
@@ -63,6 +77,12 @@ class GenerateSoundInput(_StrictInput):
     seed: StrictInt | None = Field(default=None, ge=0, le=_UINT32_MAX)
     threads: StrictInt | None = Field(default=None, ge=1)
     idempotency_key: _IdempotencyKey
+    workspace_id: _WorkspaceId | None = None
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def validate_workspace_id(cls, value: Any) -> Any:
+        return _validate_normalized_workspace_id(value)
 
     @model_validator(mode="after")
     def validate_parameter_bounds(self) -> GenerateSoundInput:
@@ -97,6 +117,7 @@ class SoundItemChangesInput(_StrictInput):
 class SoundLibraryInput(_StrictInput):
     action: Literal["list", "get", "candidates", "candidate", "save", "update", "discard"]
 
+    workspace_id: _WorkspaceId | None = None
     query: StrictStr = Field(default="", max_length=200)
     tag: StrictStr | None = Field(default=None, max_length=64)
     cursor: StrictStr | None = Field(default=None, max_length=1024)
@@ -112,14 +133,20 @@ class SoundLibraryInput(_StrictInput):
     changes: SoundItemChangesInput | None = None
     idempotency_key: _IdempotencyKey | None = None
 
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def validate_workspace_id(cls, value: Any) -> Any:
+        return _validate_normalized_workspace_id(value)
+
     @model_validator(mode="after")
     def validate_action_fields(self) -> SoundLibraryInput:
         action_fields = {
-            "list": {"query", "tag", "cursor", "limit", "archived"},
-            "get": {"item_id", "cursor", "limit", "include_detail"},
-            "candidates": {"cursor", "limit"},
-            "candidate": {"candidate_id", "include_detail"},
+            "list": {"workspace_id", "query", "tag", "cursor", "limit", "archived"},
+            "get": {"workspace_id", "item_id", "cursor", "limit", "include_detail"},
+            "candidates": {"workspace_id", "cursor", "limit"},
+            "candidate": {"workspace_id", "candidate_id", "include_detail"},
             "save": {
+                "workspace_id",
                 "candidate_id",
                 "name",
                 "tags",
@@ -127,8 +154,14 @@ class SoundLibraryInput(_StrictInput):
                 "expected_revision",
                 "idempotency_key",
             },
-            "update": {"item_id", "expected_revision", "changes", "idempotency_key"},
-            "discard": {"candidate_id", "idempotency_key"},
+            "update": {
+                "workspace_id",
+                "item_id",
+                "expected_revision",
+                "changes",
+                "idempotency_key",
+            },
+            "discard": {"workspace_id", "candidate_id", "idempotency_key"},
         }
         supplied = self.model_fields_set - {"action"}
         unsupported = supplied - action_fields[self.action]
@@ -176,6 +209,14 @@ class ImportAudioReferenceInput(_StrictInput):
     relative_path: StrictStr = Field(min_length=1, max_length=1024)
     target: Literal["sound", "voice_reference"]
     idempotency_key: _IdempotencyKey
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_workspace_id(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
 
 SOUND_INPUT_MODELS = (

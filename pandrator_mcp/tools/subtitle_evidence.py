@@ -19,6 +19,7 @@ from ..schemas.subtitle_evidence import (
 
 _EVIDENCE_KEYS = (
     "id",
+    "revision",
     "evidence_id",
     "session_id",
     "source_artifact_id",
@@ -280,6 +281,7 @@ def request_subtitle_evidence(
 def get_subtitle_evidence_routes(runtime: McpRuntime, arguments: GetSubtitleEvidenceRoutesInput) -> dict[str, Any]:
     return runtime.require_application().get_subtitle_evidence_routes(
         language=arguments.language, include_languages=arguments.include_languages,
+        **({"session_id": arguments.session_id} if arguments.session_id is not None else {}),
     )
 
 
@@ -315,5 +317,6 @@ def resolve_subtitle_evidence(
             text=arguments.text,
             note=arguments.note,
             idempotency_key=arguments.idempotency_key,
+            **({"expected_revision": arguments.expected_revision} if arguments.expected_revision is not None else {}),
         )
     )

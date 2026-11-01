@@ -16,6 +16,22 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from sqlalchemy import delete, select, update
 from sqlalchemy.engine import CursorResult
 
+from .accounts.actor_authorization import require_actor_in_session
+from .accounts.auth_state import account_state_in_session, initial_user_id
+from .accounts.credential_resources import (
+    CredentialOwner,
+    CredentialResources,
+    CredentialResourcesDenied,
+    default_personal_resources,
+    record_resources,
+    replace_client_resources,
+    require_delegation_resources,
+    require_resources_within,
+    resources_for_owner,
+    validate_resources_for_user,
+)
+from .accounts.execution_actor import UserActor, actor_from_principal
+from .accounts.installation_mode import installation_mode_in_session
 from .auth import (
     ALL_SCOPES,
     AuthService,
@@ -31,7 +47,7 @@ from .models import (
 )
 
 TTY_REDIRECT_URI = "urn:pandrator:oauth:2.0:oob"
-AUTOMATION_SCOPES = ALL_SCOPES - {"app.admin"}
+AUTOMATION_SCOPES = ALL_SCOPES
 _CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
 
 
@@ -126,13 +142,6 @@ class AutomationEnrollmentService:
                 str(error),
                 400,
             ) from error
-        denied = scopes - AUTOMATION_SCOPES
-        if denied:
-            raise EnrollmentError(
-                "invalid_scope",
-                "Application-admin scope cannot be delegated to an automation client.",
-                400,
-            )
         return scopes
 
     @staticmethod
@@ -162,7 +171,21 @@ class AutomationEnrollmentService:
         target_instance_id: str,
         canonical_origin: str,
         created_by: str,
+        user_id: str,
+        auth_revision: int,
+        resource_grants: CredentialResources | None = None,
     ) -> AutomationClient:
+        selected_resources = (
+            default_personal_resources(session, user_id)
+            if resource_grants is None
+            else resource_grants
+        )
+        try:
+            selected_resources = validate_resources_for_user(session, user_id, selected_resources)
+        except CredentialResourcesDenied as error:
+            raise EnrollmentError(
+                "access_denied", "The requested credential resources are not available.", 403
+            ) from error
         client = session.get(AutomationClient, client_id)
         if client is None:
             client = AutomationClient(
@@ -174,15 +197,22 @@ class AutomationEnrollmentService:
                 target_instance_id=target_instance_id,
                 canonical_origin=canonical_origin,
                 created_by=created_by[:200],
+                user_id=user_id,
+                user_auth_revision=auth_revision,
             )
             session.add(client)
             session.flush()
+            record_resources(session, CredentialOwner.CLIENT, client.id, selected_resources)
             return client
         if client.revoked_at is not None:
             raise EnrollmentError(
                 "invalid_client",
                 "This automation client was revoked and must use a new client ID.",
                 401,
+            )
+        if client.user_id != user_id or client.user_auth_revision != auth_revision:
+            raise EnrollmentError(
+                "invalid_client", "The automation client's account has changed.", 403
             )
         if (
             client.target_instance_id != target_instance_id
@@ -193,6 +223,25 @@ class AutomationEnrollmentService:
                 "The automation client is bound to a different Pandrator target.",
                 409,
             )
+        old_resources = resources_for_owner(session, CredentialOwner.CLIENT, client.id)
+        resources_changed = old_resources != selected_resources
+        if frozenset(client.allowed_scopes_json or []) != scopes or resources_changed:
+            now = utcnow()
+            session.execute(
+                update(ApiToken)
+                .where(ApiToken.client_id == client.id, ApiToken.revoked_at.is_(None))
+                .values(revoked_at=now)
+            )
+            session.execute(
+                update(AutomationEnrollmentGrant)
+                .where(
+                    AutomationEnrollmentGrant.client_id == client.id,
+                    AutomationEnrollmentGrant.consumed_at.is_(None),
+                )
+                .values(consumed_at=now)
+            )
+        if resources_changed:
+            replace_client_resources(session, client.id, selected_resources)
         client.name = str(name).strip()[:160]
         client.redirect_uris_json = list(
             dict.fromkeys(
@@ -216,6 +265,10 @@ class AutomationEnrollmentService:
         target_instance_id: str,
         canonical_origin: str,
         created_by: str,
+        user_id: str | None = None,
+        auth_revision: int | None = None,
+        resource_grants: CredentialResources | None = None,
+        approval_actor: UserActor | None = None,
     ) -> AutomationClient:
         validated_id = self.validate_client_id(client_id)
         validated_redirects = [
@@ -223,6 +276,21 @@ class AutomationEnrollmentService:
         ]
         selected_scopes = self.validate_scopes(scopes)
         with self.database.immediate_session() as session:
+            if approval_actor is not None:
+                try:
+                    require_actor_in_session(session, approval_actor, required_scopes=selected_scopes | {"app.admin", "app.credentials.write"}, require_admin=True)
+                    if approval_actor.user_id != user_id or approval_actor.auth_revision != auth_revision:
+                        raise PermissionError("The approving account changed.")
+                    resource_grants = require_delegation_resources(session, approval_actor, default_personal_resources(session, approval_actor.user_id) if resource_grants is None else resource_grants)
+                except PermissionError:
+                    raise EnrollmentError("access_denied", "The approving credential cannot register this client.", 403) from None
+            try:
+                actor = account_state_in_session(
+                    session, user_id if user_id is not None else initial_user_id(session),
+                    auth_revision=auth_revision, require_admin=True,
+                )
+            except PermissionError as error:
+                raise EnrollmentError("access_denied", "An active Administrator is required.", 403) from error
             client = self._register_in_session(
                 session,
                 client_id=validated_id,
@@ -232,6 +300,9 @@ class AutomationEnrollmentService:
                 target_instance_id=target_instance_id,
                 canonical_origin=canonical_origin,
                 created_by=created_by,
+                user_id=actor.user_id,
+                auth_revision=actor.auth_revision,
+                resource_grants=resource_grants,
             )
             session.expunge(client)
             return client
@@ -249,6 +320,7 @@ class AutomationEnrollmentService:
         target_instance_id: str,
         canonical_origin: str,
         approved_by: Principal,
+        resource_grants: CredentialResources | None = None,
     ) -> str:
         validated_id = self.validate_client_id(client_id)
         validated_redirect = self.validate_redirect_uri(redirect_uri)
@@ -259,8 +331,51 @@ class AutomationEnrollmentService:
         )
         bounded_days = max(1, min(int(expires_in_days), 90))
         raw_code = f"pan_code_{secrets.token_urlsafe(32)}"
-        now = utcnow()
         with self.database.immediate_session() as session:
+            now = utcnow()
+            collaboration = installation_mode_in_session(session).enabled
+            if (
+                approved_by.user_id is None
+                or approved_by.auth_revision is None
+                or approved_by.kind != "owner_session"
+                or (not collaboration and not approved_by.has_scope("app.admin"))
+            ):
+                raise EnrollmentError("access_denied", "Sign in with an account allowed to approve enrollment.", 403)
+            try:
+                actor = actor_from_principal(approved_by)
+                if (
+                    not isinstance(actor, UserActor)
+                    or actor.principal_kind != "owner_session"
+                    or actor.browser_session_id is None
+                    or actor.token_id is not None
+                ):
+                    raise ValueError("The approving transport snapshot is invalid.")
+                approving_account = require_actor_in_session(
+                    session,
+                    actor,
+                    required_scopes=selected_scopes | ({"app.credentials.write"} if collaboration else {"app.admin"}),
+                    require_admin=not collaboration,
+                    allow_host=False,
+                )
+                if approving_account is None:
+                    raise ValueError("The approving account snapshot is invalid.")
+            except (PermissionError, ValueError):
+                raise EnrollmentError(
+                    "access_denied",
+                    "The approving account credential is no longer valid.",
+                    403,
+                ) from None
+            selected_resources = (
+                default_personal_resources(session, approving_account.user_id)
+                if resource_grants is None
+                else resource_grants
+            )
+            try:
+                selected_resources = require_delegation_resources(session, actor, selected_resources)
+            except PermissionError as error:
+                raise EnrollmentError(
+                    "access_denied", "The approving credential cannot delegate these resources.", 403
+                ) from error
             client = self._register_in_session(
                 session,
                 client_id=validated_id,
@@ -270,20 +385,24 @@ class AutomationEnrollmentService:
                 target_instance_id=target_instance_id,
                 canonical_origin=canonical_origin,
                 created_by=approved_by.subject,
+                user_id=approving_account.user_id,
+                auth_revision=approving_account.auth_revision,
+                resource_grants=selected_resources,
             )
-            session.add(
-                AutomationEnrollmentGrant(
-                    client_id=client.id,
-                    code_hash=_digest(raw_code),
-                    code_prefix=raw_code[:16],
-                    redirect_uri=validated_redirect,
-                    scopes_json=sorted(selected_scopes),
-                    code_challenge=challenge,
-                    code_challenge_method="S256",
-                    expires_at=now + timedelta(minutes=5),
-                    token_expires_at=now + timedelta(days=bounded_days),
-                )
+            grant = AutomationEnrollmentGrant(
+                client_id=client.id,
+                code_hash=_digest(raw_code),
+                code_prefix=raw_code[:16],
+                redirect_uri=validated_redirect,
+                scopes_json=sorted(selected_scopes),
+                code_challenge=challenge,
+                code_challenge_method="S256",
+                expires_at=now + timedelta(minutes=5),
+                token_expires_at=now + timedelta(days=bounded_days),
             )
+            session.add(grant)
+            session.flush([grant])
+            record_resources(session, CredentialOwner.CODE, grant.id, selected_resources)
         return raw_code
 
     def exchange_code(
@@ -308,8 +427,8 @@ class AutomationEnrollmentService:
                 "The PKCE code verifier is invalid.",
                 400,
             ) from error
-        now = utcnow()
         with self.database.immediate_session() as session:
+            now = utcnow()
             grants = list(
                 session.scalars(
                     select(AutomationEnrollmentGrant).where(
@@ -349,6 +468,8 @@ class AutomationEnrollmentService:
             if (
                 client is None
                 or client.revoked_at is not None
+                or client.user_id is None
+                or client.user_auth_revision is None
                 or client.target_instance_id != target_instance_id
                 or client.canonical_origin != canonical_origin
             ):
@@ -357,6 +478,30 @@ class AutomationEnrollmentService:
                     "The enrolled target identity no longer matches.",
                     409,
                 )
+            try:
+                account_state_in_session(
+                    session, client.user_id, auth_revision=client.user_auth_revision
+                )
+            except PermissionError as error:
+                raise EnrollmentError("invalid_grant", "The consenting account has changed.", 400) from error
+            try:
+                allowed_scopes = self.validate_scopes(client.allowed_scopes_json)
+                grant_scopes = self.validate_scopes(grant.scopes_json)
+            except EnrollmentError as error:
+                raise EnrollmentError("invalid_grant", "The client's approved scopes have changed.", 400) from error
+            if not grant_scopes <= allowed_scopes:
+                raise EnrollmentError("invalid_grant", "The client's approved scopes have changed.", 400)
+            selected_resources = resources_for_owner(session, CredentialOwner.CODE, grant.id)
+            client_resources = resources_for_owner(session, CredentialOwner.CLIENT, client.id)
+            try:
+                selected_resources = validate_resources_for_user(
+                    session, client.user_id, selected_resources
+                )
+                require_resources_within(session, selected_resources, client_resources)
+            except CredentialResourcesDenied as error:
+                raise EnrollmentError(
+                    "invalid_grant", "The client's approved resources have changed.", 400
+                ) from error
             grant.consumed_at = now
             session.execute(
                 update(ApiToken)
@@ -377,18 +522,23 @@ class AutomationEnrollmentService:
                 client_id=client.id,
                 target_instance_id=client.target_instance_id,
                 canonical_origin=client.canonical_origin,
+                user_id=client.user_id,
+                auth_revision=client.user_auth_revision,
+                resource_grants=selected_resources,
             )
             session.expunge(token)
             session.expunge(client)
             return EnrollmentToken(token, raw_token, client)
 
-    def list_clients(self) -> list[dict[str, object]]:
+    def list_clients(self, *, actor: UserActor | None = None) -> list[dict[str, object]]:
         with self.database.session() as session:
+            statement = select(AutomationClient).order_by(AutomationClient.created_at.desc())
+            if actor is not None:
+                require_actor_in_session(session, actor, required_scopes={"app.credentials.read"})
+                statement = statement.where(AutomationClient.user_id == actor.user_id)
             clients = list(
                 session.scalars(
-                    select(AutomationClient).order_by(
-                        AutomationClient.created_at.desc()
-                    )
+                    statement
                 ).all()
             )
             return [
@@ -420,11 +570,15 @@ class AutomationEnrollmentService:
                 for client in clients
             ]
 
-    def revoke(self, client_id: object) -> None:
+    def revoke(self, client_id: object, *, actor: UserActor | None = None) -> None:
         validated_id = self.validate_client_id(client_id)
-        now = utcnow()
         with self.database.immediate_session() as session:
-            client = session.get(AutomationClient, validated_id)
+            now = utcnow()
+            statement = select(AutomationClient).where(AutomationClient.id == validated_id)
+            if actor is not None:
+                require_actor_in_session(session, actor, required_scopes={"app.credentials.write"})
+                statement = statement.where(AutomationClient.user_id == actor.user_id)
+            client = session.scalar(statement)
             if client is None:
                 raise KeyError(validated_id)
             client.revoked_at = now

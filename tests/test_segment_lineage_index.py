@@ -6,7 +6,8 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import delete, inspect, select
+from alembic.script import ScriptDirectory
+from sqlalchemy import MetaData, Table, delete, inspect, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -17,10 +18,9 @@ from pandrator.web.models import (
     DocumentRevision,
     Segment,
     SegmentLineage,
-    SessionRecord,
+    utcnow,
 )
 
-MIGRATION_HEAD = "0058_project_folders"
 PREVIOUS_REVISION = "0056_project_sound_plans"
 INDEX_NAME = "ix_segment_lineage_child_segment_id"
 
@@ -53,19 +53,30 @@ def _assert_child_index(engine: Engine) -> None:
 
 
 def _create_0056_fixture(path: Path) -> Engine:
-    command.upgrade(_config(path), PREVIOUS_REVISION)
+    # The baseline migration creates current metadata. Round-trip from head so
+    # later migrations remove their own columns/tables before fixture insertion.
+    command.upgrade(_config(path), "head")
+    command.downgrade(_config(path), PREVIOUS_REVISION)
     engine = create_database_engine(path)
-    # Early baseline migrations use current metadata's create_all; remove schema
-    # objects added after 0056 to model a database that was already at that revision.
-    with engine.begin() as connection:
-        Base.metadata.tables["project_folder_memberships"].drop(
-            connection, checkfirst=True
-        )
-        Base.metadata.tables["project_folders"].drop(connection, checkfirst=True)
-        connection.exec_driver_sql(f"DROP INDEX IF EXISTS {INDEX_NAME}")
+    sessions = Table("sessions", MetaData(), autoload_with=engine)
     with Session(engine) as session:
-        session.add(SessionRecord(id="session-fixture", name="Lineage fixture"))
-        session.flush()
+        now = utcnow()
+        session.execute(
+            sessions.insert().values(
+                id="session-fixture",
+                name="Lineage fixture",
+                storage_key="session-fixture-storage",
+                workflow_kind="subtitles",
+                interface_mode="advanced",
+                source_language="en",
+                workflow_preset="custom",
+                included_stages_json=[],
+                status="idle",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
         session.add(
             Document(
                 id="document-fixture",
@@ -169,9 +180,8 @@ def _all_indexes(engine: Engine) -> dict[str, tuple[tuple[str, tuple[str, ...], 
 
 
 def test_fresh_upgrade_and_metadata_schema_have_child_index(tmp_path: Path) -> None:
-    assert SCHEMA_HEAD == MIGRATION_HEAD
-
     upgraded_path = tmp_path / "upgraded.sqlite3"
+    assert SCHEMA_HEAD == ScriptDirectory.from_config(_config(upgraded_path)).get_current_head()
     upgrade_database(upgraded_path)
     upgraded_engine = create_database_engine(upgraded_path)
     try:
@@ -208,9 +218,7 @@ def test_upgrade_preserves_lineage_and_child_delete_cascades(tmp_path: Path) -> 
                 ).all()
                 assert any(INDEX_NAME in str(row[3]) for row in plan)
 
-                connection.execute(
-                    delete(Segment).where(Segment.id == "segment-child")
-                )
+                connection.execute(delete(Segment).where(Segment.id == "segment-child"))
                 remaining = connection.execute(
                     select(
                         SegmentLineage.parent_segment_id,

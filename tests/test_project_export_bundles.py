@@ -8,6 +8,7 @@ import re
 import stat
 import threading
 import zipfile
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -17,10 +18,12 @@ import pytest
 from sqlalchemy import select
 
 from pandrator.web import models as m
+from pandrator.web.accounts.execution_actor import actor_from_principal, execution_actor_scope
 from pandrator.web.api import create_app
 from pandrator.web.application_services import ApplicationServices
-from pandrator.web.auth import ALL_SCOPES, BootstrapTokenStore, Principal
+from pandrator.web.auth import BootstrapTokenStore, Principal
 from pandrator.web.http_lifecycle import ApiGuards
+from pandrator.web.job_execution import JobLease, current_job_lease
 from pandrator.web.project_export_bundle_routes import (
     PROJECT_EXPORT_BUNDLE_SCHEMAS,
     project_export_bundle_paths,
@@ -51,9 +54,7 @@ def bundle_case(tmp_path):
     target = services.identity.snapshot(observed_origin="https://pandrator.example/").model_dump(
         mode="json"
     )
-    principal = Principal(
-        "owner", "owner_session", ALL_SCOPES, None, "loopback", target["instance_id"]
-    )
+
     source = services.sessions.create(
         "English source",
         workflow_kind="subtitles",
@@ -97,22 +98,38 @@ def bundle_case(tmp_path):
     csrf = client.post("/api/v1/auth/bootstrap", json={"token": bootstrap.issue()}).get_json()[
         "csrf_token"
     ]
-    yield SimpleNamespace(
-        app=app,
-        client=client,
-        headers={"X-CSRF-Token": csrf},
-        services=services,
-        database=services.database,
-        principal=principal,
-        target=target,
-        source=source,
-        checkpoint=checkpoint,
-        project=project,
-        branches=project["branches"],
-        operations=TranslationProjectOperationService(services),
-        bundles=ProjectExportBundleService(services),
-        root=tmp_path,
+    with client.session_transaction() as browser_state:
+        resolved = services.auth.browser_sessions.resolve(browser_state["auth_session"])
+    assert resolved is not None
+    principal = Principal(
+        resolved.subject,
+        resolved.kind,
+        resolved.scopes,
+        None,
+        "loopback",
+        target["instance_id"],
+        user_id=resolved.user_id,
+        auth_revision=resolved.auth_revision,
+        browser_session_id=resolved.session_id,
+        client_id=resolved.client_id,
     )
+    with execution_actor_scope(actor_from_principal(principal)):
+        yield SimpleNamespace(
+            app=app,
+            client=client,
+            headers={"X-CSRF-Token": csrf},
+            services=services,
+            database=services.database,
+            principal=principal,
+            target=target,
+            source=source,
+            checkpoint=checkpoint,
+            project=project,
+            branches=project["branches"],
+            operations=TranslationProjectOperationService(services),
+            bundles=ProjectExportBundleService(services),
+            root=tmp_path,
+        )
     services.database.dispose()
 
 
@@ -144,11 +161,33 @@ def _claim_bundle_job(case, job_id, lease_generation=1):
         job.status = "running"
         job.lease_owner = "bundle-test-worker"
         job.lease_generation = lease_generation
-        job.lease_expires_at = m.utcnow()
+        job.lease_expires_at = m.utcnow() + timedelta(minutes=5)
         payload = dict(job.payload_json)
         payload["_job_id"] = job.id
         payload["_lease_generation"] = lease_generation
     return job_id, payload
+
+
+def _generate(case, payload, progress, cancel_event):
+    # Mirror the worker's captured actor and fenced lease, without weakening policy.
+    from pandrator.web.accounts.execution_actor import actor_from_storage
+
+    with case.database.session() as db:
+        job = db.get(m.Job, payload["bundle_job_id"])
+        saved = db.get(m.JobActorRecord, job.id)
+        assert saved is not None
+        actor = actor_from_storage(saved.user_id, saved.auth_revision, saved.context_json)
+        lease: JobLease = {
+            "job_id": job.id,
+            "owner_id": job.lease_owner,
+            "lease_generation": payload["_lease_generation"],
+        }
+    token = current_job_lease.set(lease)
+    try:
+        with execution_actor_scope(actor):
+            return case.bundles.generate(payload, progress, cancel_event)
+    finally:
+        current_job_lease.reset(token)
 
 
 def _finish_job(case, job_id, result, lease_generation=1):
@@ -157,7 +196,7 @@ def _finish_job(case, job_id, result, lease_generation=1):
         job.status = "running"
         job.lease_owner = "bundle-test-worker"
         job.lease_generation = lease_generation
-        job.lease_expires_at = m.utcnow()
+        job.lease_expires_at = m.utcnow() + timedelta(minutes=5)
     case.services.jobs.complete(
         job_id,
         "bundle-test-worker",
@@ -312,9 +351,7 @@ def test_manifest_and_bundle_keep_language_exports_separate_and_use_no_generatio
     with case.database.session() as db:
         run_rows_before = len(list(db.scalars(select(m.GenerationRun))))
     job_id, worker_payload = _claim_bundle_job(case, job.id)
-    result = case.bundles.generate(
-        worker_payload, lambda _progress, _detail: None, threading.Event()
-    )
+    result = _generate(case, worker_payload, lambda _progress, _detail: None, threading.Event())
     interrupted_response, interrupted_status = case.bundles.request_bundle(
         operation["id"],
         response["manifest_digest"],
@@ -503,9 +540,7 @@ def test_exact_replay_and_different_key_dedupe_reuse_job_then_ready_cache(bundle
     assert first["job_id"] == replay["job_id"] == same_inputs["job_id"]
     job = _bundle_job(case, first)
     job_id, worker_payload = _claim_bundle_job(case, job.id)
-    result = case.bundles.generate(
-        worker_payload, lambda _progress, _detail: None, threading.Event()
-    )
+    result = _generate(case, worker_payload, lambda _progress, _detail: None, threading.Event())
     _finish_job(case, job_id, result)
     ready_replay, ready_status = case.bundles.request_bundle(
         operation["id"],
@@ -639,7 +674,8 @@ def test_deep_completed_retry_chain_keeps_receipts_and_can_bundle(bundle_case):
     assert status == 202
     bundle_job = _bundle_job(case, request)
     job_id, worker_payload = _claim_bundle_job(case, bundle_job.id)
-    result = case.bundles.generate(
+    result = _generate(
+        case,
         worker_payload,
         lambda _progress, _detail: None,
         threading.Event(),
@@ -687,7 +723,7 @@ def test_cancellation_and_registration_failure_remove_staging_and_preserve_sourc
             canceled.set()
 
     with pytest.raises(ProjectExportBundleCanceled):
-        case.bundles.generate(worker_payload, cancel_after_first_copy, canceled)
+        _generate(case, worker_payload, cancel_after_first_copy, canceled)
     output_root = case.services.paths.artifacts / "project-exports" / case.project["id"]
     assert not list(output_root.glob(".bundle-stage-*"))
 
@@ -697,9 +733,7 @@ def test_cancellation_and_registration_failure_remove_staging_and_preserve_sourc
         side_effect=RuntimeError("registration failed"),
     ):
         with pytest.raises(RuntimeError, match="registration failed"):
-            case.bundles.generate(
-                worker_payload, lambda _progress, _detail: None, threading.Event()
-            )
+            _generate(case, worker_payload, lambda _progress, _detail: None, threading.Event())
     assert not list(output_root.glob(".bundle-stage-*"))
     assert not [path for path in output_root.iterdir() if path.is_dir()]
     with case.database.session() as db:
@@ -735,7 +769,7 @@ def test_generation_rechecks_export_state_after_job_request(bundle_case):
         db.get(m.Artifact, output_id).state = "stale"
 
     with pytest.raises(ProjectExportBundleError) as error:
-        case.bundles.generate(worker_payload, lambda _progress, _detail: None, threading.Event())
+        _generate(case, worker_payload, lambda _progress, _detail: None, threading.Event())
     assert error.value.code == "bundle_inputs_changed"
     output_root = case.services.paths.artifacts / "project-exports" / case.project["id"]
     assert not list(output_root.glob(".bundle-stage-*"))
@@ -775,9 +809,7 @@ def test_process_death_after_atomic_publish_recovers_one_pair_and_job_receipt(bu
         side_effect=SimulatedProcessDeath(),
     ):
         with pytest.raises(SimulatedProcessDeath):
-            case.bundles.generate(
-                worker_payload, lambda _progress, _detail: None, threading.Event()
-            )
+            _generate(case, worker_payload, lambda _progress, _detail: None, threading.Event())
 
     output_root = case.services.paths.artifacts / "project-exports" / case.project["id"]
     publication = output_root / job.payload_json["input_digest"]
@@ -795,12 +827,10 @@ def test_process_death_after_atomic_publish_recovers_one_pair_and_job_receipt(bu
         assert interrupted_job.result_json is None
 
     _retried_job_id, retry_payload = _claim_bundle_job(case, job_id, lease_generation=2)
-    result = case.bundles.generate(
-        retry_payload, lambda _progress, _detail: None, threading.Event()
-    )
+    result = _generate(case, retry_payload, lambda _progress, _detail: None, threading.Event())
     assert result["publication_receipt"]["job_id"] == job_id
-    recovered_again = case.bundles.generate(
-        retry_payload, lambda _progress, _detail: None, threading.Event()
+    recovered_again = _generate(
+        case, retry_payload, lambda _progress, _detail: None, threading.Event()
     )
     assert recovered_again["artifact_id"] == result["artifact_id"]
     assert recovered_again["manifest_artifact_id"] == result["manifest_artifact_id"]

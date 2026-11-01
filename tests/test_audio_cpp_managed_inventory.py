@@ -275,3 +275,30 @@ def test_manual_package_layout_is_pinned_at_the_downloader_package_level(tmp_pat
     assert pinned["strip_prefix"] == package.target_directory
     assert pinned["target_directory"] == package.target_directory
     assert pinned["files"] == [f"{package.target_directory}/{path}" for path in package.files]
+
+
+def test_removed_kitten_id_keeps_its_original_weights_and_is_added_once(tmp_path):
+    legacy = MODEL_PACKAGES["kitten_tts2_q8_0"]
+    assert legacy.revision == "73b762c95b07c4f0675c927c25d65741b8dab7da"
+    assert legacy.sha256[0] == "e97920ca5053f9fcd4de638dcd8114ed2510d4291a93257473a8843c3ff349ad"
+    spec = tmp_path / "kitten_tts2.json"
+    spec.write_text(json.dumps({
+        "family": "kitten_tts2", "packages": [{"id": "kitten_tts2_q8_v2"}],
+    }), encoding="utf-8")
+    FilesystemTaskHandler._pin_audio_cpp_model_specs(tmp_path, [legacy])
+    once = spec.read_bytes()
+    FilesystemTaskHandler._pin_audio_cpp_model_specs(tmp_path, [legacy])
+    assert spec.read_bytes() == once
+    rows = json.loads(once)["packages"]
+    assert rows[0] == {"id": "kitten_tts2_q8_v2"}
+    assert len(rows) == 2
+    assert rows[1]["id"] == legacy.id
+    # model_manager_v2 flattens every package before selecting an install ID.
+    # One incomplete compatibility row therefore breaks unrelated installs.
+    assert {
+        "id", "display_name", "target_directory", "format", "precision",
+        "files", "download",
+    } <= rows[1].keys()
+    assert rows[1]["display_name"] == legacy.label
+    assert rows[1]["download"]["revision"] == legacy.revision
+    assert rows[1]["files"] == list(legacy.download_files)

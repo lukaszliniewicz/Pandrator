@@ -12,6 +12,12 @@ from . import MCP_CONTRACT_REVISION
 from .schemas.guidance import GUIDE_TOPICS
 
 _TOPIC_ALIASES = {
+    "team": "collaboration",
+    "teams": "collaboration",
+    "workspace": "collaboration",
+    "workspaces": "collaboration",
+    "shared workspace": "collaboration",
+    "accounts": "collaboration",
     "artifact": "artifacts-and-revisions",
     "artifacts": "artifacts-and-revisions",
     "artifact revisions": "artifacts-and-revisions",

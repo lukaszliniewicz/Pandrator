@@ -12,8 +12,8 @@ import sys
 import time
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Iterable, Mapping, Sequence
+from pathlib import Path, PurePosixPath
+from typing import Dict, Iterable, Mapping, Sequence, TypedDict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -28,12 +28,20 @@ from pandrator_installer.catalog import (  # noqa: E402
     PACKAGING_SHARED_PATHS,
     RELEASE_COMPONENT_KEYS,
 )
+from scripts.audit_python_distributions import is_private_archive_member  # noqa: E402
 
 DEFAULT_CONFIG_FLAGS = PACKAGING_CONFIG_FLAGS
 DEFAULT_SHARED_PATHS = PACKAGING_SHARED_PATHS
 DEFAULT_EXCLUDED_FILE_PREFIXES = PACKAGING_EXCLUDED_FILE_PREFIXES
 ACTIVE_EXCLUDED_FILE_PREFIXES = tuple(DEFAULT_EXCLUDED_FILE_PREFIXES)
 DEFAULT_COMPONENT_PATHS = PACKAGING_COMPONENT_PATHS
+
+
+class PackagingLayout(TypedDict):
+    config_flags: tuple[str, ...]
+    shared_paths: tuple[str, ...]
+    excluded_file_prefixes: tuple[str, ...]
+    component_paths: dict[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -72,7 +80,7 @@ def normalize_relative_path(path: str) -> str:
     return path.replace("\\", "/").strip("/")
 
 
-def _remove_tree_onerror(func, path, exc_info):
+def _remove_tree_onerror(func, path, _exc_info):
     try:
         os.chmod(path, stat.S_IWRITE)
     except OSError:
@@ -204,8 +212,8 @@ def load_json_file(path: Path) -> Mapping[str, object]:
     return data
 
 
-def load_packaging_layout(source_root: Path) -> Dict[str, object]:
-    layout = {
+def load_packaging_layout(source_root: Path) -> PackagingLayout:
+    layout: PackagingLayout = {
         "config_flags": tuple(DEFAULT_CONFIG_FLAGS),
         "shared_paths": tuple(DEFAULT_SHARED_PATHS),
         "excluded_file_prefixes": tuple(DEFAULT_EXCLUDED_FILE_PREFIXES),
@@ -381,20 +389,22 @@ def load_install_config(source_root: Path) -> Dict[str, object]:
     return dict(raw_config)
 
 
-def iter_files_in_tree(root: Path) -> Iterable[Path]:
+def iter_files_in_tree(root: Path, *, relative_prefix: str | None = None) -> Iterable[Path]:
+    prefix = PurePosixPath(root.name if relative_prefix is None else relative_prefix)
+    if should_exclude_path(prefix.as_posix()):
+        return
     if root.is_file():
-        if should_exclude_file(root.name):
-            return
         yield root
         return
 
     for current_root, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if not should_exclude_file(d)]
+        current_path = Path(current_root)
+        relative_root = prefix / current_path.relative_to(root).as_posix()
+        dirs[:] = [d for d in dirs if not should_exclude_path((relative_root / d).as_posix())]
         dirs.sort()
         files.sort()
-        current_path = Path(current_root)
         for filename in files:
-            if should_exclude_file(filename):
+            if should_exclude_path((relative_root / filename).as_posix()):
                 continue
             yield current_path / filename
 
@@ -417,6 +427,16 @@ def should_exclude_file(filename: str, excluded_prefixes: Sequence[str] | None =
     return False
 
 
+def should_exclude_path(
+    relative_path: str, excluded_prefixes: Sequence[str] | None = None
+) -> bool:
+    """Apply mandatory archive privacy and configured basename exclusions."""
+    return is_private_archive_member(relative_path) or any(
+        should_exclude_file(part, excluded_prefixes)
+        for part in PurePosixPath(relative_path.replace("\\", "/")).parts
+    )
+
+
 def calculate_block_signature(source_root: Path, include_paths: Sequence[str]) -> str:
     digest = hashlib.sha256()
     digest.update(str(source_root).encode("utf-8"))
@@ -426,21 +446,22 @@ def calculate_block_signature(source_root: Path, include_paths: Sequence[str]) -
         source_entry = source_root / Path(normalized)
         digest.update(f"entry:{normalized}\n".encode("utf-8"))
 
+        if should_exclude_path(include_path):
+            digest.update(b"excluded\n")
+            continue
+
         if not source_entry.exists():
             digest.update(b"missing\n")
             continue
 
         if source_entry.is_file():
-            if should_exclude_file(source_entry.name):
-                digest.update(b"excluded\n")
-                continue
             stat = source_entry.stat()
             digest.update(
                 f"file:{normalized}|{stat.st_size}|{stat.st_mtime_ns}\n".encode("utf-8")
             )
             continue
 
-        for file_path in iter_files_in_tree(source_entry):
+        for file_path in iter_files_in_tree(source_entry, relative_prefix=normalized):
             relative_file = file_path.relative_to(source_root).as_posix()
             stat = file_path.stat()
             digest.update(
@@ -469,20 +490,30 @@ def hardlink_or_copy_file(source_file: Path, destination_file: Path, prefer_hard
     shutil.copy2(source_file, destination_file)
 
 
-def copy_directory_contents(source_dir: Path, destination_dir: Path, prefer_hardlinks: bool) -> None:
+def copy_directory_contents(
+    source_dir: Path,
+    destination_dir: Path,
+    prefer_hardlinks: bool,
+    *,
+    relative_prefix: str | None = None,
+) -> None:
+    prefix = PurePosixPath(source_dir.name if relative_prefix is None else relative_prefix)
+    if should_exclude_path(prefix.as_posix()):
+        return
     destination_dir.mkdir(parents=True, exist_ok=True)
 
     for current_root, dirs, files in os.walk(source_dir):
-        dirs[:] = [d for d in dirs if not should_exclude_file(d)]
-        dirs.sort()
-        files.sort()
         root_path = Path(current_root)
         relative_root = root_path.relative_to(source_dir)
+        archive_root = prefix / relative_root.as_posix()
+        dirs[:] = [d for d in dirs if not should_exclude_path((archive_root / d).as_posix())]
+        dirs.sort()
+        files.sort()
         target_root = destination_dir / relative_root
         target_root.mkdir(parents=True, exist_ok=True)
 
         for filename in files:
-            if should_exclude_file(filename):
+            if should_exclude_path((archive_root / filename).as_posix()):
                 continue
             source_file = root_path / filename
             destination_file = target_root / filename
@@ -496,6 +527,8 @@ def copy_relative_entries(
     prefer_hardlinks: bool,
 ) -> None:
     for relative_path in sorted(dict.fromkeys(relative_paths)):
+        if should_exclude_path(relative_path):
+            continue
         normalized = normalize_relative_path(relative_path)
         source_entry = source_root / Path(normalized)
         if not source_entry.exists():
@@ -505,10 +538,9 @@ def copy_relative_entries(
         if source_entry.is_dir():
             if destination_entry.is_file():
                 destination_entry.unlink()
-            copy_directory_contents(source_entry, destination_entry, prefer_hardlinks)
-            continue
-
-        if should_exclude_file(source_entry.name):
+            copy_directory_contents(
+                source_entry, destination_entry, prefer_hardlinks, relative_prefix=normalized
+            )
             continue
 
         if destination_entry.is_dir():
@@ -642,7 +674,7 @@ def create_zip_archive(source_dir: Path, zip_path: Path) -> None:
         compresslevel=6,
         allowZip64=True,
     ) as archive:
-        for file_path in iter_files_in_tree(source_dir):
+        for file_path in iter_files_in_tree(source_dir, relative_prefix=""):
             if not file_path.is_file():
                 continue
             archive_name = file_path.relative_to(source_dir).as_posix()
@@ -776,11 +808,13 @@ def main() -> int:
     )
 
     if args.prepare_sources:
-        installer_script = (
-            Path(resolve_cli_path(args.installer_script, invocation_cwd))
-            if args.installer_script
-            else (repo_root / "pandrator_installer_launcher.py").resolve()
-        )
+        if args.installer_script:
+            resolved_installer_script = resolve_cli_path(args.installer_script, invocation_cwd)
+            if resolved_installer_script is None:
+                raise RuntimeError("Could not resolve the explicitly supplied installer script path.")
+            installer_script = Path(resolved_installer_script)
+        else:
+            installer_script = (repo_root / "pandrator_installer_launcher.py").resolve()
         if not installer_script.exists():
             raise RuntimeError(f"Installer script not found: {installer_script}")
 
@@ -808,7 +842,7 @@ def main() -> int:
                         f"Source root '{source_root}' is missing required file for module '{component}': {marker}"
                     )
 
-    layout = load_packaging_layout(source_root)
+    layout: PackagingLayout = load_packaging_layout(source_root)
 
     config_flags = tuple(layout["config_flags"])
     shared_paths = tuple(

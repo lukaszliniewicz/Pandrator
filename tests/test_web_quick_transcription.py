@@ -8,31 +8,47 @@ import threading
 import time
 import unittest
 import wave
+from concurrent.futures import Future
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, event, func, select
 
 from pandrator.logic.cancellable_process import ProcessCancelled
+from pandrator.web.access.contracts import AccessContext
+from pandrator.web.accounts.auth_models import UserCredential
+from pandrator.web.accounts.execution_actor import actor_from_principal
+from pandrator.web.accounts.identity import initial_personal_workspace
+from pandrator.web.accounts.models import User, Workspace, WorkspaceMembership
+from pandrator.web.accounts.private_work_models import QuickTranscriptionOwner
+from pandrator.web.accounts.resource_grant_models import ApiTokenWorkspaceGrant
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.jobs import Worker
 from pandrator.web.models import (
     ApiIdempotency,
-    AppSetting,
+    ApiToken,
     Artifact,
+    BrowserAuthSession,
     DocumentRevision,
     Job,
+    JobActorRecord,
     JobEvent,
     QuickTranscription,
     SessionRecord,
     SourceAsset,
+    WorkspaceSetting,
+    new_id,
     utcnow,
 )
-from pandrator.web.quick_transcription import _empty_selection, _selection_after_transcription
+from pandrator.web.quick_transcription import (
+    TranscriptionError,
+    _empty_selection,
+    _selection_after_transcription,
+)
 from pandrator.web.quick_transcription_schemas import CHUNK_SIZE
 from pandrator.web.stt_resources import stt_resource_keys
 from tests.web_test_support import prepare_web_test_data_root
@@ -490,7 +506,8 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         }
         with self.extension["database"].immediate_session() as session:
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="defaults.stt",
                     value_json=dict(defaults),
                     revision=1,
@@ -513,7 +530,8 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
 
         changed_defaults = {**defaults, "stt_engine": "whisper"}
         with self.extension["database"].immediate_session() as session:
-            setting = session.get(AppSetting, "defaults.stt")
+            workspace_id = initial_personal_workspace(session).id
+            setting = session.get(WorkspaceSetting, (workspace_id, "defaults.stt"))
             setting.value_json = changed_defaults
             setting.revision += 1
 
@@ -543,7 +561,10 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
             self.assertEqual(0, session.scalar(select(func.count()).select_from(Job)))
             self.assertEqual(
                 changed_defaults,
-                session.get(AppSetting, "defaults.stt").value_json,
+                session.get(
+                    WorkspaceSetting,
+                    (initial_personal_workspace(session).id, "defaults.stt"),
+                ).value_json,
             )
 
     def test_create_cleans_expired_uploads_before_quota_check(self):
@@ -552,17 +573,25 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         expiry = utcnow() - timedelta(seconds=1)
         with self.extension["database"].immediate_session() as session:
             session.get(QuickTranscription, first["id"]).expires_at = expiry
+            ownership = session.get(QuickTranscriptionOwner, first["id"])
             for index in range(19):
+                record = QuickTranscription(
+                    owner_subject=owner,
+                    source_suffix=".wav",
+                    size_bytes=1,
+                    sha256=hashlib.sha256(f"expired-{index}".encode()).hexdigest(),
+                    format="txt",
+                    settings_json={},
+                    state="uploading",
+                    expires_at=expiry,
+                )
+                session.add(record)
+                session.flush()
                 session.add(
-                    QuickTranscription(
-                        owner_subject=owner,
-                        source_suffix=".wav",
-                        size_bytes=1,
-                        sha256=hashlib.sha256(f"expired-{index}".encode()).hexdigest(),
-                        format="txt",
-                        settings_json={},
-                        state="uploading",
-                        expires_at=expiry,
+                    QuickTranscriptionOwner(
+                        transcription_id=record.id,
+                        user_id=ownership.user_id,
+                        workspace_id=ownership.workspace_id,
                     )
                 )
 
@@ -646,7 +675,29 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         started = self._create_upload_start(key="quick-owner-isolation")
         identifier = started["id"]
         job_id = started["job_id"]
-        second = self.bootstrap.issue(subject="second", kind="owner_session")
+        with self.extension["database"].immediate_session() as session:
+            user = User(id=new_id(), display_name="Another actual person", is_active=True, is_instance_admin=True)
+            session.add(user)
+            session.flush()
+            session.add(UserCredential(user_id=user.id, login_name=f"private-test-{user.id}", auth_revision=1))
+            workspace = Workspace(id=new_id(), kind="personal", name="Another personal workspace", personal_owner_user_id=user.id, state="active", revision=1)
+            session.add(workspace)
+            session.flush()
+            session.add(WorkspaceMembership(workspace_id=workspace.id, user_id=user.id, role="owner"))
+            other_user_id = user.id
+        real_solo = self.extension["auth"].solo_access_allowed
+        solo_patch = patch.object(
+            self.extension["auth"], "solo_access_allowed",
+            side_effect=lambda user_id, revision: (user_id == other_user_id and revision == 1) or real_solo(user_id, revision),
+        )
+        solo_patch.start()
+        self.addCleanup(solo_patch.stop)
+        second = self.bootstrap.issue(
+            subject="owner",
+            kind="owner_session",
+            user_id=other_user_id,
+            auth_revision=1,
+        )
         second_client = self.app.test_client()
         second_bootstrap = second_client.post(
             "/api/v1/auth/bootstrap", json={"token": second}
@@ -705,6 +756,155 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         self.assertNotIn(job_id, first)
         self.assertNotIn("transcription.quick", first)
         self.assertIn("stream.cursor", first)
+
+    def test_admitted_worker_survives_browser_logout(self):
+        started = self._create_upload_start(key="quick-worker-after-logout")
+        response = self.client.post("/api/v1/auth/logout", headers=self.headers)
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertEqual(401, self.client.get(f"/api/v1/transcriptions/{started['id']}").status_code)
+        fake = _FakeQuickTranscriber()
+        with self._fake_backend(fake):
+            self.assertTrue(self._worker().run_once())
+        self.assertEqual("succeeded", self.extension["jobs"].get(started["job_id"]).status)
+        self.assertEqual(1, fake.asr_calls)
+
+    def test_run_only_credential_receives_its_successful_admission_response(self):
+        account = self.extension["auth"].initial_account()
+        with self.extension["database"].immediate_session() as session:
+            session.get(User, account.user_id).is_instance_admin = False
+        # Exercise the future User role without opening the production login gate.
+        real_solo = self.extension["auth"].solo_access_allowed
+        solo_patch = patch.object(
+            self.extension["auth"], "solo_access_allowed",
+            side_effect=lambda user_id, revision: (
+                (user_id == account.user_id and revision == account.auth_revision)
+                or real_solo(user_id, revision)
+            ),
+        )
+        solo_patch.start()
+        self.addCleanup(solo_patch.stop)
+        _, raw = self.extension["auth"].create_api_token(
+            "Synthetic run-only transcription", scopes=["app.run"]
+        )
+        client = self.app.test_client()
+        headers = {"Authorization": f"Bearer {raw}"}
+        created = client.post(
+            "/api/v1/transcriptions", json=self._payload(),
+            headers={**headers, "Idempotency-Key": "run-only-admission"},
+        )
+        self.assertEqual(201, created.status_code, created.get_json())
+        identifier = created.get_json()["id"]
+        uploaded = client.put(f"/api/v1/transcriptions/{identifier}/chunks/0", data=b"fake audio", headers=headers)
+        self.assertEqual(200, uploaded.status_code, uploaded.get_json())
+        started = client.post(f"/api/v1/transcriptions/{identifier}/start", json={}, headers=headers)
+        self.assertEqual(202, started.status_code, started.get_json())
+        self.assertEqual(identifier, started.get_json()["id"])
+        self.assertTrue(started.get_json()["job_id"])
+        self.assertEqual(403, client.get(f"/api/v1/transcriptions/{identifier}", headers=headers).status_code)
+
+    def test_run_only_multipart_command_can_replay_its_raw_result(self):
+        _, raw = self.extension["auth"].create_api_token(
+            "Synthetic run-only multipart", scopes=["app.run"]
+        )
+        client = self.app.test_client()
+        headers = {"Authorization": f"Bearer {raw}", "Idempotency-Key": "run-only-multipart"}
+
+        def submit():
+            return client.post(
+                "/api/v1/transcriptions?response=raw",
+                data={"file": (io.BytesIO(b"fake audio"), "clip.wav"), "options": '{"format":"txt"}'},
+                headers=headers,
+            )
+
+        first = submit()
+        self.assertEqual(202, first.status_code, first.get_json())
+        fake = _FakeQuickTranscriber(text="Run-only command result.")
+        with self._fake_backend(fake):
+            self.assertTrue(self._worker().run_once())
+        replay = submit()
+        self.assertEqual(200, replay.status_code, replay.get_data(as_text=True))
+        self.assertIn("Run-only command result.", replay.get_data(as_text=True))
+
+    def test_admitted_worker_survives_natural_browser_expiry(self):
+        started = self._create_upload_start(key="quick-worker-after-browser-expiry")
+        with self.extension["database"].immediate_session() as session:
+            actor = session.get(JobActorRecord, started["job_id"])
+            browser = session.get(BrowserAuthSession, actor.context_json["browser_session_id"])
+            browser.expires_at = utcnow() - timedelta(seconds=1)
+            browser.idle_expires_at = browser.expires_at
+        self.assertEqual(401, self.client.get(f"/api/v1/transcriptions/{started['id']}").status_code)
+        fake = _FakeQuickTranscriber()
+        with self._fake_backend(fake):
+            self.assertTrue(self._worker().run_once())
+        self.assertEqual("succeeded", self.extension["jobs"].get(started["job_id"]).status)
+        self.assertEqual(1, fake.asr_calls)
+
+    def test_admitted_worker_survives_natural_api_expiry(self):
+        created = self._create(key="quick-worker-after-api-expiry")
+        self.assertEqual(200, self._upload(created["id"], 0, b"fake audio").status_code)
+        token, raw = self.extension["auth"].create_api_token(
+            "Synthetic admitted transcription", scopes=["app.read", "app.run"],
+            expires_at=utcnow() + timedelta(minutes=10),
+        )
+        api_client = self.app.test_client()
+        headers = {"Authorization": f"Bearer {raw}"}
+        response = api_client.post(f"/api/v1/transcriptions/{created['id']}/start", json={}, headers=headers)
+        self.assertEqual(202, response.status_code, response.get_json())
+        started = response.get_json()
+        with self.extension["database"].immediate_session() as session:
+            session.get(ApiToken, token.id).expires_at = utcnow() - timedelta(seconds=1)
+        self.assertEqual(401, api_client.get(f"/api/v1/transcriptions/{created['id']}", headers=headers).status_code)
+        fake = _FakeQuickTranscriber()
+        with self._fake_backend(fake):
+            self.assertTrue(self._worker().run_once())
+        self.assertEqual("succeeded", self.extension["jobs"].get(started["job_id"]).status)
+        self.assertEqual(1, fake.asr_calls)
+
+    def test_waiting_upload_rechecks_credential_grants_after_writer_lock(self):
+        created = self._create(key="quick-writer-revocation")
+        token, raw = self.extension["auth"].create_api_token(
+            "Synthetic waiting upload", scopes=["app.read", "app.run"]
+        )
+        principal = self.extension["auth"].resolve_api_token(
+            raw, network_zone="loopback", target_instance_id=None,
+        )
+        context = AccessContext(actor_from_principal(principal))
+        database = self.extension["database"]
+        service = self.extension["quick_transcriptions"]
+        waiting = threading.Event()
+        finished = Future()
+        request_thread_name = "private-upload-writer-race"
+
+        def before_cursor_execute(_connection, _cursor, statement, _parameters, _execution_context, _many):
+            if threading.current_thread().name == request_thread_name and statement.strip().upper() == "BEGIN IMMEDIATE":
+                waiting.set()
+
+        def upload():
+            try:
+                finished.set_result(service.upload_chunk(created["id"], context, 0, b"fake audio"))
+            except BaseException as error:
+                finished.set_exception(error)
+
+        thread = threading.Thread(target=upload, name=request_thread_name)
+        event.listen(database.engine, "before_cursor_execute", before_cursor_execute)
+        try:
+            with database.immediate_session() as session:
+                thread.start()
+                self.assertTrue(waiting.wait(timeout=5), "Upload did not reach the held writer lock.")
+                session.execute(delete(ApiTokenWorkspaceGrant).where(ApiTokenWorkspaceGrant.token_id == token.id))
+            thread.join(timeout=10)
+            self.assertFalse(thread.is_alive())
+            with self.assertRaises(TranscriptionError) as failure:
+                finished.result(timeout=1)
+            self.assertEqual(404, failure.exception.status)
+            self.assertEqual(0, self._record(created["id"]).uploaded_bytes)
+            self.assertIsNone(self._record(created["id"]).job_id)
+            self.assertFalse((service.root / created["id"]).exists())
+        finally:
+            event.remove(database.engine, "before_cursor_execute", before_cursor_execute)
+            if thread.is_alive():
+                thread.join(timeout=10)
+            self.assertFalse(thread.is_alive())
 
     def test_expiry_queued_cancel_and_delete_remove_temporary_inputs(self):
         expiring = self._create(b"expire me", key="quick-expiring-upload")
@@ -856,7 +1056,8 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         }
         with self.extension["database"].immediate_session() as session:
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="defaults.stt",
                     value_json=settings,
                     revision=1,
@@ -996,7 +1197,8 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         }
         with self.extension["database"].immediate_session() as session:
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="defaults.stt",
                     value_json=dict(saved_defaults),
                     revision=1,
@@ -1027,7 +1229,10 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
             )
             self.assertEqual(
                 saved_defaults,
-                session.get(AppSetting, "defaults.stt").value_json,
+                session.get(
+                    WorkspaceSetting,
+                    (initial_personal_workspace(session).id, "defaults.stt"),
+                ).value_json,
             )
         self.assertEqual(
             [], list(self.extension["quick_transcriptions"].root.iterdir())
@@ -1045,7 +1250,10 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         with self.extension["database"].session() as session:
             self.assertEqual(
                 saved_defaults,
-                session.get(AppSetting, "defaults.stt").value_json,
+                session.get(
+                    WorkspaceSetting,
+                    (initial_personal_workspace(session).id, "defaults.stt"),
+                ).value_json,
             )
 
         content = b"valid whisper q5"
@@ -1182,7 +1390,13 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         )
         self.assertEqual(401, unauthenticated.status_code, unauthenticated.get_json())
 
-        limited_token = self.bootstrap.issue(subject="limited", scopes=["app.read"])
+        account = self.extension["auth"].initial_account()
+        limited_token = self.bootstrap.issue(
+            subject="limited",
+            scopes=["app.read"],
+            user_id=account.user_id,
+            auth_revision=account.auth_revision,
+        )
         limited_client = self.app.test_client()
         limited_bootstrap = limited_client.post(
             "/api/v1/auth/bootstrap", json={"token": limited_token}
@@ -1195,9 +1409,9 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         )
         self.assertEqual(403, denied.status_code, denied.get_json())
 
-        self.assertEqual(["service:stt"], stt_resource_keys({}))
+        self.assertEqual(["service:stt", "gpu:default"], stt_resource_keys({}))
         self.assertEqual(
-            ["service:stt", "gpu:cuda"],
+            ["service:stt", "gpu:default"],
             stt_resource_keys({"compute_backend": "cuda"}),
         )
         cuda = self._create(

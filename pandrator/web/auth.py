@@ -1,4 +1,4 @@
-"""Single-owner authentication, bootstrap exchange, and API tokens."""
+"""User-bound authentication with compatible solo bootstrap and token adapters."""
 
 from __future__ import annotations
 
@@ -10,81 +10,44 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal, cast
+from typing import cast
 
-from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from .accounts import installation_mode
+from .accounts.actor_authorization import require_actor_in_session
+from .accounts.auth_contracts import ALL_SCOPES as ALL_SCOPES
+from .accounts.auth_contracts import MCP_BOOTSTRAP_SCOPES as MCP_BOOTSTRAP_SCOPES
+from .accounts.auth_contracts import PRINCIPAL_KINDS as PRINCIPAL_KINDS
+from .accounts.auth_contracts import USER_BROWSER_SCOPES
+from .accounts.auth_contracts import NetworkZone as NetworkZone
+from .accounts.auth_contracts import PrincipalKind as PrincipalKind
+from .accounts.auth_contracts import normalize_scopes as normalize_scopes
+from .accounts.auth_models import UserCredential
+from .accounts.auth_state import AccountState, account_state_in_session, initial_user_id
+from .accounts.browser_sessions import BrowserSessionStore
+from .accounts.commands import revoke_user_credentials
+from .accounts.credential_resources import (
+    CredentialOwner,
+    CredentialResources,
+    default_personal_resources,
+    record_resources,
+    require_resources_within,
+    resources_for_owner,
+    validate_resources_for_user,
+)
+from .accounts.execution_actor import UserActor
+from .accounts.models import User
+from .accounts.passwords import (
+    dummy_verify,
+    hash_password,
+    mirror_initial_owner_password,
+    password_needs_rehash,
+    verify_password,
+)
 from .database import Database
-from .models import ApiToken, AutomationClient, OwnerAccount, utcnow
-
-_password_hasher = PasswordHasher()
-
-ALL_SCOPES = frozenset(
-    {
-        "app.read",
-        "app.write",
-        "app.run",
-        "app.cancel",
-        "app.credentials.read",
-        "app.credentials.write",
-        "manager.read",
-        "manager.runtime",
-        "manager.mutate",
-        "app.admin",
-    }
-)
-MCP_BOOTSTRAP_SCOPES = frozenset(
-    {
-        "app.read",
-        "app.write",
-        "app.run",
-        "app.cancel",
-        "manager.read",
-        "manager.runtime",
-        "manager.mutate",
-    }
-)
-
-PrincipalKind = Literal[
-    "owner_session",
-    "api_token",
-    "manager_bootstrap",
-    "automation_client",
-    "service",
-]
-NetworkZone = Literal["loopback", "private", "public"]
-PRINCIPAL_KINDS = frozenset(
-    {
-        "owner_session",
-        "api_token",
-        "manager_bootstrap",
-        "automation_client",
-        "service",
-    }
-)
-
-
-def normalize_scopes(
-    scopes: object,
-    *,
-    allow_empty: bool = False,
-) -> frozenset[str]:
-    if isinstance(scopes, str):
-        values = scopes.split()
-    elif isinstance(scopes, (list, tuple, set, frozenset)):
-        values = [str(value) for value in scopes]
-    else:
-        values = []
-    normalized = frozenset(value.strip() for value in values if value.strip())
-    unknown = normalized - ALL_SCOPES
-    if unknown:
-        raise ValueError(f"Unknown API scope(s): {', '.join(sorted(unknown))}.")
-    if not normalized and not allow_empty:
-        raise ValueError("At least one API scope is required.")
-    return normalized
+from .models import ApiToken, AutomationClient, utcnow
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -104,9 +67,12 @@ class Principal:
     network_zone: NetworkZone
     target_instance_id: str
     client_id: str | None = None
+    user_id: str | None = None
+    auth_revision: int | None = None
+    browser_session_id: str | None = None
 
     def has_scope(self, scope: str) -> bool:
-        return scope in self.scopes or "app.admin" in self.scopes
+        return scope in self.scopes
 
 
 def _token_digest(token: str) -> str:
@@ -121,6 +87,8 @@ class BootstrapToken:
     kind: PrincipalKind = "owner_session"
     scopes: frozenset[str] = ALL_SCOPES
     client_id: str | None = None
+    user_id: str | None = None
+    auth_revision: int | None = None
 
 
 class BootstrapTokenStore:
@@ -138,7 +106,16 @@ class BootstrapTokenStore:
         kind: PrincipalKind = "owner_session",
         scopes: object = ALL_SCOPES,
         client_id: str | None = None,
+        user_id: str | None = None,
+        auth_revision: int | None = None,
     ) -> str:
+        selected_scopes = normalize_scopes(scopes)
+        if kind not in PRINCIPAL_KINDS:
+            raise ValueError("The bootstrap principal kind is invalid.")
+        if kind == "manager_bootstrap" and "app.admin" in selected_scopes:
+            raise ValueError("Manager bootstrap cannot grant Administrator authority.")
+        if (user_id is None) != (auth_revision is None):
+            raise ValueError("Bootstrap account identity and revision must be supplied together.")
         raw = secrets.token_urlsafe(32)
         prefix = raw[:12]
         with self._lock:
@@ -147,8 +124,10 @@ class BootstrapTokenStore:
                 time.monotonic() + max(10, ttl_seconds),
                 subject=str(subject),
                 kind=kind,
-                scopes=normalize_scopes(scopes),
+                scopes=selected_scopes,
                 client_id=client_id,
+                user_id=user_id,
+                auth_revision=auth_revision,
             )
         return raw
 
@@ -269,35 +248,158 @@ class LoginThrottle:
 class AuthService:
     def __init__(self, database: Database):
         self.database = database
+        self.browser_sessions = BrowserSessionStore(database)
 
     def initialized(self) -> bool:
         with self.database.session() as session:
-            return session.get(OwnerAccount, 1) is not None
+            return session.scalar(
+                select(UserCredential.password_hash).where(
+                    UserCredential.user_id == initial_user_id(session)
+                )
+            ) is not None
 
     def initialize_owner(self, password: str, *, replace: bool = False) -> None:
-        if len(password) < 10:
-            raise ValueError("Owner password must contain at least 10 characters.")
-        with self.database.session() as session:
-            owner = session.get(OwnerAccount, 1)
-            if owner is not None and not replace:
+        # Keep the existing solo CLI minimum; new account/reset policy is stricter.
+        encoded = hash_password(password, minimum_length=10)
+        with self.database.immediate_session() as session:
+            user_id = initial_user_id(session)
+            account_state_in_session(session, user_id, require_admin=True)
+            credential = session.get(UserCredential, user_id)
+            assert credential is not None
+            if credential.password_hash is not None and not replace:
                 raise RuntimeError("Owner authentication is already initialized.")
-            encoded = _password_hasher.hash(password)
-            if owner is None:
-                session.add(OwnerAccount(singleton_id=1, password_hash=encoded))
-            else:
-                owner.password_hash = encoded
-                owner.updated_at = utcnow()
+            now = utcnow()
+            if credential.password_hash is not None:
+                credential.auth_revision += 1
+                revoke_user_credentials(session, user_id, now)
+            credential.password_hash = encoded
+            credential.updated_at = now
+            mirror_initial_owner_password(
+                session, user_id=user_id, encoded=encoded, updated_at=now
+            )
 
     def verify_password(self, password: str) -> bool:
-        with self.database.session() as session:
-            owner = session.get(OwnerAccount, 1)
-            if owner is None:
-                return False
-            encoded = owner.password_hash
-        try:
-            return _password_hasher.verify(encoded, password)
-        except VerifyMismatchError:
+        """Compatibility for owner-only adapters such as local CLI setup."""
+        return self.authenticate_initial_password(password) is not None
+
+    def authenticate_initial_password(self, password: str) -> AccountState | None:
+        return self._authenticate("owner", password, initial_administrator=True)
+
+    def collaboration_enabled(self, *, db_session: Session | None = None) -> bool:
+        """Read the installation policy in the caller's snapshot when provided."""
+        if not installation_mode.COLLABORATION_AVAILABLE:
             return False
+        if db_session is not None:
+            return installation_mode.installation_mode_in_session(db_session).enabled
+        with self.database.snapshot_session() as session:
+            return installation_mode.installation_mode_in_session(session).enabled
+
+    def authenticate_login(self, login_name: str | None, password: str) -> AccountState | None:
+        if not self.collaboration_enabled():
+            if login_name is not None and login_name.strip().lower() != "owner":
+                dummy_verify(password)
+                return None
+            return self.authenticate_initial_password(password)
+        name = (login_name or "").strip().lower()
+        if not name or len(name) > 64 or not name.isascii():
+            dummy_verify(password)
+            return None
+        return self._authenticate(name, password)
+
+    @staticmethod
+    def browser_scopes(account: AccountState) -> frozenset[str]:
+        return ALL_SCOPES if account.is_instance_admin else USER_BROWSER_SCOPES
+
+    def _authenticate(
+        self, login_name: str, password: str, *, initial_administrator: bool = False
+    ) -> AccountState | None:
+        with self.database.session() as session:
+            statement = (
+                select(User.id, UserCredential.password_hash, UserCredential.auth_revision)
+                .join(UserCredential, UserCredential.user_id == User.id)
+                .where(UserCredential.login_name == login_name, User.is_active.is_(True))
+            )
+            if initial_administrator:
+                statement = statement.where(
+                    User.legacy_subject == "owner", User.is_instance_admin.is_(True)
+                )
+            captured = session.execute(statement).one_or_none()
+        if captured is None or captured.password_hash is None:
+            dummy_verify(password)
+            return None
+        encoded = captured.password_hash
+        if not verify_password(encoded, password):
+            return None
+        replacement = (
+            hash_password(password, minimum_length=1)
+            if password_needs_rehash(encoded)
+            else None
+        )
+        # Expensive hashing occurs before this writer. A concurrent reset, disable
+        # or role change cannot be revived by an earlier password verification.
+        try:
+            with self.database.immediate_session() as session:
+                state = account_state_in_session(
+                    session,
+                    captured.id,
+                    auth_revision=captured.auth_revision,
+                    require_admin=initial_administrator,
+                )
+                credential = session.get(UserCredential, state.user_id)
+                if credential is None or credential.password_hash != encoded:
+                    return None
+                if replacement is not None:
+                    now = utcnow()
+                    credential.password_hash = replacement
+                    credential.updated_at = now
+                    mirror_initial_owner_password(
+                        session, user_id=state.user_id, encoded=replacement, updated_at=now
+                    )
+                return state
+        except PermissionError:
+            return None
+
+    def initial_account(self) -> AccountState:
+        """Trusted solo bootstrap selects the existing initial Administrator."""
+        with self.database.session() as session:
+            return account_state_in_session(
+                session, initial_user_id(session), require_admin=True
+            )
+
+    def require_administrator(self, principal: Principal) -> AccountState:
+        if (
+            not principal.user_id
+            or principal.auth_revision is None
+            or "app.admin" not in principal.scopes
+            or principal.kind == "manager_bootstrap"
+        ):
+            raise PermissionError("An active Administrator credential is required.")
+        with self.database.session() as session:
+            return account_state_in_session(
+                session,
+                principal.user_id,
+                auth_revision=principal.auth_revision,
+                require_admin=True,
+            )
+
+    def solo_access_allowed(self, user_id: str | None, auth_revision: int | None) -> bool:
+        """Compatibility name for the current installation account admission gate."""
+        if user_id is None or auth_revision is None:
+            return False
+        initial = and_(User.legacy_subject == "owner", User.is_instance_admin.is_(True))
+        admission = (
+            or_(initial, installation_mode.collaboration_enabled_clause())
+            if installation_mode.COLLABORATION_AVAILABLE else initial
+        )
+        with self.database.session() as session:
+            return session.scalar(
+                select(User.id)
+                .join(UserCredential, UserCredential.user_id == User.id)
+                .where(
+                    User.id == user_id, User.is_active.is_(True), admission,
+                    UserCredential.auth_revision == auth_revision,
+                )
+            ) is not None
 
     def create_api_token(
         self,
@@ -311,8 +413,11 @@ class AuthService:
         client_id: str | None = None,
         target_instance_id: str | None = None,
         canonical_origin: str | None = None,
+        user_id: str | None = None,
+        auth_revision: int | None = None,
+        resource_grants: CredentialResources | None = None,
     ) -> tuple[ApiToken, str]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             token, raw = self.create_api_token_in_session(
                 session,
                 label,
@@ -324,6 +429,9 @@ class AuthService:
                 client_id=client_id,
                 target_instance_id=target_instance_id,
                 canonical_origin=canonical_origin,
+                user_id=user_id,
+                auth_revision=auth_revision,
+                resource_grants=resource_grants,
             )
             session.expunge(token)
             return token, raw
@@ -341,6 +449,9 @@ class AuthService:
         client_id: str | None = None,
         target_instance_id: str | None = None,
         canonical_origin: str | None = None,
+        user_id: str | None = None,
+        auth_revision: int | None = None,
+        resource_grants: CredentialResources | None = None,
     ) -> tuple[ApiToken, str]:
         """Create a token in a caller-owned transaction."""
 
@@ -348,6 +459,37 @@ class AuthService:
             raise ValueError("The API principal kind is invalid.")
         raw = f"pan_{secrets.token_urlsafe(32)}"
         selected_scopes = normalize_scopes(scopes)
+        if principal_kind == "manager_bootstrap" and "app.admin" in selected_scopes:
+            raise PermissionError("Manager bootstrap cannot grant Administrator authority.")
+        state = account_state_in_session(
+            session,
+            user_id if user_id is not None else initial_user_id(session),
+            auth_revision=auth_revision,
+            require_admin="app.admin" in selected_scopes,
+        )
+        client_resources = None
+        if client_id is not None:
+            client = session.get(AutomationClient, client_id, populate_existing=True)
+            if (
+                client is None
+                or client.revoked_at is not None
+                or client.user_id != state.user_id
+                or client.user_auth_revision != state.auth_revision
+            ):
+                raise PermissionError("The automation credential is inactive or has changed.")
+            client_resources = resources_for_owner(session, CredentialOwner.CLIENT, client_id)
+        selected_resources = resource_grants
+        if selected_resources is None:
+            selected_resources = (
+                client_resources
+                if client_resources is not None
+                else default_personal_resources(session, state.user_id)
+            )
+        selected_resources = validate_resources_for_user(
+            session, state.user_id, selected_resources
+        )
+        if client_resources is not None:
+            require_resources_within(session, selected_resources, client_resources)
         token = ApiToken(
             label=str(label or "CLI token").strip() or "CLI token",
             token_hash=_token_digest(raw),
@@ -360,12 +502,25 @@ class AuthService:
             client_id=client_id,
             target_instance_id=target_instance_id,
             canonical_origin=canonical_origin,
+            user_id=state.user_id,
+            user_auth_revision=state.auth_revision,
         )
         session.add(token)
         session.flush()
         if not token.subject:
             token.subject = f"api-token:{token.id}"
             session.flush()
+        try:
+            account_state_in_session(
+                session,
+                state.user_id,
+                auth_revision=state.auth_revision,
+                require_admin="app.admin" in selected_scopes,
+            )
+        except PermissionError:
+            session.rollback()
+            raise
+        record_resources(session, CredentialOwner.TOKEN, token.id, selected_resources)
         return token, raw
 
     def resolve_api_token(
@@ -378,8 +533,8 @@ class AuthService:
     ) -> Principal | None:
         prefix = str(raw or "")[:12]
         digest = _token_digest(str(raw or ""))
-        now = utcnow()
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
+            now = utcnow()
             candidates = list(
                 session.scalars(
                     select(ApiToken).where(
@@ -413,13 +568,32 @@ class AuthService:
                 raw_kind = str(candidate.principal_kind or "api_token")
                 if raw_kind not in PRINCIPAL_KINDS:
                     return None
-                candidate.last_used_at = now
+                if (
+                    candidate.user_id is None
+                    or candidate.user_auth_revision is None
+                    or (raw_kind == "manager_bootstrap" and "app.admin" in scopes)
+                ):
+                    return None
+                try:
+                    state = account_state_in_session(
+                        session,
+                        candidate.user_id,
+                        auth_revision=candidate.user_auth_revision,
+                        require_admin="app.admin" in scopes,
+                    )
+                except PermissionError:
+                    return None
                 if candidate.client_id:
                     client = session.get(
                         AutomationClient,
                         candidate.client_id,
                     )
-                    if client is None or client.revoked_at is not None:
+                    if (
+                        client is None
+                        or client.revoked_at is not None
+                        or client.user_id != state.user_id
+                        or client.user_auth_revision != state.auth_revision
+                    ):
                         return None
                     if (
                         target_instance_id is not None
@@ -431,7 +605,13 @@ class AuthService:
                         and client.canonical_origin != canonical_origin
                     ):
                         return None
+                    try:
+                        if not scopes <= normalize_scopes(client.allowed_scopes_json):
+                            return None
+                    except ValueError:
+                        return None
                     client.last_used_at = now
+                candidate.last_used_at = now
                 return Principal(
                     subject=(
                         str(candidate.subject)
@@ -447,6 +627,8 @@ class AuthService:
                         or str(candidate.target_instance_id or "")
                     ),
                     client_id=candidate.client_id,
+                    user_id=state.user_id,
+                    auth_revision=state.auth_revision,
                 )
         return None
 
@@ -462,16 +644,24 @@ class AuthService:
             is not None
         )
 
-    def list_tokens(self) -> list[ApiToken]:
+    def list_tokens(self, *, actor: UserActor | None = None) -> list[ApiToken]:
         with self.database.session() as session:
-            tokens = list(session.scalars(select(ApiToken).order_by(ApiToken.created_at.desc())).all())
+            statement = select(ApiToken).order_by(ApiToken.created_at.desc())
+            if actor is not None:
+                require_actor_in_session(session, actor, required_scopes={"app.credentials.read"})
+                statement = statement.where(ApiToken.user_id == actor.user_id)
+            tokens = list(session.scalars(statement).all())
             for token in tokens:
                 session.expunge(token)
             return tokens
 
-    def revoke_token(self, token_id: str) -> None:
-        with self.database.session() as session:
-            token = session.get(ApiToken, token_id)
+    def revoke_token(self, token_id: str, *, actor: UserActor | None = None) -> None:
+        with self.database.immediate_session() as session:
+            statement = select(ApiToken).where(ApiToken.id == token_id)
+            if actor is not None:
+                require_actor_in_session(session, actor, required_scopes={"app.credentials.write"})
+                statement = statement.where(ApiToken.user_id == actor.user_id)
+            token = session.scalar(statement)
             if token is None:
                 raise KeyError(token_id)
             token.revoked_at = utcnow()

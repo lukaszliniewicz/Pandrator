@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
+from .access.sound_execution_policy import sound_execution_callbacks
 from .artifacts import ArtifactService
 from .database import Database
 from .job_execution import current_job_lease
@@ -50,7 +51,19 @@ class SoundMixService:
         *,
         timeline_artifact_id: str | None = None,
         expected_revision: int | None = None,
+        before_io: Callable[[], None] | None = None,
+        authorization_guard: Callable[[Session], None] | None = None,
+        authorize_input: Callable[[Session, str], None] | None = None,
     ) -> PreparedSoundMix:
+        before_io, authorization_guard, authorize_input = sound_execution_callbacks(
+            self.database, session_id,
+            session_artifact_ids=(base_artifact_id,) + (
+                (timeline_artifact_id,) if timeline_artifact_id is not None else ()
+            ),
+            before_io=before_io,
+            authorization_guard=authorization_guard,
+            authorize_input=authorize_input,
+        )
         prepared = prepare_sound_mix(
             self.database,
             self.paths,
@@ -59,6 +72,9 @@ class SoundMixService:
             base_artifact_id,
             timeline_artifact_id=timeline_artifact_id,
             expected_revision=expected_revision,
+            before_io=before_io,
+            authorization_guard=authorization_guard,
+            authorize_input=authorize_input,
         )
         if not prepared.has_cues:
             return prepared
@@ -67,6 +83,9 @@ class SoundMixService:
             self.paths,
             session_id,
             prepared.request_fingerprint,
+            before_io=before_io,
+            authorization_guard=authorization_guard,
+            authorize_input=authorize_input,
         )
         if cached is None:
             return prepared
@@ -76,14 +95,10 @@ class SoundMixService:
             cache_artifact_hash=cached.content_hash,
         )
 
-    def get_status(
-        self, session_id: str, base_artifact_id: str | None = None
-    ) -> dict[str, Any]:
+    def get_status(self, session_id: str, base_artifact_id: str | None = None) -> dict[str, Any]:
         return get_status(self.database, session_id, base_artifact_id)
 
-    def admit_in_session(
-        self, session: Session, prepared: PreparedSoundMix
-    ) -> dict[str, Any]:
+    def admit_in_session(self, session: Session, prepared: PreparedSoundMix) -> dict[str, Any]:
         return admit_in_session(session, self.jobs, prepared)
 
     @staticmethod
@@ -134,10 +149,37 @@ class SoundMixService:
         }
         if durable_payload.keys() != required:
             raise ValueError("Sound-mix worker payload is missing accepted input pins.")
+        with self.database.snapshot_session() as session:
+            job = session.get(Job, str(payload.get("_job_id")))
+            if (
+                job is None
+                or job.session_id != durable_payload["session_id"]
+                or job.kind != "sound.mix"
+                or job.payload_json != durable_payload
+            ):
+                raise ValueError("Sound-mix job payload no longer matches its accepted request.")
+        session_id = str(durable_payload["session_id"])
+        base_artifact_id = str(durable_payload["base_artifact_id"])
+        timeline_artifact_id = (
+            str(durable_payload["timeline_artifact_id"])
+            if durable_payload["timeline_artifact_id"] is not None else None
+        )
+        before_io, authorization_guard, authorize_input = sound_execution_callbacks(
+            self.database, session_id,
+            session_artifact_ids=(base_artifact_id,) + (
+                (timeline_artifact_id,) if timeline_artifact_id is not None else ()
+            ),
+        )
+        callbacks = (
+            {"before_io": before_io, "authorization_guard": authorization_guard,
+             "authorize_input": authorize_input}
+            if before_io is not None else {}
+        )
         prepared = self.prepare(
             str(durable_payload["session_id"]),
             str(durable_payload["base_artifact_id"]),
             expected_revision=durable_payload["sound_plan_revision"],
+            **callbacks,
             timeline_artifact_id=(
                 str(durable_payload["timeline_artifact_id"])
                 if durable_payload["timeline_artifact_id"] is not None
@@ -146,15 +188,6 @@ class SoundMixService:
         )
         if not prepared.has_cues or prepared.payload != durable_payload:
             raise ValueError("Sound-mix inputs changed after admission; submit a new mix request.")
-        with self.database.snapshot_session() as session:
-            job = session.get(Job, str(payload.get("_job_id")))
-            if (
-                job is None
-                or job.session_id != prepared.session_id
-                or job.kind != "sound.mix"
-                or job.payload_json != durable_payload
-            ):
-                raise ValueError("Sound-mix job payload no longer matches its accepted request.")
         _artifact, receipt = render_prepared(
             self.database,
             self.paths,
@@ -163,6 +196,7 @@ class SoundMixService:
             progress=progress,
             cancel_event=cancel_event,
             require_sound_mix_lease=True,
+            **callbacks,
         )
         return receipt
 
@@ -174,11 +208,26 @@ class SoundMixService:
         timeline_artifact_id: str | None = None,
         progress: Callable[[float, str], None],
         cancel_event: threading.Event,
+        before_io: Callable[[], None] | None = None,
+        authorization_guard: Callable[[Session], None] | None = None,
+        authorize_input: Callable[[Session, str], None] | None = None,
     ) -> Artifact:
+        before_io, authorization_guard, authorize_input = sound_execution_callbacks(
+            self.database, session_id,
+            session_artifact_ids=(base_artifact_id,) + (
+                (timeline_artifact_id,) if timeline_artifact_id is not None else ()
+            ),
+            before_io=before_io,
+            authorization_guard=authorization_guard,
+            authorize_input=authorize_input,
+        )
         prepared = self.prepare(
             session_id,
             base_artifact_id,
             timeline_artifact_id=timeline_artifact_id,
+            before_io=before_io,
+            authorization_guard=authorization_guard,
+            authorize_input=authorize_input,
         )
         artifact, _receipt = render_prepared(
             self.database,
@@ -187,6 +236,9 @@ class SoundMixService:
             prepared,
             progress=progress,
             cancel_event=cancel_event,
+            before_io=before_io,
+            authorization_guard=authorization_guard,
+            authorize_input=authorize_input,
         )
         return artifact
 

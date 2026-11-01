@@ -35,6 +35,7 @@ export type GenerationControls = {
   revision: number;
   characters: Character[];
   cast: Cast;
+  retained_cast?: Record<string, { model: string }>;
 };
 
 export type CastDraftController = {

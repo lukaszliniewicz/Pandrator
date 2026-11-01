@@ -21,10 +21,20 @@ export function referenceCrop(start: number, end: string) {
   };
 }
 
-export function importReferenceAudio(file: File, attempt: ApiMutationAttempt) {
+function workspacePath(path: string, workspaceId?: string) {
+  return workspaceId === undefined
+    ? path
+    : `${path}?${new URLSearchParams({ workspace_id: workspaceId })}`;
+}
+
+export function importReferenceAudio(
+  file: File,
+  attempt: ApiMutationAttempt,
+  workspaceId?: string
+) {
   if (file.size > 50 * 1024 * 1024)
     throw new Error('Audio imports may not exceed 50 MiB.');
-  const path = '/voices/reference-audio/import';
+  const path = workspacePath('/voices/reference-audio/import', workspaceId);
   return apiJson<{ artifact_id: string }>(path, {
     method: 'PUT',
     headers: {
@@ -51,12 +61,19 @@ export function prepareReference(
     start_seconds?: number;
     end_seconds?: number;
   },
-  attempt: ApiMutationAttempt
+  attempt: ApiMutationAttempt,
+  workspaceId?: string
 ) {
-  const path = `/voices/${encodeURIComponent(voiceId)}/samples/from-artifact`;
+  const path = workspacePath(
+    `/voices/${encodeURIComponent(voiceId)}/samples/from-artifact`,
+    workspaceId
+  );
   return apiJson<JobRecord>(path, {
     method: 'POST',
-    headers: attempt.headersFor(path, body),
+    headers: {
+      ...attempt.headersFor(path, body),
+      'Content-Type': 'application/json'
+    },
     body: JSON.stringify(body)
   });
 }

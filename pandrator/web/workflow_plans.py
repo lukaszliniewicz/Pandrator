@@ -12,8 +12,12 @@ from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
+from .access.contracts import AccessContext, AccessDenied, ProjectAction
+from .access.session_policy import require_session_access
+from .accounts.execution_actor import UserActor, actor_from_principal, execution_actor_scope
+from .artifact_selection import canonical_stage_key
 from .auth import Principal
 from .credentials import contains_inline_secret, is_sensitive_field
 from .database import Database
@@ -21,7 +25,6 @@ from .export_contract import export_requires_generation_assembly
 from .idempotency import IdempotencyService
 from .jobs import JobQueue
 from .models import (
-    AppSetting,
     Artifact,
     GenerationPlan,
     GenerationPlanRevision,
@@ -36,10 +39,11 @@ from .models import (
     SessionStageSelection,
     SourceAsset,
     WorkflowExecutionPlan,
+    WorkspaceSetting,
     utcnow,
 )
 from .outcome_plans import resolve_workflow_inputs
-from .source_resolution import resolve_primary_source
+from .provider_identity import provider_namespace
 from .work import WorkService
 from .workflow_inputs import workflow_transformations
 from .workflow_prerequisites import WorkflowPrerequisiteService
@@ -47,6 +51,7 @@ from .workflows import (
     GenerationPreflightError,
     ResolvedWorkflowStage,
     WorkflowService,
+    _workflow_primary_source,
 )
 
 PLAN_SCHEMA_VERSION = "1"
@@ -211,10 +216,35 @@ class WorkflowExecutionPlanService:
         self.handlers = handlers
 
     @staticmethod
+    def _context(principal: Principal) -> AccessContext:
+        try:
+            actor = actor_from_principal(principal)
+        except (TypeError, ValueError):
+            raise AccessDenied() from None
+        if type(actor) is not UserActor:
+            raise AccessDenied()
+        return AccessContext(actor)
+
+    def _owned(self, db_session: Session, plan_id: str, principal: Principal, action: ProjectAction) -> WorkflowExecutionPlan:
+        context = self._context(principal)
+        row = db_session.execute(
+            select(WorkflowExecutionPlan.session_id, WorkflowExecutionPlan.principal_subject)
+            .where(WorkflowExecutionPlan.id == plan_id)
+        ).one_or_none()
+        if row is None or row.principal_subject != principal.subject:
+            raise WorkflowPlanError("not_found", "Workflow execution plan not found.", 404)
+        require_session_access(db_session, context, row.session_id, action)
+        record = db_session.get(WorkflowExecutionPlan, plan_id)
+        if record is None:
+            raise WorkflowPlanError("not_found", "Workflow execution plan not found.", 404)
+        return record
+
+    @staticmethod
     def _state_snapshot(db_session, session_id: str) -> dict[str, Any]:
         record = db_session.get(SessionRecord, session_id)
         if record is None:
             raise KeyError(session_id)
+        namespace = provider_namespace(db_session, session_id=session_id)
         outcome = db_session.get(OutcomePlan, session_id)
         selections = list(
             db_session.scalars(
@@ -230,6 +260,10 @@ class WorkflowExecutionPlanService:
                     SourceAsset,
                     SourceAsset.id == SessionSource.source_asset_id,
                 )
+                .options(load_only(
+                    SourceAsset.id, SourceAsset.revision, SourceAsset.state,
+                    SourceAsset.artifact_id, SourceAsset.content_hash, raiseload=True,
+                ))
                 .where(SessionSource.session_id == session_id)
                 .order_by(
                     SessionSource.role,
@@ -271,21 +305,33 @@ class WorkflowExecutionPlanService:
         )
         app_settings = list(
             db_session.scalars(
-                select(AppSetting)
+                select(WorkspaceSetting)
                 .where(
+                    WorkspaceSetting.workspace_id == namespace.workspace_id,
                     or_(
-                        AppSetting.key.like("defaults.%"),
-                        AppSetting.key.like("services.%"),
+                        WorkspaceSetting.key.like("defaults.%"),
+                        WorkspaceSetting.key.like("services.%"),
                     )
                 )
-                .order_by(AppSetting.key)
+                .order_by(WorkspaceSetting.key)
             ).all()
         )
         providers = list(
-            db_session.scalars(select(Provider).order_by(Provider.id)).all()
+            db_session.scalars(
+                select(Provider)
+                .where(Provider.workspace_id == namespace.workspace_id)
+                .order_by(Provider.id)
+                .execution_options(populate_existing=True)
+            ).all()
         )
         provider_models = list(
-            db_session.scalars(select(ProviderModel).order_by(ProviderModel.id)).all()
+            db_session.scalars(
+                select(ProviderModel)
+                .join(Provider, Provider.id == ProviderModel.provider_id)
+                .where(Provider.workspace_id == namespace.workspace_id)
+                .order_by(ProviderModel.id)
+                .execution_options(populate_existing=True)
+            ).all()
         )
         generation_plan = db_session.scalar(
             select(GenerationPlan).where(GenerationPlan.session_id == session_id)
@@ -557,7 +603,7 @@ class WorkflowExecutionPlanService:
             (
                 index
                 for index, item in enumerate(stages)
-                if item.get("key") == target_stage
+                if item.get("key") == canonical_stage_key(target_stage)
             ),
             None,
         )
@@ -583,7 +629,7 @@ class WorkflowExecutionPlanService:
             transformations = workflow_transformations(
                 db_session, session_id, outcome, self.database
             )
-            primary = resolve_primary_source(db_session, session_id)
+            primary = _workflow_primary_source(db_session, session_id)
             primary_artifact = primary.artifact
             is_srt_source = False
             if record.workflow_kind != "audiobook" and primary_artifact is not None:
@@ -608,6 +654,8 @@ class WorkflowExecutionPlanService:
         steps: list[dict[str, Any]] = []
         for item in stages[: target_index + 1]:
             key = str(item.get("key") or "")
+            if key == canonical_stage_key(target_stage):
+                key = target_stage
             if key not in allowed_keys or not item.get("executable"):
                 continue
             status = str(item.get("status") or "unknown")
@@ -733,6 +781,7 @@ class WorkflowExecutionPlanService:
         continuation: bool = True,
         expires_in_minutes: int = 30,
     ) -> dict[str, Any]:
+        context = self._context(principal)
         supplied = dict(overrides or {})
         if contains_inline_secret(supplied) or _contains_url_credentials(supplied):
             raise WorkflowPlanError(
@@ -741,6 +790,7 @@ class WorkflowExecutionPlanService:
                 422,
             )
         with self.database.session() as db_session:
+            require_session_access(db_session, context, session_id, ProjectAction.RUN)
             before = self._state_fingerprint(
                 db_session,
                 session_id,
@@ -751,6 +801,7 @@ class WorkflowExecutionPlanService:
                 target_stage,
                 supplied,
                 continuation=continuation,
+                access_context=context,
             )
         except GenerationPreflightError as error:
             raise WorkflowPlanError(
@@ -824,13 +875,14 @@ class WorkflowExecutionPlanService:
             if isinstance(item, dict) and "stage" in item
         }
         if continuation:
-            steps = self._ordered_steps(
-                session_id=session_id,
-                target_stage=target_stage,
-                resolved=resolved,
-                reuse_stages=reuse_stages,
-                mismatched_stages=mismatched_stages,
-            )
+            with execution_actor_scope(context.actor):
+                steps = self._ordered_steps(
+                    session_id=session_id,
+                    target_stage=target_stage,
+                    resolved=resolved,
+                    reuse_stages=reuse_stages,
+                    mismatched_stages=mismatched_stages,
+                )
             execution_job_kind = resolved.job_kind
         else:
             steps, execution_job_kind = self._direct_steps(
@@ -941,6 +993,7 @@ class WorkflowExecutionPlanService:
         }
         digest = canonical_digest(public_plan)
         with self.database.immediate_session() as db_session:
+            require_session_access(db_session, context, session_id, ProjectAction.RUN)
             after = self._state_fingerprint(
                 db_session,
                 session_id,
@@ -980,14 +1033,8 @@ class WorkflowExecutionPlanService:
         *,
         principal: Principal,
     ) -> dict[str, Any]:
-        with self.database.session() as db_session:
-            record = db_session.get(WorkflowExecutionPlan, plan_id)
-            if record is None or record.principal_subject != principal.subject:
-                raise WorkflowPlanError(
-                    "not_found",
-                    "Workflow execution plan not found.",
-                    404,
-                )
+        with self.database.snapshot_session() as db_session:
+            record = self._owned(db_session, plan_id, principal, ProjectAction.READ)
             public_plan = self._public_plan(record)
             return {
                 "plan_digest": record.plan_digest,
@@ -1006,6 +1053,7 @@ class WorkflowExecutionPlanService:
         accepted_confirmations: list[str],
         idempotency_key: object,
         execution_guard: Callable[[Session], None] | None = None,
+        authorization_guard: Callable[[Session], None] | None = None,
     ) -> tuple[dict[str, Any], int, bool]:
         operation_payload = {
             "plan_id": plan_id,
@@ -1013,6 +1061,9 @@ class WorkflowExecutionPlanService:
             "accepted_confirmations": sorted(set(accepted_confirmations)),
         }
         with self.database.immediate_session() as db_session:
+            record = self._owned(db_session, plan_id, principal, ProjectAction.RUN)
+            if authorization_guard is not None:
+                authorization_guard(db_session)
             reservation = self.idempotency.begin(
                 db_session,
                 principal=principal,
@@ -1136,13 +1187,14 @@ class WorkflowExecutionPlanService:
                         str(error),
                         409,
                     ) from error
-            job = self.jobs.enqueue_in_session(
-                db_session,
-                str(execution.get("job_kind") or "workflow.continue"),
-                execution_payload,
-                session_id=record.session_id,
-                resource_keys=[str(value) for value in resource_keys],
-            )
+            with execution_actor_scope(self._context(principal).actor):
+                job = self.jobs.enqueue_in_session(
+                    db_session,
+                    str(execution.get("job_kind") or "workflow.continue"),
+                    execution_payload,
+                    session_id=record.session_id,
+                    resource_keys=[str(value) for value in resource_keys],
+                )
             record.consumed_at = utcnow()
             record.resulting_job_id = job.id
             response = self.work.project_job(job).model_dump(mode="json")

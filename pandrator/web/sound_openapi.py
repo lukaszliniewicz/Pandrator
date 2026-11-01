@@ -228,6 +228,14 @@ def sound_paths() -> dict:
                 "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
             },
         }
+        if operation_id == "importVoiceReferenceAudio":
+            operation["parameters"].append({
+                "name": "workspace_id", "in": "query", "required": False,
+                "description": "Targets an editable workspace, or the caller's personal workspace when omitted.",
+                "schema": {"type": "string", "minLength": 1, "maxLength": 80},
+            })
+            operation["security"] = [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": ["app.read", "app.write"]}]
+            operation["x-required-scopes"] = ["app.read", "app.write"]
         paths[path] = {"put": operation}
     multipart = _operation("importSoundMultipart", scope="app.write", status="201", write=True)
     multipart["requestBody"] = {
@@ -243,4 +251,32 @@ def sound_paths() -> dict:
         },
     }
     paths["/api/v1/sounds/import"]["post"] = multipart
+    library_operations = (
+        ("/api/v1/sounds", "get"),
+        ("/api/v1/sounds/{itemId}", "get"),
+        ("/api/v1/sounds/{itemId}", "patch"),
+        ("/api/v1/sounds/candidates", "get"),
+        ("/api/v1/sounds/candidates/{candidateId}", "get"),
+        ("/api/v1/sounds/candidates/{candidateId}", "delete"),
+        ("/api/v1/sounds/save", "post"),
+        ("/api/v1/sounds/generate", "post"),
+        ("/api/v1/sounds/import", "put"),
+        ("/api/v1/sounds/import", "post"),
+    )
+    for path, method in library_operations:
+        operation = paths[path][method]
+        operation["parameters"].append({
+            **_parameter("workspace_id", "query", required=False,
+                schema={"type": "string", "minLength": 1, "maxLength": 80}),
+            "description": "Select a member workspace, or use the caller's personal library when omitted.",
+        })
+        scopes = ["app.read"] if method == "get" else [
+            "app.read", "app.run" if path.endswith("/generate") else "app.write"
+        ]
+        operation["security"] = [
+            {"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": scopes}
+        ]
+        operation["x-required-scopes"] = scopes
+        operation["x-workspace-scope"] = "caller-personal-or-member"
+        operation["responses"]["403"]["description"] = "Caller lacks the required scopes or content authority."
     return paths

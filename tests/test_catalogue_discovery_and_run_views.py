@@ -9,9 +9,10 @@ import pytest
 from sqlalchemy import event, func, select
 
 from pandrator.logic import tts_handler
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import AppSetting, Artifact, GenerationRun
+from pandrator.web.models import Artifact, GenerationRun, WorkspaceSetting
 from pandrator.web.tts_provider_contracts import TtsHealth, TtsProviderError
 from pandrator.web.voice_catalog import (
     VoiceCatalogQuery,
@@ -44,14 +45,20 @@ def app_case(tmp_path, monkeypatch):
 
 def configure_old_native(services):
     with services["database"].session() as session:
-        row = session.get(AppSetting, "services.tts")
+        workspace_id = initial_personal_workspace(session).id
+        row = session.get(WorkspaceSetting, (workspace_id, "services.tts"))
         value = {"provider_configs": [{
             "id": "audio_cpp", "adapter": "audio_cpp", "connection_mode": "external",
             "api_base": "http://native.invalid:8060", "models": ["old_model"],
             "model_catalog": [{"id": "old_model"}], "default_model": "old_model",
         }]}
         if row is None:
-            session.add(AppSetting(key="services.tts", value_json=value, revision=1))
+            session.add(WorkspaceSetting(
+                workspace_id=workspace_id,
+                key="services.tts",
+                value_json=value,
+                revision=1,
+            ))
         else:
             row.value_json = value
     return value
@@ -138,7 +145,8 @@ def test_native_discovery_survives_read_failure_expiry_and_config_changes(app_ca
         config = deepcopy(original_config)
         config["provider_configs"][0][field] = value
         with services["database"].session() as session:
-            session.get(AppSetting, "services.tts").value_json = config
+            workspace_id = initial_personal_workspace(session).id
+            session.get(WorkspaceSetting, (workspace_id, "services.tts")).value_json = config
         changed, _ = catalogue.snapshot(service_ids=["audio_cpp"], include_profiles=False)
         assert BREEZE not in changed["services"][0]["models"]
 
@@ -197,11 +205,12 @@ def test_preview_projection_retains_latest_file_and_catalog_cursor_semantics(app
     catalogue = services["tts_catalogue"]
     now = datetime.now(timezone.utc)
     with services["database"].session() as session:
+        workspace_id = initial_personal_workspace(session).id
         for index, voice in enumerate(("alloy", "alloy", "echo", "", "missing")):
             path = services["paths"].uploads / f"preview-{index}.wav"
             if voice != "missing":
                 path.write_bytes(b"fixture")
-            session.add(Artifact(id=f"preview-{index}", kind="audio", role="tts_voice_preview", relative_path=str(path.relative_to(services["paths"].root)), metadata_json={"service_id": "openai", "model": "tts-1", "voice": voice, "preview_text": f"Preview {index}", "huge_unused": "x" * 20000}, updated_at=now + timedelta(seconds=index)))
+            session.add(Artifact(id=f"preview-{index}", workspace_id=workspace_id, kind="audio", role="tts_voice_preview", relative_path=str(path.relative_to(services["paths"].root)), metadata_json={"service_id": "openai", "model": "tts-1", "voice": voice, "preview_text": f"Preview {index}", "huge_unused": "x" * 20000}, updated_at=now + timedelta(seconds=index)))
     loaded = []
 
     def record_load(artifact, _context):
@@ -234,7 +243,8 @@ def test_discovery_failure_preserves_health_and_redacts_catalogue_error(app_case
     config["provider_configs"][0]["api_key_env"] = "PANDRATOR_TEST_CATALOGUE_KEY"
     monkeypatch.setenv("PANDRATOR_TEST_CATALOGUE_KEY", "catalogue-secret-value")
     with services["database"].session() as session:
-        session.get(AppSetting, "services.tts").value_json = config
+        workspace_id = initial_personal_workspace(session).id
+        session.get(WorkspaceSetting, (workspace_id, "services.tts")).value_json = config
     catalogue = services["tts_catalogue"]
     health = Mock(return_value=TtsHealth(True, True))
     message = "catalogue-secret-value api_key=another-secret " + "x" * 600

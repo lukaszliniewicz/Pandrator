@@ -63,7 +63,7 @@ def test_discovery_key_resolver_retains_zero_argument_call(monkeypatch, method, 
     }
 
 
-def test_single_request_retains_policy_argument_and_return_identity(monkeypatch):
+def test_single_request_retains_policy_argument_and_return_identity(monkeypatch, host_model_acquisition):
     settings = {"service": "kobold_qwen", "voice": "Ryan", "model": "Prebuilt Voices"}
     payload = {"model": "Prebuilt Voices", "input": "Test.", "voice": "Ryan", "speed": 1.0}
     calls = []
@@ -99,7 +99,7 @@ def test_single_request_retains_policy_argument_and_return_identity(monkeypatch)
     assert calls[2][2]["json"] is payload
 
 
-def test_http_batch_resolves_each_callback_when_it_is_used(monkeypatch):
+def test_http_batch_resolves_each_callback_when_it_is_used(monkeypatch, host_model_acquisition):
     settings = {"service": "kobold_qwen", "voice": "Ryan", "model": "Prebuilt Voices"}
     items = [{"id": str(i), "text": f"Text {i}.", "settings": settings} for i in range(2)]
     calls = []
@@ -200,7 +200,7 @@ def test_http_batch_resolves_each_callback_when_it_is_used(monkeypatch):
 
 
 @pytest.mark.parametrize("fail_clear", [False, True])
-def test_http_batch_clears_response_before_close_on_exception(monkeypatch, fail_clear):
+def test_http_batch_clears_response_before_close_on_exception(monkeypatch, fail_clear, host_model_acquisition):
     response = _response(status=500, payload={})
     response.raw = io.BytesIO()
     events = []

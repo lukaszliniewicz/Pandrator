@@ -7,6 +7,7 @@ from sqlalchemy import event
 
 from pandrator.logic.language_capabilities import canonical_language_tag
 from pandrator.logic.model_catalogue import catalogue_page
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
@@ -19,6 +20,8 @@ from pandrator.web.models import (
     SessionSource,
     SourceAsset,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.projects.identity import create_session_project
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -38,22 +41,28 @@ def browse_case(tmp_path, monkeypatch):
     db = services["database"]
     stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
     with db.session() as session:
-        session.add_all(
-            [
-                SessionRecord(id="a", name="Alpha", source_language="en", target_language="ja"),
-                SessionRecord(id="b", name="Beta", trashed_at=stamp),
-            ]
-        )
-        session.flush()
+        for record in (
+            SessionRecord(id="a", name="Alpha", source_language="en", target_language="ja"),
+            SessionRecord(id="b", name="Beta", trashed_at=stamp),
+        ):
+            create_session_project(session, record)
+        personal_workspace_id = initial_personal_workspace(session).id
         session.add_all(
             [
                 SourceAsset(
                     id="source",
+                    workspace_id=personal_workspace_id,
                     display_name="Readable source",
                     kind="txt",
                     metadata_json={"large": "x" * 10000},
                 ),
-                SourceAsset(id="hidden", display_name="Hidden", kind="txt", state="trashed"),
+                SourceAsset(
+                    id="hidden",
+                    workspace_id=personal_workspace_id,
+                    display_name="Hidden",
+                    kind="txt",
+                    state="trashed",
+                ),
             ]
         )
         session.flush()
@@ -162,10 +171,14 @@ def test_source_references_include_history_trashed_and_stable_paging(browse_case
 def test_artifact_compact_audio_pages_take_labels_and_legacy_full(browse_case):
     client, services, stamp = browse_case
     with services["database"].session() as session:
+        session_a_ownership = resolve_artifact_ownership(session, session_id="a")
+        session_b_ownership = resolve_artifact_ownership(session, session_id="b")
         session.add_all(
             [
                 Artifact(
                     id="audio-a",
+                    workspace_id=session_a_ownership.workspace_id,
+                    project_id=session_a_ownership.project_id,
                     session_id="a",
                     kind="wav",
                     role="assembled_audio",
@@ -175,6 +188,8 @@ def test_artifact_compact_audio_pages_take_labels_and_legacy_full(browse_case):
                 ),
                 Artifact(
                     id="audio-b",
+                    workspace_id=session_a_ownership.workspace_id,
+                    project_id=session_a_ownership.project_id,
                     session_id="a",
                     kind="bin",
                     mime_type="audio/mpeg",
@@ -184,6 +199,8 @@ def test_artifact_compact_audio_pages_take_labels_and_legacy_full(browse_case):
                 ),
                 Artifact(
                     id="text",
+                    workspace_id=session_a_ownership.workspace_id,
+                    project_id=session_a_ownership.project_id,
                     session_id="a",
                     kind="txt",
                     role="upload",
@@ -192,6 +209,8 @@ def test_artifact_compact_audio_pages_take_labels_and_legacy_full(browse_case):
                 ),
                 Artifact(
                     id="video",
+                    workspace_id=session_a_ownership.workspace_id,
+                    project_id=session_a_ownership.project_id,
                     session_id="a",
                     kind="mp4",
                     mime_type="video/mp4",
@@ -201,6 +220,8 @@ def test_artifact_compact_audio_pages_take_labels_and_legacy_full(browse_case):
                 ),
                 Artifact(
                     id="other-audio",
+                    workspace_id=session_b_ownership.workspace_id,
+                    project_id=session_b_ownership.project_id,
                     session_id="b",
                     kind="flac",
                     relative_path="b/audio.flac",

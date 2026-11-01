@@ -108,6 +108,66 @@ class TextPreprocessorTests(unittest.TestCase):
         self.assertEqual(result, ["One.", "Two."])
         legacy_split.assert_called_once_with("One. Two.", "en")
 
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_sentence_packing_rejoins_neural_clause_cuts_before_testing_fit(self, split_text):
+        first = "A lantern warmed the small kitchen while rain tapped on the old windows through the quiet evening."
+        left_clause = (
+            "The travelers followed a narrow track through the valley, carrying provisions and maps "
+            "as the last light faded and the evening wind grew cold;"
+        )
+        right_clause = (
+            "after sunset they reached a village beside the river, where warm windows shone above "
+            "the old stone bridge and a friendly host prepared a room."
+        )
+        last = "The river passed beneath the stone bridge and disappeared beyond the fields."
+        complete_sentence = left_clause + " " + right_clause
+        self.assertLessEqual(len(complete_sentence), 350)
+        self.assertGreater(len(first + " " + complete_sentence), 350)
+        self.assertGreater(len(complete_sentence + " " + last), 350)
+        split_text.return_value = [first, left_clause, right_clause, last]
+        source = " ".join(split_text.return_value)
+        for policy, threshold, isolated in (
+            ("auto", 350, True),
+            ("auto", 351, False),
+            ("sentences", 900, True),
+            ("clauses", 1, False),
+        ):
+            with self.subTest(policy=policy, threshold=threshold):
+                rows = preprocess_text(source, {
+                    "language": "en",
+                    "tts_service": "XTTS",
+                    "audiobook_preparation": True,
+                    "max_sentence_length": 350,
+                    "enable_sentence_appending": True,
+                    "enable_nemo_normalization": False,
+                    "normalize_all_caps": False,
+                    "audiobook_sentence_packing": policy,
+                    "audiobook_sentence_packing_threshold": threshold,
+                })
+                blocks = [row["original_sentence"] for row in rows]
+                self.assertEqual(source, " ".join(blocks))
+                self.assertTrue(all(len(block) <= 350 for block in blocks))
+                if isolated:
+                    self.assertEqual([first, complete_sentence, last], blocks)
+                else:
+                    self.assertEqual([first + " " + left_clause, right_clause + " " + last], blocks)
+
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_whole_sentence_mode_respects_cjk_terminal_quotes_without_appending(self, split_text):
+        split_text.return_value = ["「確かに、", "次の句です。」", "別の文です。"]
+        rows = preprocess_text("「確かに、次の句です。」別の文です。", {
+            "language": "ja",
+            "audiobook_preparation": True,
+            "audiobook_sentence_packing": "sentences",
+            "enable_sentence_appending": False,
+            "enable_nemo_normalization": False,
+            "max_sentence_length": 350,
+        })
+        self.assertEqual(
+            [row["original_sentence"] for row in rows],
+            ["「確かに、次の句です。」", "別の文です。"],
+        )
+
     @patch("pandrator.logic.text_preprocessor._sequential_preprocess_text", return_value=[])
     @patch("pandrator.logic.text_preprocessor._parallel_preprocess_text")
     @patch("pandrator.logic.text_preprocessor.sentence_segmenter.is_available", return_value=True)
@@ -531,6 +591,156 @@ class AudiobookSegmentationTests(unittest.TestCase):
             audiobook_preparation=True,
         )
         self.assertEqual([row["original_sentence"] for row in exact], ["One. Four."])
+
+    def test_preserving_sentence_boundaries_isolates_every_oversized_sentence_part(self):
+        first = "A lantern warmed the small kitchen while rain tapped on the old windows through the quiet evening."
+        clause_one = (
+            "The travelers followed a narrow track through the valley, carrying provisions and maps while "
+            "the last light faded behind the hills, and they continued carefully along the winding road "
+            "as the evening air grew colder"
+        )
+        clause_two = (
+            "After sunset they reached a village beside the river, where warm windows shone above the "
+            "stone bridge and a welcoming host prepared a room before the heavy clouds gathered over the fields"
+        )
+        oversized = f"{clause_one}; {clause_two}."
+        last = "The river passed beneath the stone bridge and disappeared beyond the fields."
+        self.assertGreater(len(oversized), 350)
+
+        parts = split_long_sentences_2(
+            self.row(oversized), 350, "en", audiobook_preparation=True
+        )
+        rows = [self.row(first), *parts, self.row(last, paragraph="yes")]
+        preserved = append_short_sentences(
+            rows,
+            350,
+            preserve_sentence_boundaries=True,
+            audiobook_preparation=True,
+        )
+
+        self.assertEqual([row["original_sentence"] for row in preserved], [
+            first, *(part["original_sentence"] for part in parts), last,
+        ])
+        self.assertTrue(all(row.get("split_part") is None for row in (preserved[0], preserved[-1])))
+        self.assertTrue(all(row.get("split_part") is not None for row in preserved[1:-1]))
+        self.assertTrue(all(len(row["original_sentence"]) <= 350 for row in preserved))
+        self.assertEqual(["no"] * (len(preserved) - 1) + ["yes"], [
+            row["paragraph"] for row in preserved
+        ])
+        self.assertEqual(
+            " ".join(" ".join(row["original_sentence"] for row in preserved).split()),
+            " ".join(" ".join([first, oversized, last]).split()),
+        )
+
+        compact = append_short_sentences(
+            rows, 350, audiobook_preparation=True
+        )
+        self.assertEqual(len(compact), 2)
+        self.assertTrue(compact[0]["original_sentence"].startswith(first))
+        self.assertTrue(compact[0]["original_sentence"].endswith(parts[0]["original_sentence"]))
+        self.assertTrue(compact[1]["original_sentence"].startswith(parts[-1]["original_sentence"]))
+        self.assertTrue(compact[1]["original_sentence"].endswith(last))
+
+    def test_preserving_sentence_boundaries_keeps_word_and_byte_split_parts_isolated(self):
+        from pandrator.logic.text_preprocessor import (
+            _limit_segment_tokenizer_bytes,
+            _limit_segment_words,
+        )
+
+        first = "A lantern warmed the small kitchen while rain tapped on the old windows through the quiet evening."
+        oversized = (
+            "The travelers followed a narrow track through the valley, carrying provisions and maps while "
+            "the last light faded behind the hills, and they continued carefully along the winding road "
+            "as the evening air grew colder; after sunset they reached a village beside the river, where "
+            "warm windows shone above the stone bridge and a welcoming host prepared a room before the "
+            "heavy clouds gathered over the fields."
+        )
+        last = "The river passed beneath the stone bridge and disappeared beyond the fields."
+        source = self.row(oversized)
+
+        for parts, word_limit, byte_limit in (
+            (_limit_segment_words(source, 20, "en", audiobook_preparation=True), 20, None),
+            (_limit_segment_tokenizer_bytes(source, 145, "en", audiobook_preparation=True), None, 145),
+        ):
+            with self.subTest(parts=len(parts), word_limit=word_limit, byte_limit=byte_limit):
+                self.assertGreater(len(parts), 1)
+                rows = [self.row(first), *parts, self.row(last, paragraph="yes")]
+                packed = append_short_sentences(
+                    rows,
+                    350,
+                    max_segment_words=word_limit,
+                    max_segment_tokenizer_bytes=byte_limit,
+                    preserve_sentence_boundaries=True,
+                    audiobook_preparation=True,
+                )
+                self.assertEqual(
+                    [row["original_sentence"] for row in packed],
+                    [first, *(part["original_sentence"] for part in parts), last],
+                )
+                self.assertTrue(all(row.get("split_part") is not None for row in packed[1:-1]))
+                self.assertTrue(all(len(row["original_sentence"]) <= 350 for row in packed))
+                if word_limit is not None:
+                    self.assertTrue(
+                        all(len(row["original_sentence"].split()) <= word_limit for row in packed)
+                    )
+                if byte_limit is not None:
+                    self.assertTrue(all(
+                        sum(
+                            3 if character == " " else len(character.encode("utf-8"))
+                            for character in row["original_sentence"]
+                        ) <= byte_limit
+                        for row in packed
+                    ))
+
+    def test_preserving_mode_still_packs_complete_sentences_with_all_budgets(self):
+        rows = [
+            self.row("One two."),
+            self.row("Three four."),
+            self.row("Five six."),
+            self.row("Seven eight.", paragraph="yes"),
+        ]
+        packed = append_short_sentences(
+            rows,
+            30,
+            max_segment_words=4,
+            max_segment_tokenizer_bytes=40,
+            preserve_sentence_boundaries=True,
+            audiobook_preparation=True,
+        )
+        self.assertEqual(
+            [row["original_sentence"] for row in packed],
+            ["One two. Three four.", "Five six. Seven eight."],
+        )
+        self.assertEqual(["no", "yes"], [row["paragraph"] for row in packed])
+
+    def test_preserving_mode_keeps_split_dialogue_parts_out_of_cross_paragraph_merge(self):
+        dialogue_metadata = {"source": "punctuation", "paragraph_count": 1}
+        rows = [
+            self.row(
+                "The split dialogue tail.",
+                paragraph="yes",
+                split_part="0b",
+                dialogue_flow=dialogue_metadata.copy(),
+                speech_boundary_after="dialogue_turn",
+            ),
+            self.row(
+                "The next complete dialogue turn.",
+                paragraph="yes",
+                dialogue_flow=dialogue_metadata.copy(),
+                speech_boundary_after="paragraph",
+            ),
+        ]
+        packed = append_short_sentences(
+            rows,
+            200,
+            dialogue_merge_allowed=True,
+            preserve_sentence_boundaries=True,
+            audiobook_preparation=True,
+        )
+        self.assertEqual(len(packed), 2)
+        self.assertEqual(packed[0]["split_part"], "0b")
+        self.assertEqual(packed[0]["speech_boundary_after"], "dialogue_turn")
+        self.assertEqual(packed[1]["speech_boundary_after"], "paragraph")
 
     def test_packing_respects_word_and_tokenizer_byte_budgets(self):
         rows = [

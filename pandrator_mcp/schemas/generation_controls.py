@@ -26,6 +26,9 @@ def _trim_text(value: Any) -> Any:
 class CharacterDelivery(_StrictModel):
     instruction: str = Field(default="", max_length=1200)
     emotion: str = Field(default="", max_length=80)
+    emotion_intensity: float | None = Field(
+        default=None, ge=0, le=2, allow_inf_nan=False
+    )
     pace: Literal["", "natural", "slower", "brisk"] = ""
     cadence: Literal["", "continuing", "concluding", "questioning", "contrast"] = ""
     emphasis: Literal["", "light", "moderate", "strong"] = ""
@@ -37,6 +40,12 @@ class CharacterDelivery(_StrictModel):
         if re.search(r"[\[\]\x00]|<\||\|>", value):
             raise ValueError("Use plain performance directions, not provider tags or control tokens.")
         return value
+
+    @model_validator(mode="after")
+    def intensity_requires_emotion(self):
+        if self.emotion_intensity is not None and not self.emotion:
+            raise ValueError("emotion_intensity requires a non-empty emotion.")
+        return self
 
 
 class CharacterEntry(_StrictModel):

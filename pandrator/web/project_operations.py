@@ -10,6 +10,9 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from . import models as m
+from .access.contracts import AccessContext, AccessDenied, ProjectAction, ProjectNotFound
+from .access.translation_project_policy import require_translation_project_access
+from .accounts.execution_actor import UserActor, actor_from_principal, execution_actor_scope
 from .artifacts import sha256_file
 from .auth import Principal
 from .idempotency import IdempotencyConflict
@@ -47,15 +50,49 @@ class TranslationProjectOperationService:
         self.services = services
         self.database = services.database
 
-    def _owned(self, db, operation_id, principal, target_identity):
-        operation = db.get(m.TranslationProjectOperation, operation_id)
-        if operation is None or operation.principal_subject != principal.subject:
+    @staticmethod
+    def _context(principal):
+        try:
+            actor = actor_from_principal(principal)
+        except (TypeError, ValueError):
+            raise AccessDenied() from None
+        if type(actor) is not UserActor:
+            raise AccessDenied()
+        return AccessContext(actor)
+
+    def _authorize(self, db, project_id, principal, action=ProjectAction.READ, *, write=False):
+        context = self._context(principal)
+        access = require_translation_project_access(db, context, project_id, action)
+        if write and "app.write" not in context.actor.scopes:
+            raise AccessDenied()
+        return access
+
+    def _owned(
+        self,
+        db,
+        operation_id,
+        principal,
+        target_identity,
+        action=ProjectAction.READ,
+        *,
+        write=False,
+    ):
+        self._context(principal)
+        row = db.execute(
+            select(
+                m.TranslationProjectOperation.project_id,
+                m.TranslationProjectOperation.principal_subject,
+                m.TranslationProjectOperation.target_instance_id,
+            ).where(m.TranslationProjectOperation.id == operation_id)
+        ).one_or_none()
+        if row is None or row.principal_subject != principal.subject:
             raise ProjectOperationError("not_found", "Project operation not found.", 404)
-        if operation.target_instance_id != str(target_identity.get("instance_id") or ""):
+        self._authorize(db, row.project_id, principal, action, write=write)
+        if row.target_instance_id != str(target_identity.get("instance_id") or ""):
             raise ProjectOperationError(
                 "target_identity_mismatch", "The operation belongs to another instance."
             )
-        return operation
+        return db.get(m.TranslationProjectOperation, operation_id)
 
     def _branch_guard(self, db, project_id: str, branch_id: str) -> dict:
         branch = db.get(m.TranslationProjectBranch, branch_id)
@@ -114,7 +151,9 @@ class TranslationProjectOperationService:
             .limit(1)
         )
 
-    def _generation_capture(self, branch):
+    def _generation_capture(self, project_id, principal, branch):
+        with self.database.session() as db:
+            self._authorize(db, project_id, principal, ProjectAction.RUN)
         status = speech_plan_status(self.services, branch["session_id"], summary=True)
         revision_id = status["selected_revision_id"]
         active = next((row for row in status["items"] if row["id"] == revision_id), None)
@@ -125,6 +164,7 @@ class TranslationProjectOperationService:
                 or "Review the current matching speech plan before generation."
             )
         with self.database.session() as db:
+            self._authorize(db, project_id, principal, ProjectAction.RUN)
             revision = db.get(m.GenerationPlanRevision, revision_id)
             source = status.get("current_input") or {}
             source_artifact = db.get(m.Artifact, str(source.get("artifact_id") or ""))
@@ -150,6 +190,7 @@ class TranslationProjectOperationService:
         prepared = self.services.generation.prepare_start(
             branch["session_id"],
             speech_plan_revision_id=revision_id,
+            retain_speech_inputs=False,
         )
         return prepared, {
             "revision_id": revision_id,
@@ -158,87 +199,89 @@ class TranslationProjectOperationService:
         }
 
     def _capture(self, project_id, branch_id, action, export_kind, principal, target_identity):
-        with self.database.session() as db:
-            guard = self._branch_guard(db, project_id, branch_id)
-            dispatch = (
-                self._partial_dispatch(db, guard["session_id"]) if action == "translate" else None
-            )
-            if dispatch:
-                raise ProjectOperationError(
-                    "manual_resume_required",
-                    "Resume the existing translation dispatch authority.",
-                    details={"dispatch_run_id": dispatch.id, "manual_resume_required": True},
+        with execution_actor_scope(self._context(principal).actor):
+            with self.database.session() as db:
+                self._authorize(db, project_id, principal, ProjectAction.RUN)
+                guard = self._branch_guard(db, project_id, branch_id)
+                dispatch = (
+                    self._partial_dispatch(db, guard["session_id"]) if action == "translate" else None
                 )
-            record = db.get(m.SessionRecord, guard["session_id"])
-            outcome = db.get(m.OutcomePlan, guard["session_id"])
-            stage_context = {
-                "session_revision": record.revision,
-                "workflow_kind": record.workflow_kind,
-                "outcome_revision": outcome.revision if outcome else 0,
-            }
-        capture = {"guard": guard}
-        if action == "generate":
-            prepared, generation_guard = self._generation_capture(guard)
-            capture.update(prepared=prepared, generation_guard=generation_guard)
-            snapshot = prepared["frozen_snapshot"]
-            public = {
-                "speech_plan_revision_id": prepared["speech_plan_revision_id"],
-                "input": generation_guard["current_input"],
-                "settings": self.services.redactor.redact_value(snapshot),
-                "language_preflight": snapshot.get("tts_language_snapshot", {}),
-                "required_confirmations": [],
-            }
-            # Use the existing provider disclosure classifier for the selected TTS
-            # snapshot, without creating a generation workflow or preparing text.
-            from .workflow_plans import WorkflowExecutionPlanService
-            from .workflows import ResolvedWorkflowStage
-            from .workspace import generation_resource_keys
+                if dispatch:
+                    raise ProjectOperationError(
+                        "manual_resume_required",
+                        "Resume the existing translation dispatch authority.",
+                        details={"dispatch_run_id": dispatch.id, "manual_resume_required": True},
+                    )
+                record = db.get(m.SessionRecord, guard["session_id"])
+                outcome = db.get(m.OutcomePlan, guard["session_id"])
+                stage_context = {
+                    "session_revision": record.revision,
+                    "workflow_kind": record.workflow_kind,
+                    "outcome_revision": outcome.revision if outcome else 0,
+                }
+            capture = {"guard": guard}
+            if action == "generate":
+                prepared, generation_guard = self._generation_capture(project_id, principal, guard)
+                capture.update(prepared=prepared, generation_guard=generation_guard)
+                snapshot = prepared["frozen_snapshot"]
+                public = {
+                    "speech_plan_revision_id": prepared["speech_plan_revision_id"],
+                    "input": generation_guard["current_input"],
+                    "settings": self.services.redactor.redact_value(snapshot),
+                    "language_preflight": snapshot.get("tts_language_snapshot", {}),
+                    "required_confirmations": [],
+                }
+                # Use the existing provider disclosure classifier for the selected TTS
+                # snapshot, without creating a generation workflow or preparing text.
+                from .workflow_plans import WorkflowExecutionPlanService
+                from .workflows import ResolvedWorkflowStage
+                from .workspace import generation_resource_keys
 
-            resource_keys = generation_resource_keys(guard["session_id"], snapshot)
-            disclosures = WorkflowExecutionPlanService._provider_disclosures(
-                ResolvedWorkflowStage(
-                    job_kind="generation.run",
-                    payload={"resolved_settings_snapshot": snapshot},
-                    resource_keys=tuple(resource_keys),
-                    source_artifact_id=generation_guard["current_input"]["artifact_id"],
-                    source_content_hash=generation_guard["current_input"]["content_hash"],
-                    **stage_context,
+                resource_keys = generation_resource_keys(guard["session_id"], snapshot)
+                disclosures = WorkflowExecutionPlanService._provider_disclosures(
+                    ResolvedWorkflowStage(
+                        job_kind="generation.run",
+                        payload={"resolved_settings_snapshot": snapshot},
+                        resource_keys=tuple(resource_keys),
+                        source_artifact_id=generation_guard["current_input"]["artifact_id"],
+                        source_content_hash=generation_guard["current_input"]["content_hash"],
+                        **stage_context,
+                    )
                 )
-            )
-            external = [
-                item for item in disclosures if WorkflowExecutionPlanService._is_external(item)
-            ]
-            public.update(
-                selected_providers=disclosures,
-                external_services=external,
-                resource_locks=resource_keys,
-            )
-            if external:
-                public["required_confirmations"] = ["external_provider", "estimated_cost_unknown"]
-        else:
-            overrides = (
-                {"source_artifact_id": guard["checkpoint_artifact_id"]}
-                if action == "translate"
-                else {}
-            )
-            if action == "export" and export_kind == "subtitles":
-                overrides.update(
-                    export_mode="subtitles",
-                    subtitle_mode="translation",
-                    subtitle_format="srt",
-                    subtitle_selection="translation",
+                external = [
+                    item for item in disclosures if WorkflowExecutionPlanService._is_external(item)
+                ]
+                public.update(
+                    selected_providers=disclosures,
+                    external_services=external,
+                    resource_locks=resource_keys,
                 )
-            public = self.services.workflow_plans.create(
-                principal=principal,
-                target_identity=target_identity,
-                session_id=guard["session_id"],
-                target_stage=action,
-                overrides=overrides,
-                continuation=False,
-            )
-            capture["plan"] = public
-        capture["public"] = public
-        return capture
+                if external:
+                    public["required_confirmations"] = ["external_provider", "estimated_cost_unknown"]
+            else:
+                overrides = (
+                    {"source_artifact_id": guard["checkpoint_artifact_id"]}
+                    if action == "translate"
+                    else {}
+                )
+                if action == "export" and export_kind == "subtitles":
+                    overrides.update(
+                        export_mode="subtitles",
+                        subtitle_mode="translation",
+                        subtitle_format="srt",
+                        subtitle_selection="translation",
+                    )
+                public = self.services.workflow_plans.create(
+                    principal=principal,
+                    target_identity=target_identity,
+                    session_id=guard["session_id"],
+                    target_stage=action,
+                    overrides=overrides,
+                    continuation=False,
+                )
+                capture["plan"] = public
+            capture["public"] = public
+            return capture
 
     def preview(
         self,
@@ -272,10 +315,11 @@ class TranslationProjectOperationService:
             "retry_from": (_retry_from or {}).get("id"),
             "target": target_identity,
         }
-        request_digest = self.services.idempotency.request_digest(
-            "previewProjectOperation", request_payload
-        )
         with self.database.session() as db:
+            self._authorize(db, project_id, principal, ProjectAction.RUN)
+            request_digest = self.services.idempotency.request_digest(
+                "previewProjectOperation", request_payload
+            )
             receipt = db.scalar(
                 select(m.ApiIdempotency).where(
                     m.ApiIdempotency.principal_subject == principal.subject,
@@ -330,7 +374,9 @@ class TranslationProjectOperationService:
             if prior and prior["state"] in {"completed", "existing"}:
                 assert _retry_from is not None
                 retained = prior
-                while retained.get("state") == "existing" and isinstance(retained.get("retained"), dict):
+                while retained.get("state") == "existing" and isinstance(
+                    retained.get("retained"), dict
+                ):
                     retained = retained["retained"]
                 child.update(
                     state="existing",
@@ -354,6 +400,8 @@ class TranslationProjectOperationService:
                         project_id, branch_id, action, export_kind, principal, target_identity
                     )
                     child["preview"] = captures[branch_id]["public"]
+                except (PermissionError, ProjectNotFound):
+                    raise
                 except (RevisionConflict, WorkflowPlanError, ValueError, KeyError) as error:
                     child.update(state="skipped", eligible=False, reason=str(error))
                     if isinstance(error, ProjectOperationError):
@@ -371,6 +419,7 @@ class TranslationProjectOperationService:
         }
         operation_id = str(uuid.uuid4())
         with self.database.immediate_session() as db:
+            self._authorize(db, project_id, principal, ProjectAction.RUN)
             project = db.get(m.TranslationProject, project_id)
             if project is None or project.revision != expected_project_revision:
                 raise RevisionConflict("The project changed during preview.")
@@ -436,7 +485,7 @@ class TranslationProjectOperationService:
             raise RevisionConflict("The project changed after preview.")
 
     def _enqueue_guard(self, db, operation_id, branch_id, principal, target_identity):
-        operation = self._owned(db, operation_id, principal, target_identity)
+        operation = self._owned(db, operation_id, principal, target_identity, ProjectAction.RUN)
         if operation.cancel_requested:
             raise OperationCancelled()
         self._validate_operation(db, operation, operation.preview_digest, target_identity)
@@ -452,8 +501,21 @@ class TranslationProjectOperationService:
             return {}
         capture = (operation.preview_json.get("captures") or {}).get(child["branch_id"]) or {}
         if capture.get("plan"):
-            plan = db.get(m.WorkflowExecutionPlan, capture["plan"]["plan_id"])
-            return {"job_id": plan.resulting_job_id} if plan and plan.resulting_job_id else {}
+            job_id = db.scalar(
+                select(m.WorkflowExecutionPlan.resulting_job_id)
+                .join(
+                    m.TranslationProjectBranch,
+                    m.TranslationProjectBranch.session_id == m.WorkflowExecutionPlan.session_id,
+                )
+                .where(
+                    m.WorkflowExecutionPlan.id == capture["plan"]["plan_id"],
+                    m.WorkflowExecutionPlan.session_id == child["session_id"],
+                    m.TranslationProjectBranch.id == child["branch_id"],
+                    m.TranslationProjectBranch.project_id == operation.project_id,
+                    m.TranslationProjectBranch.session_id == child["session_id"],
+                )
+            )
+            return {"job_id": job_id} if job_id else {}
         receipt = db.scalar(
             select(m.ApiIdempotency).where(
                 m.ApiIdempotency.principal_subject == operation.principal_subject,
@@ -471,7 +533,7 @@ class TranslationProjectOperationService:
 
     def _start_child(self, operation_id, child, principal, target_identity, accepted):
         with self.database.session() as db:
-            operation = self._owned(db, operation_id, principal, target_identity)
+            operation = self._owned(db, operation_id, principal, target_identity, ProjectAction.RUN)
             receipt = self._receipt(db, operation, child)
             if receipt:
                 return receipt
@@ -485,73 +547,143 @@ class TranslationProjectOperationService:
         child_key = _key(operation_id, child["branch_id"], child["attempt"])
         if capture.get("plan"):
             plan = capture["plan"]
-            response, _status, _replayed = self.services.workflow_plans.execute(
-                principal=principal,
-                target_identity=target_identity,
-                plan_id=plan["plan_id"],
-                supplied_digest=plan["plan_digest"],
-                accepted_confirmations=required,
-                idempotency_key=child_key,
-                execution_guard=lambda db: self._enqueue_guard(
-                    db, operation_id, child["branch_id"], principal, target_identity
-                ),
-            )
+            with execution_actor_scope(self._context(principal).actor):
+                response, _status, _replayed = self.services.workflow_plans.execute(
+                    principal=principal,
+                    target_identity=target_identity,
+                    plan_id=plan["plan_id"],
+                    supplied_digest=plan["plan_digest"],
+                    accepted_confirmations=required,
+                    idempotency_key=child_key,
+                    authorization_guard=lambda db: self._owned(
+                        db, operation_id, principal, target_identity, ProjectAction.RUN
+                    ),
+                    execution_guard=lambda db: self._enqueue_guard(
+                        db, operation_id, child["branch_id"], principal, target_identity
+                    ),
+                )
             return {"job_id": response["id"]}
-        with self.database.immediate_session() as db:
-            reservation = self.services.idempotency.begin(
-                db,
-                principal=principal,
-                operation_id="executeProjectGenerationChild",
-                idempotency_key=child_key,
-                payload={"operation_id": operation_id, "branch_id": child["branch_id"]},
-            )
-            if reservation.replayed:
-                response = reservation.response[0]
-            else:
-                _operation, capture = self._enqueue_guard(
-                    db, operation_id, child["branch_id"], principal, target_identity
-                )
-                guard = capture["generation_guard"]
-                sid = capture["guard"]["session_id"]
-                plan = db.scalar(select(m.GenerationPlan).where(m.GenerationPlan.session_id == sid))
-                review = db.get(m.SpeechPlanReview, guard["revision_id"])
-                source = selected_text(self.services, sid) or {}
-                source_artifact = db.get(m.Artifact, str(source.get("artifact_id") or ""))
-                source = {
-                    **source,
-                    "content_hash": source_artifact.content_hash if source_artifact else None,
-                }
-                if (
-                    plan is None
-                    or plan.active_revision_id != guard["revision_id"]
-                    or review is None
-                    or review.content_hash != guard["content_signature"]
-                    or plan_signature(db, guard["revision_id"]) != guard["content_signature"]
-                    or {key: source.get(key) for key in ("artifact_id", "content_hash")}
-                    != guard["current_input"]
-                ):
-                    raise RevisionConflict(
-                        "Speech input, content, or review changed after preview."
+        preview_prepared = capture["prepared"]
+        sid = capture["guard"]["session_id"]
+        fresh_prepared = None
+        try:
+            with execution_actor_scope(self._context(principal).actor):
+                def before_preparation_io() -> None:
+                    with self.database.snapshot_session() as snapshot_db:
+                        self._enqueue_guard(
+                            snapshot_db,
+                            operation_id,
+                            child["branch_id"],
+                            principal,
+                            target_identity,
+                        )
+
+                try:
+                    fresh_prepared = self.services.generation.prepare_start(
+                        sid,
+                        speech_plan_revision_id=capture["generation_guard"]["revision_id"],
+                        before_io=before_preparation_io,
                     )
-                fresh, _ = self.services.workspace_settings.resolve_in_session(db, sid)
-                if stable_hash(fresh) != stable_hash(capture["prepared"]["resolved_for_new"][0]):
-                    raise RevisionConflict("Generation settings changed after preview.")
-                response = self.services.generation.start_in_session(
-                    db, sid, prepared=capture["prepared"]
-                )
-                self.services.idempotency.complete(
-                    db,
-                    reservation,
-                    response=response,
-                    status_code=202,
-                    resource_kind="generation_run",
-                    resource_id=response["id"],
-                )
-            return {"job_id": response["job_id"], "generation_run_id": response["id"]}
+                except (ValueError, KeyError):
+                    with self.database.snapshot_session() as snapshot_db:
+                        current_operation = self._owned(
+                            snapshot_db,
+                            operation_id,
+                            principal,
+                            target_identity,
+                            ProjectAction.RUN,
+                        )
+                        receipt = self._receipt(snapshot_db, current_operation, child)
+                    if receipt:
+                        return receipt
+                    raise
+
+                with self.database.immediate_session() as db:
+                    self._owned(db, operation_id, principal, target_identity, ProjectAction.RUN)
+                    reservation = self.services.idempotency.begin(
+                        db,
+                        principal=principal,
+                        operation_id="executeProjectGenerationChild",
+                        idempotency_key=child_key,
+                        payload={"operation_id": operation_id, "branch_id": child["branch_id"]},
+                    )
+                    if reservation.replayed:
+                        response = reservation.response[0]
+                    else:
+                        for field in (
+                            "snapshot_input_hash",
+                            "snapshot_guard",
+                            "snapshot_source_run_id",
+                            "speech_plan_revision_id",
+                            "settings_source_identity",
+                        ):
+                            if stable_hash(fresh_prepared.get(field)) != stable_hash(
+                                preview_prepared.get(field)
+                            ):
+                                raise RevisionConflict(
+                                    "The generation snapshot or settings source changed after preview."
+                                )
+                        _operation, current_capture = self._enqueue_guard(
+                            db, operation_id, child["branch_id"], principal, target_identity
+                        )
+                        guard = current_capture["generation_guard"]
+                        sid = current_capture["guard"]["session_id"]
+                        plan = db.scalar(
+                            select(m.GenerationPlan).where(
+                                m.GenerationPlan.session_id == sid
+                            )
+                        )
+                        review = db.get(m.SpeechPlanReview, guard["revision_id"])
+                        source = selected_text(self.services, sid) or {}
+                        source_artifact = db.get(
+                            m.Artifact, str(source.get("artifact_id") or "")
+                        )
+                        source = {
+                            **source,
+                            "content_hash": (
+                                source_artifact.content_hash if source_artifact else None
+                            ),
+                        }
+                        if (
+                            plan is None
+                            or plan.active_revision_id != guard["revision_id"]
+                            or review is None
+                            or review.content_hash != guard["content_signature"]
+                            or plan_signature(db, guard["revision_id"])
+                            != guard["content_signature"]
+                            or {
+                                key: source.get(key)
+                                for key in ("artifact_id", "content_hash")
+                            }
+                            != guard["current_input"]
+                        ):
+                            raise RevisionConflict(
+                                "Speech input, content, or review changed after preview."
+                            )
+                        fresh, _ = self.services.workspace_settings.resolve_in_session(db, sid)
+                        if stable_hash(fresh) != stable_hash(
+                            preview_prepared["resolved_for_new"][0]
+                        ):
+                            raise RevisionConflict("Generation settings changed after preview.")
+                        response = self.services.generation.start_in_session(
+                            db, sid, prepared=fresh_prepared
+                        )
+                        self.services.idempotency.complete(
+                            db,
+                            reservation,
+                            response=response,
+                            status_code=202,
+                            resource_kind="generation_run",
+                            resource_id=response["id"],
+                        )
+                return {"job_id": response["job_id"], "generation_run_id": response["id"]}
+        finally:
+            if fresh_prepared is not None:
+                self.services.generation.cleanup_prepared_start(fresh_prepared)
 
     def _link_child(self, operation_id, branch_id, outcome, principal, target_identity):
         with self.database.immediate_session() as db:
-            operation = self._owned(db, operation_id, principal, target_identity)
+            operation = self._owned(db, operation_id, principal, target_identity, ProjectAction.RUN)
             children = deepcopy(operation.children_json)
             child = next(row for row in children if row["branch_id"] == branch_id)
             child.update(outcome)
@@ -591,7 +723,9 @@ class TranslationProjectOperationService:
         idempotency_key: object,
     ) -> dict:
         with self.database.immediate_session() as db:
-            operation = self._owned(db, operation_id, principal, target_identity)
+            operation = self._owned(
+                db, operation_id, principal, target_identity, ProjectAction.RUN, write=True
+            )
             self._validate_operation(db, operation, supplied_digest, target_identity)
             reservation = self.services.idempotency.begin(
                 db,
@@ -636,6 +770,8 @@ class TranslationProjectOperationService:
                 outcome["state"] = "queued"
             except OperationCancelled as error:
                 outcome = {"state": "canceled", "reason": str(error)}
+            except (PermissionError, ProjectNotFound):
+                raise
             except (RevisionConflict, WorkflowPlanError, ValueError, KeyError) as error:
                 outcome = {"state": "blocked", "reason": str(error)}
             self._link_child(operation_id, child["branch_id"], outcome, principal, target_identity)
@@ -648,7 +784,24 @@ class TranslationProjectOperationService:
         if child["state"] == "existing":
             return child
         child.update(self._receipt(db, operation, child))
-        job = db.get(m.Job, child["job_id"]) if child.get("job_id") else None
+        job = (
+            db.scalar(
+                select(m.Job)
+                .join(
+                    m.TranslationProjectBranch,
+                    m.TranslationProjectBranch.session_id == m.Job.session_id,
+                )
+                .where(
+                    m.Job.id == child["job_id"],
+                    m.Job.session_id == child["session_id"],
+                    m.TranslationProjectBranch.id == child["branch_id"],
+                    m.TranslationProjectBranch.project_id == operation.project_id,
+                    m.TranslationProjectBranch.session_id == child["session_id"],
+                )
+            )
+            if child.get("job_id")
+            else None
+        )
         if not job:
             if child.get("job_id"):
                 child.update(state="failed", reason="The child job is unavailable.")
@@ -661,19 +814,28 @@ class TranslationProjectOperationService:
         )
         result = job.result_json or {}
         run = (
-            db.get(m.GenerationRun, child["generation_run_id"])
+            db.scalar(
+                select(m.GenerationRun).where(
+                    m.GenerationRun.id == child["generation_run_id"],
+                    m.GenerationRun.session_id == child["session_id"],
+                )
+            )
             if child.get("generation_run_id")
             else None
         )
-        dispatch_id = next(
-            (
-                str(result.get(key) or "")
-                for key in ("dispatch_run_id", "run_id", "id")
-                if result.get(key) and db.get(m.DispatchRun, str(result[key]))
-            ),
-            None,
-        )
-        dispatch = db.get(m.DispatchRun, dispatch_id) if dispatch_id else None
+        dispatch = None
+        for key in ("dispatch_run_id", "run_id", "id"):
+            candidate_id = str(result.get(key) or "")
+            if not candidate_id:
+                continue
+            dispatch = db.scalar(
+                select(m.DispatchRun).where(
+                    m.DispatchRun.id == candidate_id,
+                    m.DispatchRun.session_id == child["session_id"],
+                )
+            )
+            if dispatch is not None:
+                break
         if (
             dispatch
             and dispatch.session_id == child["session_id"]
@@ -705,7 +867,12 @@ class TranslationProjectOperationService:
             if operation.action == "export":
                 child.update(self._export_result(db, operation, child, job, result))
                 return child
-            artifact = db.get(m.Artifact, str(result.get("artifact_id") or ""))
+            artifact = db.scalar(
+                select(m.Artifact).where(
+                    m.Artifact.id == str(result.get("artifact_id") or ""),
+                    m.Artifact.session_id == child["session_id"],
+                )
+            )
             matches = bool(artifact and artifact.session_id == child["session_id"])
             if operation.action == "translate" and artifact:
                 language = (artifact.metadata_json or {}).get("language")
@@ -743,7 +910,25 @@ class TranslationProjectOperationService:
 
     def _export_result(self, db, operation, child, job, result):
         capture = operation.preview_json["captures"][child["branch_id"]]
-        plan = db.get(m.WorkflowExecutionPlan, capture["plan"]["plan_id"])
+        plan = db.scalar(
+            select(m.WorkflowExecutionPlan)
+            .join(
+                m.TranslationProjectBranch,
+                m.TranslationProjectBranch.session_id == m.WorkflowExecutionPlan.session_id,
+            )
+            .where(
+                m.WorkflowExecutionPlan.id == capture["plan"]["plan_id"],
+                m.WorkflowExecutionPlan.session_id == child["session_id"],
+                m.TranslationProjectBranch.id == child["branch_id"],
+                m.TranslationProjectBranch.project_id == operation.project_id,
+                m.TranslationProjectBranch.session_id == child["session_id"],
+            )
+        )
+        if plan is None:
+            return {
+                "state": "failed",
+                "reason": "An export artifact does not match the captured job settings or output role.",
+            }
         payload = ((plan.plan_json or {}).get("_execution") or {}).get("payload") or {}
         settings = payload.get("settings") or {}
         roots = {
@@ -772,7 +957,20 @@ class TranslationProjectOperationService:
             return {"state": "failed", "reason": "The export produced no artifact receipts."}
         outputs = []
         for artifact_id in artifact_ids:
-            artifact = db.get(m.Artifact, str(artifact_id))
+            artifact = db.scalar(
+                select(m.Artifact)
+                .join(
+                    m.TranslationProjectBranch,
+                    m.TranslationProjectBranch.session_id == m.Artifact.session_id,
+                )
+                .where(
+                    m.Artifact.id == str(artifact_id),
+                    m.Artifact.session_id == child["session_id"],
+                    m.TranslationProjectBranch.id == child["branch_id"],
+                    m.TranslationProjectBranch.project_id == operation.project_id,
+                    m.TranslationProjectBranch.session_id == child["session_id"],
+                )
+            )
             if (
                 artifact is None
                 or artifact.session_id != child["session_id"]
@@ -823,54 +1021,92 @@ class TranslationProjectOperationService:
             }
         }
 
+    def _operation_view_in_session(self, db, operation) -> dict:
+        children = [self._child_view(db, operation, child) for child in operation.children_json]
+        active = any(
+            child["state"] in {"queued", "running", "canceling", "awaiting_agent"}
+            for child in children
+        )
+        success = any(child["state"] in {"completed", "existing"} for child in children)
+        failed = any(child["state"] in {"failed", "blocked", "skipped"} for child in children)
+        canceled = any(child["state"] == "canceled" for child in children)
+        pending = any(child["state"] == "pending" for child in children)
+        if operation.status == "preview":
+            status = "preview"
+        elif active or pending:
+            status = "canceling" if operation.cancel_requested else "running"
+        elif failed or canceled:
+            if canceled and not failed and not success:
+                status = "canceled"
+            else:
+                status = "partial" if success else "failed"
+        else:
+            status = "completed"
+        return {
+            "id": operation.id,
+            "project_id": operation.project_id,
+            "action": operation.action,
+            "export_kind": operation.preview_json["export_kind"],
+            "status": status,
+            "preview_digest": operation.preview_digest,
+            "revision": operation.revision,
+            "expected_project_revision": operation.preview_json["project_revision"],
+            "created_at": operation.created_at.isoformat(),
+            "expires_at": operation.expires_at.isoformat(),
+            "expired": _aware(operation.expires_at) <= m.utcnow(),
+            "cancel_requested": operation.cancel_requested,
+            "previous_operation_id": operation.preview_json.get("previous_operation_id"),
+            "eligible_count": sum(child["eligible"] for child in children),
+            "skipped_count": sum(child["state"] in {"skipped", "blocked"} for child in children),
+            "existing_count": sum(child["state"] == "existing" for child in children),
+            "retrying_count": sum(child["eligible"] and child["attempt"] > 1 for child in children),
+            "child_job_count": sum(child["eligible"] for child in children),
+            "children": children,
+        }
+
+    def require_export_operation_access(
+        self,
+        db,
+        operation_id,
+        principal,
+        target_identity,
+        action=ProjectAction.READ,
+        *,
+        write=False,
+    ) -> None:
+        self._context(principal)
+        row = db.execute(
+            select(
+                m.TranslationProjectOperation.project_id,
+                m.TranslationProjectOperation.action,
+                m.TranslationProjectOperation.target_instance_id,
+            ).where(m.TranslationProjectOperation.id == operation_id)
+        ).one_or_none()
+        if row is None:
+            raise ProjectOperationError("not_found", "Project operation not found.", 404)
+        self._authorize(db, row.project_id, principal, action, write=write)
+        if row.action != "export":
+            raise ProjectOperationError("not_found", "Project operation not found.", 404)
+        if row.target_instance_id != str(target_identity.get("instance_id") or ""):
+            raise ProjectOperationError(
+                "target_identity_mismatch", "The operation belongs to another instance."
+            )
+
     def get(self, operation_id: str, *, principal: Principal, target_identity: dict) -> dict:
         with self.database.session() as db:
             operation = self._owned(db, operation_id, principal, target_identity)
-            children = [self._child_view(db, operation, child) for child in operation.children_json]
-            active = any(
-                child["state"] in {"queued", "running", "canceling", "awaiting_agent"}
-                for child in children
-            )
-            success = any(child["state"] in {"completed", "existing"} for child in children)
-            failed = any(child["state"] in {"failed", "blocked", "skipped"} for child in children)
-            canceled = any(child["state"] == "canceled" for child in children)
-            pending = any(child["state"] == "pending" for child in children)
-            if operation.status == "preview":
-                status = "preview"
-            elif active or pending:
-                status = "canceling" if operation.cancel_requested else "running"
-            elif failed or canceled:
-                if canceled and not failed and not success:
-                    status = "canceled"
-                else:
-                    status = "partial" if success else "failed"
-            else:
-                status = "completed"
-            response = {
-                "id": operation.id,
-                "project_id": operation.project_id,
-                "action": operation.action,
-                "export_kind": operation.preview_json["export_kind"],
-                "status": status,
-                "preview_digest": operation.preview_digest,
-                "revision": operation.revision,
-                "expected_project_revision": operation.preview_json["project_revision"],
-                "created_at": operation.created_at.isoformat(),
-                "expires_at": operation.expires_at.isoformat(),
-                "expired": _aware(operation.expires_at) <= m.utcnow(),
-                "cancel_requested": operation.cancel_requested,
-                "previous_operation_id": operation.preview_json.get("previous_operation_id"),
-                "eligible_count": sum(child["eligible"] for child in children),
-                "skipped_count": sum(
-                    child["state"] in {"skipped", "blocked"} for child in children
-                ),
-                "existing_count": sum(child["state"] == "existing" for child in children),
-                "retrying_count": sum(
-                    child["eligible"] and child["attempt"] > 1 for child in children
-                ),
-                "child_job_count": sum(child["eligible"] for child in children),
-                "children": children,
-            }
+            response = self._operation_view_in_session(db, operation)
+        return self.services.redactor.redact_value(response)
+
+    def get_export_receipts(
+        self, operation_id: str, *, principal: Principal, target_identity: dict
+    ) -> dict:
+        with self.database.session() as db:
+            self.require_export_operation_access(db, operation_id, principal, target_identity)
+            operation = db.get(m.TranslationProjectOperation, operation_id)
+            if operation is None:
+                raise ProjectOperationError("not_found", "Project operation not found.", 404)
+            response = self._operation_view_in_session(db, operation)
         return self.services.redactor.redact_value(response)
 
     def cancel(
@@ -882,7 +1118,9 @@ class TranslationProjectOperationService:
         idempotency_key: object,
     ) -> dict:
         with self.database.immediate_session() as db:
-            operation = self._owned(db, operation_id, principal, target_identity)
+            operation = self._owned(
+                db, operation_id, principal, target_identity, ProjectAction.CANCEL_OWN, write=True
+            )
             reservation = self.services.idempotency.begin(
                 db,
                 principal=principal,
@@ -927,10 +1165,16 @@ class TranslationProjectOperationService:
         expected_project_revision: int,
         idempotency_key: object,
     ) -> dict:
+        with self.database.session() as db:
+            self._owned(db, operation_id, principal, target_identity, ProjectAction.RUN)
         previous = self.get(operation_id, principal=principal, target_identity=target_identity)
         return self.preview(
             previous["project_id"],
-            [child["branch_id"] for child in previous["children"] if not child.get("session_deleted")],
+            [
+                child["branch_id"]
+                for child in previous["children"]
+                if not child.get("session_deleted")
+            ],
             expected_project_revision=expected_project_revision,
             action=previous["action"],
             export_kind=previous["export_kind"],

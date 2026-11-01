@@ -210,6 +210,13 @@ for (const action of ['render', 'propose'] as const) {
       await expect(
         page.getByRole('link', { name: 'Subtitles', exact: true })
       ).toHaveAttribute('href', '/api/v1/artifacts/rendered-captions/content');
+      const videoBox = await page.locator('video').first().boundingBox();
+      const transcriptBox = await page
+        .locator('[data-workspace-tools]')
+        .boundingBox();
+      expect(transcriptBox!.x).toBeGreaterThanOrEqual(
+        videoBox!.x + videoBox!.width - 1
+      );
       await page.screenshot({
         path: testInfo.outputPath('render-desktop.png'),
         fullPage: true
@@ -218,6 +225,19 @@ for (const action of ['render', 'propose'] as const) {
       await expect
         .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
         .toBe(390);
+      const drawer = page.getByRole('dialog', {
+        name: 'Transcript & details',
+        exact: true
+      });
+      await expect(drawer).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(drawer).toBeHidden();
+      await expect(
+        page.getByRole('button', {
+          name: 'Show transcript & details',
+          exact: true
+        })
+      ).toBeVisible();
       await page.screenshot({
         path: testInfo.outputPath('render-mobile.png'),
         fullPage: true

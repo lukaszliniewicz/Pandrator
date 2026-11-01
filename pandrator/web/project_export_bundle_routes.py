@@ -5,6 +5,7 @@ from __future__ import annotations
 from flask import jsonify, request
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
+from .access.contracts import ProjectAction
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .project_export_bundles import (
     ProjectExportBundleError,
@@ -51,7 +52,7 @@ def project_export_bundle_paths() -> dict:
                 ],
                 "responses": {
                     "200": {"description": "Versioned project export manifest"},
-                    "404": {"description": "Operation not found or belongs to another principal"},
+                    "404": {"description": "Operation not found or unavailable to this user"},
                     "409": {"description": "Operation target or export action is incompatible"},
                 },
             }
@@ -64,7 +65,7 @@ def project_export_bundle_paths() -> dict:
                     "is complete and still matches its recorded managed-file hash."
                 ),
                 "security": [{"cookieAuth": []}, {"bearerToken": []}],
-                "x-required-scopes": ["app.write"],
+                "x-required-scopes": ["app.read", "app.write", "app.run"],
                 "parameters": [
                     {
                         "name": "operationId",
@@ -91,7 +92,7 @@ def project_export_bundle_paths() -> dict:
                     "200": {"description": "Matching cached bundle and manifest artifacts"},
                     "202": {"description": "Bundle job queued, running or recovered"},
                     "400": {"description": "Missing or invalid idempotency key"},
-                    "404": {"description": "Operation not found or belongs to another principal"},
+                    "404": {"description": "Operation not found or unavailable to this user"},
                     "409": {"description": "Incomplete, stale or unavailable bundle inputs"},
                     "422": {"description": "Invalid bundle request"},
                 },
@@ -104,18 +105,24 @@ def register_project_export_bundle_routes(app, context) -> None:
     services = context.services
     bundles = ProjectExportBundleService(services)
 
-    def invoke(model, callback):
+    def invoke(operation_id, model, callback):
         if request.content_length is not None and request.content_length > 16 * 1024:
             return context.guards.error_response(
                 "request_too_large", "The project export request exceeds the size limit.", 413
             )
         try:
-            payload = model.model_validate(request.get_json(silent=True) or {}) if model else None
             principal = context.guards.principal()
             assert principal is not None
             target = services.identity.snapshot(observed_origin=request.url_root).model_dump(
                 mode="json"
             )
+            with services.database.snapshot_session() as db:
+                bundles.operations.require_export_operation_access(
+                    db, operation_id, principal, target,
+                    ProjectAction.RUN if model else ProjectAction.READ,
+                    write=model is not None,
+                )
+            payload = model.model_validate(request.get_json(silent=True) or {}) if model else None
             result = callback(payload, principal, target)
         except ValidationError:
             return context.guards.error_response(
@@ -163,14 +170,16 @@ def register_project_export_bundle_routes(app, context) -> None:
     @context.guards.require_scope("app.read")
     def project_export_manifest(operation_id):
         return invoke(
+            operation_id,
             None,
             lambda _body, principal, target: bundles.manifest(operation_id, principal, target),
         )
 
     @app.post("/api/v1/translation-project-operations/<operation_id>/exports/bundle")
-    @context.guards.require_scope("app.write")
+    @context.guards.require_scope("app.read", "app.write", "app.run")
     def project_export_bundle(operation_id):
         return invoke(
+            operation_id,
             ProjectExportBundleRequest,
             lambda body, principal, target: bundles.request_bundle(
                 operation_id,

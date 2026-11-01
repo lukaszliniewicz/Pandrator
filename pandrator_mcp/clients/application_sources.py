@@ -25,10 +25,16 @@ class ApplicationSourceMethods(ApplicationRequests):
         self,
         *,
         include_trashed: bool = False,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
+        parameters = {"view": "compact"}
+        if include_trashed:
+            parameters["include_trashed"] = "true"
+        if workspace_id is not None:
+            parameters["workspace_id"] = workspace_id
         return self._request_json(
             "/api/v1/sources",
-            parameters=({"include_trashed": "true"} if include_trashed else None),
+            parameters=parameters or None,
         )
 
     def attach_existing_source(
@@ -84,6 +90,7 @@ class ApplicationSourceMethods(ApplicationRequests):
         mime_type: str | None,
         sha256: str,
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         return self._request_json(
             "/api/v1/uploads/init",
@@ -93,6 +100,7 @@ class ApplicationSourceMethods(ApplicationRequests):
                 "size_bytes": int(size_bytes),
                 "mime_type": mime_type,
                 "sha256": sha256,
+                **({"workspace_id": workspace_id} if workspace_id is not None else {}),
             },
             idempotency_key=idempotency_key,
         )

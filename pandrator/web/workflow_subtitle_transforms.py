@@ -13,8 +13,8 @@ from .workflow_text_protocols import (
     BeginAgenticOperationProtocol,
     PreparePassageInputProtocol,
     RecordUsageProtocol,
+    ResolveAuxiliaryCredentialProtocol,
     ResolveRunPassageSettingsProtocol,
-    ResolveSecretReferenceProtocol,
     RunStageWebResearchProtocol,
     SourcePassageRunLedgerProtocol,
     StoreSrtDocumentProtocol,
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from .artifacts import ArtifactService
     from .database import Database
     from .models import Artifact
+    from .provider_identity import LlmSettingsHydrator
     from .web_research import WebResearchResult
     from .workflow_generation_protocols import Progress
 
@@ -41,7 +42,7 @@ class SubtitleTransformContext:
     _prepare_passage_input: PreparePassageInputProtocol
     _passage_display_settings: Callable[[str], dict[str, Any]]
     _source_passage_run_ledger: SourcePassageRunLedgerProtocol
-    _with_database_llm_settings: Callable[[dict[str, Any], str], dict[str, Any]]
+    _with_database_llm_settings: LlmSettingsHydrator
     _begin_agentic_operation: BeginAgenticOperationProtocol
     _run_stage_web_research: RunStageWebResearchProtocol
     _research_metadata: Callable[[WebResearchResult | None, str], dict[str, Any] | None]
@@ -54,9 +55,7 @@ class SubtitleTransformContext:
     _stage_settings_fingerprint: Callable[[str, dict[str, Any]], dict[str, Any]]
     _scaled_progress_callback: Callable[[Progress, float, float], Progress]
     _normalize_correction_style: Callable[[str | None], str]
-    _resolve_secret_reference: ResolveSecretReferenceProtocol
-    _database_reference: Callable[[str], str]
-    _auxiliary_credential_key: Callable[[object], str]
+    _resolve_auxiliary_credential: ResolveAuxiliaryCredentialProtocol
 
 
 def correct(context: SubtitleTransformContext, payload, progress, cancel_event):
@@ -96,7 +95,9 @@ def correct(context: SubtitleTransformContext, payload, progress, cancel_event):
             effective=run_passage_effective,
             settings_revision=run_passage_revision,
         )
-    settings = context._with_database_llm_settings(requested_settings, "correction")
+    settings = context._with_database_llm_settings(
+        requested_settings, "correction", session_id=session_id
+    )
     settings["correction_style"] = context._normalize_correction_style(
         settings.get("correction_style")
     )
@@ -317,11 +318,11 @@ def translate(context: SubtitleTransformContext, payload, progress, cancel_event
     if translation_backend == "deepl":
         processing_start = 0.05
         progress(processing_start, "Preparing DeepL translation requests")
-        credential = context._resolve_secret_reference(
+        credential = context._resolve_auxiliary_credential(
             context.database,
             context.paths,
-            context._database_reference(context._auxiliary_credential_key("deepl")),
-            fallback_environment_variable="DEEPL_API_KEY",
+            credential_id="deepl",
+            session_id=session_id,
         )
         result = translate_srt_file_deepl_with_result(
             session_dir,
@@ -337,7 +338,9 @@ def translate(context: SubtitleTransformContext, payload, progress, cancel_event
             ),
         )
     else:
-        settings = context._with_database_llm_settings(settings, "translation")
+        settings = context._with_database_llm_settings(
+            settings, "translation", session_id=session_id
+        )
         run_store, agent_run, persist_checkpoint = context._begin_agentic_operation(
             payload=payload,
             kind="translation",

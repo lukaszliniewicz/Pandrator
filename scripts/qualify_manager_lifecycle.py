@@ -94,6 +94,20 @@ def _wait_for_process_exit(pid: int, create_time: float, timeout: float = 30) ->
     raise TimeoutError(f"Process {pid} did not exit.")
 
 
+def _windows_tray_registration(workspace: Path) -> tuple[Any, int] | None:
+    import winreg
+
+    suffix = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:10]
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+        ) as key:
+            return winreg.QueryValueEx(key, f"PandratorTray-{suffix}")
+    except FileNotFoundError:
+        return None
+
+
 def _prepare(workspace: Path, bundle: Path) -> int:
     from pandrator_manager import __version__
     from pandrator_manager.application import create_application
@@ -155,9 +169,7 @@ def _prepare(workspace: Path, bundle: Path) -> int:
     operation, created = application.submit_operation(
         plan_id=plan.id,
         plan_digest=plan.digest,
-        accepted_confirmations=tuple(
-            confirmation.key for confirmation in plan.confirmations
-        ),
+        accepted_confirmations=tuple(confirmation.key for confirmation in plan.confirmations),
         idempotency_key=f"qualification:{plan.id}",
     )
     if not created:
@@ -172,9 +184,7 @@ def _prepare(workspace: Path, bundle: Path) -> int:
     engine._execute(operation.id)
     pending = application.store.get_operation(operation.id)
     if pending.state != OperationState.HANDOFF_PENDING:
-        raise RuntimeError(
-            f"Manager update did not reach handoff_pending: {pending.state}"
-        )
+        raise RuntimeError(f"Manager update did not reach handoff_pending: {pending.state}")
     print(
         json.dumps(
             {
@@ -214,10 +224,7 @@ def _default_bundle_path(
     return (
         repo_root
         / "dist"
-        / (
-            f"pandrator-manager-{version}-"
-            f"{_release_platform(system=system, machine=machine)}.zip"
-        )
+        / (f"pandrator-manager-{version}-{_release_platform(system=system, machine=machine)}.zip")
     )
 
 
@@ -237,13 +244,15 @@ def main(argv: list[str] | None = None) -> int:
 
     suffix = ".exe" if os.name == "nt" else ""
     bootstrap = (
-        args.bootstrap
-        or repo_root / "dist" / f"PandratorManagerBootstrap{suffix}"
-    ).expanduser().resolve(strict=True)
+        (args.bootstrap or repo_root / "dist" / f"PandratorManagerBootstrap{suffix}")
+        .expanduser()
+        .resolve(strict=True)
+    )
     bundle = (
-        args.bundle
-        or _default_bundle_path(repo_root, __version__)
-    ).expanduser().resolve(strict=True)
+        (args.bundle or _default_bundle_path(repo_root, __version__))
+        .expanduser()
+        .resolve(strict=True)
+    )
     if not bootstrap.is_file() or bootstrap.is_symlink():
         raise RuntimeError(f"Unsafe or missing bootstrap: {bootstrap}")
     if not bundle.is_file() or bundle.is_symlink():
@@ -259,9 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         workspace = args.workspace.expanduser().resolve(strict=False)
         if workspace.exists() and any(workspace.iterdir()):
-            raise RuntimeError(
-                "An explicit qualification workspace must be absent or empty."
-            )
+            raise RuntimeError("An explicit qualification workspace must be absent or empty.")
         workspace.mkdir(parents=True, exist_ok=True)
 
     from pandrator_manager.client import ManagerClient
@@ -283,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     qualification_environment["LOCALAPPDATA"] = str(settings_root)
     qualification_environment["XDG_CONFIG_HOME"] = str(settings_root)
     try:
+        if os.name == "nt" and _windows_tray_registration(workspace) is not None:
+            raise RuntimeError("The fresh fixture already has a tray login registration.")
         setup_result = settings_root / "bootstrap-setup-result.json"
         _run(
             [
@@ -297,9 +306,9 @@ def main(argv: list[str] | None = None) -> int:
             cwd=repo_root,
             env=qualification_environment,
         )
-        report["bootstrap_setup"] = _json_from_output(
-            setup_result.read_text(encoding="utf-8")
-        )
+        report["bootstrap_setup"] = _json_from_output(setup_result.read_text(encoding="utf-8"))
+        if os.name == "nt" and _windows_tray_registration(workspace) is None:
+            raise RuntimeError("Native setup did not register this workspace's tray.")
         remembered_path = Path(
             str(report["bootstrap_setup"].get("workspace_settings") or "")
         ).resolve(strict=False)
@@ -308,9 +317,7 @@ def main(argv: list[str] | None = None) -> int:
             or not remembered_path.is_file()
             or not remembered_path.is_relative_to(settings_root)
         ):
-            raise RuntimeError(
-                "Bootstrap setup did not persist its selected workspace."
-            )
+            raise RuntimeError("Bootstrap setup did not persist its selected workspace.")
         initial = ManagerClient.discover(workspace)
         initial_status = initial.status()
         report["initial_manager"] = initial_status
@@ -340,12 +347,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if (
             report["remembered_start"].get("workspace") != str(workspace)
-            or report["remembered_start"].get("workspace_source")
-            != "remembered"
+            or report["remembered_start"].get("workspace_source") != "remembered"
         ):
-            raise RuntimeError(
-                "A later launcher run did not reuse the selected workspace."
-            )
+            raise RuntimeError("A later launcher run did not reuse the selected workspace.")
         remembered_client = ManagerClient.discover(workspace)
         default_cli = _run(
             [
@@ -360,9 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         report["remembered_cli"] = _json_from_output(default_cli.stdout)
         if report["remembered_cli"].get("workspace") != str(workspace):
-            raise RuntimeError(
-                "The CLI default did not reuse the selected workspace."
-            )
+            raise RuntimeError("The CLI default did not reuse the selected workspace.")
         remembered_descriptor = remembered_client.descriptor
         remembered_client.stop_manager()
         _wait_for_process_exit(
@@ -405,9 +407,7 @@ def main(argv: list[str] | None = None) -> int:
         active_status = active.status()
         report["active_manager"] = active_status
         if active_status.get("manager_version") != preparation["version"]:
-            raise RuntimeError(
-                "The post-handoff daemon reported the wrong manager version."
-            )
+            raise RuntimeError("The post-handoff daemon reported the wrong manager version.")
         active_descriptor = active.descriptor
         active.stop_manager()
         _wait_for_process_exit(
@@ -440,24 +440,22 @@ def main(argv: list[str] | None = None) -> int:
             )
         if uninstall_status.get("cleanup_residue") is not None:
             raise RuntimeError("Uninstall reported unexpected cleanup residue.")
+        if os.name == "nt":
+            if _windows_tray_registration(workspace) is not None:
+                raise RuntimeError("The uninstalled workspace's tray login registration remains.")
+            report["windows_tray_autostart_removed"] = True
 
         control = uninstall_control_root(layout)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and os.path.lexists(control):
             time.sleep(0.1)
         if os.path.lexists(control):
-            raise RuntimeError(
-                f"External uninstall control directory remains: {control}"
-            )
+            raise RuntimeError(f"External uninstall control directory remains: {control}")
         remaining = (
-            sorted(path.name for path in layout.root.iterdir())
-            if layout.root.is_dir()
-            else []
+            sorted(path.name for path in layout.root.iterdir()) if layout.root.is_dir() else []
         )
         if remaining != ["data"]:
-            raise RuntimeError(
-                f"Unexpected files remained after uninstall: {remaining}"
-            )
+            raise RuntimeError(f"Unexpected files remained after uninstall: {remaining}")
         if sentinel.read_text(encoding="utf-8") != "preserve me\n":
             raise RuntimeError("Preserved user data did not survive uninstall.")
         report["remaining_root_entries"] = remaining

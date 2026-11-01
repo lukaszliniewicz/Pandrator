@@ -1,6 +1,7 @@
 <script lang="ts">
   import { FolderPlus, Save, Trash2 } from '@lucide/svelte';
   import { managerApi } from './admin-api';
+  import { appState } from './app-state.svelte';
   import { errorMessage } from './errors';
 
   type SourceRoot = { name: string; path: string };
@@ -37,6 +38,7 @@
   }
 
   async function save() {
+    if (!appState.isAdministrator) return;
     saving = true;
     message = '';
     try {
@@ -75,10 +77,18 @@
         artifacts can be materialized.
       </p>
     </div>
-    <button class="btn btn-primary" onclick={save} disabled={loading || saving}>
+    <button
+      class="btn btn-primary"
+      onclick={save}
+      disabled={!appState.isAdministrator || loading || saving}
+    >
       <Save size={15} />{saving ? 'Saving…' : 'Save MCP paths'}
     </button>
   </div>
+
+  {#if !appState.isAdministrator}<p class="muted mt-4 text-sm">
+      An Administrator manages local MCP filesystem access.
+    </p>{/if}
 
   {#if message}
     <p
@@ -96,7 +106,10 @@
     <div class="mt-5 space-y-3">
       <div class="flex items-center justify-between gap-3">
         <h3 class="text-sm font-semibold">Source roots</h3>
-        <button class="btn btn-secondary" onclick={addRoot}
+        <button
+          class="btn btn-secondary"
+          onclick={addRoot}
+          disabled={!appState.isAdministrator}
           ><FolderPlus size={15} /> Add root</button
         >
       </div>
@@ -116,6 +129,7 @@
             <input
               class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"
               bind:value={root.name}
+              disabled={!appState.isAdministrator}
               placeholder="home"
             />
           </label>
@@ -124,12 +138,14 @@
             <input
               class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"
               bind:value={root.path}
+              disabled={!appState.isAdministrator}
               placeholder="/home/me or C:\\Users\\me"
             />
           </label>
           <button
             class="btn btn-secondary self-end"
             aria-label={`Remove ${root.name || 'source root'}`}
+            disabled={!appState.isAdministrator}
             onclick={() => removeRoot(index)}><Trash2 size={15} /></button
           >
         </div>
@@ -141,6 +157,7 @@
       <input
         class="mt-2 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"
         bind:value={outputRoot}
+        disabled={!appState.isAdministrator}
         placeholder="/path/to/Pandrator/exports or C:\\Users\\me\\Pandrator\\exports"
       />
       <small class="muted mt-2 block font-normal">

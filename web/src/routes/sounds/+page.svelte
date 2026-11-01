@@ -3,6 +3,12 @@
   import SoundLibrary from '$lib/SoundLibrary.svelte';
   import { page } from '$app/state';
   import { LibraryBig, Sparkles } from '@lucide/svelte';
+  import { untrack } from 'svelte';
+  import { appState } from '$lib/app-state.svelte';
+  // The layout remounts this page after the selected workspace is ready.
+  const workspaceId = untrack(() =>
+    appState.collaborationEnabled ? appState.activeWorkspaceId : undefined
+  );
   const returnTarget = $derived.by(() => {
     const target = page.url.searchParams.get('return_to');
     if (!target) return null;
@@ -67,6 +73,7 @@
 {#if tab === 'playground'}
   {#key saveItemId}<SoundPlayground
       {saveItemId}
+      {workspaceId}
       onsaved={(id) => {
         selectedId = id;
         saveItemId = undefined;
@@ -75,6 +82,7 @@
     />{/key}
 {:else}
   <SoundLibrary
+    {workspaceId}
     bind:selectedId
     onvariant={(id) => {
       saveItemId = id;

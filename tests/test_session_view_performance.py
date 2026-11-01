@@ -32,6 +32,7 @@ from pandrator.web.generation_audio_identity import (
 )
 from pandrator.web.generation_history_reads import GenerationHistoryReader
 from pandrator.web.generation_review import revision_history
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     AudioTake,
@@ -43,6 +44,8 @@ from pandrator.web.models import (
     UsageEvent,
     utcnow,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.usage_identity import bind_usage_ownership
 
 
 class SessionViewPerformanceTests(unittest.TestCase):
@@ -192,10 +195,10 @@ class SessionViewPerformanceTests(unittest.TestCase):
                         session_id, limit=250, **options
                     )
                     selects = [sql for sql in log if sql.lstrip().upper().startswith("SELECT")]
-                    # Full audiobook reads also project assembly pauses and
-                    # inspect the following voice at the page boundary.
-                    budget = {"full": 24, "compact": 23, "provenance": 23,
-                              "search": 25, "source-cue": 25}[name]
+                    # Include fixed workspace validation and assembly-pause
+                    # reads; measured counts stay flat at 1, 10 and 50 segments.
+                    budget = {"full": 33, "compact": 30, "provenance": 30,
+                              "search": 34, "source-cue": 34}[name]
                     self.assertLessEqual(len(selects), budget, f"{name}: {count} segments")
                     counts_by_read.setdefault(name, []).append(len(selects))
                     self.assertEqual(1, sum("FROM audio_takes" in sql for sql in selects))
@@ -296,6 +299,9 @@ class SessionViewPerformanceTests(unittest.TestCase):
             artifact = session.get(Artifact, active.artifact_id)
             artifact.metadata_json = {**artifact.metadata_json, **rich}
             empty = Artifact(session_id=session_id, kind="audio", role="generation_take", relative_path=f"empty-{uuid.uuid4().hex}.wav", metadata_json={})
+            ownership = resolve_artifact_ownership(session, session_id=empty.session_id)
+            empty.workspace_id = ownership.workspace_id
+            empty.project_id = ownership.project_id
             session.add(empty)
             session.flush()
             active.created_at = datetime(2025, 1, 2, 3, 4, 5)
@@ -335,6 +341,7 @@ class SessionViewPerformanceTests(unittest.TestCase):
         plan = self._plan(session_id, 1)
         run_ids = []
         with self.database.session() as session:
+            ownership = None
             for sequence in range(1, count + 1):
                 job = Job(
                     session_id=session_id,
@@ -342,6 +349,10 @@ class SessionViewPerformanceTests(unittest.TestCase):
                     status=job_status,
                     payload_json={"segment_ids": [f"segment-{sequence}"]},
                 )
+                if ownership is None:
+                    ownership = job_creation_ownership(session, session_id=job.session_id)
+                job.workspace_id = ownership.workspace_id
+                job.project_id = ownership.project_id
                 session.add(job)
                 session.flush()
                 run = GenerationRun(
@@ -387,8 +398,13 @@ class SessionViewPerformanceTests(unittest.TestCase):
         expected = {}
         now = utcnow()
         with self.database.session() as session:
+            ownership = None
             for index, run_id in enumerate(run_ids, start=1):
                 old_job = Job(session_id=session_id, kind="output.assembly", status="queued")
+                if ownership is None:
+                    ownership = job_creation_ownership(session, session_id=old_job.session_id)
+                old_job.workspace_id = ownership.workspace_id
+                old_job.project_id = ownership.project_id
                 latest_job = Job(
                     session_id=session_id,
                     kind="output.assembly",
@@ -396,6 +412,8 @@ class SessionViewPerformanceTests(unittest.TestCase):
                     progress=0.25,
                     progress_detail=f"assembly-{index}-running",
                 )
+                latest_job.workspace_id = ownership.workspace_id
+                latest_job.project_id = ownership.project_id
                 session.add_all([old_job, latest_job])
                 session.flush()
                 self._history_assembly(
@@ -463,6 +481,9 @@ class SessionViewPerformanceTests(unittest.TestCase):
                 session_id=session_id, kind="output.assembly", status="queued",
                 progress=0.25, progress_detail="selected-queued-assembly-job",
             )
+            ownership = job_creation_ownership(session, session_id=selected_job.session_id)
+            selected_job.workspace_id = ownership.workspace_id
+            selected_job.project_id = ownership.project_id
             session.add(selected_job)
             session.flush()
             selected_job_id = selected_job.id
@@ -471,6 +492,8 @@ class SessionViewPerformanceTests(unittest.TestCase):
                     session_id=session_id, kind="output.assembly", status="queued",
                     progress_detail="unused-old-assembly-job",
                 )
+                older_job.workspace_id = ownership.workspace_id
+                older_job.project_id = ownership.project_id
                 session.add(older_job)
                 session.flush()
                 self._history_assembly(
@@ -570,10 +593,12 @@ class SessionViewPerformanceTests(unittest.TestCase):
                     run.settings_snapshot_json = {
                         "tts": {"voice": "history-voice"}, "unused": "x" * 4096,
                     }
-                    session.add(UsageEvent(
+                    usage_event = UsageEvent(
                         session_id=session_id, generation_run_id=run.id,
                         provider_key="fixture", model_id="fixture-model", input_tokens=1,
-                    ))
+                    )
+                    bind_usage_ownership(session, usage_event)
+                    session.add(usage_event)
                     for offset in (0, 1):
                         session.add(OutputAssembly(
                             session_id=session_id, generation_run_id=run.id,
@@ -723,11 +748,13 @@ class SessionViewPerformanceTests(unittest.TestCase):
             runs[16].plan_revision_id = runs[5].plan_revision_id
             runs[17].source_generation_run_id = foreign_runs[0]
             for index, run in enumerate(runs):
-                session.add(UsageEvent(
+                usage_event = UsageEvent(
                     session_id=session_id, generation_run_id=run.id,
                     provider_key="fixture", model_id="fixture-model",
                     input_tokens=index + 1, output_tokens=2, cost_usd=0.01 * (index + 1),
-                ))
+                )
+                bind_usage_ownership(session, usage_event)
+                session.add(usage_event)
 
         reader = GenerationHistoryReader(self.database)
         for include_repairs in (True, False):
@@ -826,6 +853,9 @@ class SessionViewPerformanceTests(unittest.TestCase):
                     created_at=now + timedelta(seconds=index),
                     progress_detail=f"detail-{index}",
                 )
+                ownership = job_creation_ownership(session, session_id=candidate.session_id)
+                candidate.workspace_id = ownership.workspace_id
+                candidate.project_id = ownership.project_id
                 session.add(candidate)
                 session.flush()
                 candidates.append(candidate.id)

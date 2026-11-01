@@ -10,6 +10,8 @@ import requests
 
 from ..errors import PandratorMcpError
 from ..targets import ResolvedTarget, TargetProfile
+from .application import ApplicationClient
+from .manager_proxy import ApplicationProxyManagerGateway
 
 
 def _manager_client(workspace: str):
@@ -151,10 +153,19 @@ def bootstrap_local_application(
 
 
 class LocalManagerGateway:
-    """Read-only gateway that remains usable while the application is down."""
+    """Local diagnostics plus Administrator-authenticated Manager mutations."""
 
-    def __init__(self, workspace: str) -> None:
+    def __init__(
+        self,
+        workspace: str,
+        *,
+        application: ApplicationClient | None = None,
+    ) -> None:
         self.workspace = workspace
+        self.application = application
+        self._application_manager = (
+            ApplicationProxyManagerGateway(application) if application is not None else None
+        )
 
     def _client(self):
         return _manager_client(self.workspace)
@@ -171,6 +182,14 @@ class LocalManagerGateway:
                 "The local Pandrator Manager diagnostic request failed.",
                 retryable=True,
             ) from error
+
+    def _mutation_gateway(self) -> ApplicationProxyManagerGateway:
+        if self._application_manager is None:
+            raise PandratorMcpError(
+                "administrator_enrollment_required",
+                "Connect an Administrator application credential to manage models and runtimes.",
+            )
+        return self._application_manager
 
     def status(self) -> dict[str, Any]:
         return self._call("status")
@@ -216,37 +235,6 @@ class LocalManagerGateway:
                 retryable=True,
             ) from error
 
-    def _request_json(
-        self,
-        method: str,
-        path: str,
-        *,
-        body: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-        timeout: float = 30,
-    ) -> dict[str, Any]:
-        client = self._client()
-        try:
-            payload = client.request(
-                method,
-                path,
-                json_payload=body,
-                idempotency_key=idempotency_key,
-                timeout=timeout,
-            ).json()
-        except Exception as error:
-            raise PandratorMcpError(
-                "manager_unavailable",
-                "The local Pandrator Manager request failed.",
-                retryable=True,
-            ) from error
-        if not isinstance(payload, dict):
-            raise PandratorMcpError(
-                "downstream_unavailable",
-                "The local Manager returned an unexpected response.",
-            )
-        return payload
-
     def create_plan(
         self,
         *,
@@ -255,14 +243,10 @@ class LocalManagerGateway:
         expected_revision: int,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            "/v1/plans",
-            body={
-                "kind": kind,
-                "desired": desired,
-                "expected_revision": expected_revision,
-            },
+        return self._mutation_gateway().create_plan(
+            kind=kind,
+            desired=desired,
+            expected_revision=expected_revision,
             idempotency_key=idempotency_key,
         )
 
@@ -274,16 +258,10 @@ class LocalManagerGateway:
         accepted_confirmations: tuple[str, ...],
         idempotency_key: str,
     ) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            "/v1/operations",
-            body={
-                "plan_id": plan_id,
-                "plan_digest": plan_digest,
-                "accepted_confirmations": list(
-                    accepted_confirmations
-                ),
-            },
+        return self._mutation_gateway().execute_plan(
+            plan_id=plan_id,
+            plan_digest=plan_digest,
+            accepted_confirmations=accepted_confirmations,
             idempotency_key=idempotency_key,
         )
 
@@ -295,22 +273,11 @@ class LocalManagerGateway:
         service_ids: tuple[str, ...],
         idempotency_key: str,
     ) -> dict[str, Any]:
-        if action not in {"start", "stop", "restart"}:
-            raise ValueError("The Manager runtime action is invalid.")
-        if target == "application":
-            path = f"/v1/application/{action}"
-            body: dict[str, Any] = {}
-        elif target == "managed_services":
-            path = f"/v1/runtime/{action}"
-            body = {"service_ids": list(service_ids)}
-        else:
-            raise ValueError("The Manager runtime target is invalid.")
-        return self._request_json(
-            "POST",
-            path,
-            body=body,
+        return self._mutation_gateway().control_runtime(
+            action=action,
+            target=target,
+            service_ids=service_ids,
             idempotency_key=idempotency_key,
-            timeout=10 * 60,
         )
 
     def cancel_operation(
@@ -319,9 +286,7 @@ class LocalManagerGateway:
         *,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            f"/v1/operations/{quote(operation_id, safe='')}/cancel",
-            body={},
+        return self._mutation_gateway().cancel_operation(
+            operation_id,
             idempotency_key=idempotency_key,
         )

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import random
 import sqlite3
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
+from typing import TypeVar
 
 from alembic import command
 from alembic.config import Config
@@ -13,7 +16,8 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0058_project_folders"
+SCHEMA_HEAD = "0087_public_project_links"
+_WriteResult = TypeVar("_WriteResult")
 
 
 def is_sqlite_busy(error: BaseException) -> bool:
@@ -23,7 +27,7 @@ def is_sqlite_busy(error: BaseException) -> bool:
     return (
         isinstance(original, sqlite3.Error)
         and isinstance(code, int)
-        and (code & 0xFF) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+        and (code & 0xFF) == sqlite3.SQLITE_BUSY
     )
 
 
@@ -80,20 +84,29 @@ class Database:
 
     @contextmanager
     def session(self, *, busy_timeout_ms: int | None = None) -> Iterator[Session]:
-        session = self._factory()
+        # Keep explicitly timed connections open through commit and timeout
+        # restoration. A Session-owned connection closes at commit.
+        connection = self.engine.connect() if busy_timeout_ms is not None else None
+        session = (
+            self._factory(bind=connection, join_transaction_mode="control_fully")
+            if connection is not None else self._factory()
+        )
         try:
-            if busy_timeout_ms is None:
+            if connection is None:
                 yield session
+                session.commit()
             else:
-                with _scoped_busy_timeout(session.connection(), busy_timeout_ms):
+                with _scoped_busy_timeout(connection, busy_timeout_ms):
                     yield session
                     session.flush()
-            session.commit()
+                    session.commit()
         except Exception:
             session.rollback()
             raise
         finally:
             session.close()
+            if connection is not None:
+                connection.close()
 
     @contextmanager
     def snapshot_session(self) -> Iterator[Session]:
@@ -137,6 +150,45 @@ class Database:
 
     def dispose(self) -> None:
         self.engine.dispose()
+
+    def run_immediate(
+        self,
+        operation: Callable[[Session], _WriteResult],
+        *,
+        timeout_seconds: float = 2.0,
+        busy_timeout_ms: int = 100,
+        max_attempts: int = 8,
+    ) -> _WriteResult:
+        """Retry an explicitly rollback-safe SQL unit in fresh transactions.
+
+        The callback must contain only transactional database effects: never
+        provider requests, file writes, publication, sleeps or caller responses.
+        A BUSY_SNAPSHOT also needs a fresh snapshot; LOCKED is a connection or
+        shared-cache conflict and must be diagnosed instead of blindly retried.
+        Each failed attempt is fully rolled back before bounded jittered backoff.
+        This deadline bounds contention waits, not arbitrary callback CPU time.
+        """
+        if timeout_seconds <= 0 or busy_timeout_ms < 0 or max_attempts < 1:
+            raise ValueError("Invalid SQLite write retry budget.")
+        deadline = time.monotonic() + timeout_seconds
+        for attempt in range(max_attempts):
+            remaining = max(0.0, deadline - time.monotonic())
+            wait_ms = min(busy_timeout_ms, int(remaining * 1000))
+            try:
+                with self.immediate_session(busy_timeout_ms=wait_ms) as session:
+                    result = operation(session)
+                return result
+            except Exception as error:
+                remaining = deadline - time.monotonic()
+                if (
+                    not is_sqlite_busy(error)
+                    or attempt + 1 >= max_attempts
+                    or remaining <= 0
+                ):
+                    raise
+                delay = random.uniform(0.0, min(0.025 * 2**attempt, 0.2, remaining))
+                time.sleep(delay)
+        raise AssertionError("SQLite retry loop exhausted without a result.")
 
 
 def upgrade_database(path: Path) -> None:

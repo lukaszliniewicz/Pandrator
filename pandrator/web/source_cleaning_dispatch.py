@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -21,12 +21,22 @@ from pandrator.logic.source_cleaning.deterministic import (
 from pandrator.logic.source_cleaning.operations import ALLOWED_METADATA_KEYS
 from pandrator.logic.source_cleaning.selectors import blocks_matching_selector
 
+from .access.contracts import AccessDenied, ProjectAction
+from .access.source_dispatch_policy import (
+    _require_source_input_access,
+    require_source_dispatch_access,
+    require_source_preparation_access,
+)
+from .accounts.execution_actor import current_execution_actor
+from .accounts.job_authorization import require_current_job_actor_lease
 from .artifacts import ArtifactService, sha256_file
 from .database import Database
 from .dispatch import DispatchError
+from .job_execution import current_job_lease
 from .jobs import JobQueue
 from .models import (
     Artifact,
+    Job,
     SessionRecord,
     SessionSource,
     SessionStageSelection,
@@ -648,6 +658,7 @@ class SourceCleaningDispatchRunService:
         db_session: Session | None = None,
     ) -> list[dict[str, Any]]:
         if db_session is not None:
+            require_source_dispatch_access(db_session, "session", session_id)
             runs = list(
                 db_session.scalars(
                     select(SourceCleaningDispatchRun)
@@ -665,6 +676,7 @@ class SourceCleaningDispatchRunService:
 
     def get(self, run_id: str, *, db_session: Session | None = None) -> dict[str, Any]:
         if db_session is not None:
+            require_source_dispatch_access(db_session, "run", run_id)
             run = db_session.get(SourceCleaningDispatchRun, run_id)
             if run is None:
                 raise DispatchError(
@@ -713,6 +725,7 @@ class SourceCleaningDispatchRunService:
         if record is None or record.trashed_at is not None:
             raise DispatchError("not_found", "Session not found.", 404)
         if source_artifact_id:
+            _require_source_input_access(session, session_id, source_artifact_id)
             source = session.get(Artifact, source_artifact_id)
         else:
             source = resolve_primary_source(session, session_id).artifact
@@ -788,6 +801,7 @@ class SourceCleaningDispatchRunService:
         epub_table_mode: str | None = None,
         epub_image_mode: str | None = None,
     ) -> dict[str, Any]:
+        require_source_dispatch_access(session, "session", session_id, ProjectAction.RUN)
         if self.jobs is None:
             raise RuntimeError(
                 "Source-cleaning dispatch creation requires a job queue."
@@ -889,6 +903,7 @@ class SourceCleaningDispatchRunService:
     def _verify_pinned_source(
         self, session: Session, run: SourceCleaningDispatchRun
     ) -> tuple[Artifact, Path]:
+        _require_source_input_access(session, run.session_id, run.source_artifact_id)
         source = session.get(Artifact, run.source_artifact_id)
         if source is None or source.state == "deleted":
             raise DispatchError(
@@ -917,14 +932,27 @@ class SourceCleaningDispatchRunService:
             ) from error
         return source, path
 
+    def _check_preparation_access(self, run_id: str) -> None:
+        if current_execution_actor.get() is None:
+            return
+        with self.database.snapshot_session() as session:
+            require_source_preparation_access(session, run_id)
+
     def prepare_run(
         self,
         run_id: str,
         progress,
         cancel_event,
     ) -> dict[str, Any]:
+        self._check_preparation_access(run_id)
+
+        def checked_progress(value, message) -> None:
+            self._check_preparation_access(run_id)
+            progress(value, message)
+
         try:
             with self.database.session() as session:
+                require_source_preparation_access(session, run_id)
                 run = session.get(SourceCleaningDispatchRun, run_id)
                 if run is None:
                     raise DispatchError(
@@ -946,14 +974,16 @@ class SourceCleaningDispatchRunService:
             if cancel_event.is_set():
                 self._mark_preparation_cancelled(run_id)
                 return {"run_id": run_id, "status": "cancelled"}
+            self._check_preparation_access(run_id)
             dispatch_dir = (
                 self.session_dir_resolver(session_id)
                 / "source-cleaning-dispatch"
                 / run_id
             )
             dispatch_dir.mkdir(parents=True, exist_ok=True)
-            progress(0.05, "Preparing deterministic source extraction")
+            checked_progress(0.05, "Preparing deterministic source extraction")
             if source_format == "pdf":
+                self._check_preparation_access(run_id)
                 document = source_cleaning.build_source_document(
                     str(source_path),
                     pdf_config=source_cleaning.PDFIngestionConfig(
@@ -962,7 +992,7 @@ class SourceCleaningDispatchRunService:
                         ocr_dpi=int(settings.get("pdf_ocr_dpi") or 200),
                     ),
                     artifact_dir=str(dispatch_dir / "pdf-ingestion"),
-                    progress_callback=lambda message: progress(0.25, str(message)),
+                    progress_callback=lambda message: checked_progress(0.25, str(message)),
                 )
                 baseline_text = document.plain_text()
                 deterministic_operations = (
@@ -976,6 +1006,7 @@ class SourceCleaningDispatchRunService:
                     )
                 )
             else:
+                self._check_preparation_access(run_id)
                 extraction_result = extract_epub_with_diagnostics(
                     str(source_path),
                     remove_footnotes=bool(settings.get("remove_footnotes", False)),
@@ -992,6 +1023,7 @@ class SourceCleaningDispatchRunService:
                         422,
                     )
                 baseline_text = extraction_result.text
+                self._check_preparation_access(run_id)
                 document = source_cleaning.build_cleaned_epub_source_document(
                     str(source_path),
                     baseline_text,
@@ -1004,9 +1036,10 @@ class SourceCleaningDispatchRunService:
             if cancel_event.is_set():
                 self._mark_preparation_cancelled(run_id)
                 return {"run_id": run_id, "status": "cancelled"}
-            progress(0.55, "Saving the sequential editorial phase plan")
+            checked_progress(0.55, "Saving the sequential editorial phase plan")
             index_path = dispatch_dir / "source-index.json"
             baseline_path = dispatch_dir / "extracted-text.txt"
+            self._check_preparation_access(run_id)
             index_path.write_text(
                 json.dumps(
                     {
@@ -1020,11 +1053,13 @@ class SourceCleaningDispatchRunService:
                 encoding="utf-8",
                 newline="\n",
             )
+            self._check_preparation_access(run_id)
             baseline_path.write_text(baseline_text, encoding="utf-8", newline="\n")
             prepared_index = self.artifacts.prepare_registration(index_path)
             prepared_baseline = self.artifacts.prepare_registration(baseline_path)
-            progress(0.8, "Saving passive source-cleaning work")
+            checked_progress(0.8, "Saving passive source-cleaning work")
             with self.database.immediate_session() as session:
+                require_source_preparation_access(session, run_id)
                 run = session.get(SourceCleaningDispatchRun, run_id)
                 if run is None:
                     raise DispatchError(
@@ -1116,18 +1151,51 @@ class SourceCleaningDispatchRunService:
                 run.error_message = "Source-cleaning preparation was cancelled."
                 run.updated_at = utcnow()
 
-    def _mark_preparation_failed(self, run_id: str, error: Exception) -> None:
-        with self.database.session() as session:
-            run = session.get(SourceCleaningDispatchRun, run_id)
-            if run is not None and run.status not in _TERMINAL_STATUSES:
-                run.status = "failed"
-                run.error_code = (
-                    error.code
-                    if isinstance(error, DispatchError)
-                    else "preparation_failed"
+    def _mark_preparation_failed(
+        self, run_id: str, error: Exception, *, db_session: Session | None = None
+    ) -> None:
+        if db_session is None:
+            with self.database.session() as session:
+                self._mark_preparation_failed(run_id, error, db_session=session)
+            return
+        db_session.execute(
+            update(SourceCleaningDispatchRun)
+            .where(
+                SourceCleaningDispatchRun.id == run_id,
+                SourceCleaningDispatchRun.status.not_in(_TERMINAL_STATUSES),
+            )
+            .values(
+                status="failed",
+                error_code=error.code if isinstance(error, DispatchError) else "preparation_failed",
+                error_message=str(error)[:2000],
+                updated_at=utcnow(),
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+
+    def _mark_owned_preparation_failed(self, run_id: str, error: Exception) -> None:
+        """Terminal bookkeeping only; this proof grants no content/file authority."""
+        actor = current_execution_actor.get()
+        lease = current_job_lease.get()
+        if actor is None or lease is None:
+            return
+        with self.database.immediate_session() as session:
+            try:
+                require_current_job_actor_lease(session, actor)
+            except PermissionError:
+                return
+            own_target = session.scalar(
+                select(SourceCleaningDispatchRun.id)
+                .join(Job, Job.id == SourceCleaningDispatchRun.job_id)
+                .where(
+                    SourceCleaningDispatchRun.id == run_id,
+                    SourceCleaningDispatchRun.job_id == lease["job_id"],
+                    Job.kind == "source.cleaning_dispatch.prepare",
+                    Job.session_id == SourceCleaningDispatchRun.session_id,
                 )
-                run.error_message = str(error)[:2000]
-                run.updated_at = utcnow()
+            )
+            if own_target is not None:
+                self._mark_preparation_failed(run_id, error, db_session=session)
 
     @staticmethod
     def _claim_response(
@@ -1210,6 +1278,7 @@ class SourceCleaningDispatchRunService:
         claim_key: str,
         lease_seconds: int,
     ) -> dict[str, Any]:
+        require_source_dispatch_access(session, "run", run_id, ProjectAction.RUN)
         run = session.get(SourceCleaningDispatchRun, run_id)
         if run is None:
             raise DispatchError(
@@ -1308,6 +1377,7 @@ class SourceCleaningDispatchRunService:
         lease_token: str,
         lease_seconds: int,
     ) -> dict[str, Any]:
+        require_source_dispatch_access(session, "batch", batch_id, ProjectAction.RUN)
         batch = session.get(SourceCleaningDispatchBatch, batch_id)
         if batch is None:
             raise DispatchError(
@@ -1338,6 +1408,7 @@ class SourceCleaningDispatchRunService:
         batch_id: str,
         lease_token: str,
     ) -> dict[str, Any]:
+        require_source_dispatch_access(session, "batch", batch_id, ProjectAction.RUN)
         batch = session.get(SourceCleaningDispatchBatch, batch_id)
         if batch is None:
             raise DispatchError(
@@ -1369,6 +1440,7 @@ class SourceCleaningDispatchRunService:
         arguments: dict[str, Any],
         view: str,
     ) -> dict[str, Any]:
+        require_source_dispatch_access(session, "batch", batch_id, ProjectAction.RUN)
         batch = session.get(SourceCleaningDispatchBatch, batch_id)
         if batch is None:
             raise DispatchError(
@@ -1765,6 +1837,7 @@ class SourceCleaningDispatchRunService:
         submission_key: str,
         result: dict[str, Any],
     ) -> tuple[dict[str, Any], int]:
+        require_source_dispatch_access(session, "batch", batch_id, ProjectAction.RUN)
         batch = session.get(SourceCleaningDispatchBatch, batch_id)
         if batch is None:
             raise DispatchError(
@@ -1835,6 +1908,7 @@ class SourceCleaningDispatchRunService:
         session: Session,
         run: SourceCleaningDispatchRun,
     ) -> tuple[Any, list[dict[str, Any]]]:
+        _require_source_input_access(session, run.session_id, run.index_artifact_id)
         artifact = session.get(Artifact, run.index_artifact_id)
         if artifact is None or artifact.state == "deleted" or not artifact.content_hash:
             raise DispatchError(
@@ -1923,11 +1997,14 @@ class SourceCleaningDispatchRunService:
         session.flush()
 
     def _retry_finalize(self, session: Session, run: SourceCleaningDispatchRun) -> None:
+        require_source_dispatch_access(session, "run", run.id, ProjectAction.RUN)
         if run.status == "completed":
             return
         try:
             with session.begin_nested():
                 self._materialize(session, run)
+        except AccessDenied:
+            raise
         except DispatchError as error:
             run.status = "failed"
             run.error_code = error.code
@@ -1951,6 +2028,7 @@ class SourceCleaningDispatchRunService:
         *,
         run_id: str,
     ) -> tuple[dict[str, Any], int]:
+        require_source_dispatch_access(session, "run", run_id, ProjectAction.RUN)
         run = session.get(SourceCleaningDispatchRun, run_id)
         if run is None:
             raise DispatchError(
@@ -2111,4 +2189,8 @@ def prepare_source_cleaning_dispatch_job(
         artifacts,
         session_dir_resolver,
     )
-    return service.prepare_run(run_id, progress, cancel_event)
+    try:
+        return service.prepare_run(run_id, progress, cancel_event)
+    except (AccessDenied, DispatchError) as error:
+        service._mark_owned_preparation_failed(run_id, error)
+        raise

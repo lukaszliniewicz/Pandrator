@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ..media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 from .models import AudioAlignmentBlock
 from .srt_utils import parse_srt
 
@@ -300,6 +301,7 @@ def _speed_up_audio_segment(
         run_func(
             [
                 ffmpeg_executable,
+                *LOCAL_MEDIA_INPUT_OPTIONS,
                 "-i",
                 str(temp_input),
                 "-af",
@@ -428,6 +430,7 @@ def _speed_up_wav_streaming(
             "-loglevel",
             "error",
             "-y",
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             "-i",
             str(source),
             "-map",
@@ -1032,6 +1035,7 @@ def build_extract_original_audio_command(
     return [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(video_path),
         "-vn",
@@ -1053,6 +1057,7 @@ def build_volume_analysis_command(
     return [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(audio_path),
         "-af",
@@ -1076,6 +1081,7 @@ def build_amplify_audio_command(
     return [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(audio_path),
         "-af",
@@ -1097,6 +1103,7 @@ def build_normalize_dubbed_audio_command(
     return [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(audio_path),
         "-af",
@@ -1135,8 +1142,10 @@ def build_mix_audio_command(
     return [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(original_audio_path),
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(amplified_dubbed_audio_path),
         "-filter_complex",
@@ -1183,10 +1192,12 @@ def build_mix_preview_command(
         "-y",
         "-ss",
         f"{start:.3f}",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(source_media_path),
         "-ss",
         f"{start:.3f}",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(dubbed_audio_path),
         "-filter_complex",
@@ -1234,8 +1245,10 @@ def build_mix_video_audio_command(
     return [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(video_path),
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(dubbed_audio_path),
         "-filter_complex",
@@ -1269,8 +1282,10 @@ def build_mux_mixed_audio_command(
     return [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(video_path),
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(mixed_audio_path),
         "-c:v",
@@ -1308,6 +1323,7 @@ def media_has_audio_stream(
             "stream=index",
             "-of",
             "csv=p=0",
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             str(media_path),
         ],
         check=True,

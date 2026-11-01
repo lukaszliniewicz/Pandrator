@@ -47,6 +47,8 @@ from pandrator.web.models import (
     SourceRecord,
     utcnow,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.sessions import SessionService
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -562,8 +564,7 @@ class SchemaUpgradeTests(unittest.TestCase):
             try:
                 with database.session() as session:
                     session_record = SessionRecord(name="Migration fixture")
-                    session.add(session_record)
-                    session.flush()
+                    create_session_project(session, session_record)
                     plan = GenerationPlan(session_id=session_record.id)
                     session.add(plan)
                     session.flush()
@@ -689,8 +690,7 @@ class SchemaUpgradeTests(unittest.TestCase):
                 workspace = SessionRecord(
                     name="Language migration", storage_key="language-migration"
                 )
-                session.add(workspace)
-                session.flush()
+                create_session_project(session, workspace)
                 plan = GenerationPlan(session_id=workspace.id)
                 session.add(plan)
                 session.flush()
@@ -776,7 +776,11 @@ class SchemaUpgradeTests(unittest.TestCase):
                     "SELECT secret_value FROM stored_credentials WHERE key = 'aux:deepl'"
                 ).fetchone()
                 setting = connection.execute(
-                    "SELECT value_json FROM app_settings WHERE key = 'services.tts'"
+                    "SELECT settings.value_json FROM workspace_settings AS settings "
+                    "JOIN workspaces ON workspaces.id = settings.workspace_id "
+                    "JOIN users ON users.id = workspaces.personal_owner_user_id "
+                    "WHERE settings.key = 'services.tts' AND workspaces.kind = 'personal' "
+                    "AND users.legacy_subject = 'owner'"
                 ).fetchone()
             self.assertEqual(secret, stored[0])
             self.assertEqual("legacy-deepl-secret", stored_deepl[0])
@@ -820,26 +824,35 @@ class SchemaUpgradeTests(unittest.TestCase):
                         updated_at=utcnow(),
                     )
                 )
-                artifact = Artifact(
-                    session_id=session_id,
-                    kind="text",
-                    role="upload",
-                    relative_path="uploads/legacy-source.txt",
-                    mime_type="text/plain",
-                    size_bytes=12,
-                    content_hash="legacy-source-hash",
+                legacy_artifacts = Table(
+                    "artifacts", MetaData(), autoload_with=session.connection()
                 )
-                session.add(artifact)
+                artifact_id = "legacy-source-artifact"
+                session.execute(
+                    legacy_artifacts.insert().values(
+                        id=artifact_id,
+                        session_id=session_id,
+                        kind="text",
+                        role="upload",
+                        relative_path="uploads/legacy-source.txt",
+                        mime_type="text/plain",
+                        size_bytes=12,
+                        content_hash="legacy-source-hash",
+                        state="current",
+                        metadata_json={},
+                        created_at=utcnow(),
+                        updated_at=utcnow(),
+                    )
+                )
                 session.flush()
                 source = SourceRecord(
                     session_id=session_id,
                     kind="text",
                     display_name="Legacy source.txt",
-                    artifact_id=artifact.id,
+                    artifact_id=artifact_id,
                 )
                 session.add(source)
                 session.flush()
-                artifact_id = artifact.id
                 source_id = source.id
             database.dispose()
 
@@ -1516,7 +1529,11 @@ class WebApiTests(unittest.TestCase):
 
         replaced = self.client.post(
             "/api/v1/sessions",
-            json={"name": "Existing session", "overwrite_session_id": original["id"]},
+            json={
+                "name": "Existing session",
+                "overwrite_session_id": original["id"],
+                "overwrite_revision": original["revision"],
+            },
             headers=headers,
         )
         self.assertEqual(201, replaced.status_code, replaced.get_json())
@@ -1633,11 +1650,14 @@ class WebApiTests(unittest.TestCase):
                 ]
             )
             artifacts = []
+            ownership = resolve_artifact_ownership(db_session, session_id=workspace.id)
             for index, revision in enumerate(
                 [older_r1, older_r2, newer_r1, newer_r2], start=1
             ):
                 artifacts.append(
                     Artifact(
+                        workspace_id=ownership.workspace_id,
+                        project_id=ownership.project_id,
                         session_id=workspace.id,
                         kind="subtitle",
                         role=f"revision-{revision.revision_number}",
@@ -1677,7 +1697,8 @@ class WebApiTests(unittest.TestCase):
             event.remove(database.engine, "before_cursor_execute", count_selects)
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual(4, select_count)
+        # Includes two fixed authentication lookups, independent of document count.
+        self.assertEqual(6, select_count)
         documents = response.get_json()["items"]
         self.assertEqual(
             [older.id, newer.id], [document["id"] for document in documents]
@@ -1740,7 +1761,8 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual({"items": []}, response.get_json())
-        self.assertEqual(3, select_count)
+        # Includes the same two fixed authentication lookups as a populated catalog.
+        self.assertEqual(5, select_count)
 
     def test_revision_conflicts_do_not_overwrite(self):
         csrf = self.authenticate()

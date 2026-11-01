@@ -66,6 +66,11 @@ def generate_sound(runtime: McpRuntime, arguments: GenerateSoundInput) -> ToolOu
     duration_seconds = arguments.duration_seconds
     if duration_seconds is None and arguments.model_id == DEFAULT_SOUND_MODEL_ID:
         duration_seconds = 4.0
+    workspace_kwargs = (
+        {"workspace_id": arguments.workspace_id}
+        if arguments.workspace_id is not None
+        else {}
+    )
     payload = _application(runtime).generate_sound(
         prompt=arguments.prompt,
         model_id=arguments.model_id,
@@ -78,6 +83,7 @@ def generate_sound(runtime: McpRuntime, arguments: GenerateSoundInput) -> ToolOu
         seed=arguments.seed,
         threads=arguments.threads,
         idempotency_key=arguments.idempotency_key,
+        **workspace_kwargs,
     )
     result, outcome = _safe_generation_result(payload)
     return outcome or ToolOutcome(result=result)
@@ -88,6 +94,11 @@ def sound_library(
 ) -> ToolOutcome | dict[str, Any]:
     application = _application(runtime)
     action = arguments.action
+    workspace_kwargs = (
+        {"workspace_id": arguments.workspace_id}
+        if arguments.workspace_id is not None
+        else {}
+    )
     if action == "list":
         result = application.list_sounds(
             query=arguments.query,
@@ -95,6 +106,7 @@ def sound_library(
             cursor=arguments.cursor,
             limit=arguments.limit,
             archived=arguments.archived,
+            **workspace_kwargs,
         )
         return _safe_sound_page(result)
     if action == "get":
@@ -103,6 +115,7 @@ def sound_library(
             arguments.item_id or "",
             cursor=arguments.cursor,
             limit=limit,
+            **workspace_kwargs,
         )
         return _safe_sound_detail(result, include_detail=arguments.include_detail)
     if action == "candidates":
@@ -110,10 +123,14 @@ def sound_library(
         result = application.list_sound_candidates(
             cursor=arguments.cursor,
             limit=limit,
+            **workspace_kwargs,
         )
         return _safe_sound_page(result, candidates=True)
     if action == "candidate":
-        result = application.get_sound_candidate(arguments.candidate_id or "")
+        result = application.get_sound_candidate(
+            arguments.candidate_id or "",
+            **workspace_kwargs,
+        )
         return _safe_candidate(result, include_detail=arguments.include_detail)
     if action == "save":
         result = application.save_sound(
@@ -123,6 +140,7 @@ def sound_library(
             item_id=arguments.item_id,
             expected_revision=arguments.expected_revision,
             idempotency_key=arguments.idempotency_key or "",
+            **workspace_kwargs,
         )
         return ToolOutcome(
             result={
@@ -139,12 +157,14 @@ def sound_library(
             expected_revision=arguments.expected_revision or 0,
             changes=arguments.changes.model_dump(mode="json", exclude_unset=True),
             idempotency_key=arguments.idempotency_key or "",
+            **workspace_kwargs,
         )
         return ToolOutcome(result=_safe_sound_item(result))
     if action == "discard":
         result = application.discard_sound_candidate(
             arguments.candidate_id or "",
             idempotency_key=arguments.idempotency_key or "",
+            **workspace_kwargs,
         )
         return ToolOutcome(result=_safe_candidate(result))
     raise ValueError("Unknown sound-library action.")

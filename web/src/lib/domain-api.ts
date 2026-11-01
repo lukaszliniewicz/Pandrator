@@ -1,5 +1,6 @@
 import {
   ApiMutationAttempt,
+  ApiError,
   apiJson,
   apiJsonUpload,
   typedApiJson,
@@ -8,6 +9,12 @@ import {
   type UploadTransferCompleteCallback
 } from './api';
 import type { SpeechPreview } from './speech-annotations';
+import {
+  fetchTtsCatalogue,
+  fetchTtsServiceDetail,
+  speechScopeQuery,
+  type SpeechCatalogueScope
+} from './speech-catalogue-api';
 import type { GenerationControls } from './generation-controls';
 import { admitGeneration } from './generation-admission';
 import type {
@@ -60,8 +67,6 @@ import type {
   SubtitleSplitInspection,
   TtsCatalogue,
   TtsCompactCatalogue,
-  TtsDiscovery,
-  TtsServiceDetailResponse,
   XttsModelCatalogue,
   XttsModelDeletion,
   XttsModelUpload,
@@ -154,12 +159,14 @@ export const appApi = {
       '/api/v1/auth/status',
       'get'
     ),
-  login: (password: string) =>
+  login: (password: string, loginName?: string) =>
     typedApiJson<
       '/api/v1/auth/login',
       'post',
       { authenticated: boolean; csrf_token: string }
-    >('/api/v1/auth/login', 'post', { body: { password } }),
+    >('/api/v1/auth/login', 'post', {
+      body: { password, ...(loginName ? { login_name: loginName } : {}) }
+    }),
   logout: () =>
     typedApiJson<'/api/v1/auth/logout', 'post', void>(
       '/api/v1/auth/logout',
@@ -171,13 +178,16 @@ export const appApi = {
       'get',
       { query: new URLSearchParams({ view: 'compact' }) }
     ),
-  sessions: (includeTrashed = false) =>
+  sessions: (includeTrashed = false, workspaceId?: string) =>
     typedApiJson<'/api/v1/sessions', 'get', ItemPage<SessionRecord>>(
       '/api/v1/sessions',
       'get',
-      includeTrashed
-        ? { query: new URLSearchParams({ include_trashed: 'true' }) }
-        : {}
+      {
+        query: new URLSearchParams({
+          ...(includeTrashed ? { include_trashed: 'true' } : {}),
+          ...(workspaceId ? { workspace_id: workspaceId } : {})
+        })
+      }
     ),
   jobs: (limit = 40, scope: { sessionId?: string; kind?: string } = {}) =>
     typedApiJson<'/api/v1/jobs', 'get', ItemPage<JobRecord>>(
@@ -364,7 +374,8 @@ export const translationProjectApi = {
 };
 
 export const sessionApi = {
-  list: (includeTrashed = false) => appApi.sessions(includeTrashed),
+  list: (includeTrashed = false, workspaceId?: string) =>
+    appApi.sessions(includeTrashed, workspaceId),
   create: (body: ApiSchema<'SessionCreate'>, idempotencyKey?: string) =>
     typedApiJson<'/api/v1/sessions', 'post', SessionRecord>(
       '/api/v1/sessions',
@@ -521,22 +532,36 @@ export const sessionApi = {
       path: { sessionId },
       body: { sections, overrides }
     }),
-  defaults: (section: string) =>
+  defaults: (
+    section: string,
+    scope: { workspaceId?: string; sessionId?: string } = {}
+  ) =>
     typedApiJson<'/api/v1/defaults/{section}', 'get', GlobalDefaultsPayload>(
       '/api/v1/defaults/{section}',
       'get',
-      { path: { section } }
+      {
+        path: { section },
+        query:
+          scope.workspaceId || scope.sessionId
+            ? {
+                workspace_id: scope.workspaceId,
+                session_id: scope.sessionId
+              }
+            : undefined
+      }
     ),
   saveDefaults: (
     section: string,
     revision: number,
-    value: Record<string, unknown>
+    value: Record<string, unknown>,
+    workspaceId?: string
   ) =>
     typedApiJson<'/api/v1/settings/{settingKey}', 'put', GlobalDefaultsPayload>(
       '/api/v1/settings/{settingKey}',
       'put',
       {
         path: { settingKey: `defaults.${section}` },
+        query: workspaceId ? { workspace_id: workspaceId } : undefined,
         headers: { 'If-Match': `"${revision}"` },
         body: { value }
       }
@@ -645,104 +670,63 @@ export const sessionApi = {
       'post',
       { path: { jobId } }
     ),
-  ttsCatalogue: (refresh = false) =>
-    typedApiJson<'/api/v1/services/tts', 'get', TtsCatalogue>(
-      '/api/v1/services/tts',
-      'get',
-      refresh ? { query: new URLSearchParams({ refresh: 'true' }) } : {}
-    ),
-  ttsCatalogueCompact: (refresh = false) =>
-    typedApiJson<'/api/v1/services/tts', 'get', TtsCompactCatalogue>(
-      '/api/v1/services/tts',
-      'get',
-      {
-        query: new URLSearchParams({
-          view: 'compact',
-          ...(refresh ? { refresh: 'true' } : {})
-        })
-      }
-    ),
-  ttsServiceDetail: (
-    serviceId: string,
-    options?: { refresh?: boolean; models?: string[] | string }
-  ) => {
-    const query = new URLSearchParams();
-    if (options?.refresh) query.set('refresh', 'true');
-    const models =
-      options?.models == null
-        ? []
-        : Array.isArray(options.models)
-          ? options.models
-          : [options.models];
-    if (models.length > 1) query.set('models', models.join(','));
-    else if (models.length === 1) query.set('model', models[0]);
-    return typedApiJson<
-      '/api/v1/services/tts/{serviceId}',
-      'get',
-      TtsServiceDetailResponse
-    >('/api/v1/services/tts/{serviceId}', 'get', {
-      path: { serviceId },
-      query
-    });
-  },
-  voices: () =>
+  ttsCatalogue: (refresh = false, scope?: SpeechCatalogueScope) =>
+    fetchTtsCatalogue<TtsCatalogue>(refresh, scope),
+  ttsCatalogueCompact: (refresh = false, scope?: SpeechCatalogueScope) =>
+    fetchTtsCatalogue<TtsCompactCatalogue>(refresh, scope, 'compact'),
+  ttsServiceDetail: fetchTtsServiceDetail,
+  voices: (scope?: SpeechCatalogueScope) =>
     typedApiJson<'/api/v1/voices', 'get', ItemPage<VoiceRecord>>(
       '/api/v1/voices',
-      'get'
-    ),
-  discoverTts: (baseUrl: string, serviceId?: string) =>
-    typedApiJson<'/api/v1/services/tts/discover', 'post', TtsDiscovery>(
-      '/api/v1/services/tts/discover',
-      'post',
-      {
-        body: {
-          base_url: baseUrl,
-          service_id: serviceId ?? null,
-          api_key: null
-        }
-      }
+      'get',
+      { query: speechScopeQuery(scope) }
     ),
   uploadXttsModel: (
     modelId: string,
     files: File[],
     onProgress?: UploadProgressCallback,
-    onTransferComplete?: UploadTransferCompleteCallback
+    onTransferComplete?: UploadTransferCompleteCallback,
+    workspaceId?: string
   ) => {
     const body = new FormData();
     body.set('model_id', modelId);
     for (const file of files) body.append('files', file, file.name);
     return apiJsonUpload<XttsModelUpload>(
-      '/api/v1/services/tts/xtts/models',
+      `/api/v1/services/tts/xtts/models?${speechScopeQuery({ workspaceId })}`,
       { method: 'POST', body },
       onProgress,
       onTransferComplete
     );
   },
-  xttsModels: () =>
+  xttsModels: (workspaceId?: string) =>
     typedApiJson<'/api/v1/services/tts/xtts/models', 'get', XttsModelCatalogue>(
       '/api/v1/services/tts/xtts/models',
-      'get'
+      'get',
+      { query: speechScopeQuery({ workspaceId }) }
     ),
-  deleteXttsModel: (modelId: string) =>
+  deleteXttsModel: (modelId: string, workspaceId?: string) =>
     typedApiJson<
       '/api/v1/services/tts/xtts/models/{modelId}',
       'delete',
       XttsModelDeletion
     >('/api/v1/services/tts/xtts/models/{modelId}', 'delete', {
-      path: { modelId }
+      path: { modelId },
+      query: speechScopeQuery({ workspaceId })
     }),
-  providers: () =>
+  providers: (sessionId?: string) =>
     typedApiJson<'/api/v1/providers', 'get', ItemPage<ProviderRecord>>(
       '/api/v1/providers',
-      'get'
+      'get',
+      { query: sessionId ? { session_id: sessionId } : undefined }
     ),
-  providerModels: (providerId: string) =>
+  providerModels: (providerId: string, sessionId?: string) =>
     typedApiJson<
       '/api/v1/providers/{providerId}/models',
       'get',
       ItemPage<ProviderModelRecord>
     >('/api/v1/providers/{providerId}/models', 'get', {
-      path: { providerId }
+      path: { providerId },
+      query: sessionId ? { session_id: sessionId } : undefined
     }),
   sources: (sessionId: string) =>
     typedApiJson<
@@ -877,9 +861,14 @@ export const sessionApi = {
       query
     });
   },
-  subtitleEvidence: (sessionId: string, sourceArtifactId?: string) => {
+  subtitleEvidence: (
+    sessionId: string,
+    sourceArtifactId?: string,
+    includeReferenced = false
+  ) => {
     const query = new URLSearchParams();
     if (sourceArtifactId) query.set('source_artifact_id', sourceArtifactId);
+    if (includeReferenced) query.set('include_referenced', 'true');
     const suffix = query.size ? `?${query.toString()}` : '';
     return apiJson<{
       session_id: string;
@@ -927,6 +916,7 @@ export const sessionApi = {
       candidate_id?: string;
       text?: string;
       note?: string;
+      expected_revision?: string;
     }
   ) =>
     apiJson<SubtitleEvidenceProjection>(
@@ -997,10 +987,22 @@ export const sessionApi = {
         body: JSON.stringify(body)
       }
     ),
-  subtitleEvidenceRoutes: (language?: string) =>
-    apiJson<{ routes: SubtitleEvidenceRouteOption[] }>(
-      `/api/v1/subtitle-evidence/routes${language ? `?language=${encodeURIComponent(language)}` : ''}`
-    ),
+  subtitleEvidenceRoutes: (language?: string, sessionId?: string) => {
+    const query = new URLSearchParams({
+      ...(language ? { language } : {}),
+      ...(sessionId ? { session_id: sessionId } : {})
+    });
+    return apiJson<{
+      routes: SubtitleEvidenceRouteOption[];
+      audio_models: Array<{
+        id: string;
+        model_id: string;
+        provider_label: string;
+        custom: boolean;
+      }>;
+      can_select_audio_models: boolean;
+    }>(`/api/v1/subtitle-evidence/routes?${query}`);
+  },
   subtitleSplitBoundaries: (
     sessionId: string,
     body: {
@@ -1021,13 +1023,14 @@ export const sessionApi = {
 };
 
 export const sourceApi = {
-  list: (includeTrashed = false, compact = false) =>
+  list: (includeTrashed = false, compact = false, workspaceId?: string) =>
     typedApiJson<'/api/v1/sources', 'get', ItemPage<SourceAsset>>(
       '/api/v1/sources',
       'get',
       {
         query: new URLSearchParams({
           include_trashed: String(includeTrashed),
+          ...(workspaceId ? { workspace_id: workspaceId } : {}),
           ...(compact ? { view: 'compact' } : {})
         })
       }
@@ -1070,6 +1073,41 @@ export const sourceApi = {
       headers: { 'If-Match': `"${source.revision}"` }
     })
 };
+
+type ArtifactPreviewPath =
+  | '/api/v1/artifacts/{artifactId}/audio-preview'
+  | '/api/v1/artifacts/{artifactId}/video-preview'
+  | '/api/v1/artifacts/{artifactId}/waveform';
+
+async function readOrPrepareArtifactPreview<T>(
+  path: ArtifactPreviewPath,
+  artifactId: string,
+  query?: URLSearchParams,
+  signal?: AbortSignal
+): Promise<T> {
+  const options = { path: { artifactId }, query, signal };
+  try {
+    return await typedApiJson<ArtifactPreviewPath, 'get', T>(
+      path,
+      'get',
+      options
+    );
+  } catch (caught) {
+    if (
+      !(caught instanceof ApiError) ||
+      caught.status !== 409 ||
+      caught.code !== 'preview_preparation_required' ||
+      typeof caught.details !== 'object' ||
+      caught.details === null ||
+      !('can_prepare' in caught.details) ||
+      caught.details.can_prepare !== true
+    ) {
+      throw caught;
+    }
+    signal?.throwIfAborted();
+    return typedApiJson<ArtifactPreviewPath, 'post', T>(path, 'post', options);
+  }
+}
 
 export const artifactApi = {
   candidates: (
@@ -1129,15 +1167,12 @@ export const artifactApi = {
       path: { artifactId }
     }),
   waveform: (artifactId: string, points = 1600, signal?: AbortSignal) =>
-    typedApiJson<
+    readOrPrepareArtifactPreview<WaveformData>(
       '/api/v1/artifacts/{artifactId}/waveform',
-      'get',
-      WaveformData
-    >('/api/v1/artifacts/{artifactId}/waveform', 'get', {
-      path: { artifactId },
-      query: new URLSearchParams({ points: String(points) }),
+      artifactId,
+      new URLSearchParams({ points: String(points) }),
       signal
-    }),
+    ),
   waveformWindow: (
     artifactId: string,
     startMs: number,
@@ -1145,28 +1180,30 @@ export const artifactApi = {
     points = 3000,
     signal?: AbortSignal
   ) =>
-    apiJson<WaveformData>(
-      `/artifacts/${artifactId}/waveform?${new URLSearchParams({
+    readOrPrepareArtifactPreview<WaveformData>(
+      '/api/v1/artifacts/{artifactId}/waveform',
+      artifactId,
+      new URLSearchParams({
         points: String(points),
         start_ms: String(startMs),
         end_ms: String(endMs)
-      })}`,
-      { signal }
+      }),
+      signal
     ),
   videoPreview: (artifactId: string, signal?: AbortSignal) =>
-    apiJson<AudioPreviewPreparation>(
-      `/api/v1/artifacts/${encodeURIComponent(artifactId)}/video-preview`,
-      { signal }
+    readOrPrepareArtifactPreview<AudioPreviewPreparation>(
+      '/api/v1/artifacts/{artifactId}/video-preview',
+      artifactId,
+      undefined,
+      signal
     ),
   audioPreview: (artifactId: string, signal?: AbortSignal) =>
-    typedApiJson<
+    readOrPrepareArtifactPreview<AudioPreviewPreparation>(
       '/api/v1/artifacts/{artifactId}/audio-preview',
-      'get',
-      AudioPreviewPreparation
-    >('/api/v1/artifacts/{artifactId}/audio-preview', 'get', {
-      path: { artifactId },
+      artifactId,
+      undefined,
       signal
-    }),
+    ),
   saveOptimizationReview: (
     artifactId: string,
     items: { index: number; text: string }[]

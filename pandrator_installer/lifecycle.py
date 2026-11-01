@@ -272,6 +272,11 @@ def _runtime_python(paths: WorkspacePaths) -> Path:
 
 
 def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> list[ManagedProcessSpec]:
+    worker_count = (getattr(args, "preferences", None) or {}).get(
+        "PANDRATOR_WORKER_COUNT", os.environ.get("PANDRATOR_WORKER_COUNT", "1")
+    )
+    if worker_count not in {"1", "2"}:
+        raise ValueError("Worker count must be 1 or 2.")
     python = str(_runtime_python(paths))
     data_root = str(paths.install_root)
     cwd = str(paths.pandrator_repo if paths.pandrator_repo.is_dir() else Path.cwd())
@@ -280,6 +285,7 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> li
     crispasr_executable = paths.install_root / "CrispASR" / ("crispasr.exe" if is_windows() else "crispasr")
     speech_environment = {
         "CRISPASR_CACHE_DIR": str(paths.install_root / "cache" / "crispasr"),
+        "PANDRATOR_EXPECTED_WORKERS": worker_count,
     }
     if crispasr_executable.is_file():
         speech_environment["CRISPASR_EXECUTABLE"] = str(crispasr_executable)
@@ -340,14 +346,14 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> li
             restart_limit=2,
             startup_timeout_seconds=45,
         ),
-        ManagedProcessSpec(
-            key="worker",
-            label="Pandrator worker",
-            command=(python, "-m", "pandrator", "--data-dir", data_root, "worker"),
+        *[ManagedProcessSpec(
+            key=key,
+            label=f"Pandrator worker {index}",
+            command=(python, "-m", "pandrator", "--data-dir", data_root, "worker", "--worker-id", key),
             cwd=cwd,
             env=speech_environment,
             restart_limit=2,
-        ),
+        ) for index, key in enumerate(("worker", "worker-2")[:int(worker_count)], 1)],
     ]
 
 

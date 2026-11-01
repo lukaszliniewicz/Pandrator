@@ -1,6 +1,16 @@
 import { apiJson } from './api';
 import { dedupeInflight } from './inflight-dedupe';
 import type { TtsCatalogueObservation } from './api-models';
+import { browserStorageKey } from './browser-identity';
+import {
+  speechScopeQuery,
+  type SpeechCatalogueScope
+} from './speech-catalogue-api';
+
+type VoiceWorkspaceInfo = {
+  workspace_id?: string;
+  can_edit?: boolean;
+};
 
 type TraitEvidence = {
   source: 'user' | 'provider' | 'design_request' | 'audition_review';
@@ -66,7 +76,7 @@ export type CatalogVoice = {
   sample_count?: number;
   match_reasons?: string[];
 };
-export type VoiceCollection = {
+export type VoiceCollection = VoiceWorkspaceInfo & {
   id: string;
   name: string;
   description?: string | null;
@@ -74,7 +84,7 @@ export type VoiceCollection = {
   member_count: number;
   members: { key: string; reference: VoiceReference }[];
 };
-export type VoiceCatalogPage = {
+export type VoiceCatalogPage = VoiceWorkspaceInfo & {
   items: CatalogVoice[];
   total: number;
   next_cursor: string | null;
@@ -112,35 +122,58 @@ export const voiceOriginLabel = (value: string) =>
 
 const catalogRequests = new Map<string, Promise<VoiceCatalogPage>>();
 
+function workspacePath(path: string, workspaceId?: string) {
+  const query = speechScopeQuery({ workspaceId });
+  return query.size ? `${path}?${query}` : path;
+}
+
 export const voiceLibraryApi = {
-  managedVoice: async (id: string): Promise<CatalogVoice | null> => {
+  managedVoice: async (
+    id: string,
+    scope: SpeechCatalogueScope = {}
+  ): Promise<CatalogVoice | null> => {
     // Cast fields mount together. Share one inventory request, then fall back
     // to an exact lookup for libraries larger than the first page.
-    const page = await voiceLibraryApi.query({ kind: 'managed', limit: 100 });
+    const page = await voiceLibraryApi.query(
+      { kind: 'managed', limit: 100 },
+      scope
+    );
     const voice = page.items.find((item) => item.id === id);
     if (voice || !page.next_cursor) return voice ?? null;
-    const exact = await voiceLibraryApi.query({
-      query: id,
-      kind: 'managed',
-      limit: 1
-    });
+    const exact = await voiceLibraryApi.query(
+      {
+        query: id,
+        kind: 'managed',
+        limit: 1
+      },
+      scope
+    );
     return exact.items.find((item) => item.id === id) ?? null;
   },
-  query: (params: Record<string, string | boolean | number | undefined>) => {
-    const query = new URLSearchParams();
+  query: (
+    params: Record<string, string | boolean | number | undefined>,
+    scope: SpeechCatalogueScope = {}
+  ) => {
+    const query = speechScopeQuery(scope);
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== '') query.set(key, String(value));
     }
     query.sort();
     const path = `/voice-catalog?${query}`;
-    return dedupeInflight(catalogRequests, path, () =>
-      apiJson<VoiceCatalogPage>(path)
+    return dedupeInflight(
+      catalogRequests,
+      browserStorageKey('voice-catalog', path),
+      () => apiJson<VoiceCatalogPage>(path)
     );
   },
-  collections: () =>
-    apiJson<{ items: VoiceCollection[] }>('/voice-collections'),
-  createCollection: (name: string) =>
-    apiJson<VoiceCollection>('/voice-collections', {
+  collections: (scope: SpeechCatalogueScope = {}) => {
+    const query = speechScopeQuery(scope);
+    return apiJson<VoiceWorkspaceInfo & { items: VoiceCollection[] }>(
+      query.size ? `/voice-collections?${query}` : '/voice-collections'
+    );
+  },
+  createCollection: (name: string, workspaceId?: string) =>
+    apiJson<VoiceCollection>(workspacePath('/voice-collections', workspaceId), {
       method: 'POST',
       body: JSON.stringify({ name }),
       headers: { 'Content-Type': 'application/json' }
@@ -148,10 +181,14 @@ export const voiceLibraryApi = {
   membership: (
     collection: VoiceCollection,
     reference: VoiceReference,
-    add: boolean
+    add: boolean,
+    workspaceId?: string
   ) =>
     apiJson<VoiceCollection>(
-      `/voice-collections/${encodeURIComponent(collection.id)}`,
+      workspacePath(
+        `/voice-collections/${encodeURIComponent(collection.id)}`,
+        workspaceId
+      ),
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -167,10 +204,14 @@ export const voiceLibraryApi = {
       name?: string;
       add_members?: VoiceReference[];
       remove_members?: VoiceReference[];
-    }
+    },
+    workspaceId?: string
   ) =>
     apiJson<VoiceCollection>(
-      `/voice-collections/${encodeURIComponent(collection.id)}`,
+      workspacePath(
+        `/voice-collections/${encodeURIComponent(collection.id)}`,
+        workspaceId
+      ),
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -180,11 +221,18 @@ export const voiceLibraryApi = {
         })
       }
     ),
-  update: (voice: CatalogVoice, changes: Record<string, unknown>) =>
+  update: (
+    voice: CatalogVoice,
+    changes: Record<string, unknown>,
+    workspaceId?: string
+  ) =>
     apiJson<CatalogVoice>(
-      voice.kind === 'managed'
-        ? `/voices/${encodeURIComponent(voice.id)}`
-        : '/voice-catalog/metadata',
+      workspacePath(
+        voice.kind === 'managed'
+          ? `/voices/${encodeURIComponent(voice.id)}`
+          : '/voice-catalog/metadata',
+        workspaceId
+      ),
       {
         method: 'PATCH',
         headers: {

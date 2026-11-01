@@ -106,6 +106,3 @@ rules. Width and timing limits still apply.
   adapter. The adapter is licensed for noncommercial use. Ready sound candidates
   and saved clip variants also have direct download controls. See
   [sound and music generation](reference/audio-generation-models.md).
-
-Source archives recursively exclude private working notes and review files,
-including nested example environment files.

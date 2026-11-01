@@ -13,6 +13,11 @@ export type ItemPage<T> = {
 
 export type SessionRecord = {
   id: string;
+  project_id?: string;
+  workspace_id?: string;
+  workspace_name?: string | null;
+  workspace_role?: 'owner' | 'manager' | 'member' | null;
+  allowed_actions?: string[];
   name: string;
   storage_key: string;
   workflow_kind: 'audiobook' | 'subtitles' | 'voiceover' | 'media_edit';
@@ -346,6 +351,14 @@ export type JobRecord = {
   workflow_run_id?: string | null;
   payload_json?: Record<string, unknown>;
   result_json?: Record<string, unknown> | null;
+  external_effect?: {
+    operation: 'voice.publish' | 'voice.unpublish' | 'voice.google_design';
+    state: 'prepared' | 'dispatching' | 'uncertain' | 'completed' | 'rejected';
+    service_id: string;
+    provider_voice_id?: string;
+    remote_deleted?: boolean;
+    binding_state: 'not_applied' | 'ready' | 'stale' | 'removed';
+  };
   status: JobStatus;
   progress: number;
   progress_detail?: string | null;
@@ -358,6 +371,7 @@ export type JobRecord = {
   error_message?: string | null;
   attempts?: number;
   max_attempts?: number;
+  available_at?: string | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -426,9 +440,35 @@ export type RuntimeCapabilities = {
 };
 
 export type AuthStatus = {
+  public_links?: { configured: boolean; enabled: boolean; revision: number };
+  project_link?: {
+    id: string;
+    project_id: string;
+    root_session_id: string;
+    label: string;
+    mode: 'manage_project' | 'review_translation';
+  } | null;
+  instance_id?: string;
+  installation?: {
+    mode: 'solo' | 'collaboration';
+    revision: number;
+    collaboration_available: boolean;
+    collaboration_enabled: boolean;
+  };
   authenticated: boolean;
   initialized: boolean;
-  csrf_token?: string;
+  csrf_token?: string | null;
+  principal?: {
+    subject: string;
+    kind: string;
+    scopes: string[];
+    client_id: string | null;
+    user_id: string | null;
+    auth_revision: number | null;
+    display_name: string | null;
+    login_name: string | null;
+    role: 'administrator' | 'user' | null;
+  } | null;
   remote_access?: boolean;
   security_warning?: string;
 };
@@ -500,6 +540,7 @@ export type ArtifactRecord = {
 
 export type SourceAsset = {
   id: string;
+  workspace_id?: string;
   artifact_id: string;
   display_name: string;
   kind: string;
@@ -782,6 +823,7 @@ export type SubtitleEvidenceCandidate = {
 
 export type SubtitleEvidenceRecord = {
   id: string;
+  revision?: string;
   evidence_id?: string;
   session_id: string;
   source_artifact_id: string;
@@ -937,6 +979,7 @@ export type WorkflowSnapshot = {
 };
 
 export type SettingsPayload = {
+  workspace_id?: string;
   revision: number;
   global_revision?: number;
   effective: Record<string, unknown>;
@@ -960,6 +1003,9 @@ export type SubtitleLanguageProfile = {
 };
 
 export type GlobalDefaultsPayload = {
+  workspace_id?: string;
+  can_manage?: boolean;
+  setting_scope?: 'workspace' | 'installation';
   revision: number;
   value: Record<string, unknown>;
   builtin?: Record<string, unknown>;
@@ -998,6 +1044,7 @@ export type VoiceRecord = {
 
 export type GoogleVoiceDesignReceipt = {
   voice_id: string;
+  workspace_id?: string;
   provider_voice_id?: string;
   service_id?: string;
   model?: string;
@@ -1170,6 +1217,9 @@ export type TtsSettingsValue = {
 };
 
 export type TtsCatalogue = {
+  workspace_id?: string;
+  can_manage?: boolean;
+  can_refresh?: boolean;
   services: TtsService[];
   profiles?: TtsService[];
   value?: TtsSettingsValue;
@@ -1183,6 +1233,9 @@ export type TtsCatalogue = {
 };
 
 export type TtsCompactCatalogue = {
+  workspace_id?: string;
+  can_manage?: boolean;
+  can_refresh?: boolean;
   view: 'compact';
   revision?: number;
   default_service?: string;
@@ -1193,6 +1246,9 @@ export type TtsCompactCatalogue = {
 };
 
 export type TtsServiceDetailResponse = {
+  workspace_id?: string;
+  can_manage?: boolean;
+  can_refresh?: boolean;
   view: 'detail';
   revision?: number;
   default_service?: string;
@@ -1243,6 +1299,9 @@ export type SttSettingsValue = {
 };
 
 export type SttCatalogue = {
+  workspace_id?: string;
+  can_manage?: boolean;
+  can_refresh?: boolean;
   services: SttService[];
   profiles: SttService[];
   value: SttSettingsValue;
@@ -1503,6 +1562,18 @@ export type GenerationSegment = {
   optimization_model?: string | null;
   voice_id?: string | null;
   voice?: string | null;
+  retained_voice?: {
+    binding: {
+      voice_id?: string | null;
+      voice?: string | null;
+      voice_description?: string | null;
+      service?: string | null;
+      model?: string | null;
+    };
+    display_name: string;
+    adapter: string;
+    model: string;
+  };
   language?: string | null;
   silence_after_ms?: number;
   assembly_silence_after_ms?: number;

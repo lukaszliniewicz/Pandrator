@@ -6,6 +6,7 @@
   import { readinessLabel, bestBinding, setupHref } from './voice-presentation';
   import { getTtsServiceDetail } from './tts-catalogue-cache';
   import AudioPlayer from './AudioPlayer.svelte';
+  import { appState } from './app-state.svelte';
   let VoiceLibraryModal = $state<typeof VoiceLibraryModalType | null>(null);
   let libraryOpen = $state(false);
   let libraryInitialVoice = $state('');
@@ -15,6 +16,7 @@
   let playing = $state(false);
   let {
     label,
+    sessionId,
     value,
     inherited = null,
     inheritedLabel = 'Project voice',
@@ -22,10 +24,12 @@
     suggestions = [],
     service = '',
     model = '',
+    retained = false,
     disabled = false,
     onchange
   }: {
     label: string;
+    sessionId?: string;
     value?: VoiceBinding | null;
     inherited?: VoiceBinding | null;
     inheritedLabel?: string;
@@ -33,6 +37,7 @@
     suggestions?: string[];
     service?: string;
     model?: string;
+    retained?: boolean;
     disabled?: boolean;
     onchange: (value: VoiceBinding | null) => void;
   } = $props();
@@ -67,27 +72,35 @@
   const status = $derived(
     mismatched
       ? 'Assigned to a different service or model'
-      : checking
-        ? 'Checking voice setup…'
-        : checkFailed
-          ? 'Could not check voice setup'
-          : catalogVoice
-            ? readinessLabel(binding)
-            : effective?.voice_description
-              ? 'Requires a model with voice design support'
-              : effective?.voice_id
-                ? 'Reference not found in the library'
-                : effective?.voice
-                  ? 'Check service availability before generation'
-                  : 'Uses the project’s default voice'
+      : retained
+        ? 'Reference recording saved with this project'
+        : checking
+          ? 'Checking voice setup…'
+          : checkFailed
+            ? 'Could not check voice setup'
+            : catalogVoice
+              ? readinessLabel(binding)
+              : effective?.voice_description
+                ? 'Requires a model with voice design support'
+                : effective?.voice_id
+                  ? 'Reference not found in the library'
+                  : effective?.voice
+                    ? 'Check service availability before generation'
+                    : 'Uses the project’s default voice'
   );
   $effect(() => {
+    void appState.contentKey;
+    const scope = { sessionId };
     const reference = effective;
     const targetService = reference?.service || service,
       targetModel = reference?.model || model;
     playing = false;
     catalogVoice = null;
     checkFailed = false;
+    if (retained) {
+      checking = false;
+      return;
+    }
     if (!reference?.voice_id && !reference?.voice) {
       checking = false;
       return;
@@ -96,21 +109,25 @@
     checking = true;
     const prepareCatalogue =
       targetService === 'audio_cpp' && targetModel
-        ? getTtsServiceDetail(targetService, { models: targetModel }).catch(
-            () => null
-          )
+        ? getTtsServiceDetail(targetService, {
+            sessionId,
+            models: targetModel
+          }).catch(() => null)
         : Promise.resolve(null);
     const lookup = prepareCatalogue.then(() =>
       reference.voice_id
-        ? voiceLibraryApi.managedVoice(reference.voice_id)
+        ? voiceLibraryApi.managedVoice(reference.voice_id, scope)
         : voiceLibraryApi
-            .query({
-              query: reference.voice!,
-              kind: 'provider',
-              service_id: targetService,
-              model: targetModel,
-              limit: 200
-            })
+            .query(
+              {
+                query: reference.voice!,
+                kind: 'provider',
+                service_id: targetService,
+                model: targetModel,
+                limit: 200
+              },
+              scope
+            )
             .then(
               (result) =>
                 result.items.find(
@@ -283,6 +300,7 @@
 
 {#if libraryOpen && VoiceLibraryModal}
   <VoiceLibraryModal
+    {sessionId}
     initialService={service}
     initialModel={model}
     initialVoice={libraryInitialVoice}

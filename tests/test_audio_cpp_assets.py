@@ -183,7 +183,7 @@ def test_availability_is_readonly_and_reports_minimum_version(
     assert list(workspace.rglob("*")) == []
 
 
-def test_settings_cannot_inject_arbitrary_urls(settings, monkeypatch):
+def test_settings_cannot_inject_arbitrary_urls(settings, monkeypatch, host_model_acquisition):
     entry, payload = probe_spec()
     monkeypatch.setitem(MODELS, "probe", entry)
     seen = []
@@ -204,7 +204,7 @@ def test_settings_cannot_inject_arbitrary_urls(settings, monkeypatch):
     assert seen == [entry["url"]]
 
 
-def test_ensure_downloads_verifies_and_reuses_cache(settings, monkeypatch):
+def test_ensure_downloads_verifies_and_reuses_cache(settings, monkeypatch, host_model_acquisition):
     entry, payload = probe_spec()
     monkeypatch.setitem(MODELS, "probe", entry)
     opener = Mock(side_effect=lambda *a, **k: FakeResponse(payload))
@@ -214,7 +214,7 @@ def test_ensure_downloads_verifies_and_reuses_cache(settings, monkeypatch):
     assert opener.call_count == 1
 
 
-def test_partial_or_corrupt_download_leaves_no_file(settings, monkeypatch):
+def test_partial_or_corrupt_download_leaves_no_file(settings, monkeypatch, host_model_acquisition):
     entry, payload = probe_spec(size=32)
     monkeypatch.setitem(MODELS, "probe", entry)
     with pytest.raises(AudioAssetsError, match="[Ss]ize|SHA"):
@@ -228,7 +228,7 @@ def test_partial_or_corrupt_download_leaves_no_file(settings, monkeypatch):
     assert not cache_path("probe", settings).exists()
 
 
-def test_oversize_download_is_rejected(settings, monkeypatch):
+def test_oversize_download_is_rejected(settings, monkeypatch, host_model_acquisition):
     entry, payload = probe_spec(size=16)
     monkeypatch.setitem(MODELS, "probe", entry)
     with pytest.raises(AudioAssetsError, match="expected size"):
@@ -247,7 +247,7 @@ def test_cancellation_prevents_download(settings):
     opener.assert_not_called()
 
 
-def test_insufficient_disk_space_is_rejected(settings, monkeypatch):
+def test_insufficient_disk_space_is_rejected(settings, monkeypatch, host_model_acquisition):
     entry, _payload = probe_spec(size=16)
     monkeypatch.setitem(MODELS, "probe", entry)
 
@@ -282,7 +282,7 @@ def test_manager_asset_is_detected_and_reused_without_download(
 
 
 def test_manager_asset_with_wrong_digest_is_not_reused(
-    settings, workspace, monkeypatch
+    settings, workspace, monkeypatch, host_model_acquisition
 ):
     entry, _payload = probe_spec()
     monkeypatch.setitem(MODELS, "probe", entry)

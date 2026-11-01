@@ -60,6 +60,35 @@
       "file": "audiobooks.md"
     },
     {
+      "topic": "collaboration",
+      "title": "Solo, accounts and shared workspaces",
+      "summary": "Enable collaboration, enroll per-person assistants, approve workspace resources and use the complete scope/role contract.",
+      "audiences": [
+        "new_user",
+        "operator",
+        "administrator",
+        "developer"
+      ],
+      "related_tools": [
+        "pandrator_get_target_status",
+        "pandrator_list_users",
+        "pandrator_create_user",
+        "pandrator_issue_user_password_reset",
+        "pandrator_get_installation_mode",
+        "pandrator_enable_collaboration",
+        "pandrator_list_workspaces",
+        "pandrator_create_workspace",
+        "pandrator_accept_workspace_invitation",
+        "pandrator_preview_project_copy",
+        "pandrator_copy_current_project",
+        "pandrator_list_workspaces_without_manager",
+        "pandrator_recover_workspace_manager"
+      ],
+      "minimum_application_version": "0.13.0",
+      "revision": 1,
+      "file": "collaboration.md"
+    },
+    {
       "topic": "durable-work",
       "title": "Durable work and failure diagnosis",
       "summary": "Safe work projections, normalized states, redacted logs, and diagnosis.",
@@ -112,8 +141,32 @@
       ],
       "minimum_application_version": "0.11.0",
       "minimum_manager_version": "0.9.0",
-      "revision": 8,
+      "revision": 10,
       "file": "durable-work.md"
+    },
+    {
+      "topic": "generation-controls",
+      "title": "Speech XML, characters, and generation controls",
+      "summary": "Speech XML, characters, and generation controls.",
+      "audiences": [
+        "operator",
+        "developer"
+      ],
+      "related_tools": [
+        "pandrator_get_generation_controls",
+        "pandrator_update_generation_controls",
+        "pandrator_create_speech_optimization_dispatch_run",
+        "pandrator_preview_performance_plan",
+        "pandrator_get_audiobook_setup",
+        "pandrator_configure_audiobook",
+        "pandrator_preview_speech_segment",
+        "pandrator_preview_speech_selection_batch",
+        "pandrator_apply_speech_selection_batch",
+        "pandrator_create_comparison_export"
+      ],
+      "minimum_application_version": "0.11.0",
+      "revision": 4,
+      "file": "generation-controls.md"
     },
     {
       "topic": "manager-and-recovery",
@@ -130,8 +183,29 @@
       ],
       "minimum_application_version": "0.8.16",
       "minimum_manager_version": "0.9.0",
-      "revision": 2,
+      "revision": 3,
       "file": "manager-and-recovery.md"
+    },
+    {
+      "topic": "multivoice-audiobooks",
+      "title": "Multiple-voice audiobooks",
+      "summary": "Inspect voice setup, then configure multi_voice with its current revision. Prepare narration before speaker annotation: use prepared_text JSON, annotation_mode=speakers and annotation_only=true. Cast stable character IDs, inspect representative segments with preview_speech_segment, review the plan, generate, wait with get_work, and assemble. Full guidance includes the exact cast shape and a compact procedure.",
+      "audiences": [
+        "new_user",
+        "operator"
+      ],
+      "related_tools": [
+        "pandrator_get_voice_setup",
+        "pandrator_configure_voice_setup",
+        "pandrator_get_audiobook_setup",
+        "pandrator_configure_audiobook",
+        "pandrator_update_generation_controls",
+        "pandrator_preview_speech_segment",
+        "pandrator_get_work"
+      ],
+      "minimum_application_version": "0.10.0",
+      "revision": 2,
+      "file": "multivoice-audiobooks.md"
     },
     {
       "topic": "overview",
@@ -149,7 +223,7 @@
       ],
       "minimum_application_version": "0.8.16",
       "minimum_manager_version": "0.9.0",
-      "revision": 2,
+      "revision": 3,
       "file": "overview.md"
     },
     {
@@ -186,7 +260,7 @@
       ],
       "minimum_application_version": "0.8.16",
       "minimum_manager_version": "0.9.0",
-      "revision": 3,
+      "revision": 4,
       "file": "remote-targets.md"
     },
     {
@@ -231,8 +305,36 @@
         "pandrator_get_subtitle_evidence_routes"
       ],
       "minimum_application_version": "0.8.16",
-      "revision": 3,
+      "revision": 4,
       "file": "subtitles.md"
+    },
+    {
+      "topic": "voice-casting",
+      "title": "Voice discovery, design, and casting",
+      "summary": "Voice discovery, design, and casting.",
+      "audiences": [
+        "operator",
+        "developer"
+      ],
+      "related_tools": [
+        "pandrator_get_voice_capabilities",
+        "pandrator_get_voice_catalog",
+        "pandrator_create_voice",
+        "pandrator_audition_voice",
+        "pandrator_promote_voice_design",
+        "pandrator_import_voice_reference",
+        "pandrator_get_voice_samples",
+        "pandrator_transcribe_voice_sample",
+        "pandrator_review_voice_transcript",
+        "pandrator_publish_voice",
+        "pandrator_list_voice_collections",
+        "pandrator_create_voice_collection",
+        "pandrator_update_voice_collection",
+        "pandrator_update_catalog_voice_metadata"
+      ],
+      "minimum_application_version": "0.10.0",
+      "revision": 1,
+      "file": "voice-casting.md"
     },
     {
       "topic": "voiceover-and-dubbing",
@@ -269,7 +371,7 @@
         "pandrator_download_artifact"
       ],
       "minimum_application_version": "0.8.17",
-      "revision": 4,
+      "revision": 5,
       "file": "dubbing-voiceover.md"
     },
     {
@@ -301,79 +403,6 @@
       "minimum_application_version": "0.8.17",
       "revision": 4,
       "file": "workflows.md"
-    },
-    {
-      "topic": "voice-casting",
-      "title": "Voice discovery, design, and casting",
-      "summary": "Voice discovery, design, and casting.",
-      "audiences": [
-        "operator",
-        "developer"
-      ],
-      "related_tools": [
-        "pandrator_get_voice_capabilities",
-        "pandrator_get_voice_catalog",
-        "pandrator_create_voice",
-        "pandrator_audition_voice",
-        "pandrator_promote_voice_design",
-        "pandrator_import_voice_reference",
-        "pandrator_get_voice_samples",
-        "pandrator_transcribe_voice_sample",
-        "pandrator_review_voice_transcript",
-        "pandrator_publish_voice",
-        "pandrator_list_voice_collections",
-        "pandrator_create_voice_collection",
-        "pandrator_update_voice_collection",
-        "pandrator_update_catalog_voice_metadata"
-      ],
-      "minimum_application_version": "0.10.0",
-      "revision": 1,
-      "file": "voice-casting.md"
-    },
-    {
-      "topic": "generation-controls",
-      "title": "Speech XML, characters, and generation controls",
-      "summary": "Speech XML, characters, and generation controls.",
-      "audiences": [
-        "operator",
-        "developer"
-      ],
-      "related_tools": [
-        "pandrator_get_generation_controls",
-        "pandrator_update_generation_controls",
-        "pandrator_create_speech_optimization_dispatch_run",
-        "pandrator_preview_performance_plan",
-        "pandrator_get_audiobook_setup",
-        "pandrator_configure_audiobook",
-        "pandrator_preview_speech_segment",
-        "pandrator_preview_speech_selection_batch",
-        "pandrator_apply_speech_selection_batch",
-        "pandrator_create_comparison_export"
-      ],
-      "minimum_application_version": "0.11.0",
-      "revision": 4,
-      "file": "generation-controls.md"
-    },
-    {
-      "topic": "multivoice-audiobooks",
-      "title": "Multiple-voice audiobooks",
-      "summary": "Inspect voice setup, then configure multi_voice with its current revision. Prepare narration before speaker annotation: use prepared_text JSON, annotation_mode=speakers and annotation_only=true. Cast stable character IDs, inspect representative segments with preview_speech_segment, review the plan, generate, wait with get_work, and assemble. Full guidance includes the exact cast shape and a compact procedure.",
-      "audiences": [
-        "new_user",
-        "operator"
-      ],
-      "related_tools": [
-        "pandrator_get_voice_setup",
-        "pandrator_configure_voice_setup",
-        "pandrator_get_audiobook_setup",
-        "pandrator_configure_audiobook",
-        "pandrator_update_generation_controls",
-        "pandrator_preview_speech_segment",
-        "pandrator_get_work"
-      ],
-      "minimum_application_version": "0.10.0",
-      "revision": 2,
-      "file": "multivoice-audiobooks.md"
     }
   ]
 }

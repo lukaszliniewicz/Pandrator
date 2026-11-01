@@ -15,8 +15,12 @@ from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
+from .access.contracts import AccessDenied
+from .access.pdf_edit_policy import PdfEditInput, require_pdf_edit_access
+from .accounts.execution_actor import UserActor, current_execution_actor
 from .artifacts import ArtifactService
 from .database import Database
+from .job_execution import current_job_lease
 from .models import Artifact, Job, utcnow
 
 logger = logging.getLogger(__name__)
@@ -35,22 +39,28 @@ def _require_pdf_claim(
     # generic administrative jobs may have no queue session ID.
     if job_id is None and lease_generation is None:
         return
-    current = session.scalar(
-        select(Job.id).where(
-            Job.id == job_id,
-            Job.kind == "pdf.apply_edits",
-            Job.status == "running",
-            Job.lease_owner.is_not(None),
-            Job.lease_generation == lease_generation,
-            Job.lease_expires_at > utcnow(),
+    current = (
+        session.scalar(
+            select(Job.id).where(
+                Job.id == job_id,
+                Job.kind == "pdf.apply_edits",
+                Job.status == "running",
+                Job.lease_owner.is_not(None),
+                Job.lease_generation == lease_generation,
+                Job.lease_expires_at > utcnow(),
+            )
         )
-    ) if job_id is not None and lease_generation is not None else None
+        if job_id is not None and lease_generation is not None
+        else None
+    )
     if current is None:
         raise InterruptedError("PDF editing was canceled or its worker lease is no longer current.")
 
 
 def _allocate_pdf_pair(
-    session: Session, paths: DataPaths, requested_destination: Path,
+    session: Session,
+    paths: DataPaths,
+    requested_destination: Path,
 ) -> tuple[Path, Path]:
     # The caller holds the SQLite writer reservation across allocation and
     # registration. Both the PDF and sidecar, including historical rows, count.
@@ -67,14 +77,34 @@ def _allocate_pdf_pair(
             continue
         registered = session.scalar(
             select(Artifact.id)
-            .where(Artifact.relative_path.in_(
-                [paths.relative_managed_path(destination), paths.relative_managed_path(manifest)]
-            ))
+            .where(
+                Artifact.relative_path.in_(
+                    [
+                        paths.relative_managed_path(destination),
+                        paths.relative_managed_path(manifest),
+                    ]
+                )
+            )
             .limit(1)
         )
         if registered is None:
             return destination, manifest
     raise RuntimeError(f"Could not allocate an edited PDF path for {requested_destination.name}.")
+
+
+def _current_pdf_publication_claim(
+    job_id: str | None,
+    lease_generation: int | None,
+) -> tuple[str | None, int | None]:
+    lease = current_job_lease.get()
+    if current_execution_actor.get() is None or lease is None:
+        return job_id, lease_generation
+    if (job_id is not None and job_id != lease["job_id"]) or (
+        lease_generation is not None
+        and (type(lease_generation) is not int or lease_generation != lease["lease_generation"])
+    ):
+        raise AccessDenied()
+    return lease["job_id"], lease["lease_generation"]
 
 
 def publish_pdf_edit(
@@ -91,6 +121,7 @@ def publish_pdf_edit(
     cancel_event: threading.Event,
     job_id: str | None = None,
     lease_generation: int | None = None,
+    _expected_input: PdfEditInput | None = None,
 ) -> tuple[Artifact, Artifact]:
     """Fence one native edit attempt and commit its two artifact records together.
 
@@ -98,47 +129,90 @@ def publish_pdf_edit(
     allocation, file moves, registration and claim validation share it. Cleanup
     owns only files moved by this attempt; committed pairs survive late cancel.
     """
+    actor = current_execution_actor.get()
+    if actor is not None:
+        if (type(actor) is UserActor or current_job_lease.get() is not None) and type(
+            _expected_input
+        ) is not PdfEditInput:
+            raise AccessDenied()
+        with database.snapshot_session() as unit:
+            require_pdf_edit_access(unit, session_id, source_artifact_id, expected=_expected_input)
+        job_id, lease_generation = _current_pdf_publication_claim(job_id, lease_generation)
     prepared_pdf = artifacts.prepare_registration(rendered)
     moved: list[Path] = []
     committed = False
     try:
         with database.immediate_session() as session:
+            require_pdf_edit_access(
+                session, session_id, source_artifact_id, expected=_expected_input
+            )
+            job_id, lease_generation = _current_pdf_publication_claim(job_id, lease_generation)
             _require_pdf_claim(
-                session, cancel_event, job_id=job_id, lease_generation=lease_generation,
+                session,
+                cancel_event,
+                job_id=job_id,
+                lease_generation=lease_generation,
             )
             destination, manifest = _allocate_pdf_pair(
-                session, paths, requested_destination.resolve(),
+                session,
+                paths,
+                requested_destination.resolve(),
             )
             published_provenance = {
                 **provenance,
                 "output": {**provenance["output"], "path": str(destination)},
             }
-            rendered_manifest.write_text(json.dumps(published_provenance, indent=2), encoding="utf-8")
+            rendered_manifest.write_text(
+                json.dumps(published_provenance, indent=2), encoding="utf-8"
+            )
             prepared_manifest = artifacts.prepare_registration(rendered_manifest)
             os.replace(rendered, destination)
             moved.append(destination)
             os.replace(rendered_manifest, manifest)
             moved.append(manifest)
             output_artifact = artifacts.register_in_session(
-                session, destination, kind="pdf", role="pdf_edited", session_id=session_id,
+                session,
+                destination,
+                kind="pdf",
+                role="pdf_edited",
+                session_id=session_id,
                 parent_ids=[source_artifact_id],
                 metadata={"provenance_manifest": paths.relative_managed_path(manifest)},
-                _prepared=replace(prepared_pdf, relative_path=paths.relative_managed_path(destination)),
+                _prepared=replace(
+                    prepared_pdf, relative_path=paths.relative_managed_path(destination)
+                ),
             )
             manifest_artifact = artifacts.register_in_session(
-                session, manifest, kind="json", role="provenance", session_id=session_id,
+                session,
+                manifest,
+                kind="json",
+                role="provenance",
+                session_id=session_id,
                 parent_ids=[source_artifact_id, output_artifact.id],
-                _prepared=replace(prepared_manifest, relative_path=paths.relative_managed_path(manifest)),
+                _prepared=replace(
+                    prepared_manifest, relative_path=paths.relative_managed_path(manifest)
+                ),
             )
             _require_pdf_claim(
-                session, cancel_event, job_id=job_id, lease_generation=lease_generation,
+                session,
+                cancel_event,
+                job_id=job_id,
+                lease_generation=lease_generation,
             )
         committed = True
         return output_artifact, manifest_artifact
     finally:
-        if not committed:
-            for path in moved:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("Could not remove unpublished PDF output %s", path, exc_info=True)
+        if not committed and moved:
+            relative_paths = [paths.relative_managed_path(path) for path in moved]
+            with database.session() as cleanup:
+                registered = cleanup.scalar(
+                    select(Artifact.id).where(Artifact.relative_path.in_(relative_paths)).limit(1)
+                )
+            if registered is None:
+                for path in moved:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning(
+                            "Could not remove unpublished PDF output %s", path, exc_info=True
+                        )

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
+import tempfile
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -17,7 +20,9 @@ from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService, sha256_file
 from .database import Database
-from .models import Artifact, Voice, VoiceSample, utcnow
+from .models import Artifact, User, Voice, VoiceSample, utcnow
+from .projects.artifact_identity import resolve_artifact_ownership
+from .voice_identity import voice_creation_workspace, voice_sample_workspace, voice_workspace
 
 BUNDLED_VOICE_KEY = "pandrator-sample-male-v1"
 BUNDLED_VOICE_NAME = "Pandrator sample voice"
@@ -114,6 +119,7 @@ def sample_file_status(
     paths: DataPaths,
     sample: VoiceSample,
 ) -> tuple[str, Path | None]:
+    voice_sample_workspace(session, sample)
     artifact = session.get(Artifact, sample.artifact_id)
     if artifact is None or artifact.state == "deleted":
         return "missing", None
@@ -149,10 +155,12 @@ def voice_sample_payload(
 
 
 def validate_profile_evidence(
-    session: Session, paths: DataPaths, profile: dict[str, Any] | None
+    session: Session, paths: DataPaths, profile: dict[str, Any] | None,
+    *, workspace_id: str | None = None,
 ) -> None:
     if not profile:
         return
+    workspace = voice_creation_workspace(session, workspace_id=workspace_id)
     evidence = [
         *(profile.get("evidence") or {}).values(),
         *(lang.get("evidence") for lang in profile.get("languages", [])),
@@ -165,6 +173,9 @@ def validate_profile_evidence(
             raise ValueError(
                 "Voice trait evidence must reference an available audio artifact."
             )
+        owner = resolve_artifact_ownership(session, artifact=artifact)
+        if owner.workspace_id != workspace.id:
+            raise ValueError("Voice trait evidence belongs to another workspace.")
         try:
             exists = paths.managed_path(artifact.relative_path).is_file()
         except (OSError, ValueError):
@@ -179,17 +190,23 @@ def voice_payload(
     voice: Voice,
     *,
     samples: list[VoiceSample] | None = None,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Return a voice while deriving stale provider state from local files."""
 
+    workspace = voice_workspace(session, voice, workspace_id=workspace_id)
     if samples is None:
-        samples = list(
-            session.scalars(
-                select(VoiceSample)
-                .where(VoiceSample.voice_id == voice.id)
-                .order_by(VoiceSample.created_at.desc())
-            ).all()
-        )
+        sample_rows = session.execute(
+            select(VoiceSample, Artifact)
+            .outerjoin(Artifact, Artifact.id == VoiceSample.artifact_id)
+            .where(VoiceSample.voice_id == voice.id)
+            .order_by(VoiceSample.created_at.desc())
+        ).all()
+        samples = [row[0] for row in sample_rows]
+    for sample in samples:
+        if sample.voice_id != voice.id:
+            raise ValueError("A voice sample belongs to another voice.")
+        voice_sample_workspace(session, sample, workspace_id=workspace.id)
     available_ids = {
         sample.id
         for sample in samples
@@ -279,19 +296,25 @@ def voice_payloads(
     session: Session,
     paths: DataPaths,
     voices: Iterable[Voice],
+    *, workspace_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Serialize a voice collection with one sample query instead of N+1."""
 
     records = list(voices)
     if not records:
         return []
+    workspace = voice_workspace(session, records[0], workspace_id=workspace_id)
+    for voice in records:
+        voice_workspace(session, voice, workspace_id=workspace.id)
     samples_by_voice: dict[str, list[VoiceSample]] = {voice.id: [] for voice in records}
-    samples = session.scalars(
-        select(VoiceSample)
+    sample_rows = session.execute(
+        select(VoiceSample, Artifact)
+        .outerjoin(Artifact, Artifact.id == VoiceSample.artifact_id)
         .where(VoiceSample.voice_id.in_(samples_by_voice))
         .order_by(VoiceSample.voice_id, VoiceSample.created_at.desc())
     ).all()
-    for sample in samples:
+    for sample, _artifact in sample_rows:
+        voice_sample_workspace(session, sample, workspace_id=workspace.id)
         samples_by_voice.setdefault(sample.voice_id, []).append(sample)
     return [
         voice_payload(
@@ -299,6 +322,7 @@ def voice_payloads(
             paths,
             voice,
             samples=samples_by_voice.get(voice.id, []),
+            workspace_id=workspace.id,
         )
         for voice in records
     ]
@@ -311,6 +335,7 @@ def retire_sample_artifact(
 ) -> Path | None:
     """Retire an unshared sample artifact and return its removable managed path."""
 
+    voice_sample_workspace(session, sample)
     artifact = session.get(Artifact, sample.artifact_id)
     if artifact is None:
         return None
@@ -354,28 +379,63 @@ def remove_managed_files(paths: list[Path]) -> None:
             continue
 
 
+def _materialize_bundled_sample(source: Path, target: Path) -> None:
+    """Publish a complete bundled file without replacing an existing sample."""
+    if target.exists():
+        return
+    staged: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".bundled-", delete=False) as output:
+            staged = Path(output.name)
+            with source.open("rb") as incoming:
+                shutil.copyfileobj(incoming, output)
+        try:
+            os.link(staged, target)
+        except FileExistsError:
+            pass
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+
+
 def ensure_bundled_voice(
     database: Database,
     paths: DataPaths,
     artifacts: ArtifactService,
+    *,
+    workspace_id: str | None = None,
 ) -> Voice | None:
-    """Idempotently expose the bundled cloning reference in the web library."""
+    """Idempotently materialize the bundled reference in its owning workspace."""
 
     source = Path(__file__).resolve().parents[2] / "tts_voices" / "sample_male_new.wav"
     if not source.is_file():
         return None
 
-    target_dir = paths.voices / BUNDLED_VOICE_KEY
+    with database.snapshot_session() as session:
+        workspace = voice_creation_workspace(session, workspace_id=workspace_id)
+        owner_id = session.scalar(select(User.id).where(User.legacy_subject == "owner"))
+        legacy_workspace = workspace.kind == "personal" and workspace.personal_owner_user_id == owner_id
+        workspace_id = workspace.id
+        bundled_id = BUNDLED_VOICE_KEY if legacy_workspace else str(uuid5(
+            NAMESPACE_URL, f"pandrator:workspace:{workspace_id}:bundled-voice:{BUNDLED_VOICE_KEY}"
+        ))
+        existing = session.get(Voice, bundled_id)
+        if existing is not None:
+            voice_workspace(session, existing, workspace_id=workspace_id)
+
+    target_dir = paths.voices / bundled_id
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / "sample.wav"
-    if not target.is_file():
-        shutil.copy2(source, target)
+    _materialize_bundled_sample(source, target)
 
-    with database.session() as session:
-        voice = session.get(Voice, BUNDLED_VOICE_KEY)
+    with database.snapshot_session() as session:
+        workspace = voice_creation_workspace(session, workspace_id=workspace_id)
+        voice = session.get(Voice, bundled_id)
+        if voice is not None:
+            voice_workspace(session, voice, workspace_id=workspace.id)
         if voice is None:
             name_owner = session.scalar(
-                select(Voice).where(Voice.name == BUNDLED_VOICE_NAME)
+                select(Voice).where(Voice.name == BUNDLED_VOICE_NAME, Voice.workspace_id == workspace.id)
             )
             if (
                 name_owner is not None
@@ -421,18 +481,20 @@ def ensure_bundled_voice(
                     session.expunge(voice)
                     return voice
 
-    artifact = artifacts.register(
-        target,
-        kind="audio",
-        role="voice_sample",
-        metadata={"bundled_voice": BUNDLED_VOICE_KEY},
-    )
-
-    with database.session() as session:
-        voice = session.get(Voice, BUNDLED_VOICE_KEY)
+    prepared = artifacts.prepare_registration(target)
+    with database.immediate_session() as session:
+        workspace = voice_creation_workspace(session, workspace_id=workspace_id)
+        artifact = artifacts.register_in_session(
+            session, target, kind="audio", role="voice_sample",
+            workspace_id=workspace.id,
+            metadata={"bundled_voice": BUNDLED_VOICE_KEY}, _prepared=prepared,
+        )
+        voice = session.get(Voice, bundled_id)
+        if voice is not None:
+            voice_workspace(session, voice, workspace_id=workspace.id)
         if voice is None:
             display_name = BUNDLED_VOICE_NAME
-            name_owner = session.scalar(select(Voice).where(Voice.name == display_name))
+            name_owner = session.scalar(select(Voice).where(Voice.name == display_name, Voice.workspace_id == workspace.id))
             if (
                 name_owner is not None
                 and (name_owner.metadata_json or {}).get("bundled_voice")
@@ -445,7 +507,8 @@ def ensure_bundled_voice(
                 display_name = f"{BUNDLED_VOICE_NAME} (bundled)"
             if voice is None:
                 voice = Voice(
-                    id=BUNDLED_VOICE_KEY,
+                    id=bundled_id,
+                    workspace_id=workspace.id,
                     name=display_name,
                     language="en",
                     description="Bundled reference sample for local voice-cloning backends.",
@@ -462,6 +525,7 @@ def ensure_bundled_voice(
         if sample is None:
             session.add(
                 VoiceSample(
+                    workspace_id=workspace.id,
                     voice_id=voice.id,
                     artifact_id=artifact.id,
                     transcript=BUNDLED_SAMPLE_TRANSCRIPT,
@@ -470,6 +534,7 @@ def ensure_bundled_voice(
                 )
             )
         session.flush()
+        voice_workspace(session, voice, workspace_id=workspace.id)
         session.expunge(voice)
         return voice
 
@@ -481,6 +546,9 @@ def _reference_registration_id(value: object) -> str:
 def resolve_audio_cpp_voice_reference(
     session: Session, paths: DataPaths, settings: dict[str, Any],
     _service_config_cache=None,
+    *, workspace_id: str | None = None,
+    voice_id: str | None = None, strict_selection: bool = False,
+    _metadata_only: bool = False,
 ) -> tuple[str, Path, Artifact, VoiceSample] | None:
     """Select exactly the linked reference that audio.cpp synthesis will use."""
     from pandrator.logic import tts_handler
@@ -496,9 +564,14 @@ def resolve_audio_cpp_voice_reference(
     selected = str(settings.get("voice") or settings.get("speaker") or "").strip()
     if not selected:
         return None
+    workspace = voice_creation_workspace(session, workspace_id=workspace_id)
     selected_key = selected.casefold()
     match: tuple[str, Path, Artifact, VoiceSample] | None = None
-    for voice in session.scalars(select(Voice)).all():
+    voices = select(Voice).where(Voice.workspace_id == workspace.id)
+    if voice_id is not None:
+        voices = voices.where(Voice.id == voice_id)
+    matched_voice_id: str | None = None
+    for voice in session.scalars(voices).all():
         providers = dict((voice.metadata_json or {}).get("providers") or {})
         registration = None
         for provider_id, raw_registration in providers.items():
@@ -525,12 +598,15 @@ def resolve_audio_cpp_voice_reference(
             break
         if registration is None:
             continue
+        if strict_selection and matched_voice_id is not None:
+            raise ValueError("The selected audio.cpp voice alias is ambiguous.")
+        matched_voice_id = voice.id
 
         samples = list(
             session.scalars(
                 select(VoiceSample)
                 .where(VoiceSample.voice_id == voice.id)
-                .order_by(VoiceSample.created_at.desc())
+                .order_by(VoiceSample.created_at.desc(), VoiceSample.id.desc())
             ).all()
         )
         sample = next(
@@ -565,12 +641,15 @@ def resolve_audio_cpp_voice_reference(
             raise ValueError("audio.cpp linked voice references must be at most 5 MiB.")
         content_hash = str(artifact.content_hash or "").strip()
         if not content_hash:
+            if _metadata_only:
+                raise ValueError("The audio.cpp reference has no published content hash.")
             digest = hashlib.sha256()
             with path.open("rb") as handle:
                 while chunk := handle.read(1024 * 1024):
                     digest.update(chunk)
             content_hash = digest.hexdigest()
         match = (content_hash, path, artifact, sample)
-        break
+        if not strict_selection:
+            break
 
     return match

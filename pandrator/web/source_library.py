@@ -5,9 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, exists, func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .access.source_library_policy import (
+    require_source_artifact_publication_access,
+    require_source_asset_access,
+    require_source_backfill_access,
+    require_source_library_workspace,
+    source_reference_visibility_clause,
+)
+from .accounts.execution_actor import UserActor, current_execution_actor
 from .artifact_selection import select_source_path
 from .database import Database
 from .models import (
@@ -19,6 +30,8 @@ from .models import (
     SourceRecord,
     utcnow,
 )
+from .projects.identity import session_project
+from .projects.source_identity import source_creation_workspace, validate_source_attachment
 from .settings_policy import RevisionConflict
 from .source_resolution import classify_source, resolve_media_source
 
@@ -47,6 +60,7 @@ class SourceLibraryService:
     ) -> dict[str, Any]:
         return {
             "id": asset.id,
+            "workspace_id": asset.workspace_id,
             "artifact_id": asset.artifact_id,
             "display_name": asset.display_name,
             "kind": asset.kind,
@@ -70,6 +84,7 @@ class SourceLibraryService:
         *,
         display_name: str | None = None,
         kind: str | None = None,
+        workspace_id: str | None = None,
     ) -> SourceAsset:
         with self.database.immediate_session() as session:
             asset = self.ensure_for_artifact_in_session(
@@ -77,6 +92,7 @@ class SourceLibraryService:
                 artifact_id,
                 display_name=display_name,
                 kind=kind,
+                workspace_id=workspace_id,
             )
             session.expunge(asset)
             return asset
@@ -88,10 +104,13 @@ class SourceLibraryService:
         *,
         display_name: str | None = None,
         kind: str | None = None,
+        workspace_id: str | None = None,
     ) -> SourceAsset:
+        require_source_artifact_publication_access(session, artifact_id)
         artifact = session.get(Artifact, artifact_id)
         if artifact is None:
             raise KeyError(artifact_id)
+        workspace = source_creation_workspace(session, artifact, workspace_id=workspace_id)
         asset = session.scalar(
             select(SourceAsset).where(SourceAsset.artifact_id == artifact_id)
         )
@@ -101,6 +120,7 @@ class SourceLibraryService:
                 or Path(artifact.relative_path).name
             )
             asset = SourceAsset(
+                workspace_id=workspace.id,
                 artifact_id=artifact.id,
                 display_name=name,
                 kind=kind or Path(name).suffix.lower().lstrip(".") or artifact.kind,
@@ -150,10 +170,13 @@ class SourceLibraryService:
         role: str = "primary",
         expected_session_revision: int | None = None,
     ) -> dict[str, Any]:
+        require_current_session_access(session, session_id, ProjectAction.EDIT)
+        require_source_asset_access(session, source_asset_id, project_session_id=session_id)
         session_record = session.get(SessionRecord, session_id)
         asset = session.get(SourceAsset, source_asset_id)
         if session_record is None or asset is None:
             raise KeyError(session_id)
+        validate_source_attachment(session, session_id, asset)
         if asset.state == "trashed":
             raise ValueError("Restore this source before attaching it to a session.")
         if (
@@ -250,6 +273,8 @@ class SourceLibraryService:
         if self.artifacts is None:
             raise ValueError("Subtitle adoption requires the managed artifact service.")
         with self.database.immediate_session() as session:
+            require_current_session_access(session, session_id, ProjectAction.EDIT)
+            require_source_asset_access(session, source_asset_id, project_session_id=session_id)
             record = session.get(SessionRecord, session_id)
             asset = session.get(SourceAsset, source_asset_id)
             attachment = session.scalar(select(SessionSource).where(
@@ -260,6 +285,7 @@ class SourceLibraryService:
             ))
             if record is None or asset is None or attachment is None:
                 raise KeyError(source_asset_id)
+            validate_source_attachment(session, session_id, asset)
             if expected_session_revision is not None and record.revision != expected_session_revision:
                 raise RevisionConflict("The session changed before its subtitle source was adopted.")
             if asset.artifact_id is None:
@@ -277,6 +303,7 @@ class SourceLibraryService:
         self, session_id: str, attachment_id: str, expected_revision: int
     ) -> None:
         with self.database.immediate_session() as session:
+            require_current_session_access(session, session_id, ProjectAction.EDIT)
             attachment = session.get(SessionSource, attachment_id)
             if attachment is None or attachment.session_id != session_id:
                 raise KeyError(attachment_id)
@@ -292,6 +319,8 @@ class SourceLibraryService:
         self, source_asset_id: str, expected_revision: int, display_name: str
     ) -> dict[str, Any]:
         with self.database.immediate_session() as session:
+            require_source_asset_access(session, source_asset_id, ProjectAction.EDIT)
+            reference_filter = source_reference_visibility_clause()
             asset = session.get(SourceAsset, source_asset_id)
             if asset is None:
                 raise KeyError(source_asset_id)
@@ -305,7 +334,7 @@ class SourceLibraryService:
                 session.scalar(
                     select(func.count())
                     .select_from(SessionSource)
-                    .where(SessionSource.source_asset_id == asset.id)
+                    .where(SessionSource.source_asset_id == asset.id, reference_filter)
                 )
                 or 0
             )
@@ -315,6 +344,7 @@ class SourceLibraryService:
                     .select_from(SessionSource)
                     .where(
                         SessionSource.source_asset_id == asset.id,
+                        reference_filter,
                         SessionSource.is_current.is_(True),
                     )
                 )
@@ -330,6 +360,8 @@ class SourceLibraryService:
         if state not in {"current", "trashed"}:
             raise ValueError("Unsupported source lifecycle state.")
         with self.database.immediate_session() as session:
+            require_source_asset_access(session, source_asset_id, ProjectAction.EDIT)
+            reference_filter = source_reference_visibility_clause()
             asset = session.get(SourceAsset, source_asset_id)
             if asset is None:
                 raise KeyError(source_asset_id)
@@ -339,7 +371,7 @@ class SourceLibraryService:
                 session.scalar(
                     select(func.count())
                     .select_from(SessionSource)
-                    .where(SessionSource.source_asset_id == asset.id)
+                    .where(SessionSource.source_asset_id == asset.id, reference_filter)
                 )
                 or 0
             )
@@ -349,14 +381,20 @@ class SourceLibraryService:
                     .select_from(SessionSource)
                     .where(
                         SessionSource.source_asset_id == asset.id,
+                        reference_filter,
                         SessionSource.is_current.is_(True),
                     )
                 )
                 or 0
             )
-            if state == "trashed" and references:
+            in_use = bool(references)
+            if state == "trashed" and type(current_execution_actor.get()) is UserActor:
+                in_use = bool(session.scalar(select(exists().where(
+                    SessionSource.source_asset_id == asset.id
+                ))))
+            if state == "trashed" and in_use:
                 raise ValueError(
-                    f"Detach this source from {references} session attachment(s) before moving it to trash."
+                    "Detach this source from its projects before moving it to trash."
                 )
             asset.state = state
             asset.revision += 1
@@ -370,14 +408,26 @@ class SourceLibraryService:
         self,
         *,
         session_id: str | None = None,
+        workspace_id: str | None = None,
         include_trashed: bool = False,
         view: str = "full",
     ) -> list[dict[str, Any]]:
         if view not in {"full", "compact"}:
             raise ValueError("Source view must be full or compact.")
         with self.database.session() as session:
+            if session_id:
+                require_current_session_access(session, session_id, ProjectAction.READ)
+                selected_workspace = None
+            else:
+                selected_workspace = require_source_library_workspace(
+                    session, ProjectAction.READ, workspace_id=workspace_id
+                )
+            reference_filter = source_reference_visibility_clause()
             if view == "compact":
-                return self._compact_list(session, session_id, include_trashed)
+                return self._compact_list(
+                    session, session_id, include_trashed,
+                    workspace_id=selected_workspace, reference_filter=reference_filter,
+                )
             if session_id:
                 rows = session.execute(
                     select(SessionSource, SourceAsset, Artifact.relative_path)
@@ -392,7 +442,7 @@ class SourceLibraryService:
                         asset_id: count
                         for asset_id, count in session.execute(
                             select(SessionSource.source_asset_id, func.count())
-                            .where(SessionSource.source_asset_id.in_(asset_ids))
+                            .where(SessionSource.source_asset_id.in_(asset_ids), reference_filter)
                             .group_by(SessionSource.source_asset_id)
                         ).all()
                     }
@@ -406,6 +456,7 @@ class SourceLibraryService:
                             select(SessionSource.source_asset_id, func.count())
                             .where(
                                 SessionSource.source_asset_id.in_(asset_ids),
+                                reference_filter,
                                 SessionSource.is_current.is_(True),
                             )
                             .group_by(SessionSource.source_asset_id)
@@ -432,6 +483,8 @@ class SourceLibraryService:
                     for link, asset, relative_path in rows
                 ]
             statement = select(SourceAsset).order_by(SourceAsset.updated_at.desc())
+            if selected_workspace is not None:
+                statement = statement.where(SourceAsset.workspace_id == selected_workspace)
             if not include_trashed:
                 statement = statement.where(SourceAsset.state != "trashed")
             assets = list(session.scalars(statement).all())
@@ -440,7 +493,7 @@ class SourceLibraryService:
                 asset_id: count
                 for asset_id, count in session.execute(
                     select(SessionSource.source_asset_id, func.count())
-                    .where(SessionSource.source_asset_id.in_(asset_ids))
+                    .where(SessionSource.source_asset_id.in_(asset_ids), reference_filter)
                     .group_by(SessionSource.source_asset_id)
                 ).all()
             }
@@ -451,6 +504,7 @@ class SourceLibraryService:
                     .where(
                         SessionSource.is_current.is_(True),
                         SessionSource.source_asset_id.in_(asset_ids),
+                        reference_filter,
                     )
                     .group_by(SessionSource.source_asset_id)
                 ).all()
@@ -466,10 +520,12 @@ class SourceLibraryService:
 
     @staticmethod
     def _compact_list(
-        session: Session, session_id: str | None, include_trashed: bool
+        session: Session, session_id: str | None, include_trashed: bool,
+        *, workspace_id: str | None, reference_filter: ColumnElement[bool],
     ) -> list[dict[str, Any]]:
         fields = (
             "id",
+            "workspace_id",
             "artifact_id",
             "display_name",
             "kind",
@@ -482,6 +538,8 @@ class SourceLibraryService:
             "updated_at",
         )
         statement = select(*(getattr(SourceAsset, key) for key in fields))
+        if workspace_id is not None:
+            statement = statement.where(SourceAsset.workspace_id == workspace_id)
         if session_id:
             statement = (
                 statement.add_columns(
@@ -509,7 +567,7 @@ class SourceLibraryService:
                         func.count(),
                         func.sum(case((SessionSource.is_current.is_(True), 1), else_=0)),
                     )
-                    .where(SessionSource.source_asset_id.in_(ids))
+                    .where(SessionSource.source_asset_id.in_(ids), reference_filter)
                     .group_by(SessionSource.source_asset_id)
                 )
             }
@@ -538,12 +596,13 @@ class SourceLibraryService:
         if not 1 <= limit <= 100 or offset < 0:
             raise ValueError("Reference limit must be 1–100 and offset must not be negative.")
         with self.database.session() as session:
+            require_source_asset_access(session, source_asset_id)
             if (
                 session.scalar(select(SourceAsset.id).where(SourceAsset.id == source_asset_id))
                 is None
             ):
                 raise KeyError(source_asset_id)
-            predicate = SessionSource.source_asset_id == source_asset_id
+            predicate = (SessionSource.source_asset_id == source_asset_id) & source_reference_visibility_clause()
             total = int(
                 session.scalar(select(func.count()).select_from(SessionSource).where(predicate))
                 or 0
@@ -597,6 +656,7 @@ class SourceLibraryService:
         """
         created = 0
         with self.database.session() as session:
+            require_source_backfill_access(session)
             records = list(
                 session.scalars(
                     select(SourceRecord).where(SourceRecord.artifact_id.is_not(None))
@@ -606,11 +666,16 @@ class SourceLibraryService:
                 artifact = session.get(Artifact, legacy.artifact_id)
                 if artifact is None:
                     continue
+                workspace = source_creation_workspace(
+                    session, artifact,
+                    workspace_id=session_project(session, legacy.session_id).workspace_id,
+                )
                 asset = session.scalar(
                     select(SourceAsset).where(SourceAsset.artifact_id == artifact.id)
                 )
                 if asset is None:
                     asset = SourceAsset(
+                        workspace_id=workspace.id,
                         artifact_id=artifact.id,
                         display_name=legacy.display_name,
                         kind=legacy.kind,
@@ -622,6 +687,7 @@ class SourceLibraryService:
                     session.add(asset)
                     session.flush()
                     created += 1
+                validate_source_attachment(session, legacy.session_id, asset)
                 link = session.scalar(
                     select(SessionSource).where(
                         SessionSource.session_id == legacy.session_id,

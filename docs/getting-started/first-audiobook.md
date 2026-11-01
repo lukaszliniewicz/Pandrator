@@ -1,9 +1,9 @@
 # Create your first audiobook
 
-An audiobook project turns a document or pasted text into reviewable narration
-segments, generated takes, an assembled timeline, and a final audio or M4B
-export. Preparation, generation, assembly, and export are separate stages so a
-new take does not silently replace a finished book.
+Turn a document or pasted text into narrated audio. You will choose a voice,
+prepare the text, generate and review recordings, then assemble and export the
+book. Alternative recordings are called **takes**; you choose which take to use
+for each passage.
 
 For exact PDF/OCR and EPUB behavior, cleanup controls, artifacts, and
 segmentation defaults, keep the
@@ -27,7 +27,7 @@ text-native PDFs are easier than scans, and OCR should be reviewed carefully.
 The public-URL importer is for audio/video transcription workflows, not general
 PDF or EPUB downloads.
 
-Pandrator keeps the original source artifact. Cleanup produces a new,
+Pandrator keeps the original source file. Cleanup produces a new,
 reviewable result rather than overwriting it.
 
 ## 2. Clean and structure the document
@@ -45,7 +45,24 @@ especially in scholarly, illustrated, or unusually structured editions.
 Check chapter titles and metadata now. They affect navigation and M4B chapter
 markers later.
 
-## 3. Segment narration
+## 3. Choose the model and voice
+
+Select the provider, model, voice, language, and any service-supported
+sampling or style controls. For a cloned voice, use a clean, single-speaker
+sample with an accurate transcript. Short tests reveal pronunciation,
+language, noise, and pacing problems much more cheaply than a full run.
+
+The project card's TTS settings list pre-built voices for the selected model
+and language, including commercial providers. For compatible cloud providers,
+**Concurrent TTS requests** accepts 1–8 (default 1). Higher values submit small
+groups in parallel; results remain in segment order. The current group can finish
+before a pause takes effect, and provider rate limits still apply.
+
+Use the [pronunciation library](../guides/pronunciation-and-speech.md) for known
+names and terms. It changes only the TTS request; your displayed source remains
+readable.
+
+## 4. Prepare narration
 
 Segmentation creates editable speech units with pause and structure metadata.
 Choose the TTS model before preparation: the default length policy groups
@@ -64,22 +81,7 @@ Optional whole-document speech optimization creates a separate speech-text
 revision. Generation-time optimization can perform similar work per batch;
 avoid enabling both unless you deliberately want two transformations.
 
-## 4. Choose the voice and generation settings
-
-Select the provider, model, voice, language, and any service-supported
-sampling or style controls. For a cloned voice, use a clean, single-speaker
-sample with an accurate transcript. Short tests reveal pronunciation,
-language, noise, and pacing problems much more cheaply than a full run.
-
-The project card's TTS settings list pre-built voices for the selected model
-and language, including commercial providers. For compatible cloud providers,
-**Concurrent TTS requests** accepts 1–8 (default 1). Higher values submit small
-groups in parallel; results remain in segment order. The current group can finish
-before a pause takes effect, and provider rate limits still apply.
-
-Use the [pronunciation library](../guides/pronunciation-and-speech.md) for known
-names and terms. It changes only the TTS request; your displayed source remains
-readable.
+### Optional character voices
 
 For character voices, choose **Multiple voices** in the **Voices**
 card. Prepare narration, annotate the prepared speech units, then assign voices

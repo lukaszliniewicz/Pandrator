@@ -18,6 +18,7 @@ from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from ..cancellable_process import ProcessCancelled
@@ -90,6 +91,7 @@ class AlignmentDiagnostics:
     fallback_filled_token_count: int = 0
     resolved_language: str = "auto"
     language_resolution: dict[str, Any] = field(default_factory=dict)
+    source_timing_offsets: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -134,7 +136,89 @@ class AlignmentDiagnostics:
             "fallback_filled_token_count": self.fallback_filled_token_count,
             "resolved_language": self.resolved_language,
             "language_resolution": deepcopy(self.language_resolution),
+            "source_timing_offsets": deepcopy(self.source_timing_offsets),
         }
+
+
+def build_source_timing_offsets(
+    original_cues: Sequence[MediaCue], final_cues: Sequence[MediaCue]
+) -> dict[str, Any]:
+    """Summarize accepted cue boundary shifts from their source timings."""
+
+    original_by_id: dict[str, tuple[int, MediaCue]] = {}
+    for ordinal, cue in enumerate(original_cues):
+        original_by_id.setdefault(cue.id, (ordinal, cue))
+
+    start_deltas: list[int] = []
+    end_deltas: list[int] = []
+    outlier_records: list[tuple[int, int, dict[str, Any]]] = []
+    rejected_cue_count = 0
+    outlier_threshold_ms = 2000
+
+    for cue in final_cues:
+        if not cue.words:
+            rejected_cue_count += 1
+            continue
+        ordinal, source = original_by_id[cue.id]
+        start_delta_ms = cue.start_ms - source.start_ms
+        end_delta_ms = cue.end_ms - source.end_ms
+        start_deltas.append(start_delta_ms)
+        end_deltas.append(end_delta_ms)
+        maximum_absolute_delta_ms = max(
+            abs(start_delta_ms), abs(end_delta_ms)
+        )
+        if maximum_absolute_delta_ms > outlier_threshold_ms:
+            outlier_records.append(
+                (
+                    -maximum_absolute_delta_ms,
+                    ordinal,
+                    {
+                        "cue_id": cue.id,
+                        "source_start_ms": source.start_ms,
+                        "source_end_ms": source.end_ms,
+                        "aligned_start_ms": cue.start_ms,
+                        "aligned_end_ms": cue.end_ms,
+                        "start_delta_ms": start_delta_ms,
+                        "end_delta_ms": end_delta_ms,
+                    },
+                )
+            )
+
+    boundary_summaries: dict[str, dict[str, int | float | None]] = {}
+    for boundary, deltas in (("start", start_deltas), ("end", end_deltas)):
+        if not deltas:
+            boundary_summaries[boundary] = {
+                "min_delta_ms": None,
+                "max_delta_ms": None,
+                "median_delta_ms": None,
+                "p95_absolute_delta_ms": None,
+                "maximum_absolute_delta_ms": None,
+            }
+            continue
+        absolute_deltas = sorted(abs(delta) for delta in deltas)
+        p95_index = math.ceil(0.95 * len(absolute_deltas)) - 1
+        boundary_summaries[boundary] = {
+            "min_delta_ms": min(deltas),
+            "max_delta_ms": max(deltas),
+            "median_delta_ms": median(deltas),
+            "p95_absolute_delta_ms": absolute_deltas[p95_index],
+            "maximum_absolute_delta_ms": absolute_deltas[-1],
+        }
+
+    outlier_records.sort(key=lambda record: (record[0], record[1]))
+    all_outliers = [record[2] for record in outlier_records]
+    return {
+        "version": 1,
+        "units": "milliseconds",
+        "semantics": "aligned boundary minus original caption boundary; accepted cues only",
+        "outlier_threshold_ms": outlier_threshold_ms,
+        "start": boundary_summaries["start"],
+        "end": boundary_summaries["end"],
+        "rejected_cue_count": rejected_cue_count,
+        "outlier_cue_count": len(all_outliers),
+        "outliers_truncated": len(all_outliers) > 20,
+        "outliers": all_outliers[:20],
+    }
 
 
 @dataclass(frozen=True)
@@ -924,6 +1008,7 @@ def align_caption_cues(
         if cue_id in final_failed_ids
     }
     ordered = tuple(accepted_by_id[cue.id] for cue in cues)
+    diagnostics.source_timing_offsets = build_source_timing_offsets(cues, ordered)
     return CaptionAlignmentResult(ordered, diagnostics, duration_ms, str(normalized_wav))
 
 

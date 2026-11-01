@@ -66,6 +66,7 @@ class MediaEditWorkflowTests(unittest.TestCase):
         )
         with self.database.session() as session:
             asset = SourceAsset(
+                workspace_id=session.get_one(Artifact, self.original.id).workspace_id,
                 artifact_id=self.original.id,
                 display_name="original.mp4",
                 kind="mp4",

@@ -7,6 +7,7 @@ async function failedActivity(
     foreign?: boolean;
     trashed?: boolean;
     acceptStart?: boolean;
+    running?: boolean;
   } = {}
 ) {
   await page.goto('/');
@@ -50,11 +51,12 @@ async function failedActivity(
     kind: 'generation.run',
     session_id: project.id,
     generation_run_id: 'activity-failed-run',
-    status: 'failed',
+    status: options.running ? 'running' : 'failed',
     progress: 0.4,
     progress_detail: 'Generated block 2 of 5',
-    error_message:
-      'Speech generation failed after rate-limit retries (HTTP 429).',
+    error_message: options.running
+      ? null
+      : 'Speech generation failed after rate-limit retries (HTTP 429).',
     created_at: '2026-10-14T00:00:00Z',
     project: {
       id: project.id,
@@ -188,6 +190,11 @@ for (const width of [1280, 390]) {
       page.getByRole('link', { name: 'Open project', exact: true })
     ).toHaveAttribute('href', `/sessions/${fixture.project.id}`);
     await expect(page.getByText('Generated block 2 of 5')).toBeVisible();
+    const progress = await page.getByRole('progressbar').boundingBox();
+    const logs = await page
+      .getByRole('button', { name: 'Logs', exact: true })
+      .boundingBox();
+    expect(logs!.y).toBeGreaterThanOrEqual(progress!.y + progress!.height);
     if (width < 640) {
       const failure = page.getByText(
         'Speech generation failed after rate-limit retries (HTTP 429).',
@@ -307,4 +314,21 @@ test('Activity retains a trashed project name and offers restoration guidance', 
   await expect(
     page.getByRole('link', { name: 'Open projects', exact: true })
   ).toHaveAttribute('href', '/sessions');
+});
+
+test('running Activity actions sit below the progress bar', async ({
+  page
+}) => {
+  await failedActivity(page, { running: true });
+  const progress = await page.getByRole('progressbar').boundingBox();
+  for (const name of ['Logs', 'Cancel']) {
+    const button = page.getByRole('button', { name, exact: true });
+    await expect(button).toBeVisible();
+    const box = await button.boundingBox();
+    expect(box!.y).toBeGreaterThanOrEqual(progress!.y + progress!.height);
+  }
+  await page.screenshot({
+    path: test.info().outputPath('activity-running-actions.png'),
+    fullPage: true
+  });
 });

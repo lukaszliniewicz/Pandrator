@@ -9,7 +9,7 @@ from sqlalchemy import exists, select
 
 from .models import Artifact
 from .sound_project_models import ProjectSoundCue, ProjectSoundPlan
-from .workflow_output_context import OutputWorkflowContext
+from .workflow_output_context import OutputWorkflowContext, require_output_access
 
 
 def has_output_sounds(context: OutputWorkflowContext, session_id: str, settings: dict) -> bool:
@@ -19,6 +19,7 @@ def has_output_sounds(context: OutputWorkflowContext, session_id: str, settings:
         ProjectSoundPlan.session_id == session_id
     ).order_by(ProjectSoundPlan.revision.desc()).limit(1).scalar_subquery()
     with context.database.snapshot_session() as session:
+        require_output_access(context, session)
         return bool(session.scalar(select(exists().where(
             ProjectSoundCue.plan_id == latest, ProjectSoundCue.included.is_(True),
         ))))

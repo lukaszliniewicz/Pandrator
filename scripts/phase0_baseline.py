@@ -45,6 +45,7 @@ from pandrator.web.audio_assembly import (  # noqa: E402
 from pandrator.web.auth import BootstrapTokenStore  # noqa: E402
 from pandrator.web.capabilities import probe_stable_capabilities  # noqa: E402
 from pandrator.web.database import Database, upgrade_database  # noqa: E402
+from pandrator.web.job_identity import job_creation_ownership  # noqa: E402
 from pandrator.web.jobs import JobQueue  # noqa: E402
 from pandrator.web.models import (  # noqa: E402
     Artifact,
@@ -53,6 +54,7 @@ from pandrator.web.models import (  # noqa: E402
     GenerationSegment,
     Job,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership  # noqa: E402
 from pandrator.web.sessions import SessionService  # noqa: E402
 from pandrator.web.workflow_handlers import WorkflowHandlers  # noqa: E402
 from pandrator.web.workflows import WorkflowService  # noqa: E402
@@ -359,9 +361,13 @@ def benchmark_workflow_snapshot(
         "export.create",
     )
     with database.session() as session:
+        artifact_owner = resolve_artifact_ownership(session, session_id=record.id)
+        job_owner = job_creation_ownership(session, session_id=record.id)
         session.add_all(
             [
                 Artifact(
+                    workspace_id=artifact_owner.workspace_id,
+                    project_id=artifact_owner.project_id,
                     session_id=record.id,
                     kind="text",
                     role=roles[index % len(roles)],
@@ -375,6 +381,8 @@ def benchmark_workflow_snapshot(
         session.add_all(
             [
                 Job(
+                    workspace_id=job_owner.workspace_id,
+                    project_id=job_owner.project_id,
                     session_id=record.id,
                     kind=kinds[index % len(kinds)],
                     status="succeeded",

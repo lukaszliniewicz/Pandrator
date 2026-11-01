@@ -13,6 +13,7 @@ from ..results import ToolOutcome
 from ..schemas.sounds import ImportAudioReferenceInput
 from .e2e import _named_source_root, _open_contained_file, _relative_parts
 from .sound_results import _application, _safe_candidate
+from .voice_lifecycle import safe_scope_projection
 
 _AUDIO_EXTENSIONS = frozenset({".wav", ".mp3", ".flac", ".ogg", ".m4a"})
 
@@ -103,12 +104,19 @@ def import_audio_reference(
         filename=filename,
         body=body,
         idempotency_key=arguments.idempotency_key,
+        **(
+            {"workspace_id": arguments.workspace_id}
+            if arguments.workspace_id is not None
+            else {}
+        ),
     )
     if arguments.target == "sound":
         candidate = _safe_candidate(result)
         return ToolOutcome(result={"candidate": candidate})
-    return ToolOutcome(
-        result={
-            key: result[key] for key in ("artifact_id", "sha256", "size_bytes") if key in result
-        }
-    )
+    reference_result = {
+        key: result[key] for key in ("artifact_id", "sha256", "size_bytes") if key in result
+    }
+    scope = safe_scope_projection(result)
+    if "workspace_id" in scope:
+        reference_result["workspace_id"] = scope["workspace_id"]
+    return ToolOutcome(result=reference_result)

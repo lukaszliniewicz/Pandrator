@@ -38,6 +38,8 @@ from .models import (
     SessionRecord,
     TimedWord,
 )
+from .projects.artifact_identity import resolve_artifact_ownership
+from .temporal_overlap import overlap_indexes
 
 PASSAGE_VERSION = 1
 PASSAGE_NODE_KIND = "logical_passage"
@@ -302,23 +304,60 @@ def source_passages(
             )
             build_kwargs["language_code"] = language or ""
         passages = build_source_passages(cues, words, **build_kwargs)
-    for row in passages:
+    segment_positions_by_id: dict[str, tuple[int, Segment]] = {}
+    for index, item in enumerate(segments):
+        segment_positions_by_id.setdefault(item.id, (index, item))
+
+    owned_by_row: dict[int, list[Segment]] = {}
+    fallback_row_indexes: list[int] = []
+    for row_index, row in enumerate(passages):
+        owned_by_position: dict[int, Segment] = {}
+        for cue_id in row.get("source_cue_ids") or ():
+            try:
+                owner = segment_positions_by_id.get(cue_id)
+            except TypeError:
+                continue
+            if owner is not None:
+                owned_by_position[owner[0]] = owner[1]
+        if owned_by_position:
+            owned_by_row[row_index] = [
+                owned_by_position[index] for index in sorted(owned_by_position)
+            ]
+        else:
+            fallback_row_indexes.append(row_index)
+
+    temporal_matches: dict[int, list[Segment]] = {}
+    if fallback_row_indexes:
+        timed_segments: list[tuple[int, Segment]] = []
+        source_bounds: list[tuple[int, int]] = []
+        for index, item in enumerate(segments):
+            if item.start_ms is None or item.end_ms is None:
+                continue
+            timed_segments.append((index, item))
+            source_bounds.append((item.start_ms, item.end_ms))
+
+        query_bounds = [
+            (passages[index]["start_ms"], passages[index]["end_ms"])
+            for index in fallback_row_indexes
+        ]
+        source_matches = overlap_indexes(source_bounds, query_bounds)
+        for row_index, matched_indexes in zip(
+            fallback_row_indexes, source_matches, strict=True
+        ):
+            temporal_matches[row_index] = [
+                timed_segments[index][1] for index in matched_indexes
+            ]
+
+    for row_index, row in enumerate(passages):
         # Evidence tools still address real display cues in the selected artifact.
         # These are explicitly separate from model-visible passage ordinals.
-        overlapping = [
-            item
-            for item in segments
-            if item.start_ms is not None
-            and item.end_ms is not None
-            and min(row["end_ms"], item.end_ms) > max(row["start_ms"], item.start_ms)
-        ]
-        owned = [item for item in segments if item.id in row.get("source_cue_ids", [])]
-        # New source candidates know their exact cue ownership, including
-        # overlapping speech. Preserved downstream passages use compatible
-        # display intervals because display reflow has different cue IDs.
+        # New source candidates know exact cue ownership, including overlapping
+        # speech. Preserved downstream passages use compatible display intervals
+        # because display reflow has different cue IDs.
+        owned = owned_by_row.get(row_index)
         overlapping = owned or [
             item
-            for item in overlapping
+            for item in temporal_matches.get(row_index, [])
             if not item.speaker
             or not row.get("speaker")
             or item.speaker.casefold() == str(row["speaker"]).casefold()
@@ -1013,9 +1052,12 @@ def rebuild_source_passages_branch(
     )
     if write_artifact_file is None:
         raise ValueError("An artifact file writer is required to branch passages.")
+    ownership = resolve_artifact_ownership(session, session_id=session_id)
     write_artifact_file(relative_path, srt_text)
     branch = Artifact(
         session_id=session_id,
+        project_id=ownership.project_id,
+        workspace_id=ownership.workspace_id,
         kind="srt",
         role=artifact.role,
         relative_path=relative_path,

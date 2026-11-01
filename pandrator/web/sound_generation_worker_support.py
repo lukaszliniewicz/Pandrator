@@ -18,6 +18,7 @@ from pandrator.runtime import DataPaths
 
 from .job_execution import JobLease, current_job_lease
 from .models import Artifact, Job, SoundVariant, utcnow
+from .sound_identity import sound_variant_workspace
 
 
 def _aware(value: datetime) -> datetime:
@@ -47,14 +48,21 @@ def _require_job(
     candidate_id = str(payload.get("candidate_id") or "")
     job = session.get(Job, job_id, populate_existing=True)
     candidate = session.get(SoundVariant, candidate_id, populate_existing=True)
+    if job is None or candidate is None:
+        raise RuntimeError("Sound generation lease or cancellation changed.")
+    payload_has_workspace = "workspace_id" in payload
+    job_has_workspace = "workspace_id" in job.payload_json
+    workspace_matches = payload_has_workspace == job_has_workspace and (
+        not payload_has_workspace
+        or payload.get("workspace_id") == job.payload_json.get("workspace_id")
+    )
     if (
-        job is None
-        or candidate is None
-        or job.kind != "sound.generate"
+        job.kind != "sound.generate"
         or job.session_id is not None
         or job.payload_json.get("candidate_id") != candidate_id
         or job.payload_json.get("request") != payload.get("request")
         or job.payload_json.get("runtime_identity") != payload.get("runtime_identity")
+        or not workspace_matches
         or candidate.job_id != job.id
         or job.lease_owner != lease["owner_id"]
         or job.lease_generation != lease["lease_generation"]
@@ -64,6 +72,21 @@ def _require_job(
         or (check_cancel and cancel_event.is_set())
     ):
         raise RuntimeError("Sound generation lease or cancellation changed.")
+    if payload_has_workspace:
+        payload_workspace_id = payload.get("workspace_id")
+        if not isinstance(payload_workspace_id, str) or not payload_workspace_id:
+            raise RuntimeError("Sound generation workspace changed after admission.")
+        workspace = sound_variant_workspace(
+            session,
+            candidate,
+            workspace_id=payload_workspace_id,
+        )
+    else:
+        # Legacy queued jobs did not freeze a workspace in their payload. Their
+        # candidate must still carry the ownership assigned by migration.
+        workspace = sound_variant_workspace(session, candidate)
+    if workspace.id != candidate.workspace_id:
+        raise RuntimeError("Sound candidate workspace changed after admission.")
     return job, candidate
 
 

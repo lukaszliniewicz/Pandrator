@@ -392,6 +392,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_configure_audiobook",
                 "pandrator_configure_voice_setup",
                 "pandrator_configure_speech_optimization",
+                "pandrator_refresh_tts_catalog",
                 "pandrator_setup_designed_voice",
                 "pandrator_design_google_voice",
                 "pandrator_recast_voices",
@@ -403,10 +404,31 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_create_source_cleaning_dispatch_run",
                 "pandrator_create_speech_optimization_dispatch_run",
                 "pandrator_create_session",
+                "pandrator_create_workspace",
+                "pandrator_rename_workspace",
+                "pandrator_set_workspace_member_role",
+                "pandrator_remove_workspace_member",
+                "pandrator_leave_workspace",
+                "pandrator_archive_workspace",
+                "pandrator_restore_workspace",
+                "pandrator_invite_workspace_user",
+                "pandrator_revoke_workspace_invitation",
+                "pandrator_accept_workspace_invitation",
+                "pandrator_decline_workspace_invitation",
+                "pandrator_enable_collaboration",
+                "pandrator_recover_workspace_manager",
+                "pandrator_copy_current_project",
+                "pandrator_grant_project_view",
+                "pandrator_revoke_project_view",
+                "pandrator_create_user",
+                "pandrator_update_user",
+                "pandrator_issue_user_password_reset",
                 "pandrator_create_text_source",
                 "pandrator_generate_sound",
                 "pandrator_create_translation_branches",
                 "pandrator_create_translation_project",
+                "pandrator_preview_translation_project_operation",
+                "pandrator_retry_translation_project_operation_preview",
                 "pandrator_execute_translation_project_operation",
                 "pandrator_cancel_translation_project_operation",
                 "pandrator_request_translation_project_export_bundle",
@@ -474,6 +496,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_transcribe_voice_sample",
                 "pandrator_review_voice_transcript",
                 "pandrator_publish_voice",
+                "pandrator_unpublish_voice",
                 "pandrator_audition_voice",
                 "pandrator_create_voice_collection",
                 "pandrator_update_voice_collection",
@@ -513,6 +536,31 @@ class McpArchitectureTests(unittest.TestCase):
                     "pandrator_delete_pronunciation",
                     "pandrator_plan_workflow",
                     "pandrator_plan_export_variant",
+                    # Saved previews produce fresh bounded resources, so callers
+                    # inspect their result before repeating creation.
+                    "pandrator_preview_translation_project_operation",
+                    "pandrator_retry_translation_project_operation_preview",
+                    # Current workspace/invitation/project revisions fence these
+                    # commands; their contracts do not accept a replay key.
+                    "pandrator_rename_workspace",
+                    "pandrator_set_workspace_member_role",
+                    "pandrator_remove_workspace_member",
+                    "pandrator_leave_workspace",
+                    "pandrator_archive_workspace",
+                    "pandrator_restore_workspace",
+                    "pandrator_revoke_workspace_invitation",
+                    "pandrator_accept_workspace_invitation",
+                    "pandrator_decline_workspace_invitation",
+                    "pandrator_enable_collaboration",
+                    "pandrator_recover_workspace_manager",
+                    "pandrator_grant_project_view",
+                    "pandrator_revoke_project_view",
+                    # Issuing a reset intentionally rotates the one-use proof.
+                    # It must not cache/replay the secret or be retried blindly.
+                    "pandrator_issue_user_password_reset",
+                    # Refresh is a bounded repeatable provider probe, so it
+                    # intentionally has no admission idempotency key.
+                    "pandrator_refresh_tts_catalog",
                 }
                 for action in mutating
             )
@@ -543,8 +591,8 @@ class McpArchitectureTests(unittest.TestCase):
         self.assertFalse(manifest.requires_idempotency)
 
         bundle = ACTION_CATALOG.get("pandrator_request_translation_project_export_bundle")
-        self.assertEqual(RiskClass.WRITE, bundle.risk)
-        self.assertEqual("app.write", bundle.required_scope)
+        self.assertEqual(RiskClass.RUN, bundle.risk)
+        self.assertEqual("app.run", bundle.required_scope)
         self.assertEqual("requestTranslationProjectExportBundle", bundle.downstream_operation_id)
         self.assertEqual("POST", bundle.method)
         self.assertEqual(

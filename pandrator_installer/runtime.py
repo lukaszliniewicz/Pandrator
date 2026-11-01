@@ -40,6 +40,8 @@ from .models import DEFAULT_QWEN_MODEL_SIZE
 from .platforms import is_windows
 from .process_logs import attach_process_log, clear_process_log_handle, process_log_handle
 
+_WORKER_KEYS_ATTRIBUTE = "pandrator_worker_keys"
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Protocol
@@ -853,6 +855,9 @@ class RuntimeMixin(_RuntimeProviders):
         log_handle = open(log_path, "a", encoding="utf-8")
         try:
             environment = os.environ.copy()
+            worker_count = environment.get("PANDRATOR_WORKER_COUNT", "1")
+            if worker_count not in {"1", "2"}:
+                raise ValueError("Worker count must be 1 or 2.")
             if owner_password:
                 environment["PANDRATOR_OWNER_PASSWORD"] = owner_password
             process = subprocess.Popen(
@@ -867,6 +872,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
         attach_process_log(process, log_handle, log_path)
+        setattr(process, _WORKER_KEYS_ATTRIBUTE, ("worker", "worker-2")[:int(worker_count)])
         return process
 
     def wait_for_web_runtime_ready(
@@ -909,7 +915,8 @@ class RuntimeMixin(_RuntimeProviders):
             processes = state.get("processes") or {}
             supervisor_ready = bool(state.get("ready"))
             state_matches = not expected_pid or state_pid == expected_pid
-            children_ready = "api" in processes and "worker" in processes
+            worker_keys = getattr(process, _WORKER_KEYS_ATTRIBUTE, ("worker",))
+            children_ready = "api" in processes and all(key in processes for key in worker_keys)
             if state_matches and supervisor_ready and children_ready:
                 try:
                     response = requests.get(health_url, timeout=1)

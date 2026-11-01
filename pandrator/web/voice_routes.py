@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import replace
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -12,41 +14,51 @@ from flask import (
     request,
 )
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from pandrator.logic.audio_cpp_catalogue import package_metadata
 from pandrator.logic.tts_provider_profiles import AUDIO_CPP_VOICE_DESIGN_MODELS
 
+from .access.contracts import AccessContext, AccessDenied, ProjectAction, WorkspaceNotFound
+from .access.session_policy import SessionNotFound, require_session_access
+from .access.voice_policy import require_voice_access, require_voice_run_access
+from .access.workspace_policy import WorkspaceAction, require_workspace_access
+from .accounts.actor_authorization import require_actor_in_session
+from .accounts.identity import initial_personal_workspace
+from .accounts.installation_mode import installation_mode_in_session
 from .artifacts import sha256_file
+from .credential_identity import credential_namespace
 from .credentials import (
     redact_inline_secrets,
 )
 from .domain_blueprints import DomainBlueprints
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
-from .idempotency import IdempotencyConflict, IdempotencyInProgress
-from .managed_services import normalize_tts_provider_id
+from .idempotency import IdempotencyConflict, IdempotencyInProgress, IdempotencyReservation
+from .managed_services import configured_tts_provider_ids, normalize_tts_provider_id
 from .media_process import MediaProcessError
 from .models import (
-    AppSetting,
     Artifact,
     Job,
     Voice,
     VoiceSample,
     utcnow,
 )
+from .projects.artifact_identity import resolve_artifact_ownership
 from .route_context import RouteContext
 from .schemas import (
     VoiceCreate,
     VoiceTranscriptReview,
     VoiceUpdate,
 )
+from .settings_identity import workspace_setting_in_workspace
+from .speech_catalogue_access import SpeechScopeInvalid, scope_identifier
 from .stt_resources import stt_resource_keys
 from .voice_library import (
     ensure_bundled_voice,
     is_bundled_voice,
     mark_provider_registrations_stale,
     remove_managed_files,
-    resolve_voice_sample_transcription_settings,
     retire_sample_artifact,
     sample_file_status,
     validate_profile_evidence,
@@ -59,6 +71,12 @@ from .voice_lifecycle_schemas import (
     VoicePublishRequest,
     VoiceReferenceImportRequest,
 )
+from .voice_provider_settings import capture_voice_provider_settings, check_voice_provider_settings
+from .voice_queries import (
+    voice_name_owner,
+    voice_sample_in_workspace,
+    voices_in_workspace,
+)
 from .voice_recording_uploads import queue_voice_recording
 from .voice_reference_reuse import reusable_design_reference, verified_sample_artifact
 from .voice_reference_trim import (
@@ -66,6 +84,7 @@ from .voice_reference_trim import (
     inspect_voice_reference_trim,
     reference_trim_requested,
 )
+from .voice_sample_transcription import capture_voice_transcription_settings
 
 VOICE_SAMPLE_NOISE_REDUCTION_OPTIONS = ("none", "deepfilternet2")
 
@@ -94,20 +113,101 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
     idempotency_failure = idempotency.failure
     abandon_idempotency = idempotency.abandon
     replay_idempotency = idempotency.replay
-    inspect_voice_idempotency = idempotency.inspect
+
+    def voice_record_scope(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            if "session_id" in request.args:
+                return error_response("validation_error", "Session scope is not available for voice records.", 422)
+            try:
+                workspace_id = scope_identifier(request.args.get("workspace_id"))
+                return function(*args, workspace_id=workspace_id, **kwargs)
+            except SpeechScopeInvalid as error:
+                return error_response("validation_error", str(error), 422)
+            except WorkspaceNotFound:
+                return error_response("not_found", "Voice not found.", 404)
+        return wrapped
 
     @app.get("/api/v1/voices")
     @require_auth
     def voice_list():
-        ensure_bundled_voice(database, paths, artifacts)
-        with database.session() as db_session:
-            records = list(db_session.scalars(select(Voice).order_by(Voice.name)).all())
-            return jsonify({"items": voice_payloads(db_session, paths, records)})
+        workspace_id = request.args.get("workspace_id")
+        session_id = request.args.get("session_id")
+        if any(
+            value is not None
+            and (not value or value != value.strip() or not 1 <= len(value) <= 80)
+            for value in (workspace_id, session_id)
+        ):
+            return error_response(
+                "validation_error",
+                "Choose a valid voice workspace or session scope.",
+                422,
+            )
+
+        access = context.guards.access_context()
+
+        def require_scope(db_session):
+            selected_workspace_id = workspace_id
+            if session_id is not None:
+                root = require_session_access(
+                    db_session, access, session_id, ProjectAction.READ
+                )
+                if workspace_id is not None and workspace_id != root.workspace_id:
+                    raise WorkspaceNotFound()
+                selected_workspace_id = root.workspace_id
+            return require_workspace_access(db_session, access, selected_workspace_id)
+
+        def initializer_eligible(db_session, proved) -> bool:
+            if (
+                proved.kind != "personal"
+                or WorkspaceAction.EDIT not in proved.allowed_actions
+                or proved.id != initial_personal_workspace(db_session).id
+            ):
+                return False
+            return not installation_mode_in_session(db_session).enabled
+
+        def response_for(db_session, proved):
+            records = voices_in_workspace(db_session, workspace_id=proved.id)
+            return jsonify(
+                {
+                    "items": voice_payloads(
+                        db_session, paths, records, workspace_id=proved.id
+                    ),
+                    "workspace_id": proved.id,
+                }
+            )
+
+        try:
+            with database.snapshot_session() as db_session:
+                proved = require_scope(db_session)
+                should_initialize = initializer_eligible(db_session, proved)
+                if not should_initialize:
+                    return response_for(db_session, proved)
+
+            with database.snapshot_session() as db_session:
+                rechecked = require_scope(db_session)
+                should_initialize = (
+                    rechecked.id == proved.id
+                    and initializer_eligible(db_session, rechecked)
+                )
+                if not should_initialize:
+                    return response_for(db_session, rechecked)
+
+            ensure_bundled_voice(
+                database, paths, artifacts, workspace_id=proved.id
+            )
+
+            with database.snapshot_session() as db_session:
+                recaptured = require_scope(db_session)
+                return response_for(db_session, recaptured)
+        except (WorkspaceNotFound, SessionNotFound):
+            return error_response("not_found", "Voice workspace not found.", 404)
 
 
     @app.post("/api/v1/voices")
     @require_auth
-    def voice_create():
+    @voice_record_scope
+    def voice_create(*, workspace_id=None):
         payload = VoiceCreate.model_validate(request.get_json(silent=True) or {})
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
@@ -116,103 +216,61 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
         if not name:
             return error_response("validation_error", "Voice name is required.", 422)
         request_payload = payload.model_dump(mode="json")
-        replay = inspect_voice_idempotency(
-            "createVoice",
-            idempotency_key,
-            request_payload,
-            etag_key="revision",
-        )
-        if replay is not None:
-            return replay
-        with database.session() as db_session:
-            try:
-                validate_profile_evidence(db_session, paths, request_payload.get("profile"))
-            except ValueError as error:
-                return error_response("validation_error", str(error), 422)
-        if idempotency_key is not None:
-            try:
-                with database.immediate_session() as db_session:
-                    try:
-                        reservation = services.idempotency.begin(
-                            db_session,
-                            principal=idempotency.principal(),
-                            operation_id="createVoice",
-                            idempotency_key=idempotency_key,
-                            payload=request_payload,
-                        )
-                    except (
-                        IdempotencyConflict,
-                        IdempotencyInProgress,
-                        ValueError,
-                    ) as error:
-                        return idempotency_failure(error)
-                    replay = replay_idempotency(reservation, etag_key="revision")
-                    if replay is not None:
-                        return replay
-                    if db_session.scalar(select(Voice).where(Voice.name == name)) is not None:
+        access = context.guards.access_context()
+        try:
+            with database.immediate_session() as db_session:
+                proved = require_workspace_access(db_session, access, workspace_id, action=WorkspaceAction.EDIT)
+                legacy = credential_namespace(db_session, proved.id).legacy_host_access
+                reservation = None
+                if idempotency_key is not None:
+                    principal = idempotency.principal()
+                    if not legacy:
+                        principal = replace(principal, subject=f"workspace:{proved.id}:user:{access.actor.user_id}")
+                    reservation = services.idempotency.begin(
+                        db_session, principal=principal, operation_id="createVoice",
+                        idempotency_key=idempotency_key, payload=request_payload,
+                    )
+                    if reservation.response is not None:
+                        previous, _status = reservation.response
+                        if (not legacy and previous.get("workspace_id") != proved.id) or (
+                            "workspace_id" in previous and previous["workspace_id"] != proved.id
+                        ):
+                            raise WorkspaceNotFound()
+                        return replay_idempotency(reservation, etag_key="revision")
+                validate_profile_evidence(db_session, paths, request_payload.get("profile"), workspace_id=proved.id)
+                if voice_name_owner(db_session, name, workspace_id=proved.id) is not None:
+                    if reservation is not None:
                         abandon_idempotency(db_session, reservation)
-                        return error_response(
-                            "already_exists", "A voice with that name already exists.", 409
-                        )
-                    voice = Voice(
-                        name=name,
-                        language=str(payload.language or "").strip() or None,
-                        description=str(payload.description or "").strip() or None,
-                        metadata_json={
-                            "voice_category": payload.voice_category,
-                            **(
-                                {"profile": payload.profile.model_dump(mode="json")}
-                                if payload.profile
-                                else {}
-                            ),
-                        },
-                    )
-                    db_session.add(voice)
-                    db_session.flush()
-                    result = voice_payload(db_session, paths, voice)
-                    services.idempotency.complete(
-                        db_session,
-                        reservation,
-                        response=result,
-                        status_code=201,
-                        resource_kind="voice",
-                        resource_id=voice.id,
-                    )
-            except (
-                IdempotencyConflict,
-                IdempotencyInProgress,
-                ValueError,
-            ) as error:
-                return idempotency_failure(error)
-            response = jsonify(result)
-            response.status_code = 201
-            response.headers["ETag"] = f'"{result["revision"]}"'
-            return response
-        with database.session() as db_session:
-            if db_session.scalar(select(Voice).where(Voice.name == name)) is not None:
-                return error_response(
-                    "already_exists", "A voice with that name already exists.", 409
+                    return error_response("already_exists", "A voice with that name already exists.", 409)
+                voice = Voice(
+                    workspace_id=proved.id,
+                    name=name,
+                    language=str(payload.language or "").strip() or None,
+                    description=str(payload.description or "").strip() or None,
+                    metadata_json={
+                        "voice_category": payload.voice_category,
+                        **({"profile": payload.profile.model_dump(mode="json")} if payload.profile else {}),
+                    },
                 )
-            voice = Voice(
-                name=name,
-                language=str(payload.language or "").strip() or None,
-                description=str(payload.description or "").strip() or None,
-                metadata_json={
-                    "voice_category": payload.voice_category,
-                    **({"profile": payload.profile.model_dump(mode="json")} if payload.profile else {}),
-                },
-            )
-            db_session.add(voice)
-            db_session.flush()
-            result = voice_payload(db_session, paths, voice)
+                db_session.add(voice)
+                db_session.flush()
+                result = voice_payload(db_session, paths, voice, workspace_id=proved.id)
+                result["workspace_id"] = proved.id
+                if reservation is not None:
+                    services.idempotency.complete(db_session, reservation, response=result, status_code=201,
+                        resource_kind="voice", resource_id=voice.id)
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_failure(error)
         response = jsonify(result)
+        response.status_code = 201
         response.headers["ETag"] = f'"{result["revision"]}"'
-        return response, 201
+        return response
 
 
     @app.patch("/api/v1/voices/<voice_id>")
     @require_auth
-    def voice_update(voice_id: str):
+    @voice_record_scope
+    def voice_update(voice_id: str, *, workspace_id=None):
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected_revision = int(raw_etag)
@@ -225,9 +283,7 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
         payload = VoiceUpdate.model_validate(request.get_json(silent=True) or {})
         changes = payload.model_dump(exclude_unset=True)
         with database.immediate_session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            if voice is None:
-                return error_response("not_found", "Voice not found.", 404)
+            voice = require_voice_access(db_session, context.guards.access_context(), voice_id, workspace_id=workspace_id, action=WorkspaceAction.EDIT)
             if is_bundled_voice(voice):
                 return error_response(
                     "bundled_voice_protected",
@@ -241,7 +297,9 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                     409,
                 )
             try:
-                validate_profile_evidence(db_session, paths, changes.get("profile"))
+                validate_profile_evidence(
+                    db_session, paths, changes.get("profile"), workspace_id=voice.workspace_id
+                )
             except ValueError as error:
                 return error_response("validation_error", str(error), 422)
             if "name" in changes:
@@ -253,7 +311,10 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                         422,
                     )
                 owner = db_session.scalar(
-                    select(Voice).where(Voice.name == name, Voice.id != voice.id)
+                    select(Voice).where(
+                        Voice.name == name, Voice.id != voice.id,
+                        Voice.workspace_id == voice.workspace_id,
+                    )
                 )
                 if owner is not None:
                     return error_response(
@@ -287,7 +348,8 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             if changes:
                 voice.revision += 1
                 voice.updated_at = utcnow()
-            result = voice_payload(db_session, paths, voice)
+            result = voice_payload(db_session, paths, voice, workspace_id=voice.workspace_id)
+            result["workspace_id"] = voice.workspace_id
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
@@ -295,7 +357,8 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
 
     @app.delete("/api/v1/voices/<voice_id>")
     @require_auth
-    def voice_delete(voice_id: str):
+    @voice_record_scope
+    def voice_delete(voice_id: str, *, workspace_id=None):
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected_revision = int(raw_etag)
@@ -306,10 +369,8 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 428,
             )
         removable: list[Path] = []
-        with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            if voice is None:
-                return error_response("not_found", "Voice not found.", 404)
+        with database.immediate_session() as db_session:
+            voice = require_voice_access(db_session, context.guards.access_context(), voice_id, workspace_id=workspace_id, action=WorkspaceAction.EDIT)
             if is_bundled_voice(voice):
                 return error_response(
                     "bundled_voice_protected",
@@ -324,13 +385,14 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 )
             active_voice_job = next(
                 (
-                    job
-                    for job in db_session.scalars(
-                        select(Job).where(
+                    job_id
+                    for job_id, resource_keys in db_session.execute(
+                        select(Job.id, Job.resource_keys_json).where(
+                            Job.workspace_id == voice.workspace_id,
                             Job.status.in_(("queued", "running", "cancel_requested"))
                         )
                     ).all()
-                    if f"voice:{voice_id}" in (job.resource_keys_json or [])
+                    if f"voice:{voice_id}" in (resource_keys or [])
                 ),
                 None,
             )
@@ -343,7 +405,7 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 )
             samples = list(
                 db_session.scalars(
-                    select(VoiceSample).where(VoiceSample.voice_id == voice.id)
+                    select(VoiceSample).where(VoiceSample.voice_id == voice.id, VoiceSample.workspace_id == voice.workspace_id)
                 ).all()
             )
             for sample in samples:
@@ -360,15 +422,14 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
 
     @app.get("/api/v1/voices/<voice_id>/samples")
     @require_auth
-    def voice_sample_list(voice_id: str):
-        with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            if voice is None:
-                return error_response("not_found", "Voice not found.", 404)
+    @voice_record_scope
+    def voice_sample_list(voice_id: str, *, workspace_id=None):
+        with database.snapshot_session() as db_session:
+            voice = require_voice_access(db_session, context.guards.access_context(), voice_id, workspace_id=workspace_id, action=WorkspaceAction.READ)
             records = list(
                 db_session.scalars(
                     select(VoiceSample)
-                    .where(VoiceSample.voice_id == voice_id)
+                    .where(VoiceSample.voice_id == voice_id, VoiceSample.workspace_id == voice.workspace_id)
                     .order_by(VoiceSample.created_at.desc())
                 ).all()
             )
@@ -384,13 +445,75 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                         for item in records
                     ],
                     "voice_revision": voice.revision,
+                    "workspace_id": voice.workspace_id,
                 }
             )
 
 
+    def processing_receipt(
+        db_session: Session,
+        access: AccessContext,
+        voice: Voice,
+        operation_id: str,
+        key: str | None,
+        payload: dict[str, Any],
+    ) -> IdempotencyReservation | None:
+        if key is None:
+            return None
+        principal = idempotency.principal()
+        legacy = credential_namespace(db_session, voice.workspace_id).legacy_host_access
+        if not legacy:
+            principal = replace(
+                principal, subject=f"workspace:{voice.workspace_id}:user:{access.actor.user_id}"
+            )
+        reservation = services.idempotency.begin(
+            db_session, principal=principal, operation_id=operation_id,
+            idempotency_key=key, payload=payload,
+        )
+        if reservation.response is not None:
+            previous, _status = reservation.response
+            if (not legacy and previous.get("workspace_id") != voice.workspace_id) or (
+                "workspace_id" in previous and previous["workspace_id"] != voice.workspace_id
+            ):
+                raise WorkspaceNotFound()
+        return reservation
+
+    def inspect_processing_retry(
+        access: AccessContext, voice_id: str, workspace_id: str | None,
+        operation_id: str, key: str | None, payload: dict[str, Any],
+    ):
+        if key is None:
+            return None
+        try:
+            with database.immediate_session() as db_session:
+                voice = require_voice_run_access(
+                    db_session, access, voice_id, workspace_id=workspace_id
+                )
+                reservation = processing_receipt(
+                    db_session, access, voice, operation_id, key, payload
+                )
+                if reservation is not None:
+                    replay = replay_idempotency(reservation, etag_key="voice_revision")
+                    if replay is not None:
+                        return replay
+                    abandon_idempotency(db_session, reservation)
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_failure(error)
+        return None
+
+    def unchanged_processing_source(db_session: Session, voice: Voice, source: Artifact) -> bool:
+        return db_session.scalar(select(Artifact.id).where(
+            Artifact.id == source.id, Artifact.workspace_id == voice.workspace_id,
+            Artifact.state != "deleted", Artifact.kind == source.kind,
+            Artifact.role == source.role, Artifact.relative_path == source.relative_path,
+            Artifact.content_hash == source.content_hash,
+        )) is not None
+
+
     @app.post("/api/v1/voices/<voice_id>/samples/from-preview")
     @require_auth
-    def voice_sample_from_preview(voice_id: str):
+    @voice_record_scope
+    def voice_sample_from_preview(voice_id: str, *, workspace_id=None):
         payload = VoiceDesignedSamplePreparationRequest.model_validate(
             request.get_json(silent=True) or {}
         )
@@ -402,11 +525,11 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             **payload.model_dump(mode="json", exclude={"recipe_signature"}),
             **({"recipe_signature": payload.recipe_signature} if payload.recipe_signature is not None else {}),
         }
-        replay = inspect_voice_idempotency(
-            "createVoiceSampleFromPreview",
+        access = context.guards.access_context()
+        replay = inspect_processing_retry(
+            access, voice_id, workspace_id, "createVoiceSampleFromPreview",
             idempotency_key,
             idempotency_payload,
-            etag_key="voice_revision",
         )
         if replay is not None:
             return replay
@@ -418,10 +541,10 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 "A reviewed transcript is required.",
                 422,
             )
-        with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            if voice is None:
-                return error_response("not_found", "Voice not found.", 404)
+        with database.snapshot_session() as db_session:
+            voice = require_voice_run_access(
+                db_session, access, voice_id, workspace_id=workspace_id
+            )
             if is_bundled_voice(voice):
                 return error_response(
                     "bundled_voice_protected",
@@ -434,13 +557,17 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                     "The voice changed in another client.",
                     409,
                 )
-            artifact = db_session.get(Artifact, payload.artifact_id)
+            artifact = db_session.scalar(select(Artifact).where(
+                Artifact.id == payload.artifact_id, Artifact.workspace_id == voice.workspace_id,
+            ))
             if artifact is None or artifact.state == "deleted":
                 return error_response(
                     "not_found",
                     "Preview artifact not found.",
                     404,
                 )
+            if resolve_artifact_ownership(db_session, artifact=artifact).workspace_id != voice.workspace_id:
+                return error_response("not_found", "Preview artifact not found.", 404)
             if artifact.role != "tts_voice_preview" or artifact.kind != "audio":
                 return error_response(
                     "invalid_preview_artifact",
@@ -541,127 +668,75 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                     else {},
                 }
             )
-        if idempotency_key is not None:
-            request_payload = idempotency_payload
-            try:
-                with database.immediate_session() as db_session:
-                    try:
-                        reservation = services.idempotency.begin(
-                            db_session,
-                            principal=idempotency.principal(),
-                            operation_id="createVoiceSampleFromPreview",
-                            idempotency_key=idempotency_key,
-                            payload=request_payload,
-                        )
-                    except (
-                        IdempotencyConflict,
-                        IdempotencyInProgress,
-                        ValueError,
-                    ) as error:
-                        return idempotency_failure(error)
+        try:
+            with database.immediate_session() as db_session:
+                current_voice = require_voice_run_access(
+                    db_session, access, voice_id, workspace_id=voice.workspace_id
+                )
+                reservation = processing_receipt(
+                    db_session, access, current_voice, "createVoiceSampleFromPreview",
+                    idempotency_key, idempotency_payload,
+                )
+                if reservation is not None:
                     replay = replay_idempotency(reservation, etag_key="voice_revision")
                     if replay is not None:
                         return replay
-                    current_voice = db_session.get(Voice, voice_id)
-                    if current_voice is None:
+                if is_bundled_voice(current_voice):
+                    if reservation is not None:
                         abandon_idempotency(db_session, reservation)
-                        return error_response("not_found", "Voice not found.", 404)
-                    if is_bundled_voice(current_voice):
+                    return error_response("bundled_voice_protected",
+                        "Samples cannot be added to the bundled reference voice.", 409)
+                if current_voice.revision != payload.expected_voice_revision:
+                    if reservation is not None:
                         abandon_idempotency(db_session, reservation)
-                        return error_response(
-                            "bundled_voice_protected",
-                            "Samples cannot be added to the bundled reference voice.",
-                            409,
-                        )
-                    if current_voice.revision != payload.expected_voice_revision:
+                    return error_response("revision_conflict", "The voice changed in another client.", 409)
+                if not unchanged_processing_source(db_session, current_voice, artifact):
+                    if reservation is not None:
                         abandon_idempotency(db_session, reservation)
-                        return error_response(
-                            "revision_conflict",
-                            "The voice changed in another client.",
-                            409,
-                        )
-                    reusable = reusable_design_reference(
-                        db_session, paths, current_voice,
-                        source_artifact_id=artifact.id,
-                        source_sha256=preview_content_hash,
-                        transcript=transcript,
-                        language=language or preview_language,
-                    )
-                    if reusable is not None:
-                        services.idempotency.complete(
-                            db_session, reservation, response=reusable,
-                            status_code=200, resource_kind="voice_sample",
-                            resource_id=reusable["sample_id"],
-                        )
-                        return jsonify(reusable)
-                    job = jobs.enqueue_in_session(
-                        db_session,
-                        "voice.normalize_recording",
-                        {
-                            "voice_id": voice_id,
-                            "source_artifact_id": artifact.id,
-                            "source_artifact_sha256": preview_content_hash,
-                            "source_artifact_role": "tts_voice_preview",
-                            "expected_voice_revision": payload.expected_voice_revision,
-                            "reviewed_transcript": transcript,
-                            "transcript_language": language or preview_language,
-                            "sample_provenance": preview_provenance,
-                            "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg",
-                        },
-                        resource_keys=[f"voice:{voice_id}"],
-                    )
-                    result = _job_payload(job)
-                    services.idempotency.complete(
-                        db_session,
-                        reservation,
-                        response=result,
-                        status_code=202,
-                        resource_kind="job",
-                        resource_id=job.id,
-                    )
-            except (
-                IdempotencyConflict,
-                IdempotencyInProgress,
-                ValueError,
-            ) as error:
-                return idempotency_failure(error)
-            return jsonify(result), 202
-        with database.immediate_session() as db_session:
-            current_voice = db_session.get(Voice, voice_id)
-            if current_voice is None:
-                return error_response("not_found", "Voice not found.", 404)
-            if current_voice.revision != payload.expected_voice_revision:
-                return error_response(
-                    "revision_conflict", "The voice changed in another client.", 409
+                    return error_response("preview_artifact_changed",
+                        "The voice-design preview changed after it was generated. Generate and review it again.", 409)
+                reusable = reusable_design_reference(
+                    db_session, paths, current_voice, source_artifact_id=artifact.id,
+                    source_sha256=preview_content_hash, transcript=transcript,
+                    language=language or preview_language,
                 )
-            reusable = reusable_design_reference(
-                db_session, paths, current_voice,
-                source_artifact_id=artifact.id, source_sha256=preview_content_hash,
-                transcript=transcript, language=language or preview_language,
-            )
-            if reusable is not None:
-                return jsonify(reusable)
-        job = jobs.enqueue(
-            "voice.normalize_recording",
-            {
-                "voice_id": voice_id,
-                "source_artifact_id": artifact.id,
-                "source_artifact_sha256": preview_content_hash,
-                "source_artifact_role": "tts_voice_preview",
-                "expected_voice_revision": payload.expected_voice_revision,
-                "reviewed_transcript": transcript,
-                "transcript_language": language or preview_language,
-                "sample_provenance": preview_provenance,
-                "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg",
-            },
-            resource_keys=[f"voice:{voice_id}"],
-        )
-        return jsonify(_job_payload(job)), 202
+                if reusable is not None:
+                    reusable["workspace_id"] = current_voice.workspace_id
+                    if reservation is not None:
+                        services.idempotency.complete(
+                            db_session, reservation, response=reusable, status_code=200,
+                            resource_kind="voice_sample", resource_id=reusable["sample_id"],
+                        )
+                    return jsonify(reusable)
+                job = jobs.enqueue_in_session(
+                    db_session, "voice.normalize_recording",
+                    {
+                        "workspace_id": current_voice.workspace_id, "voice_id": voice_id,
+                        "source_artifact_id": artifact.id,
+                        "source_artifact_sha256": preview_content_hash,
+                        "source_artifact_role": "tts_voice_preview",
+                        "expected_voice_revision": payload.expected_voice_revision,
+                        "reviewed_transcript": transcript,
+                        "transcript_language": language or preview_language,
+                        "sample_provenance": preview_provenance,
+                        "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg",
+                    }, resource_keys=[f"voice:{voice_id}"], workspace_id=current_voice.workspace_id,
+                )
+                result = {**_job_payload(job), "workspace_id": current_voice.workspace_id}
+                if reservation is not None:
+                    services.idempotency.complete(
+                        db_session, reservation, response=result, status_code=202,
+                        resource_kind="job", resource_id=job.id,
+                    )
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_failure(error)
+        return jsonify(result), 202
 
 
     @app.post("/api/v1/voices/<voice_id>/samples/from-artifact")
     @require_auth
-    def voice_sample_from_artifact(voice_id: str):
+    @voice_record_scope
+    def voice_sample_from_artifact(voice_id: str, *, workspace_id=None):
         payload = VoiceReferenceImportRequest.model_validate(
             request.get_json(silent=True) or {}
         )
@@ -680,21 +755,21 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             "voice_id": voice_id,
             **request_fields,
         }
-        replay = inspect_voice_idempotency(
-            "createVoiceSampleFromArtifact",
+        access = context.guards.access_context()
+        replay = inspect_processing_retry(
+            access, voice_id, workspace_id, "createVoiceSampleFromArtifact",
             idempotency_key,
             idempotency_payload,
-            etag_key="voice_revision",
         )
         if replay is not None:
             return replay
         transcript = str(payload.transcript or "").strip()
         language = str(payload.language or "").strip() or None
 
-        with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            if voice is None:
-                return error_response("not_found", "Voice not found.", 404)
+        with database.snapshot_session() as db_session:
+            voice = require_voice_run_access(
+                db_session, access, voice_id, workspace_id=workspace_id
+            )
             if is_bundled_voice(voice):
                 return error_response(
                     "bundled_voice_protected",
@@ -710,11 +785,15 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                     "The voice changed in another client.",
                     409,
                 )
-            artifact = db_session.get(Artifact, payload.artifact_id)
+            artifact = db_session.scalar(select(Artifact).where(
+                Artifact.id == payload.artifact_id, Artifact.workspace_id == voice.workspace_id,
+            ))
             if artifact is None or artifact.state == "deleted":
                 return error_response(
                     "not_found", "Voice reference artifact not found.", 404
                 )
+            if resolve_artifact_ownership(db_session, artifact=artifact).workspace_id != voice.workspace_id:
+                return error_response("not_found", "Voice reference artifact not found.", 404)
             if artifact.kind != "audio":
                 return error_response(
                     "invalid_reference_artifact",
@@ -756,6 +835,8 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
         trim = None
         ffprobe_executable = shutil.which("ffprobe") or "ffprobe"
         if trim_requested:
+            with database.snapshot_session() as db_session:
+                require_voice_run_access(db_session, access, voice_id, workspace_id=voice.workspace_id)
             try:
                 trim = inspect_voice_reference_trim(
                     artifact_path,
@@ -793,6 +874,7 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
         if trim is not None:
             sample_provenance["reference_trim"] = trim.provenance()
         job_payload = {
+            "workspace_id": voice.workspace_id,
             "voice_id": voice_id,
             "source_artifact_id": artifact_id,
             "source_artifact_sha256": artifact_hash,
@@ -812,78 +894,53 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             job_payload["reviewed_transcript"] = transcript
         elif transcript:
             job_payload["unreviewed_transcript"] = transcript
-        if idempotency_key is not None:
-            request_payload = idempotency_payload
-            try:
-                with database.immediate_session() as db_session:
-                    try:
-                        reservation = services.idempotency.begin(
-                            db_session,
-                            principal=idempotency.principal(),
-                            operation_id="createVoiceSampleFromArtifact",
-                            idempotency_key=idempotency_key,
-                            payload=request_payload,
-                        )
-                    except (
-                        IdempotencyConflict,
-                        IdempotencyInProgress,
-                        ValueError,
-                    ) as error:
-                        return idempotency_failure(error)
+        try:
+            with database.immediate_session() as db_session:
+                current_voice = require_voice_run_access(
+                    db_session, access, voice_id, workspace_id=voice.workspace_id
+                )
+                reservation = processing_receipt(
+                    db_session, access, current_voice, "createVoiceSampleFromArtifact",
+                    idempotency_key, idempotency_payload,
+                )
+                if reservation is not None:
                     replay = replay_idempotency(reservation, etag_key="voice_revision")
                     if replay is not None:
                         return replay
-                    current_voice = db_session.get(Voice, voice_id)
-                    if current_voice is None:
+                if is_bundled_voice(current_voice):
+                    if reservation is not None:
                         abandon_idempotency(db_session, reservation)
-                        return error_response("not_found", "Voice not found.", 404)
-                    if is_bundled_voice(current_voice):
+                    return error_response("bundled_voice_protected",
+                        "Samples cannot be added to the bundled reference voice.", 409)
+                if current_voice.revision != payload.expected_voice_revision:
+                    if reservation is not None:
                         abandon_idempotency(db_session, reservation)
-                        return error_response(
-                            "bundled_voice_protected",
-                            "Samples cannot be added to the bundled reference voice.",
-                            409,
-                        )
-                    if current_voice.revision != payload.expected_voice_revision:
+                    return error_response("revision_conflict", "The voice changed in another client.", 409)
+                if not unchanged_processing_source(db_session, current_voice, artifact):
+                    if reservation is not None:
                         abandon_idempotency(db_session, reservation)
-                        return error_response(
-                            "revision_conflict",
-                            "The voice changed in another client.",
-                            409,
-                        )
-                    job = jobs.enqueue_in_session(
-                        db_session,
-                        "voice.normalize_recording",
-                        job_payload,
-                        resource_keys=[f"voice:{voice_id}"],
-                    )
-                    result = _job_payload(job)
+                    return error_response("reference_artifact_changed",
+                        "The voice reference artifact changed after it was registered.", 409)
+                job = jobs.enqueue_in_session(
+                    db_session, "voice.normalize_recording", job_payload,
+                    resource_keys=[f"voice:{voice_id}"], workspace_id=current_voice.workspace_id,
+                )
+                result = {**_job_payload(job), "workspace_id": current_voice.workspace_id}
+                if reservation is not None:
                     services.idempotency.complete(
-                        db_session,
-                        reservation,
-                        response=result,
-                        status_code=202,
-                        resource_kind="job",
-                        resource_id=job.id,
+                        db_session, reservation, response=result, status_code=202,
+                        resource_kind="job", resource_id=job.id,
                     )
-            except (
-                IdempotencyConflict,
-                IdempotencyInProgress,
-                ValueError,
-            ) as error:
-                return idempotency_failure(error)
-            return jsonify(result), 202
-        job = jobs.enqueue(
-            "voice.normalize_recording",
-            job_payload,
-            resource_keys=[f"voice:{voice_id}"],
-        )
-        return jsonify(_job_payload(job)), 202
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_failure(error)
+        return jsonify(result), 202
 
 
     @app.post("/api/v1/voices/<voice_id>/samples")
     @require_auth
-    def voice_sample_upload(voice_id: str):
+    @voice_record_scope
+    def voice_sample_upload(voice_id: str, *, workspace_id=None):
+        access = context.guards.access_context()
         noise_reduction = _voice_sample_noise_reduction(request.form)
         if noise_reduction is None:
             return error_response(
@@ -896,10 +953,10 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             return error_response(
                 "missing_file", "An audio recording is required.", 400
             )
-        with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            if voice is None:
-                return error_response("not_found", "Voice not found.", 404)
+        with database.snapshot_session() as db_session:
+            voice = require_voice_run_access(
+                db_session, access, voice_id, workspace_id=workspace_id
+            )
             if is_bundled_voice(voice):
                 return error_response(
                     "bundled_voice_protected",
@@ -928,13 +985,17 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             voice_id=voice_id,
             expected_revision=expected_revision,
             noise_reduction=noise_reduction,
+            workspace_id=voice.workspace_id,
+            access_context=access,
         )
-        return jsonify(_job_payload(job)), 202
+        return jsonify({**_job_payload(job), "workspace_id": voice.workspace_id}), 202
 
 
     @app.post("/api/v1/voices/<voice_id>/samples/<sample_id>/replace")
     @require_auth
-    def voice_sample_replace(voice_id: str, sample_id: str):
+    @voice_record_scope
+    def voice_sample_replace(voice_id: str, sample_id: str, *, workspace_id=None):
+        access = context.guards.access_context()
         noise_reduction = _voice_sample_noise_reduction(request.form)
         if noise_reduction is None:
             return error_response(
@@ -956,10 +1017,14 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             return error_response(
                 "missing_file", "An audio recording is required.", 400
             )
-        with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            sample = db_session.get(VoiceSample, sample_id)
-            if voice is None or sample is None or sample.voice_id != voice_id:
+        with database.snapshot_session() as db_session:
+            voice = require_voice_run_access(
+                db_session, access, voice_id, workspace_id=workspace_id
+            )
+            sample = voice_sample_in_workspace(
+                db_session, sample_id, voice_id=voice_id, workspace_id=voice.workspace_id
+            )
+            if sample is None or sample.voice_id != voice_id:
                 return error_response("not_found", "Voice sample not found.", 404)
             if is_bundled_voice(voice):
                 return error_response(
@@ -978,14 +1043,17 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             voice_id=voice_id,
             expected_revision=expected_revision,
             noise_reduction=noise_reduction,
+            workspace_id=voice.workspace_id,
+            access_context=access,
             replace_sample_id=sample_id,
         )
-        return jsonify(_job_payload(job)), 202
+        return jsonify({**_job_payload(job), "workspace_id": voice.workspace_id}), 202
 
 
     @app.delete("/api/v1/voices/<voice_id>/samples/<sample_id>")
     @require_auth
-    def voice_sample_delete(voice_id: str, sample_id: str):
+    @voice_record_scope
+    def voice_sample_delete(voice_id: str, sample_id: str, *, workspace_id=None):
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected_revision = int(raw_etag)
@@ -996,10 +1064,10 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 428,
             )
         removable: list[Path] = []
-        with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            sample = db_session.get(VoiceSample, sample_id)
-            if voice is None or sample is None or sample.voice_id != voice_id:
+        with database.immediate_session() as db_session:
+            voice = require_voice_access(db_session, context.guards.access_context(), voice_id, workspace_id=workspace_id, action=WorkspaceAction.EDIT)
+            sample = voice_sample_in_workspace(db_session, sample_id, voice_id=voice_id, workspace_id=voice.workspace_id)
+            if sample is None or sample.voice_id != voice_id:
                 return error_response("not_found", "Voice sample not found.", 404)
             if is_bundled_voice(voice):
                 return error_response(
@@ -1025,316 +1093,207 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             voice.revision += 1
             voice.updated_at = utcnow()
             next_revision = voice.revision
+            proved_workspace_id = voice.workspace_id
         remove_managed_files(removable)
         response = jsonify(
-            {"id": sample_id, "status": "deleted", "voice_revision": next_revision}
+            {"id": sample_id, "status": "deleted", "voice_revision": next_revision, "workspace_id": proved_workspace_id}
         )
         response.headers["ETag"] = f'"{next_revision}"'
         return response
 
 
-    @app.post("/api/v1/voices/<voice_id>/providers/<service_id>")
-    @require_auth
-    def voice_publish_to_provider(voice_id: str, service_id: str):
-        """Upload a managed reference to a supported cloning provider."""
+    def provider_admission_settings(db_session: Session, voice: Voice, service_id: str):
+        """Read approved configuration only after proving the owning voice."""
         from pandrator.logic import tts_handler
 
+        captured = capture_voice_provider_settings(db_session, voice.workspace_id)
+        values = {}
+        for key in ("defaults.tts", "services.tts"):
+            row = workspace_setting_in_workspace(db_session, voice.workspace_id, key)
+            if row is not None and isinstance(row.value_json, dict):
+                values.update(row.value_json)
+        service = tts_handler.get_service_config(values, service_id)
+        if service is not None and not credential_namespace(db_session, voice.workspace_id).legacy_host_access:
+            identifier = normalize_tts_provider_id(service.get("id") or service_id)
+            enabled = {}
+            for key in ("provider_configs", "service_configs"):
+                for record in values.get(key, []) if isinstance(values.get(key), list) else []:
+                    if isinstance(record, dict):
+                        enabled[normalize_tts_provider_id(record.get("id") or record.get("name") or record.get("provider"))] = record.get("enabled") is not False
+            if identifier not in configured_tts_provider_ids(values) or not enabled.get(identifier, True):
+                service = None
+        return service, captured
+
+    @app.post("/api/v1/voices/<voice_id>/providers/<service_id>")
+    @require_auth
+    @voice_record_scope
+    def voice_publish_to_provider(voice_id: str, service_id: str, *, workspace_id=None):
+        """Upload an exact managed reference using its workspace connection."""
         raw_payload = request.get_json(silent=True)
         payload = VoicePublishRequest.model_validate({} if raw_payload is None else raw_payload)
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
-        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
-            expected_revision = int(raw_etag)
+            expected_revision = int(request.headers.get("If-Match", "").strip('W/" '))
         except ValueError:
-            return error_response(
-                "precondition_required",
-                "If-Match must contain the current voice revision.",
-                428,
-            )
+            return error_response("precondition_required", "If-Match must contain the current voice revision.", 428)
         idempotency_payload = {
-            "voice_id": voice_id,
-            "service_id": service_id,
+            "voice_id": voice_id, "service_id": service_id,
             "expected_revision": expected_revision,
             **payload.model_dump(mode="json", exclude_none=True),
         }
-        replay = inspect_voice_idempotency(
-            "publishVoiceToProvider",
-            idempotency_key,
-            idempotency_payload,
-            etag_key="voice_revision",
-        )
+        access = context.guards.access_context()
+        replay = inspect_processing_retry(access, voice_id, workspace_id,
+            "publishVoiceToProvider", idempotency_key, idempotency_payload)
         if replay is not None:
             return replay
         with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            if voice is None:
-                return error_response("not_found", "Voice not found.", 404)
-            if idempotency_key is None and voice.revision != expected_revision:
-                return error_response(
-                    "revision_conflict",
-                    "The voice changed in another client.",
-                    409,
-                )
-            voice_samples = list(
-                db_session.scalars(
-                    select(VoiceSample)
-                    .where(VoiceSample.voice_id == voice_id)
-                    .order_by(VoiceSample.created_at.desc())
-                ).all()
-            )
-            preferred_sample = next(
-                (
-                    item
-                    for item in voice_samples
-                    if sample_file_status(db_session, paths, item)[0] == "ready"
-                ),
-                None,
-            )
+            voice = require_voice_run_access(db_session, access, voice_id, workspace_id=workspace_id)
+            if voice.revision != expected_revision:
+                return error_response("revision_conflict", "The voice changed in another client.", 409)
+            voice_samples = list(db_session.scalars(select(VoiceSample).where(
+                VoiceSample.voice_id == voice_id, VoiceSample.workspace_id == voice.workspace_id
+            ).order_by(VoiceSample.created_at.desc())).all())
+            preferred_sample = next((item for item in voice_samples
+                if sample_file_status(db_session, paths, item)[0] == "ready"), None)
             newest_ready_sample_id = preferred_sample.id if preferred_sample is not None else None
             if payload.sample_id is not None:
-                preferred_sample = db_session.get(VoiceSample, payload.sample_id)
-                if preferred_sample is None or preferred_sample.voice_id != voice_id:
+                preferred_sample = next((item for item in voice_samples if item.id == payload.sample_id), None)
+                if preferred_sample is None:
                     return error_response("not_found", "Voice sample not found.", 404)
             if preferred_sample is None:
-                return error_response(
-                    "missing_sample",
-                    "Add or replace a readable voice sample before uploading this voice.",
-                    422,
-                )
+                return error_response("missing_sample", "Add or replace a readable voice sample before uploading this voice.", 422)
             try:
                 preferred_artifact, sample_hash = verified_sample_artifact(
-                    db_session, paths, preferred_sample,
-                    expected_sha256=payload.sample_sha256,
-                )
+                    db_session, paths, preferred_sample, expected_sha256=payload.sample_sha256)
             except ValueError as error:
                 return error_response("sample_artifact_changed", str(error), 409)
-            connections = db_session.get(AppSetting, "services.tts")
-            defaults = db_session.get(AppSetting, "defaults.tts")
-            connection_value = (
-                dict(connections.value_json or {})
-                if connections and isinstance(connections.value_json, dict)
-                else {}
-            )
-            default_value = (
-                dict(defaults.value_json or {})
-                if defaults and isinstance(defaults.value_json, dict)
-                else {}
-            )
-        service = tts_handler.get_service_config(
-            {**default_value, **connection_value}, service_id
-        )
+            voice = require_voice_run_access(db_session, access, voice_id, workspace_id=workspace_id)
+            service, captured = provider_admission_settings(db_session, voice, service_id)
         if service is None:
-            return error_response("not_found", "TTS service not found.", 404)
+            return error_response("not_found", "TTS service not found in this workspace.", 404)
         if not bool(service.get("supports_voice_cloning")):
-            return error_response(
-                "unsupported",
-                "This TTS service does not support managed voice uploads.",
-                422,
-            )
+            return error_response("unsupported", "This TTS service does not support managed voice uploads.", 422)
         resolved_service_id = str(service.get("id") or service_id)
-        if (
-            normalize_tts_provider_id(service.get("adapter")) == "audio_cpp"
-            and payload.sample_id is not None and payload.sample_id != newest_ready_sample_id
-        ):
-            return error_response(
-                "current_reference_required",
-                "audio.cpp linked voices use the newest ready local sample. "
-                "Refresh the voice samples and publish the current reference.",
-                409,
-            )
-        if (
-            str(service.get("voice_reference_text") or "ignored") == "required"
-            and preferred_sample is not None
-            and not (
-                preferred_sample.transcript_reviewed
-                and str(preferred_sample.transcript or "").strip()
-            )
-        ):
-            return error_response(
-                "reviewed_transcript_required",
-                f"{service.get('name') or resolved_service_id} requires a reviewed "
-                "sample transcript before this voice can be used.",
-                422,
-            )
+        if (normalize_tts_provider_id(service.get("adapter")) == "audio_cpp"
+            and payload.sample_id is not None and payload.sample_id != newest_ready_sample_id):
+            return error_response("current_reference_required", "audio.cpp linked voices use the newest ready local sample. Refresh the voice samples and publish the current reference.", 409)
+        if (str(service.get("voice_reference_text") or "ignored") == "required"
+            and not (preferred_sample.transcript_reviewed and str(preferred_sample.transcript or "").strip())):
+            return error_response("reviewed_transcript_required", f"{service.get('name') or resolved_service_id} requires a reviewed sample transcript before this voice can be used.", 422)
         job_payload = {
-            "voice_id": voice_id,
-            "service_id": resolved_service_id,
-            "service": str(service.get("name") or resolved_service_id),
+            "workspace_id": voice.workspace_id, "voice_id": voice_id,
+            "service_id": resolved_service_id, "service": str(service.get("name") or resolved_service_id),
             "expected_voice_revision": expected_revision,
-            "sample_id": preferred_sample.id,
-            "sample_artifact_id": preferred_artifact.id,
-            "sample_sha256": sample_hash,
+            "sample_id": preferred_sample.id, "sample_artifact_id": preferred_artifact.id,
+            "sample_sha256": sample_hash, **captured,
         }
-        resource_keys = [
-            f"voice:{voice_id}",
-            f"service:tts:{resolved_service_id}",
-        ]
-        if idempotency_key is not None:
-            try:
-                with database.immediate_session() as db_session:
-                    try:
-                        reservation = services.idempotency.begin(
-                            db_session,
-                            principal=idempotency.principal(),
-                            operation_id="publishVoiceToProvider",
-                            idempotency_key=idempotency_key,
-                            payload=idempotency_payload,
-                        )
-                    except (
-                        IdempotencyConflict,
-                        IdempotencyInProgress,
-                        ValueError,
-                    ) as error:
-                        return idempotency_failure(error)
+        try:
+            with database.immediate_session() as db_session:
+                current_voice = require_voice_run_access(db_session, access, voice_id, workspace_id=workspace_id)
+                reservation = processing_receipt(db_session, access, current_voice,
+                    "publishVoiceToProvider", idempotency_key, idempotency_payload)
+                if reservation is not None:
                     replay = replay_idempotency(reservation, etag_key="voice_revision")
                     if replay is not None:
                         return replay
-                    current_voice = db_session.get(Voice, voice_id)
-                    if current_voice is None:
+                if current_voice.revision != expected_revision:
+                    if reservation is not None:
                         abandon_idempotency(db_session, reservation)
-                        return error_response("not_found", "Voice not found.", 404)
-                    if current_voice.revision != expected_revision:
+                    return error_response("revision_conflict", "The voice changed in another client.", 409)
+                check_voice_provider_settings(db_session, job_payload, current_voice.workspace_id)
+                current_sample = db_session.scalar(select(VoiceSample).where(
+                    VoiceSample.id == preferred_sample.id,
+                    VoiceSample.voice_id == voice_id,
+                    VoiceSample.workspace_id == current_voice.workspace_id))
+                if (current_sample is None or current_sample.artifact_id != preferred_artifact.id
+                    or not unchanged_processing_source(db_session, current_voice, preferred_artifact)):
+                    if reservation is not None:
                         abandon_idempotency(db_session, reservation)
-                        return error_response(
-                            "revision_conflict",
-                            "The voice changed in another client.",
-                            409,
-                        )
-                    current_sample = db_session.get(VoiceSample, preferred_sample.id)
-                    if (
-                        current_sample is None or current_sample.voice_id != voice_id
-                        or current_sample.artifact_id != preferred_artifact.id
-                    ):
-                        abandon_idempotency(db_session, reservation)
-                        return error_response("sample_artifact_changed", "The selected voice sample changed.", 409)
-                    try:
-                        verified_sample_artifact(
-                            db_session, paths, current_sample, expected_sha256=sample_hash
-                        )
-                    except ValueError as error:
-                        abandon_idempotency(db_session, reservation)
-                        return error_response("sample_artifact_changed", str(error), 409)
-                    job = jobs.enqueue_in_session(
-                        db_session,
-                        "voice.publish",
-                        job_payload,
-                        resource_keys=resource_keys,
-                    )
-                    result = _job_payload(job)
-                    services.idempotency.complete(
-                        db_session,
-                        reservation,
-                        response=result,
-                        status_code=202,
-                        resource_kind="job",
-                        resource_id=job.id,
-                    )
-            except (
-                IdempotencyConflict,
-                IdempotencyInProgress,
-                ValueError,
-            ) as error:
-                return idempotency_failure(error)
-            return jsonify(result), 202
-        job = jobs.enqueue(
-            "voice.publish",
-            job_payload,
-            resource_keys=resource_keys,
-        )
-        return jsonify(_job_payload(job)), 202
-
+                    return error_response("sample_artifact_changed", "The selected voice sample changed.", 409)
+                job = jobs.enqueue_in_session(db_session, "voice.publish", job_payload,
+                    resource_keys=[f"voice:{voice_id}", f"service:tts:{resolved_service_id}"],
+                    workspace_id=current_voice.workspace_id)
+                result = {**_job_payload(job), "workspace_id": current_voice.workspace_id}
+                if reservation is not None:
+                    services.idempotency.complete(db_session, reservation, response=result,
+                        status_code=202, resource_kind="job", resource_id=job.id)
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_failure(error)
+        return jsonify(result), 202
 
     @app.delete("/api/v1/voices/<voice_id>/providers/<service_id>")
     @require_auth
-    def voice_remove_from_provider(voice_id: str, service_id: str):
-        """Delete a Pandrator-owned voice copy from a configured provider."""
-        from pandrator.logic import tts_handler
-
-        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+    @voice_record_scope
+    def voice_remove_from_provider(voice_id: str, service_id: str, *, workspace_id=None):
+        """Remove a managed provider copy under current workspace authority."""
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
         try:
-            expected_revision = int(raw_etag)
+            expected_revision = int(request.headers.get("If-Match", "").strip('W/" '))
         except ValueError:
-            return error_response(
-                "precondition_required",
-                "If-Match must contain the current voice revision.",
-                428,
-            )
+            return error_response("precondition_required", "If-Match must contain the current voice revision.", 428)
+        idempotency_payload = {"voice_id": voice_id, "service_id": service_id, "expected_revision": expected_revision}
+        access = context.guards.access_context()
+        replay = inspect_processing_retry(access, voice_id, workspace_id,
+            "removeVoiceFromProvider", idempotency_key, idempotency_payload)
+        if replay is not None:
+            return replay
         with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            if voice is None:
-                return error_response("not_found", "Voice not found.", 404)
+            voice = require_voice_run_access(db_session, access, voice_id, workspace_id=workspace_id)
             if voice.revision != expected_revision:
-                return error_response(
-                    "revision_conflict",
-                    "The voice changed in another client.",
-                    409,
-                )
-            registration = dict(
-                ((voice.metadata_json or {}).get("providers") or {}).get(service_id)
-                or {}
-            )
-            connections = db_session.get(AppSetting, "services.tts")
-            defaults = db_session.get(AppSetting, "defaults.tts")
-            connection_value = (
-                dict(connections.value_json or {})
-                if connections and isinstance(connections.value_json, dict)
-                else {}
-            )
-            default_value = (
-                dict(defaults.value_json or {})
-                if defaults and isinstance(defaults.value_json, dict)
-                else {}
-            )
-        if not registration:
-            return error_response(
-                "not_found", "This voice is not registered with that service.", 404
-            )
-        if registration.get("managed_by") != "pandrator":
-            return error_response(
-                "legacy_registration",
-                "This older registration has no ownership proof, so Pandrator will "
-                "not delete it automatically.",
-                409,
-            )
-        service = tts_handler.get_service_config(
-            {**default_value, **connection_value}, service_id
-        )
+                return error_response("revision_conflict", "The voice changed in another client.", 409)
+            registration = dict(((voice.metadata_json or {}).get("providers") or {}).get(service_id) or {})
+            if not registration:
+                return error_response("not_found", "This voice is not registered with that service.", 404)
+            if registration.get("managed_by") != "pandrator":
+                return error_response("legacy_registration", "This older registration has no ownership proof, so Pandrator will not delete it automatically.", 409)
+            service, captured = provider_admission_settings(db_session, voice, service_id)
         if service is None:
-            return error_response("not_found", "TTS service not found.", 404)
-        service_adapter = (
-            str(service.get("adapter") or "").strip().lower().replace("-", "_")
-        )
+            return error_response("not_found", "TTS service not found in this workspace.", 404)
         linked_reference = registration.get("resource_kind") == "linked_reference"
         if not bool(service.get("supports_voice_deletion")) and not (
-            linked_reference and service_adapter == "audio_cpp"
-        ):
-            return error_response(
-                "unsupported",
-                "This TTS service does not advertise provider-side voice deletion.",
-                422,
-            )
+            linked_reference and normalize_tts_provider_id(service.get("adapter")) == "audio_cpp"):
+            return error_response("unsupported", "This TTS service does not advertise provider-side voice deletion.", 422)
         resolved_service_id = str(service.get("id") or service_id)
-        job = jobs.enqueue(
-            "voice.unpublish",
-            {
-                "voice_id": voice_id,
-                "service_id": resolved_service_id,
-                "service": str(service.get("name") or resolved_service_id),
-                "expected_voice_revision": expected_revision,
-            },
-            resource_keys=[
-                f"voice:{voice_id}",
-                f"service:tts:{resolved_service_id}",
-            ],
-        )
-        return jsonify(_job_payload(job)), 202
+        job_payload = {
+            "workspace_id": voice.workspace_id, "voice_id": voice_id,
+            "service_id": resolved_service_id, "service": str(service.get("name") or resolved_service_id),
+            "expected_voice_revision": expected_revision, **captured,
+        }
+        try:
+            with database.immediate_session() as db_session:
+                current_voice = require_voice_run_access(db_session, access, voice_id, workspace_id=workspace_id)
+                reservation = processing_receipt(db_session, access, current_voice,
+                    "removeVoiceFromProvider", idempotency_key, idempotency_payload)
+                if reservation is not None:
+                    replay = replay_idempotency(reservation, etag_key="voice_revision")
+                    if replay is not None:
+                        return replay
+                if current_voice.revision != expected_revision or (
+                    ((current_voice.metadata_json or {}).get("providers") or {}).get(service_id) != registration):
+                    if reservation is not None:
+                        abandon_idempotency(db_session, reservation)
+                    return error_response("revision_conflict", "The voice changed in another client.", 409)
+                check_voice_provider_settings(db_session, job_payload, current_voice.workspace_id)
+                job = jobs.enqueue_in_session(db_session, "voice.unpublish", job_payload,
+                    resource_keys=[f"voice:{voice_id}", f"service:tts:{resolved_service_id}"],
+                    workspace_id=current_voice.workspace_id)
+                result = {**_job_payload(job), "workspace_id": current_voice.workspace_id}
+                if reservation is not None:
+                    services.idempotency.complete(db_session, reservation, response=result,
+                        status_code=202, resource_kind="job", resource_id=job.id)
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_failure(error)
+        return jsonify(result), 202
 
 
     @app.post("/api/v1/voices/<voice_id>/samples/<sample_id>/transcribe")
     @require_auth
-    def voice_sample_transcribe(voice_id: str, sample_id: str):
+    @voice_record_scope
+    def voice_sample_transcribe(voice_id: str, sample_id: str, *, workspace_id=None):
         raw_settings = request.get_json(silent=True)
         settings = {} if raw_settings is None else raw_settings
         if not isinstance(settings, dict):
@@ -1344,54 +1303,77 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
-        if idempotency_key is not None:
-            try:
-                with database.immediate_session() as db_session:
-                    try:
-                        reservation = services.idempotency.begin(
-                            db_session,
-                            principal=idempotency.principal(),
-                            operation_id="transcribeVoiceSample",
-                            idempotency_key=idempotency_key,
-                            payload={
-                                "voice_id": voice_id,
-                                "sample_id": sample_id,
-                                "settings": settings,
-                            },
-                        )
-                    except (
-                        IdempotencyConflict,
-                        IdempotencyInProgress,
-                        ValueError,
-                    ) as error:
-                        return idempotency_failure(error)
-                    replay = replay_idempotency(reservation)
-                    if replay is not None:
-                        return replay
-                    voice = db_session.get(Voice, voice_id)
-                    sample = db_session.get(VoiceSample, sample_id)
-                    if voice is None or sample is None or sample.voice_id != voice_id:
-                        abandon_idempotency(db_session, reservation)
-                        return error_response("not_found", "Voice sample not found.", 404)
-                    try:
-                        resolved_settings = resolve_voice_sample_transcription_settings(
-                            settings, voice.language
-                        )
-                    except ValueError as error:
-                        abandon_idempotency(db_session, reservation)
-                        return error_response("validation_error", str(error), 422)
-                    job = jobs.enqueue_in_session(
+        access = context.guards.access_context()
+        try:
+            with database.immediate_session() as db_session:
+                try:
+                    require_actor_in_session(
                         db_session,
-                        "voice.transcribe",
-                        {
+                        access.actor,
+                        required_scopes=("app.read", "app.write", "app.run"),
+                    )
+                except PermissionError:
+                    raise AccessDenied() from None
+                voice = require_voice_access(
+                    db_session,
+                    access,
+                    voice_id,
+                    workspace_id=workspace_id,
+                    action=WorkspaceAction.EDIT,
+                )
+                legacy = credential_namespace(db_session, voice.workspace_id).legacy_host_access
+                reservation = None
+                if idempotency_key is not None:
+                    principal = idempotency.principal()
+                    if not legacy:
+                        principal = replace(
+                            principal,
+                            subject=f"workspace:{voice.workspace_id}:user:{access.actor.user_id}",
+                        )
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=principal,
+                        operation_id="transcribeVoiceSample",
+                        idempotency_key=idempotency_key,
+                        payload={
                             "voice_id": voice_id,
                             "sample_id": sample_id,
-                            "sample_artifact_id": sample.artifact_id,
-                            "settings": resolved_settings,
+                            "settings": settings,
                         },
-                        resource_keys=stt_resource_keys(resolved_settings),
                     )
-                    result = _job_payload(job)
+                    if reservation.response is not None:
+                        previous, _status = reservation.response
+                        if (not legacy and previous.get("workspace_id") != voice.workspace_id) or (
+                            "workspace_id" in previous
+                            and previous["workspace_id"] != voice.workspace_id
+                        ):
+                            raise WorkspaceNotFound()
+                        return replay_idempotency(reservation)
+                sample = voice_sample_in_workspace(
+                    db_session, sample_id, voice_id=voice_id, workspace_id=voice.workspace_id
+                )
+                if sample is None:
+                    if reservation is not None:
+                        abandon_idempotency(db_session, reservation)
+                    return error_response("not_found", "Voice sample not found.", 404)
+                captured = capture_voice_transcription_settings(
+                    db_session, voice.workspace_id, settings, voice.language
+                )
+                job = jobs.enqueue_in_session(
+                    db_session,
+                    "voice.transcribe",
+                    {
+                        "workspace_id": voice.workspace_id,
+                        "voice_id": voice_id,
+                        "sample_id": sample_id,
+                        "sample_artifact_id": sample.artifact_id,
+                        **captured,
+                    },
+                    resource_keys=stt_resource_keys(captured["settings"]),
+                    workspace_id=voice.workspace_id,
+                )
+                result = {**_job_payload(job), "workspace_id": voice.workspace_id}
+                if reservation is not None:
                     services.idempotency.complete(
                         db_session,
                         reservation,
@@ -1400,125 +1382,116 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                         resource_kind="job",
                         resource_id=job.id,
                     )
-            except (
-                IdempotencyConflict,
-                IdempotencyInProgress,
-                ValueError,
-            ) as error:
-                return idempotency_failure(error)
-            return jsonify(result), 202
-        with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            sample = db_session.get(VoiceSample, sample_id)
-            if voice is None or sample is None or sample.voice_id != voice_id:
-                return error_response("not_found", "Voice sample not found.", 404)
-            artifact_id = sample.artifact_id
-            settings = resolve_voice_sample_transcription_settings(
-                settings, voice.language
-            )
-        job = jobs.enqueue(
-            "voice.transcribe",
-            {
-                "voice_id": voice_id,
-                "sample_id": sample_id,
-                "sample_artifact_id": artifact_id,
-                "settings": settings,
-            },
-            resource_keys=stt_resource_keys(settings),
-        )
-        return jsonify(_job_payload(job)), 202
-
+        except (IdempotencyConflict, IdempotencyInProgress) as error:
+            return idempotency_failure(error)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(result), 202
 
     @app.patch("/api/v1/voices/<voice_id>/samples/<sample_id>/transcript")
     @require_auth
-    def voice_sample_transcript(voice_id: str, sample_id: str):
-        payload = VoiceTranscriptReview.model_validate(
-            request.get_json(silent=True) or {}
-        )
+    @voice_record_scope
+    def voice_sample_transcript(voice_id: str, sample_id: str, *, workspace_id=None):
+        payload = VoiceTranscriptReview.model_validate(request.get_json(silent=True) or {})
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
-        if idempotency_key is not None:
-            request_payload = {
-                "voice_id": voice_id,
-                "sample_id": sample_id,
-                "request": payload.model_dump(mode="json"),
-                "if_match": raw_etag,
-            }
-            try:
-                with database.immediate_session() as db_session:
+        request_payload = {
+            "voice_id": voice_id,
+            "sample_id": sample_id,
+            "request": payload.model_dump(mode="json"),
+            "if_match": raw_etag,
+        }
+        access = context.guards.access_context()
+        try:
+            with database.immediate_session() as db_session:
+                voice = require_voice_access(
+                    db_session,
+                    access,
+                    voice_id,
+                    workspace_id=workspace_id,
+                    action=WorkspaceAction.EDIT,
+                )
+                legacy = credential_namespace(db_session, voice.workspace_id).legacy_host_access
+                reservation = None
+                if idempotency_key is not None:
+                    principal = idempotency.principal()
+                    if not legacy:
+                        principal = replace(
+                            principal,
+                            subject=f"workspace:{voice.workspace_id}:user:{access.actor.user_id}",
+                        )
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=principal,
+                        operation_id="reviewVoiceSampleTranscript",
+                        idempotency_key=idempotency_key,
+                        payload=request_payload,
+                    )
+                    if reservation.response is not None:
+                        previous, _status = reservation.response
+                        if (not legacy and previous.get("workspace_id") != voice.workspace_id) or (
+                            "workspace_id" in previous
+                            and previous["workspace_id"] != voice.workspace_id
+                        ):
+                            raise WorkspaceNotFound()
+                        return replay_idempotency(reservation, etag_key="voice_revision")
+
+                def rejected(code, message, status):
+                    if reservation is not None:
+                        abandon_idempotency(db_session, reservation)
+                    return error_response(code, message, status)
+
+                sample = voice_sample_in_workspace(
+                    db_session, sample_id, voice_id=voice_id, workspace_id=voice.workspace_id
+                )
+                if sample is None:
+                    return rejected("not_found", "Voice sample not found.", 404)
+                if is_bundled_voice(voice):
+                    return rejected(
+                        "bundled_voice_protected",
+                        "The bundled reference transcript cannot be edited.",
+                        409,
+                    )
+                expected_revision = payload.expected_voice_revision
+                if expected_revision is None and raw_etag:
                     try:
-                        reservation = services.idempotency.begin(
-                            db_session,
-                            principal=idempotency.principal(),
-                            operation_id="reviewVoiceSampleTranscript",
-                            idempotency_key=idempotency_key,
-                            payload=request_payload,
-                        )
-                    except (
-                        IdempotencyConflict,
-                        IdempotencyInProgress,
-                        ValueError,
-                    ) as error:
-                        return idempotency_failure(error)
-                    replay = replay_idempotency(reservation, etag_key="voice_revision")
-                    if replay is not None:
-                        return replay
-                    voice = db_session.get(Voice, voice_id)
-                    sample = db_session.get(VoiceSample, sample_id)
-                    if voice is None or sample is None or sample.voice_id != voice_id:
-                        abandon_idempotency(db_session, reservation)
-                        return error_response("not_found", "Voice sample not found.", 404)
-                    if is_bundled_voice(voice):
-                        abandon_idempotency(db_session, reservation)
-                        return error_response(
-                            "bundled_voice_protected",
-                            "The bundled reference transcript cannot be edited.",
-                            409,
-                        )
-                    expected_revision = payload.expected_voice_revision
-                    if expected_revision is None and raw_etag:
-                        try:
-                            expected_revision = int(raw_etag)
-                        except ValueError:
-                            abandon_idempotency(db_session, reservation)
-                            return error_response(
-                                "precondition_required",
-                                "If-Match must contain the current voice revision.",
-                                428,
-                            )
-                    if expected_revision is None:
-                        abandon_idempotency(db_session, reservation)
-                        return error_response(
+                        expected_revision = int(raw_etag)
+                    except ValueError:
+                        return rejected(
                             "precondition_required",
-                            "Provide the current voice revision before editing a transcript.",
+                            "If-Match must contain the current voice revision.",
                             428,
                         )
-                    if voice.revision != expected_revision:
-                        abandon_idempotency(db_session, reservation)
-                        return error_response(
-                            "revision_conflict",
-                            "The voice changed in another client.",
-                            409,
-                        )
-                    sample.transcript = payload.transcript
-                    sample.transcript_language = payload.language
-                    sample.transcript_reviewed = True
-                    mark_provider_registrations_stale(
-                        voice,
-                        "The reviewed transcript changed.",
-                        sample_id=sample.id,
-                        reference_text_only=True,
+                if expected_revision is None:
+                    return rejected(
+                        "precondition_required",
+                        "Provide the current voice revision before editing a transcript.",
+                        428,
                     )
-                    voice.revision += 1
-                    voice.updated_at = utcnow()
-                    result = voice_sample_payload(
-                        db_session,
-                        paths,
-                        sample,
-                        voice_revision=voice.revision,
+                if voice.revision != expected_revision:
+                    return rejected(
+                        "revision_conflict", "The voice changed in another client.", 409
                     )
+                sample.transcript = payload.transcript
+                sample.transcript_language = payload.language
+                sample.transcript_reviewed = True
+                mark_provider_registrations_stale(
+                    voice,
+                    "The reviewed transcript changed.",
+                    sample_id=sample.id,
+                    reference_text_only=True,
+                )
+                voice.revision += 1
+                voice.updated_at = utcnow()
+                result = {
+                    **voice_sample_payload(
+                        db_session, paths, sample, voice_revision=voice.revision
+                    ),
+                    "workspace_id": voice.workspace_id,
+                }
+                if reservation is not None:
                     services.idempotency.complete(
                         db_session,
                         reservation,
@@ -1527,65 +1500,8 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                         resource_kind="voice_sample",
                         resource_id=sample.id,
                     )
-            except (
-                IdempotencyConflict,
-                IdempotencyInProgress,
-                ValueError,
-            ) as error:
-                return idempotency_failure(error)
-            response = jsonify(result)
-            response.headers["ETag"] = f'"{result["voice_revision"]}"'
-            return response
-        with database.session() as db_session:
-            voice = db_session.get(Voice, voice_id)
-            sample = db_session.get(VoiceSample, sample_id)
-            if voice is None or sample is None or sample.voice_id != voice_id:
-                return error_response("not_found", "Voice sample not found.", 404)
-            if is_bundled_voice(voice):
-                return error_response(
-                    "bundled_voice_protected",
-                    "The bundled reference transcript cannot be edited.",
-                    409,
-                )
-            expected_revision = payload.expected_voice_revision
-            if expected_revision is None and raw_etag:
-                try:
-                    expected_revision = int(raw_etag)
-                except ValueError:
-                    return error_response(
-                        "precondition_required",
-                        "If-Match must contain the current voice revision.",
-                        428,
-                    )
-            if expected_revision is None:
-                return error_response(
-                    "precondition_required",
-                    "Provide the current voice revision before editing a transcript.",
-                    428,
-                )
-            if voice.revision != expected_revision:
-                return error_response(
-                    "revision_conflict",
-                    "The voice changed in another client.",
-                    409,
-                )
-            sample.transcript = payload.transcript
-            sample.transcript_language = payload.language
-            sample.transcript_reviewed = True
-            mark_provider_registrations_stale(
-                voice,
-                "The reviewed transcript changed.",
-                sample_id=sample.id,
-                reference_text_only=True,
-            )
-            voice.revision += 1
-            voice.updated_at = utcnow()
-            result = voice_sample_payload(
-                db_session,
-                paths,
-                sample,
-                voice_revision=voice.revision,
-            )
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_failure(error)
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["voice_revision"]}"'
         return response

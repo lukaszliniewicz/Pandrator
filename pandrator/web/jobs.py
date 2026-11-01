@@ -3,27 +3,42 @@
 from __future__ import annotations
 
 import logging
+import math
 import random
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
-from typing import Any, ClassVar, TypeGuard, cast
+from typing import Any, ClassVar, TypeGuard
 
-from sqlalchemy import and_, delete, func, or_, select, update
-from sqlalchemy.engine import CursorResult
+from sqlalchemy import and_, delete, false, func, or_, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from pandrator.logic.tts_service_identity import normalize_service_id
 
+from .accounts.administration import PRIVILEGED_JOB_SCOPES, AdministratorRequired
+from .accounts.execution_actor import (
+    ExecutionActor,
+    actor_from_storage,
+    actor_to_storage,
+    current_execution_actor,
+    execution_actor_scope,
+)
+from .accounts.job_authorization import require_execution_actor_in_session
+from .accounts.model_acquisition import model_acquisition_for_actor
 from .credentials import SecretRedactor
 from .database import Database, is_sqlite_busy
+from .job_execution import current_job_lease
+from .job_identity import job_creation_ownership
+from .model_base import as_utc
 from .model_maintenance import ensure_app_job_allowed
 from .models import (
     AgentRun,
     GenerationRun,
     Job,
+    JobActorRecord,
     JobEvent,
     QuickTranscription,
     ResourceClaim,
@@ -31,8 +46,14 @@ from .models import (
     SessionRecord,
     utcnow,
 )
+from .output_storage import storage_effect_scope, storage_wait_detail
+from .projects.copy_contracts import PROJECT_COPY_JOB_KIND, public_copy_job_result
+from .resource_keys import canonical_resource_key
+from .storage_admission import StoragePressure
 from .training_state import reconcile_training_runs_in_session
 from .update_maintenance import update_maintenance_active
+
+_ATOMIC_COMPLETION_JOB_KINDS = frozenset({PROJECT_COPY_JOB_KIND, "subtitle.evidence"})
 
 JobHandler = Callable[
     [dict[str, Any], Callable[[float, str | None], None], threading.Event],
@@ -138,6 +159,8 @@ class JobQueue:
             job.session_id or kind.startswith("session.")
         ):
             entities.add("sessions")
+        if event_type == "job.succeeded" and kind == PROJECT_COPY_JOB_KIND:
+            entities.add("sessions")
         if kind.startswith(("source.", "pdf.")):
             entities.add("sources")
         if (
@@ -164,8 +187,10 @@ class JobQueue:
         return sorted(entities)
 
     def _event(
-        self, session, job_id: str | None, event_type: str, payload: dict | None = None
+        self, session, job_id: str, event_type: str, payload: dict | None = None
     ) -> JobEvent:
+        if type(job_id) is not str or not job_id.strip():
+            raise ValueError("A job event requires a job ID.")
         event_payload = (
             self.redact_diagnostic(payload) if isinstance(payload, dict) else {}
         )
@@ -256,6 +281,8 @@ class JobQueue:
             and job.lease_owner == worker_id
             and job.lease_generation == lease_generation
             and (not require_running or job.status == "running")
+            and job.lease_expires_at is not None
+            and as_utc(job.lease_expires_at) > utcnow()
         )
 
     def _reconcile_stale_locked(self, session) -> None:
@@ -510,6 +537,8 @@ class JobQueue:
         workflow_run_id: str | None = None,
         max_attempts: int = 1,
         resource_keys: list[str] | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
     ) -> Job:
         with self.database.session() as session:
             job = self.enqueue_in_session(
@@ -520,6 +549,8 @@ class JobQueue:
                 workflow_run_id=workflow_run_id,
                 max_attempts=max_attempts,
                 resource_keys=resource_keys,
+                workspace_id=workspace_id,
+                project_id=project_id,
             )
             session.flush()
             session.expunge(job)
@@ -535,44 +566,94 @@ class JobQueue:
         workflow_run_id: str | None = None,
         max_attempts: int = 1,
         resource_keys: list[str] | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
     ) -> Job:
         """Enqueue within a caller-owned transaction without committing it."""
 
-        job = Job(
-            kind=kind,
-            payload_json=payload or {},
-            session_id=session_id,
-            workflow_run_id=workflow_run_id,
-            max_attempts=max(1, int(max_attempts)),
-            resource_keys_json=sorted(
-                {
-                    _canonical_tts_resource_key(str(key))
-                    for key in (resource_keys or [])
-                    if str(key).strip()
-                }
-            ),
-        )
-        session.add(job)
-        session.flush()
-        # Check after acquiring the SQLite writer lock, so an older read cannot
-        # submit work after a purge has claimed the session.
-        if session_id:
-            owner = session.get(SessionRecord, session_id, populate_existing=True)
-            if owner is None or owner.trashed_at is not None or owner.status == "purging":
-                raise ValueError(
-                    "Restore the session before starting work; permanent deletion cannot be resumed as a session."
-                )
-        # The flush has acquired the app SQLite writer transaction.  The
-        # manager guard must run before the queue event and return so a busy
-        # check raises into the caller's transaction and removes this job.
-        ensure_app_job_allowed(self.database.path)
-        self._event(
-            session,
-            job.id,
-            "job.queued",
-            {"kind": kind, "session_id": session_id},
-        )
-        session.flush()
+        try:
+            # Flush caller-owned roots, then acquire the writer even when that
+            # flush had nothing to write. Resolve current authority only after
+            # this fence, without inserting a temporarily unscoped job.
+            session.flush()
+            session.execute(
+                update(Job).where(false()).values(id=Job.id),
+                execution_options={"synchronize_session": False},
+            )
+            actor = current_execution_actor.get()
+            actor_record = None
+            if actor is not None:
+                actor_record = actor_to_storage(actor)
+                if actor_record is None:
+                    raise ValueError("The current execution actor is invalid.")
+            privileged_scopes = PRIVILEGED_JOB_SCOPES.get(kind)
+            try:
+                if privileged_scopes is not None:
+                    require_execution_actor_in_session(
+                        session,
+                        actor,
+                        required_scopes=privileged_scopes,
+                        require_admin=True,
+                        allow_host=True,
+                    )
+                elif actor is not None:
+                    require_execution_actor_in_session(session, actor, allow_host=True)
+            except PermissionError:
+                if privileged_scopes is not None:
+                    raise AdministratorRequired() from None
+                raise
+            ownership = job_creation_ownership(
+                session,
+                session_id=session_id,
+                workflow_run_id=workflow_run_id,
+                project_id=project_id,
+                workspace_id=workspace_id,
+            )
+            job = Job(
+                kind=kind,
+                payload_json=payload or {},
+                session_id=session_id,
+                workflow_run_id=workflow_run_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
+                max_attempts=max(1, int(max_attempts)),
+                resource_keys_json=sorted(
+                    {
+                        _canonical_tts_resource_key(str(key))
+                        for key in (resource_keys or [])
+                        if str(key).strip()
+                    }
+                ),
+            )
+            session.add(job)
+            session.flush()
+            if actor_record is not None:
+                session.add(JobActorRecord(job_id=job.id, **actor_record))
+            # Check after acquiring the SQLite writer lock, so an older read
+            # cannot submit work after a purge has claimed the session.
+            if session_id:
+                owner = session.get(SessionRecord, session_id, populate_existing=True)
+                if owner is None or owner.trashed_at is not None or owner.status == "purging":
+                    raise ValueError(
+                        "Restore the session before starting work; permanent deletion cannot be resumed as a session."
+                    )
+            # The flush has acquired the app SQLite writer transaction.  The
+            # manager guard must run before the queue event and return so a busy
+            # check raises into the caller's transaction and removes this job.
+            ensure_app_job_allowed(self.database.path)
+            self._event(
+                session,
+                job.id,
+                "job.queued",
+                {"kind": kind, "session_id": session_id},
+            )
+            session.flush()
+        except Exception:
+            # Admission shares the caller's transaction.  A rejected enqueue
+            # must also undo the domain work that led to it, so a caller cannot
+            # catch the error and commit a partial, unscoped job or its inputs.
+            session.rollback()
+            raise
         return job
 
     def acquire_resources(
@@ -587,10 +668,12 @@ class JobQueue:
         normalized_keys = sorted(
             {_canonical_tts_resource_key(str(key).strip()) for key in keys if str(key).strip()}
         )
-        now = utcnow()
-        expires = now + timedelta(seconds=max(5, lease_seconds))
         with self.database.immediate_session() as session:
-            job = session.get(Job, job_id)
+            now = utcnow()
+            expires = now + timedelta(seconds=max(5, lease_seconds))
+            job = session.scalar(
+                select(Job).where(Job.id == job_id, Job.lease_expires_at > now)
+            )
             if not self._owns_lease(job, worker_id, lease_generation):
                 return False
             if not normalized_keys:
@@ -606,18 +689,22 @@ class JobQueue:
             )
             if conflict is not None:
                 return False
-            tts_keys = {key for key in normalized_keys if key.startswith("service:tts:")}
-            if tts_keys:
-                # Older workers may hold an alias key. Match its identity
-                # without rewriting another worker's active lease.
+            alias_filters = []
+            if any(key.startswith("service:tts:") for key in normalized_keys):
+                alias_filters.append(ResourceClaim.resource_key.like("service:tts:%"))
+            if any(key.startswith("gpu:") for key in normalized_keys):
+                alias_filters.append(ResourceClaim.resource_key.like("gpu:%"))
+            if alias_filters:
+                # Match legacy spellings without rewriting an active lease.
+                identities = {canonical_resource_key(key) for key in normalized_keys}
                 legacy_keys = session.scalars(
                     select(ResourceClaim.resource_key).where(
-                        ResourceClaim.resource_key.like("service:tts:%"),
+                        or_(*alias_filters),
                         ResourceClaim.expires_at > now,
                         ResourceClaim.job_id != job_id,
                     )
                 )
-                if any(_canonical_tts_resource_key(key) in tts_keys for key in legacy_keys):
+                if any(canonical_resource_key(key) in identities for key in legacy_keys):
                     return False
             claims = {
                 claim.resource_key: claim
@@ -651,26 +738,35 @@ class JobQueue:
         *,
         lease_generation: int,
         lease_seconds: int = 30,
+        expected_keys: Sequence[str] | None = None,
     ) -> bool:
-        with self.database.session(busy_timeout_ms=HEARTBEAT_WRITE_TIMEOUT_MS) as session:
-            result = session.execute(
+        with self.database.immediate_session(busy_timeout_ms=HEARTBEAT_WRITE_TIMEOUT_MS) as session:
+            now = utcnow()
+            renewed_keys = list(session.scalars(
                 update(ResourceClaim)
                 .where(
                     ResourceClaim.job_id == job_id,
                     ResourceClaim.lease_owner == worker_id,
                     ResourceClaim.lease_generation == lease_generation,
+                    ResourceClaim.expires_at > now,
                     select(Job.id)
                     .where(
                         Job.id == job_id,
                         Job.status == "running",
                         Job.lease_owner == worker_id,
                         Job.lease_generation == lease_generation,
+                        Job.lease_expires_at > now,
                     )
                     .exists(),
                 )
-                .values(expires_at=utcnow() + timedelta(seconds=max(5, lease_seconds)))
-            )
-            return bool(cast(CursorResult[Any], result).rowcount)
+                .values(expires_at=now + timedelta(seconds=max(5, lease_seconds)))
+                .returning(ResourceClaim.resource_key)
+            ))
+            if expected_keys is None:
+                return bool(renewed_keys)
+            required = {canonical_resource_key(str(key)) for key in expected_keys if str(key).strip()}
+            renewed = {canonical_resource_key(str(key)) for key in renewed_keys}
+            return required.issubset(renewed)
 
     def release_resources(
         self,
@@ -723,6 +819,56 @@ class JobQueue:
             )
             return True
 
+    def defer_for_storage(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        lease_generation: int,
+        detail: str,
+        retry_delay_seconds: float = 60.0,
+    ) -> bool:
+        delay = float(retry_delay_seconds)
+        if not math.isfinite(delay):
+            raise ValueError("Storage retry delay must be finite.")
+        delay = max(1.0, min(delay, 300.0))
+        safe_detail = self.secret_redactor.redact(detail)
+
+        def defer(session: Session) -> bool:
+            # run_immediate has already acquired BEGIN IMMEDIATE, so this time
+            # and the lease check fence the exact claim that is being released.
+            now = utcnow()
+            job = session.scalar(
+                select(Job).where(
+                    Job.id == job_id,
+                    Job.status == "running",
+                    Job.lease_owner == worker_id,
+                    Job.lease_generation == lease_generation,
+                    Job.lease_expires_at > now,
+                )
+            )
+            if job is None:
+                return False
+
+            job.status = "queued"
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.attempts = max(0, job.attempts - 1)
+            job.available_at = now + timedelta(seconds=delay)
+            job.error_code = "storage_pressure"
+            job.error_message = safe_detail
+            job.progress_detail = safe_detail
+            job.updated_at = now
+            self._event(
+                session,
+                job.id,
+                "job.waiting_for_storage",
+                {"detail": safe_detail, "retry_after_ms": round(delay * 1000)},
+            )
+            return True
+
+        return self.database.run_immediate(defer)
+
     def list(
         self, limit: int = 100, *, session_id: str | None = None, kind: str | None = None
     ) -> list[Job]:
@@ -753,11 +899,16 @@ class JobQueue:
             session.expunge(job)
             return job
 
-    def waiting_for_jobs(
-        self, records: list[Job]
-    ) -> dict[str, dict[str, Any]]:
-        """Return the first live resource blocker for each queued record."""
+    def waiting_for_jobs(self, records: list[Job]) -> dict[str, dict[str, Any]]:
+        """Return blockers for trusted internal callers."""
+        with self.database.session() as session:
+            return self.waiting_for_jobs_in_session(session, records)
 
+    def waiting_for_jobs_in_session(
+        self, session: Session, records: list[Job], *,
+        visibility: ColumnElement[bool] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Select blockers in the caller's unit, optionally intersecting its policy."""
         waiters_by_resource: dict[str, list[str]] = {}
         for record in records:
             if record.status != "queued":
@@ -766,7 +917,7 @@ class JobQueue:
             if not isinstance(raw_keys, list):
                 continue
             keys = {
-                _canonical_tts_resource_key(str(key).strip())
+                canonical_resource_key(str(key))
                 for key in raw_keys
                 if isinstance(key, str) and key.strip()
             }
@@ -786,54 +937,103 @@ class JobQueue:
                 resource_filter,
                 ResourceClaim.resource_key.like("service:tts:%"),
             )
+        if any(key.startswith("gpu:") for key in requested_keys):
+            resource_filter = or_(resource_filter, ResourceClaim.resource_key.like("gpu:%"))
 
         now = utcnow()
         waiting_for: dict[str, dict[str, Any]] = {}
-        with self.database.session() as session:
-            claims = session.execute(
-                select(ResourceClaim, Job)
-                .join(Job, Job.id == ResourceClaim.job_id)
-                .where(
-                    resource_filter,
-                    ResourceClaim.expires_at > now,
-                    Job.lease_expires_at > now,
-                    Job.status.in_(("running", "cancel_requested")),
-                    ResourceClaim.lease_owner == Job.lease_owner,
-                    ResourceClaim.lease_generation == Job.lease_generation,
-                    Job.kind != "transcription.quick",
-                    ~select(QuickTranscription.id)
-                    .where(QuickTranscription.job_id == Job.id)
-                    .exists(),
-                )
-                .order_by(Job.created_at.asc(), Job.id.asc(), ResourceClaim.resource_key.asc())
-            ).all()
-            for claim, blocker in claims:
-                resource_key = _canonical_tts_resource_key(claim.resource_key.strip())
-                for waiter_id in waiters_by_resource.get(resource_key, ()):
-                    if waiter_id == blocker.id or waiter_id in waiting_for:
-                        continue
-                    waiting_for[waiter_id] = {
-                        "id": blocker.id,
-                        "kind": blocker.kind,
-                        "progress_detail": blocker.progress_detail,
-                    }
+        statement = (
+            select(ResourceClaim, Job)
+            .join(Job, Job.id == ResourceClaim.job_id)
+            .where(
+                resource_filter,
+                ResourceClaim.expires_at > now,
+                Job.lease_expires_at > now,
+                Job.status.in_(("running", "cancel_requested")),
+                ResourceClaim.lease_owner == Job.lease_owner,
+                ResourceClaim.lease_generation == Job.lease_generation,
+                Job.kind != "transcription.quick",
+                ~select(QuickTranscription.id)
+                .where(QuickTranscription.job_id == Job.id)
+                .exists(),
+            )
+            .order_by(Job.created_at.asc(), Job.id.asc(), ResourceClaim.resource_key.asc())
+        )
+        if visibility is not None:
+            statement = statement.where(visibility)
+        with session.no_autoflush:
+            claims = session.execute(statement).all()
+        for claim, blocker in claims:
+            resource_key = canonical_resource_key(claim.resource_key)
+            for waiter_id in waiters_by_resource.get(resource_key, ()):
+                if waiter_id == blocker.id or waiter_id in waiting_for:
+                    continue
+                waiting_for[waiter_id] = {
+                    "id": blocker.id,
+                    "kind": blocker.kind,
+                    "progress_detail": blocker.progress_detail,
+                }
         return waiting_for
+
+    def _next_claimable_job_id(self, session: Session, now) -> str | None:
+        """Skip occupied resources without spending attempts or rewriting waiters."""
+        running_session_ids = select(Job.session_id).where(
+            Job.status == "running",
+            Job.session_id.is_not(None),
+            Job.lease_expires_at > now,
+        )
+        statement = (
+            select(Job.id, Job.resource_keys_json)
+            .where(
+                or_(
+                    self._available_filter(now),
+                    and_(Job.status == "running", Job.lease_expires_at <= now),
+                ),
+                or_(Job.session_id.is_(None), Job.session_id.not_in(running_session_ids)),
+                Job.attempts < Job.max_attempts,
+            )
+            .order_by(Job.created_at.asc(), Job.id.asc())
+        )
+        occupied: dict[str, set[str]] = {}
+        for key, owner_job_id in session.execute(
+            select(ResourceClaim.resource_key, ResourceClaim.job_id).where(
+                ResourceClaim.expires_at > now
+            )
+        ):
+            occupied.setdefault(canonical_resource_key(key), set()).add(owner_job_id)
+        if not occupied:
+            return session.scalar(statement.limit(1))
+        candidates = session.execute(statement.execution_options(yield_per=128))
+        try:
+            for job_id, keys in candidates:
+                if all(
+                    occupied.get(canonical_resource_key(str(key)), set())
+                    .issubset({job_id})
+                    for key in (keys or [])
+                ):
+                    return job_id
+        finally:
+            candidates.close()
+        return None
 
     def claim(self, worker_id: str, lease_seconds: int = 30) -> Job | None:
         if update_maintenance_active(self.database.path.parent):
             return None
         now = utcnow()
         with self.database.session() as session:
-            potentially_available = session.scalar(
+            if session.scalar(
                 select(Job.id)
-                .where(
-                    or_(
-                        self._available_filter(now),
-                        self._stale_filter(now),
-                    )
-                )
+                .where(or_(self._available_filter(now), self._stale_filter(now)))
                 .limit(1)
-            )
+            ) is None:
+                return None
+            potentially_available = self._next_claimable_job_id(session, now)
+            if potentially_available is None:
+                # Expired owners still need reconciliation even when their
+                # resource claims temporarily hide all queued candidates.
+                potentially_available = session.scalar(
+                    select(Job.id).where(self._stale_filter(now)).limit(1)
+                )
         if potentially_available is None:
             return None
         with self.database.immediate_session() as session:
@@ -842,32 +1042,15 @@ class JobQueue:
             now = utcnow()
             self._reconcile_stale_locked(session)
             session.flush()
-            running_session_ids = select(Job.session_id).where(
-                Job.status == "running",
-                Job.session_id.is_not(None),
-                Job.lease_expires_at.is_not(None),
-                Job.lease_expires_at > now,
-            )
-            statement = (
-                select(Job)
-                .where(
-                    or_(
-                        self._available_filter(now),
-                        and_(Job.status == "running", Job.lease_expires_at <= now),
-                    ),
-                    or_(
-                        Job.session_id.is_(None),
-                        Job.session_id.not_in(running_session_ids),
-                    ),
-                    Job.attempts < Job.max_attempts,
-                )
-                .order_by(Job.created_at.asc())
-                .limit(1)
-            )
-            job = session.scalar(statement)
+            candidate_id = self._next_claimable_job_id(session, now)
+            job = session.get(Job, candidate_id) if candidate_id is not None else None
             if job is None:
                 return None
             reclaimed = job.status == "running"
+            if job.error_code == "storage_pressure":
+                job.error_code = None
+                job.error_message = None
+                job.progress_detail = None
             job.status = "running"
             job.lease_owner = worker_id
             job.lease_expires_at = now + timedelta(seconds=max(5, lease_seconds))
@@ -899,11 +1082,13 @@ class JobQueue:
         detail: str | None = None,
         lease_seconds: int = 30,
     ) -> bool:
-        now = utcnow()
         with self.database.immediate_session(
             busy_timeout_ms=HEARTBEAT_WRITE_TIMEOUT_MS
         ) as session:
-            job = session.get(Job, job_id)
+            now = utcnow()
+            job = session.scalar(select(Job).where(
+                Job.id == job_id, Job.lease_expires_at > now,
+            ))
             if not self._owns_lease(job, worker_id, lease_generation):
                 return False
             job.lease_expires_at = now + timedelta(seconds=max(5, lease_seconds))
@@ -978,6 +1163,10 @@ class JobQueue:
         if job.status == "queued":
             job.status = "canceled"
             job.finished_at = utcnow()
+            job.error_code = None
+            job.error_message = None
+            job.available_at = None
+            job.progress_detail = None
             event_type = "job.canceled"
         elif job.status in {"running", "cancel_requested"}:
             # The lease owner must acknowledge cancellation.  Clearing its
@@ -1029,28 +1218,56 @@ class JobQueue:
         lease_generation: int,
     ) -> None:
         with self.database.immediate_session() as session:
-            job = session.get(Job, job_id)
-            if not self._owns_lease(job, worker_id, lease_generation):
-                raise RuntimeError("Job lease is no longer owned by this worker.")
-            job.status = "succeeded"
-            job.progress = 1.0
-            job.result_json = self.redact_diagnostic(result or {})
-            job.error_code = None
-            job.error_message = None
-            retry_detail = (
-                f"Retry scheduled after attempt {job.attempts - 1} of {job.max_attempts}"
+            self.complete_in_session(
+                session, job_id, worker_id, result, lease_generation=lease_generation
             )
-            if job.progress_detail == retry_detail:
-                job.progress_detail = None
-            job.lease_owner = None
-            job.lease_expires_at = None
-            finished_at = utcnow()
-            job.finished_at = finished_at
-            job.updated_at = finished_at
-            self._event(session, job.id, "job.succeeded", job.result_json)
-            self._reconcile_generation_run_for_job_locked(session, job)
-            self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
-            reconcile_training_runs_in_session(session, [job_id])
+
+    def complete_in_session(
+        self,
+        session: Session,
+        job_id: str,
+        worker_id: str,
+        result: dict[str, Any] | None = None,
+        *,
+        lease_generation: int,
+    ) -> None:
+        """Seal domain publication and terminal success in one caller writer."""
+        job = session.get(Job, job_id, populate_existing=True)
+        if job is None:
+            raise RuntimeError("Job lease is no longer owned by this worker.")
+        # A handler may have sealed its output atomically before returning to
+        # Worker. This duplicate acknowledgement has no effects or new event.
+        if (
+            job.kind in _ATOMIC_COMPLETION_JOB_KINDS
+            and job.status == "succeeded"
+            and job.lease_generation == lease_generation
+        ):
+            if job.result_json == self.redact_diagnostic(result or {}):
+                return
+            raise RuntimeError("Job lease is no longer owned by this worker.")
+        if not self._owns_lease(job, worker_id, lease_generation):
+            raise RuntimeError("Job lease is no longer owned by this worker.")
+        safe_result = self.redact_diagnostic(result or {})
+        job.status = "succeeded"
+        job.progress = 1.0
+        job.result_json = safe_result
+        job.error_code = None
+        job.error_message = None
+        retry_detail = f"Retry scheduled after attempt {job.attempts - 1} of {job.max_attempts}"
+        if job.progress_detail == retry_detail:
+            job.progress_detail = None
+        job.lease_owner = None
+        job.lease_expires_at = None
+        finished_at = utcnow()
+        job.finished_at = finished_at
+        job.updated_at = finished_at
+        self._event(
+            session, job.id, "job.succeeded",
+            public_copy_job_result(job.id) if job.kind == PROJECT_COPY_JOB_KIND else job.result_json,
+        )
+        self._reconcile_generation_run_for_job_locked(session, job)
+        self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
+        reconcile_training_runs_in_session(session, [job_id])
 
     def fail(
         self,
@@ -1248,43 +1465,51 @@ class Worker:
         status: str,
         lease_generation: int,
     ) -> None:
-        """Update a linked agent run only while this claim is still current."""
-        payload = job.payload_json if isinstance(job.payload_json, dict) else {}
-        agent_run_id = str(payload.get("agent_run_id") or "")
-        from .models import AgentRun
-
+        """Record terminal state for this claim's active runs without reading bodies."""
         with self.queue.database.immediate_session() as session:
-            current_job = session.get(Job, job.id)
+            now = utcnow()
+            current_job = session.execute(
+                select(Job.lease_generation, Job.lease_owner, Job.session_id).where(
+                    Job.id == job.id,
+                    Job.lease_expires_at > now,
+                    Job.status.in_({"running", "cancel_requested"}),
+                )
+            ).one_or_none()
             if (
                 current_job is None
                 or current_job.lease_generation != lease_generation
                 or current_job.lease_owner != self.worker_id
+                or current_job.session_id != job.session_id
             ):
                 return
-            active_statuses = {"queued", "running", "retrying"}
-            if agent_run_id:
-                candidate = session.get(AgentRun, agent_run_id)
-                agent_runs = (
-                    [candidate]
-                    if candidate is not None and candidate.status in active_statuses
-                    else []
+            # The stored job link, not a payload-selected ID, owns bookkeeping.
+            # A job may create several phase runs after its immutable enqueue.
+            session.execute(
+                update(AgentRun)
+                .where(
+                    AgentRun.job_id == job.id,
+                    AgentRun.session_id == current_job.session_id,
+                    AgentRun.status.in_({"queued", "running", "retrying"}),
                 )
-            else:
-                # Transformation handlers create their AgentRun after the job
-                # begins, so its ID cannot be present in the immutable payload.
-                # Recover every active run owned by this exact job without
-                # touching completed stages from an earlier workflow step.
-                agent_runs = list(
-                    session.scalars(
-                        select(AgentRun).where(
-                            AgentRun.job_id == job.id,
-                            AgentRun.status.in_(active_statuses),
-                        )
-                    ).all()
-                )
-            for agent_run in agent_runs:
-                agent_run.status = status
-                agent_run.updated_at = utcnow()
+                .values(status=status, updated_at=now)
+                .execution_options(synchronize_session=False)
+            )
+
+    def _execution_actor_for_job(self, job_id: str) -> ExecutionActor | None:
+        """Read and strictly decode only this job's private attribution row."""
+
+        with self.queue.database.snapshot_session() as session:
+            record = session.get(JobActorRecord, job_id)
+            if record is None:
+                return None
+            actor = actor_from_storage(
+                record.user_id,
+                record.auth_revision,
+                record.context_json,
+            )
+            if actor is None:
+                raise ValueError("The job actor record is invalid.")
+            return actor
 
     def _run_claimed(
         self,
@@ -1331,12 +1556,21 @@ class Worker:
                     lease_lost_event.set()
                     cancel_event.set()
                     return False
-                self.queue.heartbeat_resources(
+                expected_resources = {
+                    _canonical_tts_resource_key(str(key).strip())
+                    for key in (job.resource_keys_json or []) if str(key).strip()
+                }
+                resources_renewed = self.queue.heartbeat_resources(
                     job.id,
                     self.worker_id,
                     lease_generation=lease_generation,
                     lease_seconds=WORKER_LEASE_SECONDS,
+                    expected_keys=sorted(expected_resources),
                 )
+                if expected_resources and not resources_renewed:
+                    lease_lost_event.set()
+                    cancel_event.set()
+                    return False
                 # Keep the grace clock aligned with the full job and resource lease.
                 last_successful_heartbeat = time.monotonic()
                 return True
@@ -1390,18 +1624,7 @@ class Worker:
             renew_lease(progress_value=value, progress_detail=detail)
 
         try:
-            monitor_thread.start()
-            # Handlers occasionally create child domain records (for example a
-            # GenerationRun) while still executing inside this durable job.
-            # Pass the owning job ID as internal context so those records can
-            # expose accurate status, cancellation, and error information.
-            if not isinstance(job.payload_json, dict):
-                raise TypeError("Job payload must be a JSON object.")
-            handler_payload = dict(job.payload_json)
-            handler_payload["_job_id"] = job.id
-            handler_payload["_lease_generation"] = lease_generation
-            from .job_execution import current_job_lease
-
+            execution_actor = self._execution_actor_for_job(job.id)
             lease_token = current_job_lease.set(
                 {
                     "job_id": job.id,
@@ -1410,7 +1633,35 @@ class Worker:
                 }
             )
             try:
-                result = handler(handler_payload, progress, cancel_event)
+                with (
+                    execution_actor_scope(execution_actor),
+                    model_acquisition_for_actor(self.queue.database),
+                ):
+                    privileged_scopes = PRIVILEGED_JOB_SCOPES.get(job.kind)
+                    if privileged_scopes is not None:
+                        with self.queue.database.immediate_session() as session:
+                            try:
+                                require_execution_actor_in_session(
+                                    session,
+                                    execution_actor,
+                                    required_scopes=privileged_scopes,
+                                    require_admin=True,
+                                    allow_host=True,
+                                )
+                            except PermissionError:
+                                raise AdministratorRequired() from None
+                    monitor_thread.start()
+                    # Handlers occasionally create child domain records (for
+                    # example a GenerationRun) while executing inside a durable
+                    # job. Pass the owning job ID as internal context so those
+                    # records can expose accurate status and cancellation.
+                    if not isinstance(job.payload_json, dict):
+                        raise TypeError("Job payload must be a JSON object.")
+                    handler_payload = dict(job.payload_json)
+                    handler_payload["_job_id"] = job.id
+                    handler_payload["_lease_generation"] = lease_generation
+                    with storage_effect_scope(self.queue.database):
+                        result = handler(handler_payload, progress, cancel_event)
             finally:
                 current_job_lease.reset(lease_token)
             canceled = self.queue.should_cancel(
@@ -1441,6 +1692,38 @@ class Worker:
                     result,
                     lease_generation=lease_generation,
                 )
+        except StoragePressure as error:
+            canceled = self.queue.should_cancel(
+                job.id,
+                self.worker_id,
+                lease_generation=lease_generation,
+            )
+            if canceled:
+                safe_message = self.queue.secret_redactor.redact(error)
+                logging.warning(
+                    "Worker job %s stopped after cancellation: %s",
+                    job.id,
+                    safe_message,
+                )
+                self._update_agent_run_status(job, "canceled", lease_generation)
+                self.queue.cancel_owned(
+                    job.id,
+                    self.worker_id,
+                    lease_generation=lease_generation,
+                )
+            elif not lease_lost_event.is_set():
+                try:
+                    self.queue.defer_for_storage(
+                        job.id,
+                        self.worker_id,
+                        lease_generation=lease_generation,
+                        detail=storage_wait_detail(error),
+                    )
+                except Exception as recovery_error:
+                    self._report_exception(
+                        f"Worker could not defer job {job.id} after storage pressure",
+                        recovery_error,
+                    )
         except Exception as error:
             safe_message = self.queue.secret_redactor.redact(error)
             safe_trace = self.queue.secret_redactor.redact(traceback.format_exc())

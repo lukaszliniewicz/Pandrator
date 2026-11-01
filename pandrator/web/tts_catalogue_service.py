@@ -5,18 +5,20 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from threading import Lock
 from time import monotonic
 from typing import Any, Protocol
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from pandrator.logic import tts_handler
 from pandrator.logic.preset_voice_metadata import decorate_preset_voices
+from pandrator.logic.speech_capabilities import decorate_service_capabilities
 from pandrator.logic.tts_provider_policy import DEFAULT_TTS_SERVICE_ID, provider_policy
 from pandrator.logic.tts_provider_profiles import (
     AUDIO_CPP_VOICE_DESIGN_MODELS,
@@ -24,6 +26,9 @@ from pandrator.logic.tts_provider_profiles import (
 )
 from pandrator.runtime import DataPaths
 
+from .access.contracts import AccessDenied
+from .accounts.actor_authorization import ActorAuthorizationDenied
+from .credential_identity import credential_namespace
 from .credentials import (
     TTS_SERVICE_ENVS,
     ProviderCredentialInput,
@@ -47,8 +52,11 @@ from .managed_services import (
     effective_tts_connection_mode,
 )
 from .manager_proxy import LocalManagerProxy, ManagerProxyError
-from .models import AppSetting, Artifact, Voice
+from .models import Artifact
+from .settings_identity import settings_workspace_id, workspace_setting_in_workspace
 from .settings_policy import BUILTIN_DEFAULTS
+from .speech_catalogue_access import CatalogueChanged
+from .speech_catalogue_projection import approved_tts_payload
 from .tts_catalogue_projection import (
     MAX_TTS_DETAIL_MODEL_IDS,
     MAX_TTS_SERVICE_FILTER_IDS,
@@ -64,6 +72,12 @@ from .tts_catalogue_projection import (
     normalize_service_id,
 )
 from .tts_provider_contracts import TtsCapabilities, TtsHealth, TtsProviderError
+from .voice_identity import voice_creation_workspace
+from .voice_queries import voices_in_workspace
+
+_CONNECTION_APPROVAL_SERVICE_FIELDS = frozenset(
+    {"id", "name", "enabled", "models", "connection_mode"}
+)
 
 
 class TtsCatalogueProviders(Protocol):
@@ -76,6 +90,7 @@ class TtsCatalogueProviders(Protocol):
         service: dict[str, Any],
         *,
         api_key: str = "",
+        before_io: Callable[[], None] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -89,6 +104,7 @@ class TtsCatalogueService:
         providers: TtsCatalogueProviders,
         *,
         manager_bridge: LocalManagerProxy | None = None,
+        _connection_config_cache: dict | None = None,
     ):
         self.database = database
         self.paths = paths
@@ -99,18 +115,28 @@ class TtsCatalogueService:
         self._native_discovery_guard = Lock()
         self._health_observations: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
         self._health_observations_guard = Lock()
+        self._connection_config_cache = _connection_config_cache
+        self._connection_cache_day: date | None = None
 
     _HEALTH_OBSERVATION_TTL_SECONDS = 60.0
     _MAX_HEALTH_OBSERVATIONS = 128
 
     @staticmethod
     def _native_discovery_key(
-        service: dict[str, Any], settings: dict[str, Any], api_key: str = "",
+        service: dict[str, Any],
+        settings: dict[str, Any],
+        api_key: str = "",
+        *,
+        workspace_id: str | None = None,
     ) -> str | None:
         service_id = normalize_service_id(service.get("id") or service.get("name"))
-        if normalize_service_id(service.get("adapter")) != "audio_cpp" and service_id not in {"gemini", "vertex_ai"}:
+        if normalize_service_id(service.get("adapter")) != "audio_cpp" and service_id not in {
+            "gemini",
+            "vertex_ai",
+        }:
             return None
         identity = {
+            "workspace_id": workspace_id,
             "service_id": normalize_service_id(service.get("id") or service.get("name")),
             "endpoint": str(service.get("api_base") or "").rstrip("/"),
             "connection_mode": service.get("connection_mode"),
@@ -118,17 +144,24 @@ class TtsCatalogueService:
             "credential_hash": hashlib.sha256(api_key.encode()).hexdigest(),
             "adc_identity_hash": service.get("_adc_identity_hash", ""),
         }
-        return hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
+        return hashlib.sha256(
+            json.dumps(identity, sort_keys=True, default=str).encode()
+        ).hexdigest()
 
     @staticmethod
     def _health_observation_key(
-        service: dict[str, Any], settings: dict[str, Any], api_key: str = "",
+        service: dict[str, Any],
+        settings: dict[str, Any],
+        api_key: str = "",
+        *,
+        workspace_id: str | None = None,
     ) -> str | None:
         """Fence short-lived health by provider, endpoint, settings, and credential."""
         service_id = normalize_service_id(service.get("id") or service.get("name"))
         if not service_id:
             return None
         identity = {
+            "workspace_id": workspace_id,
             "service_id": service_id,
             "endpoint": str(service.get("api_base") or "").rstrip("/"),
             "connection_mode": service.get("connection_mode"),
@@ -149,9 +182,7 @@ class TtsCatalogueService:
         expiry = monotonic() + self._HEALTH_OBSERVATION_TTL_SECONDS
         checked_at = datetime.now(timezone.utc).isoformat()
         with self._health_observations_guard:
-            for service, key, values in zip(
-                services, keys, sensitive_values, strict=True
-            ):
+            for service, key, values in zip(services, keys, sensitive_values, strict=True):
                 if key is None:
                     continue
                 reason = service.get("availability_reason")
@@ -176,7 +207,9 @@ class TtsCatalogueService:
                 self._health_observations.popitem(last=False)
 
     def _apply_health_observations(
-        self, services: list[dict[str, Any]], keys: Sequence[str | None],
+        self,
+        services: list[dict[str, Any]],
+        keys: Sequence[str | None],
     ) -> None:
         now = monotonic()
         with self._health_observations_guard:
@@ -221,8 +254,12 @@ class TtsCatalogueService:
 
     @staticmethod
     def _catalogue_metadata(
-        service: dict[str, Any], *, source: str = "configured",
-        checked_at: str | None = None, complete: bool = False, error: str | None = None,
+        service: dict[str, Any],
+        *,
+        source: str = "configured",
+        checked_at: str | None = None,
+        complete: bool = False,
+        error: str | None = None,
     ) -> dict[str, Any]:
         return {
             "source": source,
@@ -234,7 +271,11 @@ class TtsCatalogueService:
         }
 
     def _mark_discovery_failure(
-        self, service: dict[str, Any], key: str | None, error: object, api_key: str,
+        self,
+        service: dict[str, Any],
+        key: str | None,
+        error: object,
+        api_key: str,
     ) -> None:
         values = (api_key, str(service.get("credential_reference") or ""))
         safe_error = redact_secret_text(error, values)
@@ -245,8 +286,10 @@ class TtsCatalogueService:
             service["voice_catalogue_warning"] = safe_error[:500]
         previous = service.get("catalogue") or {}
         service["catalogue"] = self._catalogue_metadata(
-            service, source=previous.get("source", "configured"),
-            checked_at=previous.get("checked_at"), error=safe_error[:500],
+            service,
+            source=previous.get("source", "configured"),
+            checked_at=previous.get("checked_at"),
+            error=safe_error[:500],
         )
         # Keep prior inventory and its original TTL, but never hide a failed
         # refresh behind the previous complete observation on the next read.
@@ -261,9 +304,14 @@ class TtsCatalogueService:
         # Availability belongs to the current manager/health projection, never
         # to retained model discovery. Native loaded flags remain model metadata.
         discovery = {
-            name: deepcopy(value) for name, value in catalogue.items()
-            if name not in {
-                "available", "online", "availability_reason", "health_checked_at",
+            name: deepcopy(value)
+            for name, value in catalogue.items()
+            if name
+            not in {
+                "available",
+                "online",
+                "availability_reason",
+                "health_checked_at",
             }
         }
         with self._native_discovery_guard:
@@ -278,46 +326,64 @@ class TtsCatalogueService:
         if self._owns_manager_bridge:
             self.manager_bridge.close()
 
+    def _connection_lookup_cache(self) -> dict | None:
+        cache = self._connection_config_cache
+        if cache is None:
+            return None
+        today = date.today()
+        if today != self._connection_cache_day:
+            cache.clear()
+            self._connection_cache_day = today
+        return cache
+
     def _settings(
         self,
+        *,
+        workspace_id: str | None = None,
+        db_session: Session | None = None,
     ) -> tuple[dict[str, Any], int, dict[str, Any], int]:
-        with self.database.session() as db_session:
-            connections = db_session.get(AppSetting, "services.tts")
-            defaults = db_session.get(AppSetting, "defaults.tts")
-            connection_value = (
-                dict(connections.value_json or {})
-                if connections and isinstance(connections.value_json, dict)
-                else {}
-            )
-            default_value = (
-                dict(defaults.value_json or {})
-                if defaults and isinstance(defaults.value_json, dict)
-                else {}
-            )
-            if not connection_value and isinstance(
-                default_value.get("provider_configs"), list
-            ):
-                connection_value = {
-                    "provider_configs": list(default_value["provider_configs"])
-                }
-            return (
-                connection_value,
-                connections.revision if connections else 0,
-                default_value,
-                defaults.revision if defaults else 0,
-            )
+        if db_session is not None:
+            with db_session.no_autoflush:
+                return self._settings_in_session(db_session, workspace_id=workspace_id)
+        with self.database.snapshot_session() as db_session:
+            return self._settings_in_session(db_session, workspace_id=workspace_id)
+
+    @staticmethod
+    def _settings_in_session(
+        db_session: Session,
+        *,
+        workspace_id: str | None,
+    ) -> tuple[dict[str, Any], int, dict[str, Any], int]:
+        workspace_id = settings_workspace_id(db_session, workspace_id=workspace_id)
+        connections = workspace_setting_in_workspace(db_session, workspace_id, "services.tts")
+        defaults = workspace_setting_in_workspace(db_session, workspace_id, "defaults.tts")
+        connection_value = (
+            deepcopy(connections.value_json)
+            if connections and isinstance(connections.value_json, dict)
+            else {}
+        )
+        default_value = (
+            deepcopy(defaults.value_json)
+            if defaults and isinstance(defaults.value_json, dict)
+            else {}
+        )
+        if not connection_value and isinstance(default_value.get("provider_configs"), list):
+            connection_value = {"provider_configs": deepcopy(default_value["provider_configs"])}
+        return (
+            connection_value,
+            connections.revision if connections else 0,
+            default_value,
+            defaults.revision if defaults else 0,
+        )
 
     def _credential_details(
         self,
         service: dict[str, Any],
     ) -> tuple[str, str, str]:
         service_id = normalize_service_id(service.get("id") or service.get("name"))
-        key_env = str(
-            service.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")
-        ).strip()
+        key_env = str(service.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")).strip()
         secret_reference = str(
-            service.get("secret_ref")
-            or database_reference(tts_service_credential_key(service_id))
+            service.get("secret_ref") or database_reference(tts_service_credential_key(service_id))
         )
         return service_id, key_env, secret_reference
 
@@ -327,6 +393,8 @@ class TtsCatalogueService:
         *,
         resolved_credential: ResolvedCredential | None = None,
         allow_adc_network: bool = False,
+        allow_host_adc: bool = True,
+        before_io: Callable[[], None] | None = None,
     ) -> None:
         service_id, key_env, secret_reference = self._credential_details(service)
         service["credential_required"] = bool(
@@ -352,7 +420,13 @@ class TtsCatalogueService:
             )
         service["credential_backend"] = credential_backend(secret_reference)
         service["credential_reference"] = credential_reference_input(secret_reference)
-        if service_id == "vertex_ai" and not service.get("credential_configured"):
+        if (
+            service_id == "vertex_ai"
+            and not service.get("credential_configured")
+            and allow_host_adc
+        ):
+            if before_io is not None:
+                before_io()
             try:
                 import google.auth
                 from google.auth.exceptions import DefaultCredentialsError
@@ -361,12 +435,23 @@ class TtsCatalogueService:
                     "scopes": ["https://www.googleapis.com/auth/cloud-platform"]
                 }
                 if not allow_adc_network:
+
                     def reject_adc_network(*_args: Any, **_kwargs: Any) -> Any:
                         raise DefaultCredentialsError(
                             "ADC network discovery is disabled for passive catalogue reads."
                         )
 
                     options["request"] = reject_adc_network
+                elif before_io is not None:
+                    from google.auth.transport.requests import Request
+
+                    transport = Request()
+
+                    def guarded_adc_request(*args: Any, **kwargs: Any) -> Any:
+                        before_io()
+                        return transport(*args, **kwargs)
+
+                    options["request"] = guarded_adc_request
                 credentials, project = google.auth.default(**options)
                 if project or service.get("vertex_project"):
                     service["_google_project"] = str(service.get("vertex_project") or project)
@@ -375,7 +460,8 @@ class TtsCatalogueService:
                         credential_source="application_default",
                     )
                     identity = [
-                        type(credentials).__name__, project,
+                        type(credentials).__name__,
+                        project,
                         getattr(credentials, "refresh_token", None),
                         getattr(credentials, "service_account_email", None),
                         getattr(credentials, "quota_project_id", None),
@@ -383,6 +469,8 @@ class TtsCatalogueService:
                     service["_adc_identity_hash"] = hashlib.sha256(
                         json.dumps(identity, default=str).encode()
                     ).hexdigest()
+            except (AccessDenied, ActorAuthorizationDenied, CatalogueChanged):
+                raise
             except Exception:  # noqa: BLE001 - absent ADC is a normal unconfigured state
                 pass
         source = str(service.get("credential_source") or "").casefold()
@@ -404,7 +492,15 @@ class TtsCatalogueService:
         return credential.resolved_value()
 
     def _merge_remembered_google_voices(
-        self, services: list[dict[str, Any]], credentials: list[ResolvedCredential],
+        self,
+        services: list[dict[str, Any]],
+        credentials: list[ResolvedCredential],
+        *,
+        workspace_id: str | None = None,
+        allow_host_adc: bool = True,
+        allow_adc_network: bool = True,
+        captured_public: bool = False,
+        before_io: Callable[[], None] | None = None,
     ) -> None:
         """Keep created voices selectable after restart, within their Google scope."""
         from pandrator.logic.google_tts_audio import STRUCTURED_TTS_MODELS
@@ -413,7 +509,7 @@ class TtsCatalogueService:
         if not any(service.get("id") in {"gemini", "vertex_ai"} for service in services):
             return
         with self.database.session() as session:
-            voices = list(session.scalars(select(Voice)).all())
+            voices = voices_in_workspace(session, workspace_id=workspace_id)
             saved = [
                 (voice.name, voice.language, voice.description, deepcopy(voice.metadata_json or {}))
                 for voice in voices
@@ -423,34 +519,57 @@ class TtsCatalogueService:
             if service_id not in {"gemini", "vertex_ai"}:
                 continue
             service["managed_google_voice_ids"] = []
+            if (
+                service_id == "vertex_ai"
+                and not credential.resolved_value()
+                and (
+                    not allow_host_adc
+                    or not allow_adc_network
+                    and not service.get("_google_project")
+                )
+            ):
+                continue
             candidates = [
-                item for item in saved
-                if ((item[3].get("providers") or {}).get(service_id) or {}).get("resource_kind") == "designed_voice"
+                item
+                for item in saved
+                if ((item[3].get("providers") or {}).get(service_id) or {}).get("resource_kind")
+                == "designed_voice"
             ]
             if not candidates:
                 continue
             try:
-                scope = google_voice_scope(service_id, service, credential.resolved_value())
+                scope = google_voice_scope(
+                    service_id,
+                    service,
+                    credential.resolved_value(),
+                    allow_host_adc=allow_host_adc and not captured_public,
+                    before_io=before_io,
+                )
             except (ValueError, RuntimeError):
                 continue
             catalogues = deepcopy(service.get("voice_catalogues") or {})
             metadata = deepcopy(service.get("voice_metadata") or {})
             for name, language, description, voice_metadata in candidates:
                 registration = (voice_metadata.get("providers") or {}).get(service_id) or {}
-                if (registration.get("resource_kind") != "designed_voice"
+                if (
+                    registration.get("resource_kind") != "designed_voice"
                     or registration.get("status") != "ready"
-                    or registration.get("scope_fingerprint") != scope["fingerprint"]):
+                    or registration.get("scope_fingerprint") != scope["fingerprint"]
+                ):
                     continue
                 identifier = str(registration.get("voice_id") or "")
                 if not identifier.startswith("voice_"):
                     continue
                 # Google extends storage after each use. A discovery response
                 # may therefore report a later expiry than the creation receipt.
-                expiry = next((
-                    metadata.get(f"{model}:{identifier}", {}).get("expire_time")
-                    for model in STRUCTURED_TTS_MODELS
-                    if metadata.get(f"{model}:{identifier}", {}).get("expire_time")
-                ), registration.get("expire_time"))
+                expiry = next(
+                    (
+                        metadata.get(f"{model}:{identifier}", {}).get("expire_time")
+                        for model in STRUCTURED_TTS_MODELS
+                        if metadata.get(f"{model}:{identifier}", {}).get("expire_time")
+                    ),
+                    registration.get("expire_time"),
+                )
                 if expiry:
                     try:
                         expires_at = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
@@ -462,14 +581,22 @@ class TtsCatalogueService:
                 for model in service.get("models", []):
                     if model not in STRUCTURED_TTS_MODELS:
                         continue
-                    catalogues[model] = list(dict.fromkeys([
-                        *catalogues.get(model, service.get("voices") or []), identifier,
-                    ]))
+                    catalogues[model] = list(
+                        dict.fromkeys(
+                            [
+                                *catalogues.get(model, service.get("voices") or []),
+                                identifier,
+                            ]
+                        )
+                    )
                     metadata[f"{model}:{identifier}"] = {
                         **metadata.get(f"{model}:{identifier}", {}),
-                        "id": identifier, "display_name": name,
-                        "description": description or "", "language_code": language or "",
-                        "type": "prompted", "model": model,
+                        "id": identifier,
+                        "display_name": name,
+                        "description": description or "",
+                        "language_code": language or "",
+                        "type": "prompted",
+                        "model": model,
                         **({"expire_time": expiry} if expiry else {}),
                     }
             service["voice_catalogues"] = catalogues
@@ -481,14 +608,16 @@ class TtsCatalogueService:
         *,
         resolved_api_keys: Sequence[str] | Mapping[str, str] | None = None,
         discovery_keys: Sequence[str | None] = (),
+        before_io: Callable[[], None] | None = None,
+        allow_host_adc: bool = True,
     ) -> None:
         def probe(service: dict[str, Any]) -> TtsHealth:
+            if before_io is not None:
+                before_io()
             if service.get("connection_mode") == "managed_local":
                 managed = service.get("manager_service")
                 endpoint = (
-                    str(managed.get("endpoint") or "").strip()
-                    if isinstance(managed, dict)
-                    else ""
+                    str(managed.get("endpoint") or "").strip() if isinstance(managed, dict) else ""
                 )
                 if not endpoint:
                     return TtsHealth(
@@ -521,30 +650,41 @@ class TtsCatalogueService:
             if resolved_api_keys is None:
                 api_key = self._resolved_api_key(service)
             elif isinstance(resolved_api_keys, Mapping):
-                service_id = normalize_service_id(
-                    service.get("id") or service.get("name")
-                )
+                service_id = normalize_service_id(service.get("id") or service.get("name"))
                 api_key = str(resolved_api_keys.get(service_id, "") or "")
             else:
                 api_key = (
-                    str(resolved_api_keys[index] or "")
-                    if index < len(resolved_api_keys)
-                    else ""
+                    str(resolved_api_keys[index] or "") if index < len(resolved_api_keys) else ""
                 )
+            if (
+                normalize_service_id(service.get("id") or service.get("name")) == "vertex_ai"
+                and not allow_host_adc
+                and not api_key
+            ):
+                continue
             online_services.append((index, service, api_key))
 
         def enrich(
             item: tuple[int, dict[str, Any], str],
         ) -> tuple[dict[str, Any] | None, TtsProviderError | None]:
             _index, service, api_key = item
+            if before_io is not None:
+                before_io()
             try:
-                return (
-                    self.providers.enrich_catalog(
-                        service,
-                        api_key=api_key,
-                    ),
-                    None,
-                )
+                service_id = normalize_service_id(service.get("id") or service.get("name"))
+                native_base = {
+                    "gemini": tts_handler.GEMINI_AUDIO_BASE_URL,
+                    "vertex_ai": "https://aiplatform.googleapis.com",
+                }.get(service_id)
+                if (
+                    before_io is not None
+                    and native_base is not None
+                    and str(service.get("api_base") or "").rstrip("/") == native_base
+                ):
+                    return self.providers.enrich_catalog(
+                        service, api_key=api_key, before_io=before_io
+                    ), None
+                return self.providers.enrich_catalog(service, api_key=api_key), None
             except TtsProviderError as error:
                 return None, error
 
@@ -558,14 +698,21 @@ class TtsCatalogueService:
             strict=True,
         ):
             key = discovery_keys[_index] if _index < len(discovery_keys) else None
+            if before_io is not None:
+                before_io()
             if error is not None:
                 self._mark_discovery_failure(service, key, error, api_key)
             elif catalogue is not None:
                 # Inventory must not replace the independent health observation.
                 discovery = {
-                    name: value for name, value in catalogue.items()
-                    if name not in {
-                        "available", "online", "availability_reason", "health_checked_at",
+                    name: value
+                    for name, value in catalogue.items()
+                    if name
+                    not in {
+                        "available",
+                        "online",
+                        "availability_reason",
+                        "health_checked_at",
                     }
                 }
                 service.update(discovery)
@@ -574,8 +721,10 @@ class TtsCatalogueService:
                     self._mark_discovery_failure(service, key, warning, api_key)
                 else:
                     service["catalogue"] = self._catalogue_metadata(
-                        service, source="runtime",
-                        checked_at=datetime.now(timezone.utc).isoformat(), complete=True,
+                        service,
+                        source="runtime",
+                        checked_at=datetime.now(timezone.utc).isoformat(),
+                        complete=True,
                     )
                     discovery["catalogue"] = deepcopy(service["catalogue"])
                     self._retain_native_discovery(key, discovery)
@@ -585,6 +734,7 @@ class TtsCatalogueService:
         services: list[dict[str, Any]],
         *,
         configured_provider_ids: frozenset[str],
+        inspect_inventory: bool = True,
     ) -> dict[str, Any]:
         summary: dict[str, Any] = {
             "configured": self.manager_bridge.configured,
@@ -596,6 +746,9 @@ class TtsCatalogueService:
                 configured_provider_ids=configured_provider_ids,
                 manager_configured=self.manager_bridge.configured,
             )
+        if not inspect_inventory:
+            summary["available"] = None
+            return summary
         try:
             inventory = self.manager_bridge.inventory()
         except ManagerProxyError as error:
@@ -646,12 +799,8 @@ class TtsCatalogueService:
                     "connection_mode": connection_mode,
                     "manager_available": True,
                     "manager_component_id": binding.component_id,
-                    "manager_component_state": str(
-                        inspection.get("state") or "unknown"
-                    ),
-                    "manager_supported_actions": list(
-                        definition.get("supported_actions") or []
-                    ),
+                    "manager_component_state": str(inspection.get("state") or "unknown"),
+                    "manager_supported_actions": list(definition.get("supported_actions") or []),
                     "managed_service_id": binding.service_id,
                     "manager_service": managed,
                     "manager_endpoint_read_only": (connection_mode == "managed_local"),
@@ -673,17 +822,22 @@ class TtsCatalogueService:
             service["api_base"] = str(managed["endpoint"]).rstrip("/")
         return summary
 
-    def _previews(self) -> list[dict[str, Any]]:
+    def _previews(self, *, workspace_id: str | None = None) -> list[dict[str, Any]]:
         previews: list[dict[str, Any]] = []
         with self.database.session() as db_session:
+            workspace = voice_creation_workspace(db_session, workspace_id=workspace_id)
             preview_artifacts = db_session.execute(
                 select(
-                    Artifact.id, Artifact.relative_path, Artifact.updated_at,
-                    *(Artifact.metadata_json[key].label(key) for key in (
-                        "voice", "service_id", "model", "language", "preview_text"
-                    )),
+                    Artifact.id,
+                    Artifact.relative_path,
+                    Artifact.updated_at,
+                    *(
+                        Artifact.metadata_json[key].label(key)
+                        for key in ("voice", "service_id", "model", "language", "preview_text")
+                    ),
                 )
                 .where(
+                    Artifact.workspace_id == workspace.id,
                     Artifact.role == "tts_voice_preview",
                     Artifact.state == "current",
                     Artifact.metadata_json["voice"].as_string().is_not(None),
@@ -719,6 +873,11 @@ class TtsCatalogueService:
         view: str = "full",
         service_ids: Sequence[str] | None = None,
         include_profiles: bool = True,
+        workspace_id: str | None = None,
+        settings_snapshot: tuple[dict[str, Any], int, dict[str, Any], int] | None = None,
+        approved_only: bool = False,
+        allow_host_adc: bool = True,
+        before_io: Callable[[], None] | None = None,
     ) -> tuple[dict[str, Any], int]:
         """Return the UI-facing TTS catalogue.
 
@@ -748,7 +907,33 @@ class TtsCatalogueService:
             default_value,
             default_revision,
             resolved_credentials,
-        ) = self._build_services(refresh=refresh, selected=selected, compact=compact)
+        ) = self._build_services(
+            refresh=refresh,
+            selected=selected,
+            compact=compact or approved_only,
+            workspace_id=workspace_id,
+            settings_snapshot=settings_snapshot,
+            approved_only=approved_only,
+            allow_host_adc=allow_host_adc,
+            before_io=before_io,
+        )
+        if approved_only:
+            payload = approved_tts_payload(
+                {
+                    "view": "compact" if compact else "full",
+                    "revision": revision,
+                    "default_service": str(
+                        default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]
+                    ),
+                    "recommended_service": DEFAULT_TTS_SERVICE_ID,
+                    "default_revision": default_revision,
+                    "default_value": default_value,
+                    "services": services,
+                }
+            )
+            if before_io is not None:
+                before_io()
+            return payload, revision
         if compact:
             payload = {
                 "view": "compact",
@@ -763,6 +948,8 @@ class TtsCatalogueService:
                 ),
                 "manager": manager,
             }
+            if before_io is not None:
+                before_io()
             return payload, revision
         payload = {
             "value": redact_inline_secrets(connection_value),
@@ -775,11 +962,13 @@ class TtsCatalogueService:
             "default_revision": default_revision,
             "builtin_defaults": redact_inline_secrets(BUILTIN_DEFAULTS["tts"]),
             "services": redact_inline_secrets(services),
-            "previews": self._previews(),
+            "previews": self._previews(workspace_id=workspace_id),
             "manager": manager,
         }
         if include_profiles:
             payload["profiles"] = list_tts_provider_profiles()
+        if before_io is not None:
+            before_io()
         return payload, revision
 
     def service_detail(
@@ -788,6 +977,12 @@ class TtsCatalogueService:
         *,
         refresh: bool = False,
         models: Sequence[str] | None = None,
+        workspace_id: str | None = None,
+        settings_snapshot: tuple[dict[str, Any], int, dict[str, Any], int] | None = None,
+        approved_only: bool = False,
+        allow_host_adc: bool = True,
+        before_io: Callable[[], None] | None = None,
+        allow_refresh_fallback: bool = True,
     ) -> tuple[dict[str, Any], int]:
         """Return the full catalogue entry for one selected service.
 
@@ -814,17 +1009,43 @@ class TtsCatalogueService:
             default_value,
             default_revision,
             _resolved_credentials,
-        ) = self._build_services(refresh=refresh, selected=[normalized], compact=False)
+        ) = self._build_services(
+            refresh=refresh,
+            selected=[normalized],
+            compact=approved_only,
+            workspace_id=workspace_id,
+            settings_snapshot=settings_snapshot,
+            approved_only=approved_only,
+            allow_host_adc=allow_host_adc,
+            before_io=before_io,
+        )
         if not services:  # pragma: no cover - _build_services raises first
             raise TtsCatalogueServiceNotFoundError([service_id])
         service = services[0]
+        if approved_only:
+            payload = approved_tts_payload(
+                {
+                    "view": "detail",
+                    "revision": revision,
+                    "default_service": str(
+                        default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]
+                    ),
+                    "default_revision": default_revision,
+                    "default_value": default_value,
+                    "recommended_service": DEFAULT_TTS_SERVICE_ID,
+                    "service": service,
+                    **({"selected_models": selected_models} if selected_models is not None else {}),
+                },
+                selected_models=selected_models,
+            )
+            if before_io is not None:
+                before_io()
+            return payload, revision
         if selected_models is not None:
             try:
-                service = _filter_service_models(
-                    service, selected_models, service_id=normalized
-                )
+                service = _filter_service_models(service, selected_models, service_id=normalized)
             except TtsCatalogueModelNotFoundError:
-                if normalized != "audio_cpp" or refresh:
+                if normalized != "audio_cpp" or refresh or not allow_refresh_fallback:
                     raise
                 # Saved native inventories can predate a model selected by a run.
                 # Discover once, retaining the normal strict model validation.
@@ -837,7 +1058,13 @@ class TtsCatalogueService:
                     default_revision,
                     _resolved_credentials,
                 ) = self._build_services(
-                    refresh=True, selected=[normalized], compact=False
+                    refresh=True,
+                    selected=[normalized],
+                    compact=False,
+                    workspace_id=workspace_id,
+                    settings_snapshot=settings_snapshot,
+                    allow_host_adc=allow_host_adc,
+                    before_io=before_io,
                 )
                 service = _filter_service_models(
                     services[0], selected_models, service_id=normalized
@@ -854,6 +1081,8 @@ class TtsCatalogueService:
         }
         if selected_models is not None:
             payload["selected_models"] = selected_models
+        if before_io is not None:
+            before_io()
         return payload, revision
 
     @staticmethod
@@ -866,18 +1095,13 @@ class TtsCatalogueService:
         for raw in models:
             model_id = str(raw or "").strip()
             if not model_id or len(model_id) > 256:
-                raise ValueError(
-                    "Each selected TTS model id must be 1 to 256 characters."
-                )
+                raise ValueError("Each selected TTS model id must be 1 to 256 characters.")
             if model_id not in selected:
                 selected.append(model_id)
         if not selected:
             raise ValueError("Select at least one TTS model.")
         if len(selected) > MAX_TTS_DETAIL_MODEL_IDS:
-            raise ValueError(
-                "Select at most "
-                f"{MAX_TTS_DETAIL_MODEL_IDS} TTS models per request."
-            )
+            raise ValueError(f"Select at most {MAX_TTS_DETAIL_MODEL_IDS} TTS models per request.")
         return selected
 
     def _normalize_service_selection(
@@ -890,15 +1114,12 @@ class TtsCatalogueService:
         for raw in service_ids:
             normalized = normalize_service_id(raw)
             if not normalized or len(normalized) > 64:
-                raise ValueError(
-                    "Each TTS service filter id must be 1 to 64 characters."
-                )
+                raise ValueError("Each TTS service filter id must be 1 to 64 characters.")
             if normalized not in selected:
                 selected.append(normalized)
         if len(selected) > MAX_TTS_SERVICE_FILTER_IDS:
             raise ValueError(
-                "Select at most "
-                f"{MAX_TTS_SERVICE_FILTER_IDS} TTS services per request."
+                f"Select at most {MAX_TTS_SERVICE_FILTER_IDS} TTS services per request."
             )
         return selected
 
@@ -911,20 +1132,82 @@ class TtsCatalogueService:
         filtered = [
             service
             for service in services
-            if normalize_service_id(service.get("id") or service.get("name"))
-            in wanted
+            if normalize_service_id(service.get("id") or service.get("name")) in wanted
             or normalize_service_id(service.get("name")) in wanted
         ]
         found = {
-            normalize_service_id(service.get("id") or service.get("name"))
-            for service in filtered
-        } | {
-            normalize_service_id(service.get("name")) for service in filtered
-        }
+            normalize_service_id(service.get("id") or service.get("name")) for service in filtered
+        } | {normalize_service_id(service.get("name")) for service in filtered}
         missing = [item for item in selected if item not in found]
         if missing:
             raise TtsCatalogueServiceNotFoundError(missing)
         return filtered
+
+    def _base_services(
+        self,
+        connection_value,
+        default_value,
+        *,
+        selected,
+        approved_only=False,
+        refresh=False,
+        before_io=None,
+        _service_config_cache=None,
+    ):
+        settings = {**default_value, **connection_value}
+        if approved_only and _service_config_cache is not None:
+            service_configs = tts_handler.get_service_configs(
+                settings,
+                _cache=_service_config_cache,
+                _fields=_CONNECTION_APPROVAL_SERVICE_FIELDS,
+            )
+        else:
+            service_configs = tts_handler.get_service_configs(settings)
+        services = [dict(item) for item in service_configs]
+        configured = configured_tts_provider_ids(default_value, connection_value)
+        if approved_only:
+            # The trusted builder omits enabled from its normalized records.
+            # Retain the captured configuration's explicit visibility decision.
+            effective_settings = {**default_value, **connection_value}
+            enabled = {}
+            for key in ("provider_configs", "service_configs"):
+                records = effective_settings.get(key)
+                if isinstance(records, list):
+                    for record in records:
+                        if isinstance(record, dict):
+                            identifier = normalize_service_id(
+                                record.get("id") or record.get("name") or record.get("provider")
+                            )
+                            if identifier:
+                                enabled[identifier] = record.get("enabled") is not False
+            services = [
+                service
+                for service in services
+                if enabled.get(normalize_service_id(service.get("id") or service.get("name")), True)
+                and service.get("enabled") is not False
+                and (
+                    normalize_service_id(service.get("id") or service.get("name")) in configured
+                    or effective_tts_connection_mode(
+                        service,
+                        configured_provider_ids=configured,
+                        manager_configured=self.manager_bridge.configured,
+                    )
+                    == "managed_local"
+                )
+            ]
+        if selected is not None:
+            services = self._apply_service_selection(services, selected)
+        if refresh and before_io is not None and len(services) > MAX_TTS_SERVICE_FILTER_IDS:
+            raise ValueError("Select at most 20 TTS services per refresh.")
+        if before_io is not None:
+            before_io()
+        if approved_only:
+            for service in services:
+                service.update(online=None, available=None, health_checked_at=None)
+        manager = self._project_manager(
+            services, configured_provider_ids=configured, inspect_inventory=not approved_only
+        )
+        return services, manager
 
     def _build_services(
         self,
@@ -932,6 +1215,11 @@ class TtsCatalogueService:
         refresh: bool,
         selected: Sequence[str] | None,
         compact: bool,
+        workspace_id: str | None = None,
+        settings_snapshot: tuple[dict[str, Any], int, dict[str, Any], int] | None = None,
+        approved_only: bool = False,
+        allow_host_adc: bool = True,
+        before_io: Callable[[], None] | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         dict[str, Any],
@@ -941,46 +1229,79 @@ class TtsCatalogueService:
         int,
         list[ResolvedCredential],
     ]:
-        connection_value, revision, default_value, default_revision = self._settings()
-        services = [
-            dict(item)
-            for item in tts_handler.get_service_configs(
-                {**default_value, **connection_value}
+        if settings_snapshot is not None:
+            if workspace_id is None:
+                raise ValueError("Captured TTS settings require a workspace.")
+            connection_value, revision, default_value, default_revision = deepcopy(
+                settings_snapshot
             )
-        ]
-        if selected is not None:
-            services = self._apply_service_selection(services, selected)
-        manager = self._project_manager(
-            services,
-            configured_provider_ids=configured_tts_provider_ids(
-                default_value,
-                connection_value,
-            ),
+        else:
+            with self.database.snapshot_session() as session:
+                workspace_id = voice_creation_workspace(session, workspace_id=workspace_id).id
+            connection_value, revision, default_value, default_revision = self._settings(
+                workspace_id=workspace_id
+            )
+        services, manager = self._base_services(
+            connection_value,
+            default_value,
+            selected=selected,
+            approved_only=approved_only,
+            refresh=refresh,
+            before_io=before_io,
         )
+        if approved_only:
+            for service in services:
+                service.update(
+                    provider_policy(normalize_service_id(service.get("id") or service.get("name")))
+                )
+                _decorate_model_language_support(service)
+                decorate_preset_voices(service)
+            return (
+                services,
+                manager,
+                connection_value,
+                revision,
+                default_value,
+                default_revision,
+                [],
+            )
         credential_inputs: list[ProviderCredentialInput] = []
         for service in services:
             service_id, key_env, secret_reference = self._credential_details(service)
             credential_inputs.append((service_id, secret_reference, key_env, True))
+        if before_io is not None:
+            before_io()
         resolved_credentials = resolve_provider_credentials(
             self.database,
             self.paths,
             credential_inputs,
+            workspace_id=workspace_id,
         )
+        if before_io is not None:
+            before_io()
         for service, credential in zip(services, resolved_credentials, strict=True):
             self._decorate_credentials(
                 service,
                 resolved_credential=credential,
                 allow_adc_network=refresh,
+                allow_host_adc=allow_host_adc,
+                before_io=before_io,
             )
         discovery_keys = [
             self._native_discovery_key(
-                service, {**default_value, **connection_value}, credential.resolved_value(),
+                service,
+                {**default_value, **connection_value},
+                credential.resolved_value(),
+                workspace_id=workspace_id,
             )
             for service, credential in zip(services, resolved_credentials, strict=True)
         ]
         health_keys = [
             self._health_observation_key(
-                service, {**default_value, **connection_value}, credential.resolved_value(),
+                service,
+                {**default_value, **connection_value},
+                credential.resolved_value(),
+                workspace_id=workspace_id,
             )
             for service, credential in zip(services, resolved_credentials, strict=True)
         ]
@@ -1003,9 +1324,7 @@ class TtsCatalogueService:
                 service.update(discovery)
             service.pop("_adc_identity_hash", None)
             service_id = normalize_service_id(service.get("id") or service.get("name"))
-            service["supports_parallel_synthesis"] = _supports_parallel_cloud_synthesis(
-                service
-            )
+            service["supports_parallel_synthesis"] = _supports_parallel_cloud_synthesis(service)
             if service_id in {"xtts", "gemini", "vertex_ai"}:
                 capabilities = self.providers.capabilities(service)
                 service["supports_dynamic_catalog"] = capabilities.dynamic_catalog
@@ -1014,11 +1333,13 @@ class TtsCatalogueService:
         if refresh:
             self._refresh(
                 services,
-                resolved_api_keys=[
-                    resolved.resolved_value() for resolved in resolved_credentials
-                ],
+                resolved_api_keys=[resolved.resolved_value() for resolved in resolved_credentials],
                 discovery_keys=discovery_keys,
+                before_io=before_io,
+                allow_host_adc=allow_host_adc,
             )
+            if before_io is not None:
+                before_io()
             self._remember_health_observations(
                 services,
                 health_keys,
@@ -1031,23 +1352,30 @@ class TtsCatalogueService:
                         )
                         if value
                     )
-                    for service, credential in zip(
-                        services, resolved_credentials, strict=True
-                    )
+                    for service, credential in zip(services, resolved_credentials, strict=True)
                 ],
             )
         else:
             self._apply_health_observations(services, health_keys)
-        self._merge_remembered_google_voices(services, resolved_credentials)
+        if before_io is not None:
+            before_io()
+        self._merge_remembered_google_voices(
+            services,
+            resolved_credentials,
+            workspace_id=workspace_id,
+            allow_host_adc=allow_host_adc,
+            allow_adc_network=refresh or settings_snapshot is None,
+            captured_public=settings_snapshot is not None,
+            before_io=before_io,
+        )
         for service in services:
             service.pop("_google_project", None)
             service.update(
-                provider_policy(
-                    normalize_service_id(service.get("id") or service.get("name"))
-                )
+                provider_policy(normalize_service_id(service.get("id") or service.get("name")))
             )
             _decorate_model_language_support(service)
             decorate_preset_voices(service)
+            decorate_service_capabilities(service)
         if compact:
             # Slim after refresh so live discovered records feed the chooser
             # with the same record-over-builtin precedence as the full view.
@@ -1063,10 +1391,10 @@ class TtsCatalogueService:
             resolved_credentials,
         )
 
-    def discovery_api_key(self, service_id: str | None) -> str:
+    def discovery_api_key(self, service_id: str | None, *, workspace_id: str | None = None) -> str:
         if not service_id:
             return ""
-        connection_value, _, default_value, _ = self._settings()
+        connection_value, _, default_value, _ = self._settings(workspace_id=workspace_id)
         service = tts_handler.get_service_config(
             {**default_value, **connection_value},
             service_id,
@@ -1078,11 +1406,11 @@ class TtsCatalogueService:
             self.database,
             self.paths,
             normalized,
-            service.get("secret_ref")
-            or database_reference(tts_service_credential_key(normalized)),
+            service.get("secret_ref") or database_reference(tts_service_credential_key(normalized)),
             fallback_environment_variable=str(
                 service.get("api_key_env") or TTS_SERVICE_ENVS.get(normalized, "")
             ),
+            workspace_id=workspace_id,
         )
         return resolved.resolved_value()
 
@@ -1096,27 +1424,72 @@ class TtsCatalogueService:
         generation_prompt: str | None = None,
         seed: int | None = None,
         preserve_blank_voice: bool = False,
+        workspace_id: str | None = None,
+        db_session: Session | None = None,
     ) -> dict[str, Any] | None:
-        connection_value, _, default_value, _ = self._settings()
-        service = tts_handler.get_service_config(
-            {**default_value, **connection_value},
-            service_id,
+        connection_value, _, default_value, _ = self._settings(
+            workspace_id=workspace_id, db_session=db_session
         )
+        service_config_cache = (
+            self._connection_lookup_cache() if db_session is not None else None
+        )
+        service_settings = {**default_value, **connection_value}
+        if service_config_cache is None:
+            service = tts_handler.get_service_config(service_settings, service_id)
+        else:
+            service = tts_handler.get_service_config(
+                service_settings,
+                service_id,
+                _cache=service_config_cache,
+                _model_catalog_id=model,
+            )
         if service is None:
             return None
         resolved_id = normalize_service_id(service.get("id") or service_id)
+        if db_session is None:
+            with self.database.snapshot_session() as scope_session:
+                scope_id = settings_workspace_id(scope_session, workspace_id=workspace_id)
+                legacy = credential_namespace(scope_session, scope_id).legacy_host_access
+        else:
+            scope_id = settings_workspace_id(db_session, workspace_id=workspace_id)
+            legacy = credential_namespace(db_session, scope_id).legacy_host_access
+        if not legacy:
+            # Use the same passive approval policy as the Member catalogue.
+            if service_config_cache is None:
+                approved, _manager = self._base_services(
+                    connection_value, default_value, selected=None, approved_only=True
+                )
+            else:
+                approved, _manager = self._base_services(
+                    connection_value,
+                    default_value,
+                    selected=None,
+                    approved_only=True,
+                    _service_config_cache=service_config_cache,
+                )
+            visible = next(
+                (item for item in approved if normalize_service_id(item.get("id")) == resolved_id),
+                None,
+            )
+            if visible is None:
+                return None
+            approved_models = visible.get("models")
+            if model and (not isinstance(approved_models, list) or model not in approved_models):
+                raise ValueError("The selected preview model is not configured in this workspace.")
         resolved_adapter = str(service.get("adapter") or "").strip().casefold()
         is_audio_cpp = resolved_adapter == "audio_cpp" or resolved_id in {
             "audio_cpp",
             "audio_cpp_experimental",
         }
         resolved_model = model or str(service.get("default_model") or "")
-        model_voice_mode = str(
-            tts_handler._audio_cpp_model_metadata(resolved_model, service).get(
-                "voice_mode"
+        model_voice_mode = (
+            str(
+                tts_handler._audio_cpp_model_metadata(resolved_model, service).get("voice_mode")
+                or ""
             )
-            or ""
-        ).strip().lower()
+            .strip()
+            .lower()
+        )
         raw_default_voices = service.get("default_voices")
         default_voices = raw_default_voices if isinstance(raw_default_voices, dict) else {}
         if (

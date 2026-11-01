@@ -61,6 +61,7 @@ export function adoptUpdatedSegment(
         ? {
             ...candidate,
             ...updated,
+            retained_voice: updated.retained_voice,
             takes: staleMarkedTakes(candidate.takes, updated)
           }
         : candidate
@@ -104,6 +105,7 @@ export function adoptUpdatedSegments(
       {
         ...candidate,
         ...updated,
+        retained_voice: updated.retained_voice,
         takes: staleMarkedTakes(candidate.takes, updated)
       }
     ];

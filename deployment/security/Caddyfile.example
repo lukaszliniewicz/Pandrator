@@ -1,0 +1,15 @@
+# Direct Internet clients -> Caddy -> loopback Pandrator; exactly one trusted proxy hop.
+# Configure Pandrator's public origin to the same HTTPS origin before starting it.
+pandrator.example.com {
+    reverse_proxy 127.0.0.1:8097 {
+        header_up Host pandrator.example.com
+        header_up X-Forwarded-Host pandrator.example.com
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {remote_host}
+        flush_interval -1
+    }
+}
+
+# This profile deliberately uses the socket peer as the visitor.
+# Behind Cloudflare, restore the real client only from trusted Cloudflare peers;
+# see docs/operations/public-hosting-protection.md before adapting this file.

@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Any
+from collections.abc import Sequence
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, TypeVar
 
 import regex as unicode_regex
 from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from pandrator.logic.dubbing.text_units import pronunciation_pattern
 
 from .database import Database
 from .models import PronunciationEntry, SessionRecord, utcnow
+from .projects.models import Project
+from .pronunciation_identity import (
+    pronunciation_creation_ownership,
+    pronunciation_ownership,
+)
 
 _COMBINING_MARK_CATEGORIES = frozenset({"Mc", "Me", "Mn"})
 _DISALLOWED_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf"})
@@ -153,6 +164,50 @@ def apply_reviewed_pronunciations(
     return text
 
 
+@dataclass(frozen=True, slots=True)
+class PronunciationCandidate:
+    source_form: str
+    normalized_form: str
+    language: str
+    backend: str
+    session_id: str | None
+    updated_at: datetime
+    payload: dict[str, Any]
+
+
+_Candidate = TypeVar("_Candidate", PronunciationEntry, PronunciationCandidate)
+
+def _matching_pronunciations(
+    entries: Sequence[_Candidate], text: str, *, session_id: str | None,
+    normalized_language: str, normalized_backend: str,
+) -> list[_Candidate]:
+    ranked = sorted(
+        entries,
+        key=lambda item: (
+            item.session_id == session_id and bool(session_id),
+            item.language == normalized_language,
+            item.backend == normalized_backend,
+            len(item.source_form),
+            item.updated_at,
+        ),
+        reverse=True,
+    )
+    # Pick the highest-precedence entry for each normalized written form
+    # first.  A session entry therefore overrides its global counterpart,
+    # while genuinely different forms still participate in longest-match
+    # selection below.
+    chosen: dict[str, _Candidate] = {}
+    for entry in ranked:
+        if entry.normalized_form in chosen:
+            continue
+        if _bounded_contains(text, entry.source_form):
+            chosen[entry.normalized_form] = entry
+    return sorted(
+        chosen.values(),
+        key=lambda item: (-len(item.normalized_form), item.normalized_form),
+    )
+
+
 class PronunciationLibrary:
     def __init__(self, database: Database):
         self.database = database
@@ -233,6 +288,7 @@ class PronunciationLibrary:
         excluding_id: str | None = None,
     ) -> PronunciationEntry | None:
         statement = select(PronunciationEntry).where(
+            PronunciationEntry.workspace_id == values["workspace_id"],
             PronunciationEntry.scope == values["scope"],
             PronunciationEntry.normalized_form == values["normalized_form"],
             PronunciationEntry.language == values["language"],
@@ -257,13 +313,48 @@ class PronunciationLibrary:
         scope: str = "",
         session_id: str = "",
         limit: int = 500,
+        workspace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         with self.database.session() as session:
+            selected = pronunciation_creation_ownership(
+                session,
+                scope="global",
+                session_id=None,
+                workspace_id=workspace_id,
+                require_writable=False,
+            )
+            selected_session_id = session_id.strip()
+            if selected_session_id:
+                session_root = session.execute(
+                    select(SessionRecord.project_id, Project.workspace_id)
+                    .outerjoin(Project, SessionRecord.project_id == Project.id)
+                    .where(SessionRecord.id == selected_session_id)
+                ).one_or_none()
+                if session_root is None:
+                    return []
+                if (
+                    session_root.workspace_id is not None
+                    and session_root.workspace_id != selected.workspace_id
+                ):
+                    return []
+                try:
+                    session_owner = pronunciation_creation_ownership(
+                        session,
+                        scope="session",
+                        session_id=selected_session_id,
+                        workspace_id=selected.workspace_id,
+                        trusted_session=True,
+                        require_writable=False,
+                    )
+                except KeyError:
+                    return []
+                if session_owner.workspace_id != selected.workspace_id:
+                    return []
             statement = select(PronunciationEntry).order_by(
                 PronunciationEntry.status != "proposed",
                 PronunciationEntry.updated_at.desc(),
                 PronunciationEntry.source_form,
-            )
+            ).where(PronunciationEntry.workspace_id == selected.workspace_id)
             if query.strip():
                 pattern = f"%{query.strip()}%"
                 statement = statement.where(
@@ -285,19 +376,26 @@ class PronunciationLibrary:
                 statement = statement.where(
                     PronunciationEntry.scope == scope.strip().lower()
                 )
-            if session_id.strip():
+            if selected_session_id:
                 statement = statement.where(
-                    PronunciationEntry.session_id == session_id.strip()
+                    PronunciationEntry.session_id == selected_session_id
                 )
             entries = list(
                 session.scalars(statement.limit(max(1, min(limit, 1000)))).all()
             )
+            for item in entries:
+                pronunciation_ownership(session, item, require_writable=False)
             session_ids = {item.session_id for item in entries if item.session_id}
             session_names = (
                 {
-                    record.id: record.name
-                    for record in session.scalars(
-                        select(SessionRecord).where(SessionRecord.id.in_(session_ids))
+                    record_id: name
+                    for record_id, name in session.execute(
+                        select(SessionRecord.id, SessionRecord.name)
+                        .join(Project, SessionRecord.project_id == Project.id)
+                        .where(
+                            SessionRecord.id.in_(session_ids),
+                            Project.workspace_id == selected.workspace_id,
+                        )
                     ).all()
                 }
                 if session_ids
@@ -314,14 +412,22 @@ class PronunciationLibrary:
                 for item in entries
             ]
 
-    def create(self, values: dict[str, Any]) -> dict[str, Any]:
+    def create(
+        self,
+        values: dict[str, Any],
+        *,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
         normalized = self._normalized_values(values)
-        with self.database.session() as session:
-            if (
-                normalized["session_id"]
-                and session.get(SessionRecord, normalized["session_id"]) is None
-            ):
-                raise KeyError(normalized["session_id"])
+        with self.database.immediate_session() as session:
+            owner = pronunciation_creation_ownership(
+                session,
+                scope=normalized["scope"],
+                session_id=normalized["session_id"],
+                workspace_id=workspace_id,
+            )
+            normalized["workspace_id"] = owner.workspace_id
+            normalized["project_id"] = owner.project_id
             if self._duplicate(session, normalized):
                 raise ValueError(
                     "A pronunciation for this written form, language, backend, and scope already exists."
@@ -336,11 +442,25 @@ class PronunciationLibrary:
         entry_id: str,
         expected_revision: int,
         changes: dict[str, Any],
+        *,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
-        with self.database.session() as session:
-            entry = session.get(PronunciationEntry, entry_id)
+        with self.database.immediate_session() as session:
+            selected = pronunciation_creation_ownership(
+                session,
+                scope="global",
+                session_id=None,
+                workspace_id=workspace_id,
+            )
+            entry = session.scalar(
+                select(PronunciationEntry).where(
+                    PronunciationEntry.id == entry_id,
+                    PronunciationEntry.workspace_id == selected.workspace_id,
+                )
+            )
             if entry is None:
                 raise KeyError(entry_id)
+            pronunciation_ownership(session, entry, require_writable=True)
             if entry.revision != expected_revision:
                 raise ValueError("The pronunciation changed in another client.")
             current = {
@@ -357,11 +477,14 @@ class PronunciationLibrary:
                 "metadata": dict(entry.metadata_json or {}),
             }
             normalized = self._normalized_values({**current, **changes})
-            if (
-                normalized["session_id"]
-                and session.get(SessionRecord, normalized["session_id"]) is None
-            ):
-                raise KeyError(normalized["session_id"])
+            owner = pronunciation_creation_ownership(
+                session,
+                scope=normalized["scope"],
+                session_id=normalized["session_id"],
+                workspace_id=selected.workspace_id,
+            )
+            normalized["workspace_id"] = owner.workspace_id
+            normalized["project_id"] = owner.project_id
             if self._duplicate(session, normalized, excluding_id=entry.id):
                 raise ValueError(
                     "A pronunciation for this written form, language, backend, and scope already exists."
@@ -373,76 +496,113 @@ class PronunciationLibrary:
             session.flush()
             return self.payload(entry)
 
-    def delete(self, entry_id: str, expected_revision: int) -> None:
-        with self.database.session() as session:
-            entry = session.get(PronunciationEntry, entry_id)
+    def delete(
+        self,
+        entry_id: str,
+        expected_revision: int,
+        *,
+        workspace_id: str | None = None,
+    ) -> None:
+        with self.database.immediate_session() as session:
+            selected = pronunciation_creation_ownership(
+                session,
+                scope="global",
+                session_id=None,
+                workspace_id=workspace_id,
+            )
+            entry = session.scalar(
+                select(PronunciationEntry).where(
+                    PronunciationEntry.id == entry_id,
+                    PronunciationEntry.workspace_id == selected.workspace_id,
+                )
+            )
             if entry is None:
                 raise KeyError(entry_id)
+            pronunciation_ownership(session, entry, require_writable=True)
             if entry.revision != expected_revision:
                 raise ValueError("The pronunciation changed in another client.")
             session.delete(entry)
 
     def resolve(
-        self,
-        text: str,
-        *,
-        session_id: str | None,
-        language: str,
-        backend: str = "*",
+        self, text: str, *, session_id: str | None, language: str,
+        backend: str = "*", workspace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Resolve reviewed entries with session overrides winning over global ones."""
+        with self.database.session() as session:
+            entries = self._reviewed_entries_in_session(
+                session, session_id=session_id, language=language,
+                backend=backend, workspace_id=workspace_id,
+            )
+        return [self.payload(item) for item in _matching_pronunciations(
+            entries, text, session_id=session_id,
+            normalized_language=normalize_language(language),
+            normalized_backend=normalize_backend(backend),
+        )]
+
+    def _reviewed_entries_in_session(
+        self, session: Session, *, session_id: str | None, language: str,
+        backend: str = "*", workspace_id: str | None = None,
+        predicate: ColumnElement[bool] | None = None,
+    ) -> list[PronunciationEntry]:
         normalized_language = normalize_language(language)
         normalized_backend = normalize_backend(backend)
-        with self.database.session() as session:
-            scope_filter = PronunciationEntry.session_id.is_(None)
-            if session_id:
-                scope_filter = or_(
-                    PronunciationEntry.session_id.is_(None),
-                    PronunciationEntry.session_id == session_id,
-                )
-            entries = list(
-                session.scalars(
-                    select(PronunciationEntry).where(
-                        PronunciationEntry.status == "reviewed",
-                        scope_filter,
-                        PronunciationEntry.language.in_(
-                            tuple(dict.fromkeys((normalized_language, "und")))
-                        ),
-                        PronunciationEntry.backend.in_(
-                            tuple(dict.fromkeys((normalized_backend, "*")))
-                        ),
-                    )
-                ).all()
-            )
-
-        ranked = sorted(
-            entries,
-            key=lambda item: (
-                item.session_id == session_id and bool(session_id),
-                item.language == normalized_language,
-                item.backend == normalized_backend,
-                len(item.source_form),
-                item.updated_at,
-            ),
-            reverse=True,
+        owner = pronunciation_creation_ownership(
+            session,
+            scope="session" if session_id else "global",
+            session_id=session_id or None,
+            workspace_id=workspace_id,
+            trusted_session=True,
+            require_writable=False,
         )
-        # Pick the highest-precedence entry for each normalized written form
-        # first.  A session entry therefore overrides its global counterpart,
-        # while genuinely different forms still participate in longest-match
-        # selection below.
-        chosen: dict[str, PronunciationEntry] = {}
-        for entry in ranked:
-            if entry.normalized_form in chosen:
-                continue
-            if _bounded_contains(text, entry.source_form):
-                chosen[entry.normalized_form] = entry
-        return [
-            self.payload(item)
-            for item in sorted(
-                chosen.values(),
-                key=lambda item: (-len(item.normalized_form), item.normalized_form),
+        scope_filter = PronunciationEntry.session_id.is_(None)
+        if session_id:
+            scope_filter = or_(
+                PronunciationEntry.session_id.is_(None),
+                PronunciationEntry.session_id == session_id,
             )
-        ]
+        entries = list(
+            session.scalars(
+                select(PronunciationEntry).where(
+                    *([predicate] if predicate is not None else []),
+                    PronunciationEntry.workspace_id == owner.workspace_id,
+                    PronunciationEntry.status == "reviewed",
+                    scope_filter,
+                    PronunciationEntry.language.in_(
+                        tuple(dict.fromkeys((normalized_language, "und")))
+                    ),
+                    PronunciationEntry.backend.in_(
+                        tuple(dict.fromkeys((normalized_backend, "*")))
+                    ),
+                )
+            ).all()
+        )
+        for entry in entries:
+            pronunciation_ownership(session, entry, require_writable=False)
+        return entries
+
+    def reviewed_candidates_in_session(
+        self, session: Session, *, session_id: str | None, language: str,
+        backend: str = "*", workspace_id: str | None = None,
+        predicate: ColumnElement[bool] | None = None,
+    ) -> list[PronunciationCandidate]:
+        return [PronunciationCandidate(
+            source_form=entry.source_form, normalized_form=entry.normalized_form,
+            language=entry.language, backend=entry.backend, session_id=entry.session_id,
+            updated_at=entry.updated_at, payload=deepcopy(self.payload(entry)),
+        ) for entry in self._reviewed_entries_in_session(
+            session, session_id=session_id, language=language, backend=backend,
+            workspace_id=workspace_id, predicate=predicate,
+        )]
+
+    def match_reviewed_candidates(
+        self, candidates: Sequence[PronunciationCandidate], text: str, *,
+        session_id: str | None, language: str, backend: str = "*",
+    ) -> list[dict[str, Any]]:
+        return [deepcopy(item.payload) for item in _matching_pronunciations(
+            candidates, text, session_id=session_id,
+            normalized_language=normalize_language(language),
+            normalized_backend=normalize_backend(backend),
+        )]
 
     def propose(
         self,
@@ -453,8 +613,42 @@ class PronunciationLibrary:
         language: str,
         backend: str = "*",
         metadata: dict[str, Any] | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
-        values = self._normalized_values(
+        values = self._proposal_values(
+            session_id=session_id, source_form=source_form, phonetic=phonetic,
+            language=language, backend=backend, metadata=metadata,
+        )
+        with self.database.immediate_session() as session:
+            return self._propose_values_in_session(
+                session, values, workspace_id=workspace_id
+            )
+
+    def propose_in_session(
+        self,
+        session: Session,
+        *,
+        session_id: str,
+        source_form: str,
+        phonetic: str,
+        language: str,
+        backend: str = "*",
+        metadata: dict[str, Any] | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        values = self._proposal_values(
+            session_id=session_id, source_form=source_form, phonetic=phonetic,
+            language=language, backend=backend, metadata=metadata,
+        )
+        return self._propose_values_in_session(
+            session, values, workspace_id=workspace_id
+        )
+
+    def _proposal_values(
+        self, *, session_id: str, source_form: str, phonetic: str,
+        language: str, backend: str, metadata: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return self._normalized_values(
             {
                 "scope": "session",
                 "session_id": session_id,
@@ -467,11 +661,24 @@ class PronunciationLibrary:
                 "metadata": metadata or {},
             }
         )
-        with self.database.session() as session:
-            existing = self._duplicate(session, values)
-            if existing is not None:
-                return self.payload(existing)
-            entry = PronunciationEntry(**values)
-            session.add(entry)
-            session.flush()
-            return self.payload(entry)
+
+    def _propose_values_in_session(
+        self, session: Session, values: dict[str, Any], *, workspace_id: str | None,
+    ) -> dict[str, Any]:
+        owner = pronunciation_creation_ownership(
+            session,
+            scope="session",
+            session_id=values["session_id"],
+            workspace_id=workspace_id,
+            trusted_session=True,
+        )
+        values["workspace_id"] = owner.workspace_id
+        values["project_id"] = owner.project_id
+        existing = self._duplicate(session, values)
+        if existing is not None:
+            pronunciation_ownership(session, existing, require_writable=True)
+            return self.payload(existing)
+        entry = PronunciationEntry(**values)
+        session.add(entry)
+        session.flush()
+        return self.payload(entry)

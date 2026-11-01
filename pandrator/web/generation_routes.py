@@ -7,6 +7,8 @@ import re
 from flask import g, jsonify, request
 from sqlalchemy import func, select
 
+from .access.contracts import ProjectAction
+from .access.generation_resource_policy import require_generation_resource_access
 from .domain_blueprints import DomainBlueprints
 from .generation_admission import (
     GenerationAdmissionStaleInputs,
@@ -16,8 +18,14 @@ from .generation_history_reads import project_generation_run
 from .generation_summary import get_generation_summary
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
+from .http_session_access import require_session_action
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .models import Artifact, GenerationRun, OutputAssembly, SessionRecord
+from .project_segment_settings import (
+    write_project_segment_settings,
+    write_project_segments_settings,
+)
+from .project_settings_policy import ProjectSpeechPreferencesError, public_project_settings
 from .route_context import RouteContext
 from .schemas import (
     GenerationPlanCreate,
@@ -39,11 +47,21 @@ def register_generation_routes(
     idempotency: MutationIdempotency,
 ) -> None:
     services = context.services
+
+    def public_response(value):
+        return jsonify(public_project_settings(value))
+
     database = services.database
     generation = services.generation
     sessions = services.sessions
     jobs = services.jobs
     error_response = context.guards.error_response
+
+    def generation_failure(error: ValueError):
+        if isinstance(error, ProjectSpeechPreferencesError):
+            return error_response("validation_error", str(error), 422)
+        return error_response("generation_unavailable", str(error), 409)
+
     inline_credential_error = context.guards.inline_credential_error
     require_auth = context.guards.require_auth
     mutation_idempotency_key = idempotency.require_key
@@ -51,14 +69,16 @@ def register_generation_routes(
 
     @app.get("/api/v1/sessions/<session_id>/generation/summary")
     @require_auth
+    @require_session_action(context, ProjectAction.READ)
     def generation_summary(session_id: str):
         try:
-            return jsonify(get_generation_summary(database, session_id))
+            return public_response(get_generation_summary(database, session_id))
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
 
     @app.post("/api/v1/sessions/<session_id>/generation-plan")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def generation_plan_create(session_id: str):
         payload = GenerationPlanCreate.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.settings):
@@ -74,10 +94,11 @@ def register_generation_routes(
             return error_response("not_found", "Session or source revision not found.", 404)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
-        return jsonify(result), 201
+        return public_response(result), 201
 
     @app.post("/api/v1/sessions/<session_id>/generation-plan/topology")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def generation_plan_topology(session_id: str):
         payload = GenerationPlanTopologyRequest.model_validate(request.get_json(silent=True) or {})
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
@@ -105,6 +126,7 @@ def register_generation_routes(
         operation = payload.model_dump(exclude={"expected_revision_id"}, exclude_none=True)
         try:
             with database.immediate_session() as db_session:
+                require_generation_resource_access(db_session, "session", session_id, ProjectAction.EDIT)
                 reservation = services.idempotency.begin(
                     db_session,
                     principal=idempotency.principal(),
@@ -118,7 +140,7 @@ def register_generation_routes(
                 )
                 if reservation.response is not None:
                     result, status_code = reservation.response
-                    response = jsonify(result)
+                    response = public_response(result)
                     response.status_code = status_code
                     response.headers["Idempotency-Replayed"] = "true"
                     response.headers["ETag"] = f'"{result["plan_revision_id"]}"'
@@ -147,7 +169,7 @@ def register_generation_routes(
                 "Session, generation plan revision, or segment not found.",
                 404,
             )
-        response = jsonify(result)
+        response = public_response(result)
         response.status_code = 201
         response.headers["Idempotency-Replayed"] = "false"
         response.headers["ETag"] = f'"{result["plan_revision_id"]}"'
@@ -155,6 +177,7 @@ def register_generation_routes(
 
     @app.get("/api/v1/sessions/<session_id>/generation-plan/revisions")
     @require_auth
+    @require_session_action(context, ProjectAction.READ)
     def generation_plan_revisions(session_id: str):
         from .generation_review import parse_summary_flag, revision_history
 
@@ -172,15 +195,16 @@ def register_generation_routes(
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
-        return jsonify(result)
+        return public_response(result)
 
     @app.get("/api/v1/sessions/<session_id>/generation-plan/revisions/<revision_id>")
     @require_auth
+    @require_session_action(context, ProjectAction.READ)
     def generation_plan_revision_detail(session_id: str, revision_id: str):
         from .generation_review import revision_detail
 
         try:
-            return jsonify(revision_detail(database, session_id, revision_id))
+            return public_response(revision_detail(database, session_id, revision_id))
         except KeyError:
             return error_response("not_found", "Session or speech-plan revision not found.", 404)
         except ValueError as error:
@@ -188,6 +212,7 @@ def register_generation_routes(
 
     @app.post("/api/v1/sessions/<session_id>/generation-plan/topology/batch")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def generation_plan_topology_batch(session_id: str):
         from .generation_review import revise_topology_batch_in_session
         from .schemas import GenerationPlanBatchRequest
@@ -214,6 +239,7 @@ def register_generation_routes(
         request_payload = {"session_id": session_id, **payload.model_dump(exclude_none=True)}
         try:
             with database.immediate_session() as db_session:
+                require_generation_resource_access(db_session, "session", session_id, ProjectAction.EDIT)
                 reservation = services.idempotency.begin(
                     db_session,
                     principal=idempotency.principal(),
@@ -223,7 +249,7 @@ def register_generation_routes(
                 )
                 if reservation.response is not None:
                     result, status_code = reservation.response
-                    response = jsonify(result)
+                    response = public_response(result)
                     response.status_code = status_code
                     response.headers["Idempotency-Replayed"] = "true"
                     response.headers["ETag"] = f'"{result["plan_revision_id"]}"'
@@ -249,13 +275,14 @@ def register_generation_routes(
             return idempotency_failure(error)
         except KeyError:
             return error_response("not_found", "Session, revision, or segment not found.", 404)
-        response = jsonify(result)
+        response = public_response(result)
         response.status_code = 201
         response.headers["ETag"] = f'"{result["plan_revision_id"]}"'
         return response
 
     @app.get("/api/v1/sessions/<session_id>/generation-segments")
     @require_auth
+    @require_session_action(context, ProjectAction.READ)
     def generation_segment_list(session_id: str):
         def optional_bool_arg(name: str, *, default: bool | None = None) -> bool | None:
             raw = request.args.get(name)
@@ -304,10 +331,11 @@ def register_generation_routes(
             )
         except ValueError as error:
             return error_response("validation_error", str(error), 422, getattr(error, "details", None))
-        return jsonify(result)
+        return public_response(result)
 
     @app.patch("/api/v1/sessions/<session_id>/generation-segments")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def generation_segments_update(session_id: str):
         payload = GenerationSegmentBatchUpdate.model_validate(request.get_json(silent=True) or {})
         clearable = {"optimized_text", "voice_id", "voice", "language"}
@@ -340,34 +368,17 @@ def register_generation_routes(
         if idempotency_error is not None:
             return idempotency_error
         try:
-            if idempotency_key is None:
-                result = generation.update_segments(session_id, updates)
-            else:
-                with database.immediate_session() as db_session:
-                    reservation = services.idempotency.begin(
-                        db_session,
-                        principal=idempotency.principal(),
-                        operation_id="updateGenerationSegments",
-                        idempotency_key=idempotency_key,
-                        payload={"session_id": session_id, "updates": updates},
-                    )
-                    if reservation.response is not None:
-                        result, status_code = reservation.response
-                        response = jsonify(result)
-                        response.status_code = status_code
-                        response.headers["Idempotency-Replayed"] = "true"
-                        return response
-                    result = generation.update_segments_in_session(
-                        db_session, session_id, updates
-                    )
-                    services.idempotency.complete(
-                        db_session,
-                        reservation,
-                        response=result,
-                        status_code=200,
-                        resource_kind="generation_segment_batch",
-                        resource_id=session_id,
-                    )
+            result = write_project_segments_settings(
+                database,
+                services.paths,
+                services.workspace_settings,
+                generation,
+                session_id=session_id,
+                updates=updates,
+                idempotency=services.idempotency,
+                principal=idempotency.principal(),
+                idempotency_key=idempotency_key,
+            )
         except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
             if isinstance(error, WorkspaceRevisionConflict):
                 return error_response("revision_conflict", str(error), 409)
@@ -378,10 +389,15 @@ def register_generation_routes(
                 "Session or generation segment not found.",
                 404,
             )
-        return jsonify(result)
+        response = public_response(result.value)
+        response.status_code = result.status_code
+        if result.replayed:
+            response.headers["Idempotency-Replayed"] = "true"
+        return response
 
     @app.patch("/api/v1/generation-segments/<segment_id>")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT, resource="segment")
     def generation_segment_update(segment_id: str):
         payload = GenerationSegmentUpdate.model_validate(request.get_json(silent=True) or {})
         changes = payload.model_dump(exclude_unset=True)
@@ -407,63 +423,37 @@ def register_generation_routes(
                 "If-Match must contain the current segment revision.",
                 428,
             )
-        if idempotency_key is not None:
-            try:
-                with database.immediate_session() as db_session:
-                    reservation = services.idempotency.begin(
-                        db_session,
-                        principal=idempotency.principal(),
-                        operation_id="updateGenerationSegment",
-                        idempotency_key=idempotency_key,
-                        payload={
-                            "segment_id": segment_id,
-                            "expected_revision": expected,
-                            "changes": changes,
-                        },
-                    )
-                    if reservation.response is not None:
-                        result, status_code = reservation.response
-                        response = jsonify(result)
-                        response.status_code = status_code
-                        response.headers["Idempotency-Replayed"] = "true"
-                        response.headers["ETag"] = f'"{result["revision"]}"'
-                        return response
-                    result = generation.update_segment_in_session(
-                        db_session, segment_id, expected, changes
-                    )
-                    services.idempotency.complete(
-                        db_session,
-                        reservation,
-                        response=result,
-                        status_code=200,
-                        resource_kind="generation_segment",
-                        resource_id=segment_id,
-                    )
-            except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
-                if isinstance(error, WorkspaceRevisionConflict):
-                    return error_response("revision_conflict", str(error), 409)
-                return idempotency_failure(error)
-            except KeyError:
-                return error_response("not_found", "Generation segment not found.", 404)
-            response = jsonify(result)
-            response.headers["ETag"] = f'"{result["revision"]}"'
-            return response
         try:
-            # Explicit null clears a segment override back to the inherited
-            # session value; omitted fields remain unchanged.
-            result = generation.update_segment(segment_id, expected, changes)
+            result = write_project_segment_settings(
+                database,
+                services.paths,
+                services.workspace_settings,
+                generation,
+                segment_id=segment_id,
+                expected_revision=expected,
+                changes=changes,
+                idempotency=services.idempotency,
+                principal=idempotency.principal(),
+                idempotency_key=idempotency_key,
+            )
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            if isinstance(error, WorkspaceRevisionConflict):
+                return error_response("revision_conflict", str(error), 409)
+            if idempotency_key is not None:
+                return idempotency_failure(error)
+            return error_response("validation_error", str(error), 422)
         except KeyError:
             return error_response("not_found", "Generation segment not found.", 404)
-        except WorkspaceRevisionConflict as error:
-            return error_response("revision_conflict", str(error), 409)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
-        response = jsonify(result)
-        response.headers["ETag"] = f'"{result["revision"]}"'
+        response = public_response(result.value)
+        response.status_code = result.status_code
+        if result.replayed:
+            response.headers["Idempotency-Replayed"] = "true"
+        response.headers["ETag"] = f'"{result.value["revision"]}"'
         return response
 
     @app.post("/api/v1/generation-segments/<segment_id>/takes/<take_id>/select")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT, resource="segment")
     def generation_take_select(segment_id: str, take_id: str):
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
@@ -480,6 +470,7 @@ def register_generation_routes(
         if idempotency_key is not None:
             try:
                 with database.immediate_session() as db_session:
+                    require_generation_resource_access(db_session, "segment", segment_id, ProjectAction.EDIT)
                     reservation = services.idempotency.begin(
                         db_session,
                         principal=idempotency.principal(),
@@ -493,7 +484,7 @@ def register_generation_routes(
                     )
                     if reservation.response is not None:
                         result, status_code = reservation.response
-                        response = jsonify(result)
+                        response = public_response(result)
                         response.status_code = status_code
                         response.headers["Idempotency-Replayed"] = "true"
                         response.headers["ETag"] = f'"{result["revision"]}"'
@@ -519,7 +510,7 @@ def register_generation_routes(
                 return error_response(
                     "not_found", "Generation segment or audio take not found.", 404
                 )
-            response = jsonify(result)
+            response = public_response(result)
             response.headers["ETag"] = f'"{result["revision"]}"'
             return response
         try:
@@ -530,21 +521,23 @@ def register_generation_routes(
             return error_response("revision_conflict", str(error), 409)
         except ValueError as error:
             return error_response("invalid_take", str(error), 409)
-        response = jsonify(result)
+        response = public_response(result)
         response.headers["ETag"] = f'"{result["revision"]}"'
         return response
 
     @app.get("/api/v1/sessions/<session_id>/generation-runs/latest")
     @require_auth
+    @require_session_action(context, ProjectAction.READ)
     def generation_run_latest(session_id: str):
         try:
             sessions.get(session_id)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        return jsonify({"item": generation.latest_run(session_id)})
+        return public_response({"item": generation.latest_run(session_id)})
 
     @app.get("/api/v1/sessions/<session_id>/generation-runs")
     @require_auth
+    @require_session_action(context, ProjectAction.READ)
     def generation_run_list(session_id: str):
         view = request.args.get("view", "full")
         try:
@@ -558,11 +551,12 @@ def register_generation_routes(
         requested_run_id = request.args.get("generation_run_id")
         if requested_run_id is not None:
             with database.snapshot_session() as db_session:
+                require_generation_resource_access(db_session, "session", session_id, ProjectAction.READ)
                 run = db_session.get(GenerationRun, requested_run_id)
                 if run is None or run.session_id != session_id:
                     return error_response("not_found", "Generation run not found in this session.", 404)
                 result = generation._run_payload(db_session, run)
-            return jsonify({"items": [services.redactor.redact_value(project_generation_run(result, view=view))]})
+            return public_response({"items": [services.redactor.redact_value(project_generation_run(result, view=view))]})
         raw_limit = request.args.get("limit")
         try:
             limit = int(raw_limit) if raw_limit is not None else None
@@ -575,7 +569,7 @@ def register_generation_routes(
         include_repairs = request.args.get("include_repairs", "true")
         if include_repairs not in {"true", "false"}:
             return error_response("validation_error", "include_repairs must be true or false", 422)
-        return jsonify(
+        return public_response(
             {
                 "items": [
                     project_generation_run(item, view=view)
@@ -588,6 +582,7 @@ def register_generation_routes(
 
     @app.get("/api/v1/generation-runs/<run_id>")
     @require_auth
+    @require_session_action(context, ProjectAction.READ, resource="run")
     def generation_run_detail(run_id: str):
         view = request.args.get("view", "full")
         try:
@@ -595,14 +590,16 @@ def register_generation_routes(
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         with database.snapshot_session() as db_session:
+            require_generation_resource_access(db_session, "run", run_id, ProjectAction.READ)
             run = db_session.get(GenerationRun, run_id)
             if run is None:
                 return error_response("not_found", "Generation run not found.", 404)
             result = generation._run_payload(db_session, run)
-        return jsonify(services.redactor.redact_value(project_generation_run(result, view=view)))
+        return public_response(services.redactor.redact_value(project_generation_run(result, view=view)))
 
     @app.post("/api/v1/sessions/<session_id>/generation-runs")
     @require_auth
+    @require_session_action(context, ProjectAction.RUN)
     def generation_run_start(session_id: str):
         view = request.args.get("view", "full")
         try:
@@ -625,6 +622,7 @@ def register_generation_routes(
             }
             try:
                 with database.immediate_session() as db_session:
+                    require_generation_resource_access(db_session, "session", session_id, ProjectAction.RUN)
                     reservation = services.idempotency.begin(
                         db_session,
                         principal=principal,
@@ -634,14 +632,14 @@ def register_generation_routes(
                     )
                     if reservation.response is not None:
                         result, status_code = reservation.response
-                        response = jsonify(project_generation_run(result, view=view))
+                        response = public_response(project_generation_run(result, view=view))
                         response.status_code = status_code
                         response.headers["Idempotency-Replayed"] = "true"
                         return response
             except (IdempotencyConflict, IdempotencyInProgress) as error:
                 return idempotency_failure(error)
             except ValueError as error:
-                return error_response("generation_unavailable", str(error), 409)
+                return generation_failure(error)
 
             reservation_id = reservation.record.id
 
@@ -678,13 +676,14 @@ def register_generation_routes(
                 return error_response("not_found", "Session not found.", 404)
             except ValueError as error:
                 abandon_generation_reservation()
-                return error_response("generation_unavailable", str(error), 409)
+                return generation_failure(error)
             except Exception:
                 abandon_generation_reservation()
                 raise
 
             try:
                 with database.immediate_session() as db_session:
+                    require_generation_resource_access(db_session, "session", session_id, ProjectAction.RUN)
                     reservation = services.idempotency.load_in_progress(
                         db_session, reservation_id, principal=principal
                     )
@@ -704,11 +703,13 @@ def register_generation_routes(
                 return error_response("not_found", "Session not found.", 404)
             except ValueError as error:
                 abandon_generation_reservation()
-                return error_response("generation_unavailable", str(error), 409)
+                return generation_failure(error)
             except Exception:
                 abandon_generation_reservation()
                 raise
-            return jsonify(project_generation_run(result, view=view)), 202
+            finally:
+                generation.cleanup_prepared_start(prepared)
+            return public_response(project_generation_run(result, view=view)), 202
         try:
             result = generation.start(
                 session_id,
@@ -727,11 +728,12 @@ def register_generation_routes(
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
-            return error_response("generation_unavailable", str(error), 409)
-        return jsonify(project_generation_run(result, view=view)), 202
+            return generation_failure(error)
+        return public_response(project_generation_run(result, view=view)), 202
 
     @app.post("/api/v1/sessions/<session_id>/generation-admissions")
     @require_auth
+    @require_session_action(context, ProjectAction.RUN)
     def generation_admission_create(session_id: str):
         payload = GenerationStartRequest.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.run_override):
@@ -749,6 +751,7 @@ def register_generation_routes(
             traceparent = ""
         try:
             with database.immediate_session() as db_session:
+                require_generation_resource_access(db_session, "session", session_id, ProjectAction.RUN)
                 reservation = services.idempotency.begin(
                     db_session,
                     principal=idempotency.principal(),
@@ -786,16 +789,17 @@ def register_generation_routes(
         except GenerationAdmissionStaleInputs as error:
             return error_response("generation_admission_stale_inputs", str(error), 409)
         except ValueError as error:
-            return error_response("generation_unavailable", str(error), 409)
+            return generation_failure(error)
         g.audit_resource_kind = "job"
         g.audit_resource_id = result["job_id"]
-        response = jsonify(result)
+        response = public_response(result)
         response.status_code = status_code
         response.headers["Idempotency-Replayed"] = "true" if replayed else "false"
         return response
 
     @app.post("/api/v1/sessions/<session_id>/generation-runs/preview")
     @require_auth
+    @require_session_action(context, ProjectAction.RUN)
     def generation_run_preview(session_id: str):
         payload = GenerationStartRequest.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.run_override):
@@ -819,14 +823,15 @@ def register_generation_routes(
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
-            return error_response("generation_unavailable", str(error), 409)
-        return jsonify(result), 200
+            return generation_failure(error)
+        return public_response(result), 200
 
     @app.post("/api/v1/generation-runs/<run_id>/pause")
     @require_auth
+    @require_session_action(context, ProjectAction.CANCEL_ANY, resource="run")
     def generation_run_pause(run_id: str):
         try:
-            return jsonify(generation.request_pause(run_id)), 202
+            return public_response(generation.request_pause(run_id)), 202
         except KeyError:
             return error_response("not_found", "Generation run not found.", 404)
         except ValueError as error:
@@ -834,9 +839,10 @@ def register_generation_routes(
 
     @app.post("/api/v1/generation-runs/<run_id>/resume")
     @require_auth
+    @require_session_action(context, ProjectAction.RUN, resource="run")
     def generation_run_resume(run_id: str):
         try:
-            return jsonify(generation.resume(run_id)), 202
+            return public_response(generation.resume(run_id)), 202
         except KeyError:
             return error_response("not_found", "Generation run not found.", 404)
         except ValueError as error:
@@ -844,14 +850,16 @@ def register_generation_routes(
 
     @app.post("/api/v1/generation-runs/<run_id>/cancel")
     @require_auth
+    @require_session_action(context, ProjectAction.CANCEL_ANY, resource="run")
     def generation_run_cancel(run_id: str):
         try:
-            return jsonify(generation.cancel(run_id)), 202
+            return public_response(generation.cancel(run_id)), 202
         except KeyError:
             return error_response("not_found", "Generation run not found.", 404)
 
     @app.delete("/api/v1/generation-runs/<run_id>")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT, resource="run")
     def generation_run_delete(run_id: str):
         try:
             generation.delete_run(run_id)
@@ -863,15 +871,17 @@ def register_generation_routes(
 
     @app.get("/api/v1/sessions/<session_id>/output-assemblies/latest")
     @require_auth
+    @require_session_action(context, ProjectAction.READ)
     def output_assembly_latest(session_id: str):
         try:
             sessions.get(session_id)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        return jsonify({"item": generation.latest_assembly(session_id)})
+        return public_response({"item": generation.latest_assembly(session_id)})
 
     @app.post("/api/v1/sessions/<session_id>/output-assemblies")
     @require_auth
+    @require_session_action(context, ProjectAction.RUN)
     def output_assembly_create(session_id: str):
         payload = OutputAssemblyCreateRequest.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.run_override):
@@ -897,6 +907,7 @@ def register_generation_routes(
 
             try:
                 with database.immediate_session() as db_session:
+                    require_generation_resource_access(db_session, "session", session_id, ProjectAction.RUN)
                     reservation = services.idempotency.begin(
                         db_session,
                         principal=principal,
@@ -909,7 +920,7 @@ def register_generation_routes(
                     )
                     if reservation.response is not None:
                         result, status_code = reservation.response
-                        response = jsonify(result)
+                        response = public_response(result)
                         response.status_code = status_code
                         response.headers["Idempotency-Replayed"] = "true"
                         return response
@@ -920,6 +931,7 @@ def register_generation_routes(
                     run_override=payload.run_override,
                 )
                 with database.immediate_session() as db_session:
+                    require_generation_resource_access(db_session, "session", session_id, ProjectAction.RUN)
                     reservation = services.idempotency.load_in_progress(
                         db_session, reservation_id, principal=principal
                     )
@@ -949,7 +961,7 @@ def register_generation_routes(
             except Exception:
                 abandon_assembly_reservation()
                 raise
-            return jsonify(result), 202
+            return public_response(result), 202
         try:
             result = generation.create_assembly(
                 session_id,
@@ -961,59 +973,20 @@ def register_generation_routes(
             return error_response("not_found", "Session or generation run not found.", 404)
         except ValueError as error:
             return error_response("assembly_unavailable", str(error), 409)
-        return jsonify(result), 202
+        return public_response(result), 202
 
     @app.post("/api/v1/sessions/<session_id>/output-mix-preview")
     @require_auth
+    @require_session_action(context, ProjectAction.RUN)
     def output_mix_preview(session_id: str):
         """Queue a bounded audio preview from server-resolved mix inputs."""
 
-        payload = OutputMixPreviewRequest.model_validate(request.get_json(silent=True) or {})
-        with database.session() as db_session:
-            record = db_session.get(SessionRecord, session_id)
-            if record is None:
-                return error_response("not_found", "Session not found.", 404)
-            if record.workflow_kind != "voiceover":
-                return error_response(
-                    "mix_preview_unavailable",
-                    "Soundtrack mix previews are available for voiceover sessions.",
-                    409,
-                )
-            source_resolution = resolve_media_source(db_session, session_id)
-            source = source_resolution.artifact
-            if source is None or not source_resolution.has_audio:
-                return error_response(
-                    "mix_preview_unavailable",
-                    "Attach an audio or video source before previewing the soundtrack mix.",
-                    409,
-                )
-            assembly = db_session.scalar(
-                select(OutputAssembly)
-                .where(
-                    OutputAssembly.session_id == session_id,
-                    OutputAssembly.generation_run_id == payload.generation_run_id,
-                    func.coalesce(OutputAssembly.settings_json["audio_version_side"].as_string(), "after") == payload.audio_version_side,
-                    OutputAssembly.status == "completed",
-                    OutputAssembly.artifact_id.is_not(None),
-                )
-                .order_by(OutputAssembly.created_at.desc())
-            )
-            if assembly is None:
-                return error_response(
-                    "mix_preview_unavailable",
-                    "Assemble the selected audio version before previewing its soundtrack mix.",
-                    409,
-                )
-            dubbing = db_session.get(Artifact, assembly.artifact_id)
-            if dubbing is None or dubbing.state == "deleted":
-                return error_response(
-                    "mix_preview_unavailable",
-                    "The selected audio version's assembly is unavailable.",
-                    409,
-                )
-            source_artifact_id = source.id
-            dubbing_artifact_id = dubbing.id
+        from .access.contracts import AccessDenied
+        from .access.output_mix_policy import require_output_mix_access
+        from .accounts.execution_actor import execution_actor_scope
 
+        payload = OutputMixPreviewRequest.model_validate(request.get_json(silent=True) or {})
+        access = context.guards.access_context()
         mix_fields = (
             "mix_source_gain_db",
             "mix_voice_gain_db",
@@ -1022,18 +995,80 @@ def register_generation_routes(
             "mix_attack_ms",
             "mix_release_ms",
         )
-        job = jobs.enqueue(
-            "output.mix_preview",
-            {
-                "session_id": session_id,
-                "generation_run_id": payload.generation_run_id,
-                "source_artifact_id": source_artifact_id,
-                "dubbing_artifact_id": dubbing_artifact_id,
-                "start_seconds": payload.start_seconds,
-                "duration_seconds": payload.duration_seconds,
-                "settings": {field: getattr(payload, field) for field in mix_fields},
-            },
-            session_id=session_id,
-            resource_keys=[f"session:{session_id}"],
-        )
-        return jsonify(_job_payload(job)), 202
+        try:
+            with database.immediate_session() as db_session, execution_actor_scope(access.actor):
+                require_generation_resource_access(
+                    db_session, "session", session_id, ProjectAction.RUN
+                )
+                record = db_session.get(SessionRecord, session_id)
+                if record is None:
+                    return error_response("not_found", "Session not found.", 404)
+                if record.workflow_kind != "voiceover":
+                    return error_response(
+                        "mix_preview_unavailable",
+                        "Soundtrack mix previews are available for voiceover sessions.",
+                        409,
+                    )
+                source_resolution = resolve_media_source(
+                    db_session, session_id, include_metadata=False
+                )
+                source = source_resolution.artifact
+                if source is None or not source_resolution.has_audio:
+                    return error_response(
+                        "mix_preview_unavailable",
+                        "Attach an audio or video source before previewing the soundtrack mix.",
+                        409,
+                    )
+                assembly_artifact_id = db_session.scalar(
+                    select(OutputAssembly.artifact_id)
+                    .where(
+                        OutputAssembly.session_id == session_id,
+                        OutputAssembly.generation_run_id == payload.generation_run_id,
+                        func.coalesce(OutputAssembly.settings_json["audio_version_side"].as_string(), "after") == payload.audio_version_side,
+                        OutputAssembly.status == "completed",
+                        OutputAssembly.artifact_id.is_not(None),
+                    )
+                    .order_by(OutputAssembly.created_at.desc())
+                )
+                if assembly_artifact_id is None:
+                    return error_response(
+                        "mix_preview_unavailable",
+                        "Assemble the selected audio version before previewing its soundtrack mix.",
+                        409,
+                    )
+                dubbing_artifact_id = db_session.scalar(
+                    select(Artifact.id).where(
+                        Artifact.id == assembly_artifact_id, Artifact.state != "deleted"
+                    )
+                )
+                if dubbing_artifact_id is None:
+                    return error_response(
+                        "mix_preview_unavailable",
+                        "The selected audio version's assembly is unavailable.",
+                        409,
+                    )
+                captured = require_output_mix_access(
+                    db_session, session_id, source.id, dubbing_artifact_id
+                )
+                if captured is None:
+                    raise AccessDenied()
+                job = jobs.enqueue_in_session(
+                    db_session,
+                    "output.mix_preview",
+                    {
+                        "session_id": session_id,
+                        "generation_run_id": payload.generation_run_id,
+                        "source_artifact_id": source.id,
+                        "dubbing_artifact_id": dubbing_artifact_id,
+                        "start_seconds": payload.start_seconds,
+                        "duration_seconds": payload.duration_seconds,
+                        "settings": {field: getattr(payload, field) for field in mix_fields},
+                    },
+                    session_id=session_id,
+                    workspace_id=captured.workspace_id,
+                    project_id=captured.project_id,
+                    resource_keys=[f"session:{session_id}"],
+                )
+        except KeyError:
+            return error_response("not_found", "Mix preview input not found.", 404)
+        return public_response(_job_payload(job)), 202

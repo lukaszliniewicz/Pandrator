@@ -8,8 +8,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .access.contracts import ProjectAction
+from .access.sound_library_policy import (
+    require_sound_library_headers,
+    require_sound_library_workspace,
+)
+from .accounts.execution_actor import current_execution_actor
 from .models import Artifact, GenerationSegment, SoundVariant, new_id
+from .projects.artifact_identity import resolve_artifact_ownership
 from .settings_policy import RevisionConflict
+from .sound_identity import sound_variant_workspace
 from .sound_project_models import ProjectSoundCue, ProjectSoundPlan
 from .sound_project_queries import MAX_CUES
 from .sound_project_schemas import SoundAnchor, SoundPlayback
@@ -23,7 +31,29 @@ def assert_revision(plan: ProjectSoundPlan | None, expected: int) -> None:
         )
 
 
-def require_variant(session: Session, variant_id: str) -> SoundVariant:
+def require_variant(
+    session: Session, variant_id: str, *, session_id: str
+) -> SoundVariant:
+    owner = resolve_artifact_ownership(session, session_id=session_id)
+    if current_execution_actor.get() is not None:
+        # The caller has proved project EDIT. Previously attached material stays
+        # within that project; a new library selection also needs library READ.
+        retained = session.scalar(
+            select(ProjectSoundCue.id)
+            .join(ProjectSoundPlan, ProjectSoundPlan.id == ProjectSoundCue.plan_id)
+            .where(
+                ProjectSoundPlan.session_id == session_id,
+                ProjectSoundCue.variant_id == variant_id,
+            )
+            .limit(1)
+        )
+        if retained is None:
+            require_sound_library_workspace(
+                session, ProjectAction.READ, workspace_id=owner.workspace_id
+            )
+        require_sound_library_headers(
+            session, owner.workspace_id, candidate_id=variant_id
+        )
     variant = session.get(SoundVariant, variant_id)
     if variant is None or variant.state != "ready" or not variant.artifact_id:
         raise ValueError("Choose a ready sound variant with a managed artifact.")
@@ -36,7 +66,26 @@ def require_variant(session: Session, variant_id: str) -> SoundVariant:
         or artifact.session_id is not None
     ):
         raise ValueError("Sound variants must reference a current global audio artifact.")
+    sound_variant_workspace(session, variant, workspace_id=owner.workspace_id)
     return variant
+
+
+def validate_sound_cue_workspaces(
+    session: Session, session_id: str, cues: list[dict[str, Any]]
+) -> None:
+    """Validate every pinned owner before projecting or versioning a sound plan."""
+    with session.no_autoflush:
+        owner = resolve_artifact_ownership(session, session_id=session_id)
+        identifiers = sorted({str(cue["variant_id"]) for cue in cues})
+        for start in range(0, len(identifiers), 400):
+            requested = identifiers[start:start + 400]
+            variants = list(session.scalars(
+                select(SoundVariant).where(SoundVariant.id.in_(requested))
+            ))
+            if len(variants) != len(requested):
+                raise ValueError("A sound cue references a missing variant.")
+            for variant in variants:
+                sound_variant_workspace(session, variant, workspace_id=owner.workspace_id)
 
 
 def normalize_placement(
@@ -106,6 +155,7 @@ def write_version(
 ) -> ProjectSoundPlan:
     if len(cues) > MAX_CUES:
         raise ValueError(f"A project can contain at most {MAX_CUES} authored sound cues.")
+    validate_sound_cue_workspaces(session, session_id, cues)
     plan = ProjectSoundPlan(
         session_id=session_id,
         revision=(old.revision if old else 0) + 1,

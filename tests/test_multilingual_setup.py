@@ -350,7 +350,7 @@ def test_planned_second_fork_failure_rolls_back_project_and_files(case):
 def test_setup_dto_is_strict():
     assert MultilingualSetup(target_languages=["PT_br"]).target_languages == ["pt-br"]
     with pytest.raises(ValueError):
-        MultilingualSetup(target_languages=["pt"], generate_voiceover="yes")
+        MultilingualSetup.model_validate({"target_languages": ["pt"], "generate_voiceover": "yes"})
 
 
 def test_voiceover_create_setup_seeds_correction_only_outcome(case):
@@ -375,12 +375,19 @@ def test_voiceover_create_setup_seeds_correction_only_outcome(case):
         assert db.get(SessionRecord, sid).revision == 1
 
 
-def test_enabling_existing_voiceover_reconciles_outcome_once(case):
+@pytest.mark.parametrize("saved_outcome", [False, True])
+def test_enabling_existing_voiceover_reconciles_outcome_once(case, saved_outcome):
     client, headers, services = case
     source = _source(client, headers, name="EnableVoiceover", workflow_kind="voiceover").get_json()
     sid = source["id"]
     initial = client.get(f"/api/v1/sessions/{sid}/outcome-plan").get_json()
     assert "generate_audio" in {step["key"] for step in initial["pipeline"]}
+    with services["database"].immediate_session() as db:
+        assert db.get(OutcomePlan, sid) is None
+        if saved_outcome:
+            db.add(OutcomePlan(session_id=sid, value_json=initial["value"], revision=1))
+    if saved_outcome:
+        initial = client.get(f"/api/v1/sessions/{sid}/outcome-plan").get_json()
     response = client.patch(
         f"/api/v1/sessions/{sid}",
         json={"multilingual_setup": {"target_languages": ["fr"]}},
@@ -394,9 +401,11 @@ def test_enabling_existing_voiceover_reconciles_outcome_once(case):
     assert "generate_audio" not in keys
     assert updated["revision"] == initial["revision"] + 1
     with services["database"].session() as db:
+        assert db.get(OutcomePlan, sid).revision == updated["revision"]
         history = db.scalars(select(OutcomePlanHistory).where(OutcomePlanHistory.session_id == sid)).all()
-        assert len(history) == 1
-        assert history[0].value_json["deliverables"]["voiceover"] is True
+        assert len(history) == int(saved_outcome)
+        if saved_outcome:
+            assert history[0].value_json["deliverables"]["voiceover"] is True
     preferences = client.patch(
         f"/api/v1/sessions/{sid}",
         json={"multilingual_setup": {"target_languages": ["fr", "it"]}},
@@ -490,6 +499,7 @@ def test_native_mcp_setup_lifecycle_with_disposable_api(case, tmp_path):
     def request_json(path, *, method="GET", body=None, idempotency_key=None,
                      if_match_revision=None, **_kwargs):
         if path == "/api/v1/sessions" and method == "POST":
+            assert isinstance(body, dict)
             setup = body.get("multilingual_setup")
             if setup is not None:
                 assert setup["target_languages"] in (["pl"], ["it"])

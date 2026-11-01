@@ -14,6 +14,11 @@ from .export_contract import (
     export_uses_generated_audio,
     resolve_export_audio_mode,
 )
+from .export_subtitle_selection import (
+    SUBTITLE_TRACK_ROLES,
+    collect_export_roles,
+    resolve_subtitle_track_snapshot,
+)
 from .models import (
     Artifact,
     GenerationRun,
@@ -24,7 +29,13 @@ from .models import (
 )
 from .output_settings_snapshot import build_output_settings_snapshot
 from .source_resolution import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, resolve_media_source
-from .workflow_output_context import OutputWorkflowContext
+from .subtitle_selection import export_requires_captions, resolve_subtitle_selection
+from .workflow_output_context import (
+    OutputWorkflowContext,
+    authorize_output_input,
+    output_access_options,
+    require_output_access,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +77,10 @@ def resolve_export_inputs(
     settings = dict(payload.get("settings") or {})
     from .source_management import require_recording_timing_review
 
-    require_recording_timing_review(context.database, session_id, settings)
+    require_recording_timing_review(
+        context.database, session_id, settings,
+        **output_access_options(context),
+    )
     raw_export_contract = payload.get("export_contract")
     if raw_export_contract is not None and not isinstance(
         raw_export_contract, dict
@@ -91,6 +105,7 @@ def resolve_export_inputs(
     media_edit_plan: MediaEditPlan | None = None
     active_media_edit_revision: MediaEditPlanRevision | None = None
     with context.database.session() as session:
+        require_output_access(context, session)
         if record.workflow_kind in {"media_edit", "voiceover"}:
             media_edit_plan = session.scalar(
                 select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
@@ -114,12 +129,19 @@ def resolve_export_inputs(
             ).all()
         )
         selected_text = selected_artifacts(session, session_id)
+        pinned_subtitles = (
+            resolve_subtitle_track_snapshot(
+                context, session, session_id, payload["subtitle_track_snapshot"], current,
+            )
+            if "subtitle_track_snapshot" in payload else None
+        )
         contract_source_id = (
             str(raw_export_contract.get("source_artifact_id") or "")
             if isinstance(raw_export_contract, dict)
             else ""
         )
         if isinstance(raw_export_contract, dict) and contract_source_id:
+            authorize_output_input(context, session, contract_source_id)
             contract_source = session.get(Artifact, contract_source_id)
             if contract_source is None:
                 raise ValueError(
@@ -143,7 +165,7 @@ def resolve_export_inputs(
             attached_sources = []
         else:
             compatibility_source = resolve_media_source(
-                session, session_id
+                session, session_id, authorize_input=getattr(context, "_authorize_input", None)
             ).artifact
             attached_sources = (
                 [compatibility_source] if compatibility_source else []
@@ -274,16 +296,18 @@ def resolve_export_inputs(
                 raise ValueError(
                     "Assemble the selected generation run before exporting it."
                 )
+            if selected_assembly.artifact_id:
+                authorize_output_input(context, session, selected_assembly.artifact_id)
             selected_audio = session.get(Artifact, selected_assembly.artifact_id)
             if selected_audio is None or selected_audio.state != "current":
                 raise ValueError(
                     "The selected generation run assembly is unavailable."
                 )
-    by_role: dict[str, Artifact] = {}
-    for item in current:
-        by_role.setdefault(item.role, item)
-    for item in selected_text.values():
-        by_role[item.role] = item
+    by_role = collect_export_roles(current, selected_text)
+    if pinned_subtitles is not None:
+        for role in SUBTITLE_TRACK_ROLES:
+            by_role.pop(role, None)
+        by_role.update(pinned_subtitles)
     assembled_audio_candidates = tuple(
         item for item in current if item.role == "assembled_audio"
     )
@@ -458,25 +482,17 @@ def select_media_export(inputs: ExportInputs) -> MediaExportSelection:
         subtitle_format = "srt"
     subtitle_mode = str(settings.get("subtitle_mode") or "none").lower()
     subtitle_mode = {"burn": "burned"}.get(subtitle_mode, subtitle_mode)
-    subtitle_selection = str(
-        settings.get("subtitle_selection")
-        or ("dual" if translated and source_subtitle else "translation")
-    ).lower()
-    subtitle_selection = {"both": "dual"}.get(
-        subtitle_selection, subtitle_selection
+    subtitle_selection = resolve_subtitle_selection(
+        settings,
+        source_available=source_subtitle is not None,
+        translation_available=translated is not None,
+        captions_required=export_requires_captions(
+            workflow_kind=record.workflow_kind,
+            export_mode=export_mode,
+            subtitle_mode=subtitle_mode,
+            source_is_video=upload_media is not None,
+        ),
     )
-    if (
-        subtitle_selection == "translation"
-        and translated is None
-        and source_subtitle is not None
-    ):
-        subtitle_selection = "source"
-    elif (
-        subtitle_selection == "source"
-        and source_subtitle is None
-        and translated is not None
-    ):
-        subtitle_selection = "translation"
     selected_subtitles = (
         [source_subtitle]
         if source_subtitle and subtitle_selection in {"source", "dual"}

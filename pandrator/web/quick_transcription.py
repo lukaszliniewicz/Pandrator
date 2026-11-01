@@ -29,21 +29,35 @@ from pandrator.logic.dubbing.stt_languages import validate_stt_language
 from pandrator.logic.dubbing.stt_provider_profiles import CLOUD_STT_ENGINE_IDS
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata
+from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 from pandrator.runtime import DataPaths
 
+from .access.contracts import AccessContext, AccessDenied
+from .access.private_transcription_policy import (
+    PrivateTranscriptionNotFound,
+    PrivateWorkAction,
+    get_private_transcription,
+    private_job_visibility_clause,
+    require_private_workspace,
+)
+from .accounts.execution_actor import UserActor, actor_from_principal, current_execution_actor
+from .accounts.private_work_models import QuickTranscriptionOwner
 from .auth import Principal
 from .credentials import SecretRedactor, hydrate_stt_settings
 from .database import Database
 from .idempotency import IdempotencyService
+from .job_identity import job_ownership
 from .jobs import JobQueue
 from .maintenance_threads import MaintenanceThread
 from .media_process import resolve_ffmpeg_executable
-from .models import AppSetting, Job, QuickTranscription, new_id, utcnow
+from .models import Job, QuickTranscription, new_id, utcnow
+from .quick_transcription_execution import prepare_private_transcription_execution
 from .quick_transcription_schemas import (
     CHUNK_SIZE,
     INLINE_BYTES,
     TranscriptionCreate,
 )
+from .settings_identity import workspace_setting_in_workspace
 from .stt_resources import stt_resource_keys
 
 TERMINAL = {"succeeded", "failed", "canceled", "interrupted"}
@@ -331,27 +345,48 @@ class QuickTranscriptionService:
         # Identifiers come from a database record, never a caller's path.
         return self.root / identifier
 
-    def hidden_job_ids(self, subject: str, identifiers) -> set[str]:
-        """Filter only the current aggregate page, without exposing private IDs."""
+    def hidden_job_ids(self, context: AccessContext, identifiers) -> set[str]:
+        """Compatibility for bounded callers; external lists filter before their limit."""
         candidates = [identifier for identifier in identifiers if identifier]
         if not candidates:
             return set()
-        with self.database.session() as session:
-            return {
-                identifier
-                for identifier in session.scalars(
-                    select(QuickTranscription.job_id).where(
-                        QuickTranscription.job_id.in_(candidates),
-                        QuickTranscription.owner_subject != subject,
-                    )
-                ).all()
-                if identifier is not None
-            }
+        with self.database.snapshot_session() as session:
+            allowed = private_job_visibility_clause(session, context)
+            return set(session.scalars(select(Job.id).where(Job.id.in_(candidates), ~allowed)))
 
-    def _owned(self, session, identifier: str, subject: str, *, allow_gone=False):
-        record = session.get(QuickTranscription, identifier)
-        if record is None or record.owner_subject != subject:
-            raise TranscriptionError("not_found", "Transcription not found.", 404)
+    @staticmethod
+    def _context(principal: Principal) -> AccessContext:
+        try:
+            actor = actor_from_principal(principal)
+            if type(actor) is not UserActor:
+                raise ValueError("An authenticated user actor is required.")
+            return AccessContext(actor)
+        except (TypeError, ValueError):
+            raise TranscriptionError(
+                "scope_denied", "The requested action is not permitted.", 403
+            ) from None
+
+    @staticmethod
+    def _private_workspace(session, context: AccessContext) -> str:
+        try:
+            return require_private_workspace(session, context, PrivateWorkAction.RUN)
+        except AccessDenied:
+            raise TranscriptionError(
+                "scope_denied", "The requested action is not permitted.", 403
+            ) from None
+
+    def _owned(
+        self, session, identifier: str, context: AccessContext, *,
+        action: PrivateWorkAction = PrivateWorkAction.READ, allow_gone=False,
+    ):
+        try:
+            record = get_private_transcription(session, context, identifier, action)
+        except PrivateTranscriptionNotFound:
+            raise TranscriptionError("not_found", "Transcription not found.", 404) from None
+        except AccessDenied:
+            raise TranscriptionError(
+                "scope_denied", "The requested action is not permitted.", 403
+            ) from None
         if not allow_gone and (
             record.state in {"deleted", "expired", "deleting"}
             or _aware(record.expires_at) <= utcnow()
@@ -366,8 +401,12 @@ class QuickTranscriptionService:
     def create(
         self, principal: Principal, payload: TranscriptionCreate, key: str
     ) -> dict[str, Any]:
+        context = self._context(principal)
+        with self.database.snapshot_session() as session:
+            self._private_workspace(session, context)
         self.cleanup()
         with self.database.immediate_session() as session:
+            workspace_id = self._private_workspace(session, context)
             reservation = self.idempotency.begin(
                 session,
                 principal=principal,
@@ -377,13 +416,15 @@ class QuickTranscriptionService:
             )
             if reservation.response is not None:
                 identifier = reservation.response[0]["id"]
-                record = self._owned(session, identifier, principal.subject)
+                record = self._owned(
+                    session, identifier, context, action=PrivateWorkAction.RUN
+                )
                 return self._snapshot(session, record, include_result=False)
             # Snapshot ordinary non-secret configured defaults, then resolve credentials only in the worker.
             from .settings_policy import BUILTIN_DEFAULTS
 
             settings = copy.deepcopy(BUILTIN_DEFAULTS["stt"])
-            defaults = session.get(AppSetting, "defaults.stt")
+            defaults = workspace_setting_in_workspace(session, workspace_id, "defaults.stt")
             if defaults and isinstance(defaults.value_json, dict):
                 settings.update(copy.deepcopy(defaults.value_json))
             legacy_quantization = settings.get("stt_model_quantization")
@@ -455,7 +496,11 @@ class QuickTranscriptionService:
 
             active = session.scalars(
                 select(QuickTranscription).where(
-                    QuickTranscription.owner_subject == principal.subject,
+                    QuickTranscription.id.in_(
+                        select(QuickTranscriptionOwner.transcription_id).where(
+                            QuickTranscriptionOwner.user_id == context.actor.user_id
+                        )
+                    ),
                     QuickTranscription.state.not_in(["deleted", "expired"]),
                 )
             ).all()
@@ -477,6 +522,14 @@ class QuickTranscriptionService:
             )
             session.add(record)
             session.flush()
+            session.add(
+                QuickTranscriptionOwner(
+                    transcription_id=record.id,
+                    user_id=context.actor.user_id,
+                    workspace_id=workspace_id,
+                )
+            )
+            session.flush()
             result = self._snapshot(session, record, include_result=False)
             # Store only the opaque identity in idempotency history, never result text or input filenames.
             self.idempotency.complete(
@@ -489,13 +542,13 @@ class QuickTranscriptionService:
             )
         return result
 
-    def upload_chunk(self, identifier: str, subject: str, index: int, data: bytes):
+    def upload_chunk(self, identifier: str, context: AccessContext, index: int, data: bytes):
         if index < 0 or not data or len(data) > CHUNK_SIZE:
             raise TranscriptionError(
                 "invalid_chunk", "Chunks must contain 1–8 MiB of audio data."
             )
         with self.database.immediate_session() as session:
-            record = self._owned(session, identifier, subject)
+            record = self._owned(session, identifier, context, action=PrivateWorkAction.RUN)
             if record.state != "uploading":
                 raise TranscriptionError(
                     "upload_closed",
@@ -534,9 +587,11 @@ class QuickTranscriptionService:
             record.next_chunk_index += 1
             return self._snapshot(session, record, include_result=False)
 
-    def start(self, identifier: str, subject: str):
+    def start(self, identifier: str, context: AccessContext):
         with self.database.immediate_session() as session:
-            record = self._owned(session, identifier, subject)
+            record = self._owned(session, identifier, context, action=PrivateWorkAction.RUN)
+            owner = session.get(QuickTranscriptionOwner, record.id)
+            assert owner is not None
             if record.job_id:
                 return self._snapshot(session, record, include_result=False)
             if (
@@ -564,13 +619,18 @@ class QuickTranscriptionService:
                     "The uploaded audio does not match its SHA-256 checksum.",
                     409,
                 )
-            job = self.jobs.enqueue_in_session(
-                session,
-                "transcription.quick",
-                {"transcription_id": record.id},
-                resource_keys=stt_resource_keys(record.settings_json),
-                max_attempts=1,
-            )
+            actor_token = current_execution_actor.set(context.actor)
+            try:
+                job = self.jobs.enqueue_in_session(
+                    session,
+                    "transcription.quick",
+                    {"transcription_id": record.id},
+                    workspace_id=owner.workspace_id,
+                    resource_keys=stt_resource_keys(record.settings_json),
+                    max_attempts=1,
+                )
+            finally:
+                current_execution_actor.reset(actor_token)
             record.job_id = job.id
             record.state = "submitted"
             record.expires_at = utcnow() + timedelta(hours=24)
@@ -578,7 +638,11 @@ class QuickTranscriptionService:
             return self._snapshot(session, record, include_result=False)
 
     def _snapshot(self, session, record, *, format=None, include_result=True):
-        job = session.get(Job, record.job_id) if record.job_id else None
+        job = (
+            session.get(Job, record.job_id)
+            if record.job_id and record.state != "finished"
+            else None
+        )
         selected = format or record.format
         if selected not in MIME_TYPES:
             raise TranscriptionError("invalid_format", "Choose txt, srt, or json.")
@@ -590,14 +654,18 @@ class QuickTranscriptionService:
                 409,
             )
         status = job.status if job else record.state
+        if record.state == "finished":
+            status = "succeeded"
         if record.state in {"deleted", "expired", "deleting"}:
             status = record.state
         result = {
             "id": record.id,
             "job_id": record.job_id,
             "status": status,
-            "progress": job.progress if job else 0,
-            "progress_detail": job.progress_detail if job else None,
+            "progress": 1.0 if record.state == "finished" else job.progress if job else 0,
+            "progress_detail": "Transcript ready"
+            if record.state == "finished"
+            else job.progress_detail if job else None,
             "expires_at": _aware(record.expires_at).isoformat(),
             "format": selected,
             "available_formats": available_formats,
@@ -611,7 +679,7 @@ class QuickTranscriptionService:
                 and isinstance(record.settings_json.get(_SELECTION_KEY), dict)
                 else _empty_selection()
             ),
-            "result_available": status == "succeeded"
+            "result_available": record.state == "finished"
             and (self._directory(record.id) / f"result.{selected}").is_file(),
             "inline_result": False,
             "result_url": f"/api/v1/transcriptions/{record.id}/result?format={selected}",
@@ -635,12 +703,15 @@ class QuickTranscriptionService:
         return result
 
     def get(
-        self, identifier: str, subject: str, *, format=None, wait_seconds: float = 0
+        self, identifier: str, context: AccessContext, *, format=None, wait_seconds: float = 0,
+        action: PrivateWorkAction = PrivateWorkAction.READ,
     ):
+        if action is not PrivateWorkAction.READ and action is not PrivateWorkAction.RUN:
+            raise ValueError("Invalid transcription observation action.")
         deadline = time.monotonic() + min(30, max(0, wait_seconds))
         while True:
-            with self.database.session() as session:
-                record = self._owned(session, identifier, subject)
+            with self.database.snapshot_session() as session:
+                record = self._owned(session, identifier, context, action=action)
                 result = self._snapshot(session, record, format=format)
             if (
                 result["status"] in TERMINAL | {"uploading"}
@@ -649,20 +720,24 @@ class QuickTranscriptionService:
                 return result
             time.sleep(min(0.2, max(0, deadline - time.monotonic())))
 
-    def result(self, identifier: str, subject: str, format: str):
+    def result(
+        self, identifier: str, context: AccessContext, format: str, *,
+        action: PrivateWorkAction = PrivateWorkAction.READ,
+    ):
+        if action is not PrivateWorkAction.READ and action is not PrivateWorkAction.RUN:
+            raise ValueError("Invalid transcription observation action.")
         if format not in MIME_TYPES:
             raise TranscriptionError("invalid_format", "Choose txt, srt, or json.")
         # Read under the same short lock used by deletion to avoid a read/delete race.
         with self.database.immediate_session() as session:
-            record = self._owned(session, identifier, subject)
+            record = self._owned(session, identifier, context, action=action)
             if format not in self._available_formats(record.format):
                 raise TranscriptionError(
                     "timing_not_requested",
                     "Word timings were not requested, so an SRT result is unavailable.",
                     409,
                 )
-            job = session.get(Job, record.job_id) if record.job_id else None
-            if not job or job.status != "succeeded":
+            if record.state != "finished":
                 raise TranscriptionError(
                     "result_not_ready", "The transcript is not ready yet.", 409
                 )
@@ -681,9 +756,11 @@ class QuickTranscriptionService:
         # freezes whether precise word timing and SRT publication were asked for.
         return ["txt", "json"] if transcript_format == "txt" else ["txt", "srt", "json"]
 
-    def cancel(self, identifier: str, subject: str, *, delete=False):
+    def cancel(self, identifier: str, context: AccessContext, *, delete=False):
         with self.database.immediate_session() as session:
-            record = self._owned(session, identifier, subject, allow_gone=True)
+            record = self._owned(
+                session, identifier, context, action=PrivateWorkAction.RUN, allow_gone=True
+            )
             job = session.get(Job, record.job_id) if record.job_id else None
             if job and job.status not in TERMINAL:
                 job = self.jobs.request_cancel_in_session(session, job.id)
@@ -781,26 +858,83 @@ class QuickTranscriptionService:
 
     def run(self, payload, progress, cancel_event):
         identifier = str(payload["transcription_id"])
-        with self.database.session() as session:
-            record = session.get(QuickTranscription, identifier)
-            if (
-                not record
-                or record.job_id != payload.get("_job_id")
-                or record.state != "submitted"
-            ):
-                raise ProcessCancelled("This transcription is no longer active.")
-            settings = copy.deepcopy(record.settings_json)
-            initial_selection = settings.pop(_SELECTION_KEY, None)
-            source_suffix = record.source_suffix
-            transcript_format = record.format
-            require_word_timestamps = transcript_format != "txt"
+        execution = prepare_private_transcription_execution(
+            self.database, self.paths, payload, cancel_event
+        )
+        if execution is None:
+            with self.database.session() as session:
+                record = session.get(QuickTranscription, identifier)
+                if (
+                    not record
+                    or record.job_id is None
+                    or record.job_id != payload.get("_job_id")
+                    or record.state != "submitted"
+                ):
+                    raise ProcessCancelled("This transcription is no longer active.")
+                settings = copy.deepcopy(record.settings_json)
+                job = session.get(Job, record.job_id)
+                if job is None:
+                    raise ProcessCancelled("This transcription has no retained job.")
+                workspace_id = job_ownership(session, job).workspace_id
+                source_suffix = record.source_suffix
+                transcript_format = record.format
+            generation = payload.get("_lease_generation", 0)
+        else:
+            header = execution.header
+            identifier = header.transcription_id
+            settings = copy.deepcopy(execution.settings)
+            workspace_id = header.workspace_id
+            source_suffix = header.source_suffix
+            transcript_format = header.format
+            generation = header.lease[2]
+        initial_selection = settings.pop(_SELECTION_KEY, None)
+        require_word_timestamps = transcript_format != "txt"
         directory = self._directory(identifier)
-        # Each worker lease writes separately; a stale lease cannot overwrite a replacement's output.
-        scratch = directory / f"attempt-{payload.get('_lease_generation', 0)}"
-        scratch.mkdir(mode=0o700, exist_ok=True)
+        suffix = f"-{new_id()}" if execution is not None else ""
+        scratch = directory / f"attempt-{generation}{suffix}"
+        scratch_owned = False
+        committed = False
+        moved_outputs: list[Path] = []
+        original_progress = progress
+
+        def report_progress(value, detail=None):
+            if execution is not None:
+                if committed:
+                    with self.database.snapshot_session() as unit:
+                        execution.check_in_session(unit, allow_finished=True)
+                else:
+                    execution.before_io()
+            original_progress(value, detail)
+
+        if execution is not None:
+            progress = report_progress
+
+        def output_path(value):
+            path = Path(value)
+            if execution is not None:
+                execution.before_io()
+                resolved = path.resolve()
+                if (
+                    path.is_symlink()
+                    or not resolved.is_relative_to(scratch.resolve())
+                    or not resolved.is_file()
+                ):
+                    raise ValueError(
+                        "The transcription output is missing or outside its temporary directory."
+                    )
+                path = resolved
+            return path
+
         try:
+            if execution is not None:
+                execution.check_source()
+                execution.before_io()
+            scratch.mkdir(mode=0o700, exist_ok=execution is None)
+            scratch_owned = True
             progress(0.05, "Preparing audio")
             normalized = scratch / "audio.wav"
+            if execution is not None:
+                execution.before_io()
             run_cancellable(
                 [
                     resolve_ffmpeg_executable(),
@@ -808,10 +942,7 @@ class QuickTranscriptionService:
                     "-v",
                     "error",
                     "-y",
-                    "-protocol_whitelist",
-                    "file,pipe",
-                    "-format_whitelist",
-                    "mov,matroska,webm,wav,mp3,ogg,flac,aac,aiff,asf,avi,mpeg,mpegts",
+                    *LOCAL_MEDIA_INPUT_OPTIONS,
                     "-i",
                     str(directory / f"source{source_suffix}"),
                     "-t",
@@ -829,30 +960,54 @@ class QuickTranscriptionService:
                 check=True,
                 capture_output=True,
             )
+            if execution is not None:
+                execution.before_io()
             with wave.open(str(normalized), "rb") as audio:
                 if audio.getnframes() / audio.getframerate() > 7200:
                     raise TranscriptionError(
                         "media_too_long",
                         "Quick transcription supports media up to two hours.",
                     )
-            settings = hydrate_stt_settings(self.database, self.paths, settings)
+            if execution is not None:
+                settings = execution.runtime_settings(settings)
+            else:
+                settings = hydrate_stt_settings(
+                    self.database, self.paths, settings, workspace_id=workspace_id
+                )
 
             def report(value, _detail=None):
                 progress(0.15 + 0.8 * value, "Transcribing audio")
 
-            output = transcribe_source_file_with_metadata(
-                scratch,
-                normalized,
-                settings,
-                source_is_normalized=True,
-                require_word_timestamps=require_word_timestamps,
-                cancel_event=cancel_event,
-                progress_callback=report,
-            )
-            native_payload = json.loads(
-                Path(output.word_timestamps_path).read_text(encoding="utf-8-sig")
-            )
-            transcript = load_transcript(output.word_timestamps_path)
+            if execution is not None:
+                execution.before_io()
+                output = transcribe_source_file_with_metadata(
+                    scratch,
+                    normalized,
+                    settings,
+                    source_is_normalized=True,
+                    require_word_timestamps=require_word_timestamps,
+                    cancel_event=cancel_event,
+                    progress_callback=report,
+                    before_io=execution.before_io,
+                    cloud_request_func=execution.cloud_request,
+                )
+            else:
+                output = transcribe_source_file_with_metadata(
+                    scratch,
+                    normalized,
+                    settings,
+                    source_is_normalized=True,
+                    require_word_timestamps=require_word_timestamps,
+                    cancel_event=cancel_event,
+                    progress_callback=report,
+                )
+            words_path = output_path(output.word_timestamps_path)
+            if execution is not None:
+                execution.before_io()
+            native_payload = json.loads(words_path.read_text(encoding="utf-8-sig"))
+            if execution is not None:
+                execution.before_io()
+            transcript = load_transcript(words_path)
             canonical = transcript.to_dict()
             canonical["engine"] = output.engine
             canonical["compute_backend"] = output.compute_backend
@@ -874,49 +1029,96 @@ class QuickTranscriptionService:
                 initial_selection, settings, output, native_payload
             )
             canonical["selection"] = selection
+            if execution is not None:
+                execution.before_io()
             (scratch / "result.json").write_text(
                 json.dumps(canonical, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            if execution is not None:
+                execution.before_io()
             (scratch / "result.txt").write_text(canonical["text"], encoding="utf-8")
             available_formats = self._available_formats(transcript_format)
             if require_word_timestamps:
-                shutil.copyfile(output.srt_path, scratch / "result.srt")
+                srt_path = output_path(output.srt_path)
+                if execution is not None:
+                    execution.before_io()
+                shutil.copyfile(srt_path, scratch / "result.srt")
             with self.database.immediate_session() as session:
+                if execution is not None:
+                    execution.check_in_session(session)
                 record = session.get(QuickTranscription, identifier)
-                job = session.get(Job, payload["_job_id"])
-                if (
-                    cancel_event.is_set()
-                    or not record
-                    or record.state != "submitted"
-                    or not job
-                    or job.status != "running"
-                    or job.lease_generation != payload.get("_lease_generation")
-                ):
+                if execution is None:
+                    job = session.get(Job, payload["_job_id"])
+                    if (
+                        cancel_event.is_set()
+                        or not record
+                        or record.state != "submitted"
+                        or not job
+                        or job.status != "running"
+                        or job.lease_generation != payload.get("_lease_generation")
+                    ):
+                        raise ProcessCancelled("Transcription was canceled.")
+                elif cancel_event.is_set():
                     raise ProcessCancelled("Transcription was canceled.")
+                assert record is not None
+                if execution is not None and any(
+                    (directory / f"result.{format}").exists()
+                    for format in available_formats
+                ):
+                    raise FileExistsError("A transcription result already exists.")
                 for format in available_formats:
-                    (scratch / f"result.{format}").replace(
-                        directory / f"result.{format}"
-                    )
+                    destination = directory / f"result.{format}"
+                    (scratch / f"result.{format}").replace(destination)
+                    moved_outputs.append(destination)
                 saved_settings = copy.deepcopy(record.settings_json or {})
                 saved_settings[_SELECTION_KEY] = selection
                 record.settings_json = saved_settings
                 record.expires_at = utcnow() + timedelta(hours=1)
                 record.state = "finished"
+                if execution is not None:
+                    if cancel_event.is_set():
+                        raise ProcessCancelled("Transcription was canceled.")
+                    execution.check_in_session(session, allow_finished=True)
+            committed = True
             progress(1, "Transcript ready")
             return {}  # Transcript content is deliberately absent from generic job/event history.
         except ProcessCancelled:
             raise
         except Exception:
+            if execution is not None:
+                execution.raise_if_failed()
+                if cancel_event.is_set():
+                    raise ProcessCancelled("Transcription was canceled.") from None
             raise RuntimeError(
                 "Transcription failed. Check the media and configured STT service."
             ) from None
         finally:
-            shutil.rmtree(scratch, ignore_errors=True)
-            # Do not delete a source still in use by a newer worker lease.
-            with self.database.immediate_session() as session:
-                job = session.get(Job, payload.get("_job_id"))
-                current = job and job.lease_generation == payload.get(
-                    "_lease_generation"
-                )
-                if current:
-                    self._remove_inputs(identifier)
+            if scratch_owned:
+                shutil.rmtree(scratch, ignore_errors=True)
+            if execution is not None and moved_outputs and not committed:
+                retain = True
+                try:
+                    with self.database.snapshot_session() as unit:
+                        retain = execution.result_is_committed(unit)
+                except Exception:
+                    pass
+                if not retain:
+                    for path in moved_outputs:
+                        path.unlink(missing_ok=True)
+            if execution is not None:
+                try:
+                    with self.database.immediate_session() as unit:
+                        if execution.may_cleanup_inputs(unit):
+                            self._remove_inputs(identifier)
+                except Exception:
+                    # Uncertain ownership cannot authorize removing uploaded inputs.
+                    pass
+            else:
+                # Do not delete a source still in use by a newer worker lease.
+                with self.database.immediate_session() as session:
+                    job = session.get(Job, payload.get("_job_id"))
+                    current = job and job.lease_generation == payload.get(
+                        "_lease_generation"
+                    )
+                    if current:
+                        self._remove_inputs(identifier)

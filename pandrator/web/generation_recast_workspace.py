@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .access.contracts import ProjectAction
+from .access.generation_resource_policy import require_generation_resource_access
 from .generation_audio_versions import (
     audio_version_undo_updates,
     initialize_audio_version,
@@ -32,6 +34,7 @@ def start_recast_in_session(
     expected_selection_hash: str,
 ) -> dict[str, Any]:
     """Publish one previewed standalone run without compiling under the writer lock."""
+    require_generation_resource_access(session, "session", session_id, ProjectAction.RUN)
     preview = prepared["preview"]
     from .generation_recast import collect_recast_job_guard
     if preview["selection_hash"] != expected_selection_hash:
@@ -94,6 +97,7 @@ def undo_recast_in_session(
     expected_selection_hash: str,
 ) -> dict[str, Any]:
     """Restore affected audio choices atomically, keeping current casting intent."""
+    require_generation_resource_access(session, "run", run_id, ProjectAction.EDIT)
     updates = audio_version_undo_updates(session, run_id, expected_selection_hash)
     for segment_id, take_id, revision in updates:
         generation.select_take_in_session(session, segment_id, take_id, revision)

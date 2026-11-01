@@ -16,6 +16,7 @@ from pandrator.web.generation_controls import (
     get_generation_controls,
     save_generation_controls,
 )
+from pandrator.web.projects.identity import session_project
 from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 from tests.test_performance_plans import adopt, create, get
 from tests.test_performance_plans import case as case
@@ -206,7 +207,11 @@ def test_strict_single_alternate_start_freezes_without_resolving_inactive_cast(c
 
     sid = case["segment_ids"][0]
     with case["services"]["database"].session() as session:
-        inactive = m.Voice(name="Inactive managed voice", metadata_json={})
+        inactive = m.Voice(
+            workspace_id=session_project(session, case["session_id"]).workspace_id,
+            name="Inactive managed voice",
+            metadata_json={},
+        )
         session.add(inactive)
         session.flush()
         segment = session.get(m.GenerationSegment, sid)
@@ -562,13 +567,18 @@ def test_managed_block_voices_reach_provider_and_invalidate_narrator_takes(
         tts_batch_size=1,
     )
     with database.session() as session:
+        workspace_id = session_project(session, case["session_id"]).workspace_id
         save_generation_controls(session, case["session_id"], expected_revision=0,
                                  cast={"narrator": {"voice": "Kore"}})
         old_identity = AudioIdentityContext(session, run_override).for_segment(
             session.get(m.GenerationSegment, case["segment_ids"][1]))
         for segment_id, provider_voice in zip(case["segment_ids"][1:], ["Puck", "Charon"], strict=True):
-            voice = m.Voice(name=provider_voice, metadata_json={"providers": {
-                "gemini": {"status": "ready", "provider_voice_id": provider_voice}}})
+            voice = m.Voice(
+                workspace_id=workspace_id,
+                name=provider_voice,
+                metadata_json={"providers": {
+                    "gemini": {"status": "ready", "provider_voice_id": provider_voice}}},
+            )
             session.add(voice)
             session.flush()
             session.get(m.GenerationSegment, segment_id).voice_id = voice.id
@@ -612,8 +622,12 @@ def test_block_binding_overrides_cast_markup_and_is_frozen(case):
 
     settings = overrides(performance_enabled=False)["tts"]
     with case["services"]["database"].session() as session:
-        voice = m.Voice(name="Scrooge", metadata_json={"providers": {
-            "gemini": {"status": "ready", "provider_voice_id": "Puck"}}})
+        voice = m.Voice(
+            workspace_id=session_project(session, case["session_id"]).workspace_id,
+            name="Scrooge",
+            metadata_json={"providers": {
+                "gemini": {"status": "ready", "provider_voice_id": "Puck"}}},
+        )
         session.add(voice)
         session.flush()
         segment = session.get(m.GenerationSegment, case["segment_ids"][0])
@@ -632,7 +646,11 @@ def test_block_binding_overrides_cast_markup_and_is_frozen(case):
 
 def test_missing_managed_block_voice_blocks_generation(case):
     with case["services"]["database"].session() as session:
-        voice = m.Voice(name="Unpublished character", metadata_json={})
+        voice = m.Voice(
+            workspace_id=session_project(session, case["session_id"]).workspace_id,
+            name="Unpublished character",
+            metadata_json={},
+        )
         session.add(voice)
         session.flush()
         session.get(m.GenerationSegment, case["segment_ids"][0]).voice_id = voice.id
@@ -677,8 +695,12 @@ def test_generation_commit_rejects_changed_prepared_inputs(case, change):
 
     services = case["services"]
     with services["database"].session() as session:
-        voice = m.Voice(name="Managed block", metadata_json={"providers": {
-            "gemini": {"status": "ready", "provider_voice_id": "Puck"}}})
+        voice = m.Voice(
+            workspace_id=session_project(session, case["session_id"]).workspace_id,
+            name="Managed block",
+            metadata_json={"providers": {
+                "gemini": {"status": "ready", "provider_voice_id": "Puck"}}},
+        )
         session.add(voice)
         session.flush()
         voice_id = voice.id

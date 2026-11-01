@@ -246,6 +246,7 @@ class CorrectionChainFreshnessTests(unittest.TestCase):
         with self.database.session() as session:
             asset = SourceAsset(
                 artifact_id=original.id,
+                workspace_id=original.workspace_id,
                 display_name="source.mp4",
                 kind="mp4",
                 mime_type="video/mp4",

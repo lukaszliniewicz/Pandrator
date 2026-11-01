@@ -27,13 +27,14 @@ from .releases.bundles import active_release_bundle
 PANDRATOR_API_SERVICE = "pandrator.api"
 PANDRATOR_MCP_SERVICE = "pandrator.mcp"
 PANDRATOR_WORKER_SERVICE = "pandrator.worker"
+PANDRATOR_WORKER_SERVICES = (PANDRATOR_WORKER_SERVICE, "pandrator.worker.2")
 PANDRATOR_MCP_PORT = 8099
 PANDRATOR_CORE_SERVICES = frozenset(
     {PANDRATOR_API_SERVICE, PANDRATOR_WORKER_SERVICE}
 )
 PANDRATOR_SERVICE_START_ORDER = (
     PANDRATOR_API_SERVICE,
-    PANDRATOR_WORKER_SERVICE,
+    *PANDRATOR_WORKER_SERVICES,
     PANDRATOR_MCP_SERVICE,
 )
 PANDRATOR_SERVICE_STOP_ORDER = tuple(reversed(PANDRATOR_SERVICE_START_ORDER))
@@ -145,6 +146,11 @@ def pandrator_runtime_specs(
     mcp_port: int = PANDRATOR_MCP_PORT,
     mcp_supported: bool | None = None,
 ) -> tuple[ManagedProcessSpec, ...]:
+    worker_count = (preferences or {}).get(
+        "PANDRATOR_WORKER_COUNT", os.environ.get("PANDRATOR_WORKER_COUNT", "1")
+    )
+    if worker_count not in {"1", "2"}:
+        raise ValueError("Worker count must be 1 or 2.")
     selected_exposure = exposure or EndpointExposure(
         bind_host=host,
         port=port,
@@ -192,6 +198,7 @@ def pandrator_runtime_specs(
         "PANDRATOR_MANAGER_CREDENTIAL": str(layout.credential),
         "PANDRATOR_WORKSPACE": str(layout.workspace),
         **(preferences or {}),
+        "PANDRATOR_EXPECTED_WORKERS": worker_count,
     }
     if bootstrap_token:
         environment["PANDRATOR_BOOTSTRAP_TOKEN"] = bootstrap_token
@@ -318,27 +325,30 @@ def pandrator_runtime_specs(
                 required=False,
             )
         )
-    specifications.append(
-        ManagedProcessSpec(
-            service_id=PANDRATOR_WORKER_SERVICE,
-            component_id="pandrator",
-            label="Pandrator worker",
-            executable=executable,
-            arguments=(
-                *command_prefix,
-                "-m",
-                "pandrator",
-                "--data-dir",
-                str(layout.data),
-                "worker",
-            ),
-            cwd=str(root),
-            environment=worker_environment,
-            dependencies=(PANDRATOR_API_SERVICE,),
-            readiness=HealthProbeSpec(kind="none"),
-            restart=RestartPolicy(maximum_restarts=3),
+    for index, service_id in enumerate(PANDRATOR_WORKER_SERVICES[:int(worker_count)], 1):
+        specifications.append(
+            ManagedProcessSpec(
+                service_id=service_id,
+                component_id="pandrator",
+                label=f"Pandrator worker {index}",
+                executable=executable,
+                arguments=(
+                    *command_prefix,
+                    "-m",
+                    "pandrator",
+                    "--data-dir",
+                    str(layout.data),
+                    "worker",
+                    "--worker-id",
+                    service_id,
+                ),
+                cwd=str(root),
+                environment=worker_environment,
+                dependencies=(PANDRATOR_API_SERVICE,),
+                readiness=HealthProbeSpec(kind="none"),
+                restart=RestartPolicy(maximum_restarts=3),
+            )
         )
-    )
     return tuple(specifications)
 
 

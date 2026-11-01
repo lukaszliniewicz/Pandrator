@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { appState } from './app-state.svelte';
   import {
     CheckCircle2,
     CloudUpload,
@@ -114,7 +115,8 @@
     <span class="text-sm font-semibold">TTS service</span><button
       type="button"
       onclick={actions.refreshSpeechServices}
-      disabled={activity.refreshingTtsServices}
+      disabled={activity.refreshingTtsServices ||
+        !speechCatalogues.catalogue.can_refresh}
       class="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold disabled:opacity-50"
       ><RefreshCw
         size={14}
@@ -123,7 +125,7 @@
     >
   </div>
   <select
-    value={draft.ttsService}
+    value={ttsSelection.selectedTtsService?.id ?? draft.ttsService}
     onchange={(event) => actions.chooseTtsService(event.currentTarget.value)}
     class="w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
     aria-label="TTS service"
@@ -152,7 +154,7 @@
     >{:else if ttsSelection.selectedTtsService && ttsSelection.selectedTtsService.available == null}<span
       class="muted text-xs"
       role="status">Provider availability has not been checked yet.</span
-    >{:else if ttsSelection.selectedTtsService && !ttsSelection.selectedTtsServiceAvailable}<span
+    >{:else if ttsSelection.selectedTtsService && !ttsSelection.selectedTtsServiceUsable}<span
       class="text-xs font-semibold text-red-500"
       role="status"
       >{ttsSelection.selectedTtsService.availability_reason ||
@@ -225,16 +227,16 @@
           XTTS model management
         </h3>
         <p class="muted mt-1 max-w-xl text-xs leading-relaxed">
-          Select any listed model for this generation. Local complete bundles
-          can be removed here; the built-in XTTS model is protected. Add a
-          fine-tuned model with the four-file bundle below—Pandrator installs it
-          in stable user data.
+          Select any listed model for this generation. Administrators can add or
+          remove local model bundles; the built-in XTTS model is protected.
         </p>
       </div>
       <button
         type="button"
         onclick={actions.loadXttsModels}
-        disabled={activity.xttsModelsLoading}
+        disabled={activity.xttsModelsLoading ||
+          !appState.isAdministrator ||
+          !speechCatalogues.catalogue.can_manage}
         class="flex items-center gap-2 rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold disabled:opacity-50"
         ><RefreshCw
           size={14}
@@ -281,7 +283,7 @@
                 onclick={() => actions.chooseTtsModel(model.id)}
                 class="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-semibold"
                 >Select</button
-              >{#if model.removable && activity.xttsModelsLifecycleSupported}<button
+              >{#if appState.isAdministrator && model.removable && activity.xttsModelsLifecycleSupported}<button
                   type="button"
                   onclick={() => actions.removeXttsModel(model)}
                   disabled={Boolean(activity.deletingXttsModelId)}
@@ -289,81 +291,89 @@
                   >{activity.deletingXttsModelId === model.id
                     ? 'Removing…'
                     : 'Remove'}</button
-                >{:else if !model.is_default}<span class="muted text-xs"
-                  >Removal unavailable</span
+                >{:else if appState.isAdministrator && !model.is_default}<span
+                  class="muted text-xs">Removal unavailable</span
                 >{/if}
             </div>
           </div>{/each}
       </div>{/if}
-    <div class="mt-3 grid gap-3 sm:grid-cols-2">
-      <label class="text-xs font-semibold"
-        >Model ID<input
-          bind:value={activity.xttsModelId}
-          placeholder="custom/my-narrator-v1"
-          disabled={activity.uploadingXttsModel}
-          class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
-        /></label
-      ><label class="text-xs font-semibold"
-        >Bundle files<input
-          type="file"
-          multiple
-          accept=".json,.pth"
-          disabled={activity.uploadingXttsModel}
-          onchange={(event) =>
-            actions.chooseXttsModelFiles(event.currentTarget.files)}
-          class="mt-1 block w-full text-sm font-normal"
-        /></label
-      >
-    </div>
-    <p class="muted mt-3 text-xs">
-      Required: <code>config.json</code>, <code>model.pth</code>,
-      <code>speakers_xtts.pth</code>, and <code>vocab.json</code>.
-      {#if activity.xttsModelFiles.length}
-        Selected: {activity.xttsModelFiles.map((file) => file.name).join(', ')}.
-      {/if}
-    </p>
-    <div class="mt-3 flex flex-wrap items-center gap-3">
-      <button
-        type="button"
-        onclick={actions.uploadXttsModel}
-        disabled={activity.uploadingXttsModel ||
-          !ttsSelection.selectedTtsServiceAvailable}
-        class="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
-        >{#if activity.uploadingXttsModel}<LoaderCircle
-            class="animate-spin"
-            size={14}
-          /> Uploading model…{:else}<CloudUpload size={14} /> Upload and select{/if}</button
-      >
-      {#if activity.xttsModelUploadError}<p
-          class="basis-full rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-800"
-          role="alert"
+    {#if appState.isAdministrator}
+      <div class="mt-3 grid gap-3 sm:grid-cols-2">
+        <label class="text-xs font-semibold"
+          >Model ID<input
+            bind:value={activity.xttsModelId}
+            placeholder="custom/my-narrator-v1"
+            disabled={activity.uploadingXttsModel}
+            class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+          /></label
+        ><label class="text-xs font-semibold"
+          >Bundle files<input
+            type="file"
+            multiple
+            accept=".json,.pth"
+            disabled={activity.uploadingXttsModel}
+            onchange={(event) =>
+              actions.chooseXttsModelFiles(event.currentTarget.files)}
+            class="mt-1 block w-full text-sm font-normal"
+          /></label
         >
-          {activity.xttsModelUploadError}
-        </p>{/if}
-      {#if activity.xttsModelUploadMessage && !activity.uploadingXttsModel}<span
-          class="text-xs"
-          role="status"
-          aria-live="polite">{activity.xttsModelUploadMessage}</span
-        >{/if}
-    </div>
-    {#if activity.uploadingXttsModel}<div class="mt-3">
-        <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
-          <span class="muted"
-            >{activity.xttsModelUploadPhase === 'installing'
-              ? 'Upload transferred; Pandrator is installing the model…'
-              : 'Uploading the XTTS model…'}</span
-          ><span class="muted tabular-nums"
-            >{Math.round(activity.xttsModelUploadProgress * 100)}%</span
+      </div>
+      <p class="muted mt-3 text-xs">
+        Required: <code>config.json</code>, <code>model.pth</code>,
+        <code>speakers_xtts.pth</code>, and <code>vocab.json</code>.
+        {#if activity.xttsModelFiles.length}
+          Selected: {activity.xttsModelFiles
+            .map((file) => file.name)
+            .join(', ')}.
+        {/if}
+      </p>
+      <div class="mt-3 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onclick={actions.uploadXttsModel}
+          disabled={activity.uploadingXttsModel ||
+            !ttsSelection.selectedTtsServiceUsable}
+          class="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+          >{#if activity.uploadingXttsModel}<LoaderCircle
+              class="animate-spin"
+              size={14}
+            /> Uploading model…{:else}<CloudUpload size={14} /> Upload and select{/if}</button
+        >
+        {#if activity.xttsModelUploadError}<p
+            class="basis-full rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-800"
+            role="alert"
           >
-        </div>
-        <progress
-          class="h-2 w-full overflow-hidden rounded-full accent-[var(--accent)]"
-          max="1"
-          value={activity.xttsModelUploadProgress}
-          aria-label="XTTS model upload progress"
-          >{Math.round(activity.xttsModelUploadProgress * 100)}%</progress
-        >
-      </div>{/if}
+            {activity.xttsModelUploadError}
+          </p>{/if}
+        {#if activity.xttsModelUploadMessage && !activity.uploadingXttsModel}<span
+            class="text-xs"
+            role="status"
+            aria-live="polite">{activity.xttsModelUploadMessage}</span
+          >{/if}
+      </div>
+      {#if activity.uploadingXttsModel}<div class="mt-3">
+          <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
+            <span class="muted"
+              >{activity.xttsModelUploadPhase === 'installing'
+                ? 'Upload transferred; Pandrator is installing the model…'
+                : 'Uploading the XTTS model…'}</span
+            ><span class="muted tabular-nums"
+              >{Math.round(activity.xttsModelUploadProgress * 100)}%</span
+            >
+          </div>
+          <progress
+            class="h-2 w-full overflow-hidden rounded-full accent-[var(--accent)]"
+            max="1"
+            value={activity.xttsModelUploadProgress}
+            aria-label="XTTS model upload progress"
+            >{Math.round(activity.xttsModelUploadProgress * 100)}%</progress
+          >
+        </div>{/if}
+    {:else}
+      <p class="muted mt-3 text-xs">
+        Ask an Administrator to add or remove an XTTS model.
+      </p>
+    {/if}
   </section>
 {/if}
 <LanguageSelect

@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     ArtifactEdge,
@@ -35,7 +36,8 @@ class AudioPreviewTests(unittest.TestCase):
             bootstrap_tokens=self.bootstrap,
         )
         self.client = self.app.test_client()
-        self.client.post("/api/v1/auth/bootstrap", json={"token": token})
+        bootstrap_response = self.client.post("/api/v1/auth/bootstrap", json={"token": token})
+        self.csrf_token = bootstrap_response.get_json()["csrf_token"]
         extension = self.app.extensions["pandrator"]
         self.database = extension["database"]
         self.artifacts = extension["artifacts"]
@@ -44,6 +46,9 @@ class AudioPreviewTests(unittest.TestCase):
         self.session_dir = self.paths.sessions / self.session.storage_key
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.handlers = extension["workflow_handlers"]
+
+    def _prepare(self, path):
+        return self.client.post(path, headers={"X-CSRF-Token": self.csrf_token})
 
     def tearDown(self):
         self.database.dispose()
@@ -172,7 +177,7 @@ class AudioPreviewTests(unittest.TestCase):
         )
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
-    def test_failed_retry_restores_existing_preview_destination(self):
+    def test_failed_new_attempt_preserves_existing_preview_destination(self):
         source = self._source("retry.wav")
         destination = self.session_dir / f"audio-preview-v1-{source.id}.mp3"
         destination.write_bytes(b"previous-valid-preview")
@@ -189,7 +194,7 @@ class AudioPreviewTests(unittest.TestCase):
             ),
             mock.patch.object(
                 self.handlers.artifacts,
-                "register",
+                "register_in_session",
                 side_effect=RuntimeError("registration failed"),
             ),
             self.assertRaises(RuntimeError),
@@ -208,16 +213,13 @@ class AudioPreviewTests(unittest.TestCase):
             )
         )
 
-    def test_postcommit_cleanup_failure_preserves_preview_receipt_and_redacts_paths(self):
+    def test_postcommit_cleanup_failure_preserves_both_receipts_and_redacts_paths(self):
         source = self._source("cleanup.wav")
         destination = self.session_dir / f"audio-preview-v1-{source.id}.mp3"
         destination.write_bytes(b"previous-valid-preview")
         previous = self.artifacts.register(
-            destination,
-            kind="audio",
-            role="source_audio_preview",
-            session_id=self.session.id,
-            parent_ids=[source.id],
+            destination, kind="audio", role="source_audio_preview",
+            session_id=self.session.id, parent_ids=[source.id],
             metadata={"preview_version": "previous"},
         )
         original_unlink = Path.unlink
@@ -226,49 +228,41 @@ class AudioPreviewTests(unittest.TestCase):
             del cancel_event
             Path(command[-1]).write_bytes(b"replacement-preview")
 
-        def fail_previous_cleanup(path, *args, **kwargs):
-            if path.suffix == ".previous":
-                raise OSError(f"Could not remove private backup {path}")
+        def fail_temporary_cleanup(path, *args, **kwargs):
+            if path.name.startswith(".audio-preview-v1-"):
+                raise OSError(f"Could not remove private temporary file {path}")
             return original_unlink(path, *args, **kwargs)
 
         with (
-            mock.patch(
-                "pandrator.web.media_process.resolve_ffmpeg_executable", return_value="ffmpeg"
-            ),
-            mock.patch(
-                "pandrator.web.media_process.run_media_process", side_effect=write_temporary
-            ),
-            mock.patch.object(Path, "unlink", autospec=True, side_effect=fail_previous_cleanup),
+            mock.patch("pandrator.web.media_process.resolve_ffmpeg_executable", return_value="ffmpeg"),
+            mock.patch("pandrator.web.media_process.run_media_process", side_effect=write_temporary),
+            mock.patch.object(Path, "unlink", autospec=True, side_effect=fail_temporary_cleanup),
             self.assertRaises(RuntimeError) as raised,
         ):
             self.handlers.generate_audio_preview(
                 {"source_artifact_id": source.id}, lambda *_args: None, threading.Event()
             )
-
         self.assertEqual("The source audio preview could not be prepared.", str(raised.exception))
         self.assertNotIn(str(self.session_dir), str(raised.exception))
-        self.assertEqual(b"replacement-preview", destination.read_bytes())
+        self.assertEqual(b"previous-valid-preview", destination.read_bytes())
         with self.database.session() as session:
-            current = session.get(Artifact, previous.id)
-            self.assertEqual(
-                hashlib.sha256(destination.read_bytes()).hexdigest(), current.content_hash
-            )
-            self.assertNotEqual(previous.content_hash, current.content_hash)
-            self.assertEqual("v1", current.metadata_json["preview_version"])
-            self.assertEqual(source.id, current.metadata_json["source_artifact_id"])
-            self.assertEqual(
-                {source.id},
-                set(
-                    session.scalars(
-                        select(ArtifactEdge.parent_artifact_id).where(
-                            ArtifactEdge.child_artifact_id == current.id
-                        )
-                    ).all()
-                ),
-            )
-        backups = list(self.session_dir.glob(".audio-preview-v1-*.previous"))
-        self.assertEqual(1, len(backups))
-        self.assertEqual(b"previous-valid-preview", backups[0].read_bytes())
+            retained = session.get(Artifact, previous.id)
+            self.assertEqual(previous.content_hash, retained.content_hash)
+            self.assertEqual("previous", retained.metadata_json["preview_version"])
+            published = session.scalar(select(Artifact).where(
+                Artifact.role == "source_audio_preview", Artifact.id != previous.id,
+            ))
+            self.assertIsNotNone(published)
+            output = self.paths.managed_path(published.relative_path)
+            self.assertNotEqual(destination, output)
+            self.assertEqual(b"replacement-preview", output.read_bytes())
+            self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(), published.content_hash)
+            self.assertEqual("v1", published.metadata_json["preview_version"])
+            self.assertEqual(source.id, published.metadata_json["source_artifact_id"])
+            self.assertEqual({source.id}, set(session.scalars(
+                select(ArtifactEdge.parent_artifact_id).where(ArtifactEdge.child_artifact_id == published.id)
+            ).all()))
+        self.assertFalse(any(self.session_dir.glob(".audio-preview-v1-*.previous")))
         self.assertFalse(any(self.session_dir.glob(".audio-preview-v1-*.mp3")))
 
     def test_cancel_during_registration_restores_existing_preview(self):
@@ -291,7 +285,7 @@ class AudioPreviewTests(unittest.TestCase):
                 "pandrator.web.media_process.run_media_process",
                 side_effect=write_temporary,
             ),
-            mock.patch.object(self.handlers.artifacts, "register") as register,
+            mock.patch.object(self.handlers.artifacts, "register_in_session") as register,
         ):
             result = self.handlers.generate_audio_preview(
                 {"source_artifact_id": source.id},
@@ -331,10 +325,11 @@ class AudioPreviewTests(unittest.TestCase):
         self.assertNotIn(str(self.session_dir), str(raised.exception))
 
     def test_input_resolution_error_does_not_expose_managed_paths(self):
+        source = self._source("input-resolution.wav")
         with (
             mock.patch.object(
-                self.handlers,
-                "_resolve_input",
+                type(self.paths),
+                "managed_path",
                 side_effect=FileNotFoundError(
                     f"Missing {self.session_dir}/private-source.wav"
                 ),
@@ -345,7 +340,7 @@ class AudioPreviewTests(unittest.TestCase):
             ) as raised,
         ):
             self.handlers.generate_audio_preview(
-                {"source_artifact_id": "missing"},
+                {"source_artifact_id": source.id},
                 lambda *_args: None,
                 threading.Event(),
             )
@@ -353,7 +348,7 @@ class AudioPreviewTests(unittest.TestCase):
 
     def test_endpoint_deduplicates_jobs_and_uses_parent_based_ready_lookup(self):
         source = self._source("endpoint.wav")
-        first = self.client.get(f"/api/v1/artifacts/{source.id}/audio-preview")
+        first = self._prepare(f"/api/v1/artifacts/{source.id}/audio-preview")
         self.assertEqual(202, first.status_code, first.get_json())
         first_payload = first.get_json()
         self.assertEqual("queued", first_payload["status"])
@@ -424,7 +419,7 @@ class AudioPreviewTests(unittest.TestCase):
             return {"artifact_id": artifact.id}
 
         with mock.patch.object(self.handlers, "generate_waveform", side_effect=generate):
-            response = self.client.get(
+            response = self._prepare(
                 f"/api/v1/artifacts/{source.id}/waveform?start_ms=0&end_ms=1000"
             )
 
@@ -440,7 +435,7 @@ class AudioPreviewTests(unittest.TestCase):
     def test_unbounded_waveform_cache_miss_remains_queued(self):
         source = self._source("waveform-queued.wav")
         with mock.patch.object(self.handlers, "generate_waveform") as generate:
-            response = self.client.get(f"/api/v1/artifacts/{source.id}/waveform")
+            response = self._prepare(f"/api/v1/artifacts/{source.id}/waveform")
 
         self.assertEqual(202, response.status_code)
         generate.assert_not_called()
@@ -456,7 +451,7 @@ class AudioPreviewTests(unittest.TestCase):
             "generate_waveform",
             side_effect=RuntimeError("media backend unavailable"),
         ):
-            response = self.client.get(
+            response = self._prepare(
                 f"/api/v1/artifacts/{source.id}/waveform?start_ms=0&end_ms=1000"
             )
 
@@ -528,6 +523,12 @@ class AudioPreviewTests(unittest.TestCase):
                 progress_detail="Generating resumed run",
                 payload_json={"generation_run_id": run.id},
             )
+            for current_job in (wrapper, direct):
+                ownership = job_creation_ownership(
+                    session, session_id=current_job.session_id
+                )
+                current_job.workspace_id = ownership.workspace_id
+                current_job.project_id = ownership.project_id
             session.add_all([wrapper, direct])
             session.flush()
             run.job_id = direct.id
@@ -607,6 +608,9 @@ class AudioPreviewTests(unittest.TestCase):
                 progress=0.0,
                 payload_json={"generation_run_id": run.id},
             )
+            ownership = job_creation_ownership(session, session_id=job.session_id)
+            job.workspace_id = ownership.workspace_id
+            job.project_id = ownership.project_id
             session.add(job)
             session.flush()
             run.job_id = job.id

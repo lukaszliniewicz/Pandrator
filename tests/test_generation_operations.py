@@ -10,17 +10,17 @@ from sqlalchemy import event
 
 from pandrator.runtime import DataPaths
 from pandrator.web.credentials import SecretRedactor
-from pandrator.web.database import Database
+from pandrator.web.database import Database, upgrade_database
 from pandrator.web.generation_audio_versions import audio_version_take_ids
 from pandrator.web.generation_operations import (
     get_generation_operation,
     get_generation_run_coverage,
 )
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
     Artifact,
     AudioTake,
-    Base,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationRun,
@@ -28,20 +28,21 @@ from pandrator.web.models import (
     Job,
     SessionRecord,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.work import WorkService
 
 
 @pytest.fixture
 def rig(tmp_path):
     paths = DataPaths(tmp_path).ensure()
+    upgrade_database(paths.database)
     database = Database(paths.database)
-    Base.metadata.create_all(database.engine)
     redactor = SecretRedactor(database, paths)
     work = WorkService(JobQueue(database, redactor), redactor)
     with database.session() as session:
         record = SessionRecord(name="Generation operation test")
-        session.add(record)
-        session.flush()
+        create_session_project(session, record)
         plan = GenerationPlan(session_id=record.id)
         session.add(plan)
         session.flush()
@@ -88,7 +89,10 @@ def rig(tmp_path):
         error_message: str | None = None,
     ) -> str:
         with database.session() as session:
+            ownership = job_creation_ownership(session, session_id=session_id)
             job = Job(
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
                 kind=kind,
                 status=status,
                 session_id=session_id,
@@ -144,7 +148,12 @@ def rig(tmp_path):
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
                 artifact_path.write_bytes(b"audio")
             with database.session() as session:
+                ownership = resolve_artifact_ownership(
+                    session, session_id=session_id
+                )
                 artifact = Artifact(
+                    workspace_id=ownership.workspace_id,
+                    project_id=ownership.project_id,
                     session_id=session_id,
                     kind="audio",
                     relative_path=relative_path,
@@ -299,8 +308,7 @@ def test_cross_session_child_and_missing_child_are_never_exposed(rig):
     )
     with rig.database.session() as session:
         foreign_session = SessionRecord(name="Other session")
-        session.add(foreign_session)
-        session.flush()
+        create_session_project(session, foreign_session)
         foreign_session_id = foreign_session.id
         foreign_plan = GenerationPlan(session_id=foreign_session.id)
         session.add(foreign_plan)
@@ -527,7 +535,12 @@ def test_coverage_counts_run_owned_shared_artifact_as_inherited_and_new_artifact
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_bytes(b"audio")
         with rig.database.session() as session:
+            ownership = resolve_artifact_ownership(
+                session, session_id=rig.session_id
+            )
             artifact = Artifact(
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
                 session_id=rig.session_id,
                 kind="audio",
                 relative_path=relative_path,
@@ -647,8 +660,7 @@ def test_recast_coverage_uses_frozen_before_and_after_take_ids(rig):
 def test_coverage_rejects_audio_version_from_another_session(rig):
     with rig.database.session() as session:
         foreign = SessionRecord(name="Other plan")
-        session.add(foreign)
-        session.flush()
+        create_session_project(session, foreign)
         foreign_plan = GenerationPlan(session_id=foreign.id)
         session.add(foreign_plan)
         session.flush()
@@ -700,7 +712,12 @@ def test_selected_take_lookups_are_batched_at_500(rig):
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_bytes(b"audio")
     with rig.database.session() as session:
+        ownership = resolve_artifact_ownership(
+            session, session_id=rig.session_id
+        )
         artifact = Artifact(
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             session_id=rig.session_id,
             kind="audio",
             relative_path=artifact_relative_path,

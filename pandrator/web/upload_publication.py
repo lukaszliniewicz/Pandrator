@@ -14,6 +14,7 @@ from typing import Any
 
 from pandrator.runtime import DataPaths
 
+from .access.upload_policy import require_upload_creation_access
 from .artifacts import ArtifactService, sha256_file
 from .database import Database
 from .models import SourceRecord
@@ -34,8 +35,23 @@ def publish_multipart_upload(
     paths: DataPaths,
     artifacts: ArtifactService,
     sources: SourceLibraryService,
+    workspace_id: str | None = None,
+    attach_to_session: bool = True,
 ) -> dict[str, Any]:
     """Publish file and related rows, removing our link if the writer fails."""
+    if type(attach_to_session) is not bool or (
+        not attach_to_session and (session_id is None or purpose != "source")
+    ):
+        raise ValueError(
+            "Staged source uploads require an explicit session and a strict boolean flag."
+        )
+    with database.session() as session:
+        ownership = require_upload_creation_access(
+            session, session_id=session_id, workspace_id=workspace_id
+        )
+        if not attach_to_session and ownership.project_id is None:
+            raise ValueError("Staged uploads require an existing project.")
+        require_writable_upload_owner(session, session_id)
     digest = sha256_file(temporary)
     destination = paths.uploads / f"{uuid.uuid4()}-{filename}"
     prepared = replace(
@@ -64,13 +80,20 @@ def publish_multipart_upload(
                     with temporary.open("rb") as source:
                         copyfileobj(source, output)
             with database.immediate_session() as session:
+                current_ownership = require_upload_creation_access(
+                    session, session_id=session_id, workspace_id=ownership.workspace_id
+                )
                 require_writable_upload_owner(session, session_id)
+                if current_ownership != ownership:
+                    raise ValueError("The upload project changed before publication.")
                 artifact = artifacts.register_in_session(
                     session,
                     destination,
                     kind="image" if purpose == "cover" else "source",
                     role="cover" if purpose == "cover" else "upload",
                     session_id=session_id,
+                    project_id=ownership.project_id,
+                    workspace_id=ownership.workspace_id,
                     calculate_hash=False,
                     metadata={"original_filename": original_filename, "purpose": purpose},
                     _prepared=prepared,
@@ -79,7 +102,7 @@ def publish_multipart_upload(
                 attachment = None
                 if purpose == "source":
                     kind = Path(filename).suffix.lower().lstrip(".") or "file"
-                    if session_id:
+                    if session_id and attach_to_session:
                         session.add(
                             SourceRecord(
                                 session_id=session_id,
@@ -94,8 +117,9 @@ def publish_multipart_upload(
                         artifact.id,
                         display_name=original_filename,
                         kind=kind,
+                        workspace_id=ownership.workspace_id,
                     )
-                    if session_id:
+                    if session_id and attach_to_session:
                         attachment = sources.attach_in_session(session, session_id, source_asset.id)
                 result = {
                     "artifact_id": artifact.id,

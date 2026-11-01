@@ -8,6 +8,7 @@ from typing import Any
 from flask import jsonify, request
 from sqlalchemy.orm import Session
 
+from .auth import Principal
 from .http_idempotency import MutationIdempotency
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .route_context import RouteContext
@@ -37,6 +38,9 @@ class SoundHttpMutations:
         body: dict[str, Any],
         action: Callable[[Session], dict[str, Any]],
         status: int = 200,
+        *,
+        authorize: Callable[[Session], None] | None = None,
+        principal: Principal | None = None,
     ):
         key = request.headers.get("Idempotency-Key", "").strip()
         if not key:
@@ -46,9 +50,11 @@ class SoundHttpMutations:
         services = self.context.services
         try:
             with services.database.immediate_session() as session:
+                if authorize is not None:
+                    authorize(session)
                 reservation = services.idempotency.begin(
                     session,
-                    principal=self.retry.principal(),
+                    principal=principal if principal is not None else self.retry.principal(),
                     operation_id=operation,
                     idempotency_key=key,
                     payload=body,

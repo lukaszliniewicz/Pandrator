@@ -84,7 +84,10 @@ def build_runtime(
             maximum_response_bytes=settings.maximum_response_bytes,
         )
         if profile.mode == TargetMode.LOCAL_MANAGED:
-            manager: ManagerGateway = LocalManagerGateway(str(profile.workspace))
+            manager: ManagerGateway = LocalManagerGateway(
+                str(profile.workspace),
+                application=application,
+            )
         elif profile.mode == TargetMode.EXTERNAL_APPLICATION:
             manager = ManagerUnavailableGateway()
         else:

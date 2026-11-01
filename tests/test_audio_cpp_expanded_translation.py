@@ -106,9 +106,9 @@ def test_unknown_model_does_not_silently_gain_cloning():
 
 
 def test_catalogue_covers_inventory_without_claiming_editing_or_installation():
-    assert len(inventory()["families"]) == 122
+    assert len(inventory()["families"]) == 125
     packages = inventory()["packages"]
-    assert len(packages) == 380
+    assert len(packages) == 392
 
     # Component rows are excluded from the ordinary paginated catalogue.
     component_ids = {
@@ -129,7 +129,7 @@ def test_catalogue_covers_inventory_without_claiming_editing_or_installation():
         ordinary_rows.extend(catalogue_page(limit=100, offset=offset)["items"])
     ordinary_ids = {item["id"] for item in ordinary_rows}
     inventory_ids = {package["id"] for package in packages}
-    assert ordinary_page["total"] == 374
+    assert ordinary_page["total"] == 386
     assert ordinary_ids == inventory_ids - component_ids
     assert ordinary_ids.isdisjoint(component_ids)
     qwen = package_metadata("qwen3_tts_1_7b_customvoice_q8_0")

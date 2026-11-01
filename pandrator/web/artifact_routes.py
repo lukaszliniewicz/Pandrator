@@ -8,14 +8,31 @@ import threading
 from pathlib import PurePosixPath
 
 from flask import jsonify, request, send_file
-from sqlalchemy import func, or_, select
+from sqlalchemy import false, func, or_, select
 
+from .access.artifact_policy import (
+    ArtifactNotFound,
+    require_artifact_access,
+    require_artifact_content_access,
+    visible_artifact_ids_statement,
+    visible_usage_event_ids_statement,
+)
+from .access.contracts import AccessContext, AccessDenied, ProjectAction
+from .access.job_policy import job_visibility_clause
+from .access.session_policy import SessionNotFound, require_session_access
+from .accounts.actor_authorization import ActorAuthorizationDenied
+from .accounts.execution_actor import execution_actor_scope
+from .artifact_commands import can_run_artifact, require_artifact_run_access
 from .domain_blueprints import DomainBlueprints
 from .http_serialization import model_payload as _model_dict
+from .job_inputs import artifact_job_ownership
 from .models import (
     Artifact,
     ArtifactEdge,
     AudioTake,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationRun,
     GenerationSegment,
     Job,
     OutputAssembly,
@@ -51,9 +68,11 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
                 raise ValueError
         except ValueError:
             return error_response("validation_error", "offset must be a nonnegative integer.", 400)
-        with database.session() as db_session:
+        access = context.guards.access_context()
+        with database.snapshot_session() as db_session:
             output_only = request.args.get("output_only") == "true"
-            statement = select(Artifact)
+            visible = visible_artifact_ids_statement(db_session, access).correlate(None)
+            statement = select(Artifact).where(Artifact.id.in_(visible))
             if output_only:
                 statement = statement.where(
                     (Artifact.role == "export")
@@ -166,7 +185,16 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
                             GenerationSegment,
                             GenerationSegment.id == AudioTake.generation_segment_id,
                         )
-                        .where(AudioTake.artifact_id.in_(ids))
+                        .join(Artifact, Artifact.id == AudioTake.artifact_id)
+                        .join(
+                            GenerationPlanRevision,
+                            GenerationPlanRevision.id == GenerationSegment.plan_revision_id,
+                        )
+                        .join(GenerationPlan, GenerationPlan.id == GenerationPlanRevision.plan_id)
+                        .where(
+                            AudioTake.artifact_id.in_(ids),
+                            GenerationPlan.session_id == Artifact.session_id,
+                        )
                         .order_by(GenerationSegment.ordinal, GenerationSegment.id, AudioTake.id)
                     ).mappings():
                         take_labels.setdefault(
@@ -236,6 +264,8 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
     def output_artifact_delete(session_id: str, artifact_id: str):
         try:
             result = artifacts.remove_output(session_id, artifact_id)
+        except AccessDenied:
+            raise
         except KeyError:
             return error_response("not_found", "Output not found.", 404)
         except ValueError as error:
@@ -252,10 +282,21 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
     @require_auth
     def artifact_optimization_review(artifact_id: str):
         payload = OptimizationReviewRequest.model_validate(request.get_json(silent=True) or {})
+        access = context.guards.access_context()
         try:
-            source, source_path = artifacts.resolve(artifact_id)
-        except KeyError:
+            with database.snapshot_session() as db_session:
+                source = require_artifact_access(db_session, access, artifact_id)
+                if source.state == "deleted" or source.session_id is None:
+                    raise ArtifactNotFound()
+                require_session_access(
+                    db_session,
+                    access,
+                    source.session_id,
+                    ProjectAction.EDIT,
+                )
+        except (ArtifactNotFound, SessionNotFound):
             return error_response("not_found", "Speech-optimized artifact not found.", 404)
+        source_path = paths.managed_path(source.relative_path)
         if source.role != "tts_optimized" or source_path.suffix.lower() != ".json":
             return error_response(
                 "validation_error",
@@ -305,38 +346,68 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
             row["optimization_reviewed"] = True
         destination = source_path.parent / f"tts-optimized-reviewed-{new_id()}.json"
         owns_destination = False
+
+        def cleanup_owned_destination() -> None:
+            if not owns_destination:
+                return
+            try:
+                # A failed commit may have persisted the artifact. Keep its file.
+                with database.session() as db_session:
+                    registered = db_session.scalar(
+                        select(Artifact.id).where(
+                            Artifact.relative_path == paths.relative_managed_path(destination)
+                        )
+                    )
+                if registered is None:
+                    destination.unlink(missing_ok=True)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Could not clean up the failed optimization review."
+                )
+
         try:
             with destination.open("x", encoding="utf-8") as stream:
                 owns_destination = True
                 stream.write(json.dumps(rows, ensure_ascii=False, indent=2))
-            reviewed = artifacts.register(
-                destination,
-                kind="json",
-                role="tts_optimized",
-                session_id=source.session_id,
-                parent_ids=[source.id],
-                metadata={
-                    **(source.metadata_json or {}),
-                    "reviewed": True,
-                    "reviewed_from": source.id,
-                },
-            )
+            prepared = artifacts.prepare_registration(destination)
+            with database.immediate_session() as db_session:
+                current_source = require_artifact_access(
+                    db_session,
+                    access,
+                    source.id,
+                    expected_session_id=source.session_id,
+                )
+                if (
+                    current_source.state == "deleted"
+                    or current_source.session_id != source.session_id
+                    or current_source.role != "tts_optimized"
+                ):
+                    raise ArtifactNotFound()
+                require_session_access(
+                    db_session,
+                    access,
+                    source.session_id,
+                    ProjectAction.EDIT,
+                )
+                reviewed = artifacts.register_in_session(
+                    db_session,
+                    destination,
+                    kind="json",
+                    role="tts_optimized",
+                    session_id=source.session_id,
+                    parent_ids=[source.id],
+                    metadata={
+                        **(current_source.metadata_json or {}),
+                        "reviewed": True,
+                        "reviewed_from": source.id,
+                    },
+                    _prepared=prepared,
+                )
+        except (ArtifactNotFound, SessionNotFound):
+            cleanup_owned_destination()
+            return error_response("not_found", "Speech-optimized artifact not found.", 404)
         except Exception:
-            if owns_destination:
-                try:
-                    # Commit hooks can fail after persistence. Keep any registered file.
-                    with database.session() as db_session:
-                        registered = db_session.scalar(
-                            select(Artifact.id).where(
-                                Artifact.relative_path == paths.relative_managed_path(destination)
-                            )
-                        )
-                    if registered is None:
-                        destination.unlink(missing_ok=True)
-                except Exception:
-                    logging.getLogger(__name__).exception(
-                        "Could not clean up the failed optimization review."
-                    )
+            cleanup_owned_destination()
             raise
         return jsonify(
             _model_dict(
@@ -374,14 +445,18 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
             "metadata_json",
             "created_at",
         )
-        with database.session() as db_session:
-            artifact = db_session.get(Artifact, artifact_id)
-            if artifact is None:
+        access = context.guards.access_context()
+        with database.snapshot_session() as db_session:
+            try:
+                artifact = require_artifact_access(db_session, access, artifact_id)
+            except ArtifactNotFound:
                 return error_response("not_found", "Artifact not found.", 404)
+            visible = visible_artifact_ids_statement(db_session, access).correlate(None)
             parent_ids = list(
                 db_session.scalars(
                     select(ArtifactEdge.parent_artifact_id).where(
-                        ArtifactEdge.child_artifact_id == artifact_id
+                        ArtifactEdge.child_artifact_id == artifact_id,
+                        ArtifactEdge.parent_artifact_id.in_(visible),
                     )
                 ).all()
             )
@@ -394,7 +469,8 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
             child_ids = list(
                 db_session.scalars(
                     select(ArtifactEdge.child_artifact_id).where(
-                        ArtifactEdge.parent_artifact_id == artifact_id
+                        ArtifactEdge.parent_artifact_id == artifact_id,
+                        ArtifactEdge.child_artifact_id.in_(visible),
                     )
                 ).all()
             )
@@ -405,26 +481,41 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
             )
             children.sort(key=lambda item: (item.created_at, item.id))
             usage_artifact_ids = {artifact.id, *parent_ids}
-            events = list(
-                db_session.scalars(
-                    select(UsageEvent).where(UsageEvent.artifact_id.in_(usage_artifact_ids))
-                ).all()
+            metadata = artifact.metadata_json if isinstance(artifact.metadata_json, dict) else {}
+            generation_run_id = str(metadata.get("generation_run_id") or "")
+            output_assembly_id = str(metadata.get("output_assembly_id") or "")
+            if output_assembly_id and artifact.session_id is not None:
+                assembly = db_session.execute(
+                    select(OutputAssembly.generation_run_id).where(
+                        OutputAssembly.id == output_assembly_id,
+                        OutputAssembly.session_id == artifact.session_id,
+                        OutputAssembly.artifact_id == artifact.id,
+                    )
+                ).one_or_none()
+                if assembly is not None:
+                    generation_run_id = str(assembly.generation_run_id or "")
+            valid_run_id = (
+                db_session.scalar(
+                    select(GenerationRun.id).where(
+                        GenerationRun.id == generation_run_id,
+                        GenerationRun.session_id == artifact.session_id,
+                    )
+                )
+                if generation_run_id and artifact.session_id is not None
+                else None
             )
-            generation_run_id = str((artifact.metadata_json or {}).get("generation_run_id") or "")
-            output_assembly_id = str((artifact.metadata_json or {}).get("output_assembly_id") or "")
-            if output_assembly_id:
-                assembly = db_session.get(OutputAssembly, output_assembly_id)
-                generation_run_id = (
-                    str(assembly.generation_run_id or "")
-                    if assembly is not None
-                    else generation_run_id
-                )
-            if generation_run_id:
-                events.extend(
-                    db_session.scalars(
-                        select(UsageEvent).where(UsageEvent.generation_run_id == generation_run_id)
-                    ).all()
-                )
+            usage = select(UsageEvent).where(
+                UsageEvent.id.in_(
+                    visible_usage_event_ids_statement(db_session, access).correlate(None)
+                ),
+                or_(
+                    UsageEvent.artifact_id.in_(usage_artifact_ids),
+                    UsageEvent.generation_run_id == valid_run_id
+                    if valid_run_id is not None
+                    else false(),
+                ),
+            )
+            events = list(db_session.scalars(usage).all())
             from .usage import usage_summary
 
             return jsonify(
@@ -439,26 +530,45 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
     @app.get("/api/v1/artifacts/<artifact_id>/content")
     @require_auth
     def artifact_content(artifact_id: str):
+        access = context.guards.access_context()
         try:
-            artifact, path = artifacts.resolve(artifact_id)
-        except KeyError:
+            with database.snapshot_session() as db_session:
+                artifact = require_artifact_content_access(db_session, access, artifact_id)
+                if artifact.state == "deleted":
+                    raise ArtifactNotFound()
+                path = paths.managed_path(artifact.relative_path)
+                if not path.is_file():
+                    return error_response("artifact_missing", "The artifact file is missing.", 410)
+                return send_file(
+                    path,
+                    mimetype=artifact.mime_type,
+                    conditional=True,
+                    etag=artifact.content_hash if artifact.content_hash is not None else False,
+                )
+        except ArtifactNotFound:
             return error_response("not_found", "Artifact not found.", 404)
-        if not path.is_file():
-            return error_response("artifact_missing", "The artifact file is missing.", 410)
-        return send_file(
-            path,
-            mimetype=artifact.mime_type,
-            conditional=True,
-            etag=artifact.content_hash if artifact.content_hash is not None else False,
+
+    def preparation_required(db_session, access: AccessContext, artifact_id: str):
+        return error_response(
+            "preview_preparation_required", "This preview has not been prepared.", 409,
+            {"can_prepare": can_run_artifact(db_session, access, artifact_id),
+             "required_scopes": ["app.read", "app.run"]},
         )
 
     @app.get("/api/v1/artifacts/<artifact_id>/video-preview")
+    @app.post("/api/v1/artifacts/<artifact_id>/video-preview")
     @require_auth
     def artifact_video_preview(artifact_id: str):
         try:
-            result, status = VideoPreviewService(database, paths, artifacts, jobs).request(
-                artifact_id
+            result, status = VideoPreviewService(database, paths, artifacts, jobs).request_for_actor(
+                artifact_id, context.guards.access_context(), prepare=request.method == "POST",
             )
+            if status == 409:
+                return error_response(
+                    "preview_preparation_required", "This preview has not been prepared.", 409,
+                    {"can_prepare": result["can_prepare"],
+                     "required_scopes": ["app.read", "app.run"]},
+                )
             return jsonify(result), status
         except KeyError:
             return error_response("not_found", "Artifact not found.", 404)
@@ -469,18 +579,32 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
         except ValueError as error:
             return error_response("video_preview_conflict", str(error), 409)
 
+    def readable_preview_source(db_session, access: AccessContext, artifact_id: str):
+        source = require_artifact_access(db_session, access, artifact_id)
+        if source.state == "deleted":
+            raise ArtifactNotFound()
+        return source
+
     @app.get("/api/v1/artifacts/<artifact_id>/audio-preview")
+    @app.post("/api/v1/artifacts/<artifact_id>/audio-preview")
     @require_auth
     def artifact_audio_preview(artifact_id: str):
-        """Return a browser-safe source preview or queue its derivation."""
+        """Read a preview, or explicitly prepare one through POST."""
+        try:
+            return audio_preview_response(artifact_id, context.guards.access_context())
+        except ArtifactNotFound:
+            return error_response("not_found", "Artifact not found.", 404)
+
+    def audio_preview_response(artifact_id: str, access: AccessContext):
+        prepare = request.method == "POST"
         with database.immediate_session() as db_session:
-            source = db_session.get(Artifact, artifact_id)
-            if source is None or source.state == "deleted":
-                return error_response("not_found", "Artifact not found.", 404)
+            source = (
+                require_artifact_run_access(db_session, access, artifact_id) if prepare
+                else readable_preview_source(db_session, access, artifact_id)
+            )
             source_path = paths.managed_path(source.relative_path)
             if not source_path.is_file():
                 return error_response("artifact_missing", "The artifact file is missing.", 410)
-
             preview = db_session.scalar(
                 select(Artifact)
                 .join(ArtifactEdge, ArtifactEdge.child_artifact_id == Artifact.id)
@@ -488,51 +612,67 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
                     ArtifactEdge.parent_artifact_id == source.id,
                     Artifact.role == "source_audio_preview",
                     Artifact.state == "current",
+                    Artifact.workspace_id == source.workspace_id,
+                    Artifact.project_id == source.project_id,
+                    Artifact.session_id == source.session_id,
+                    Artifact.id.in_(
+                        visible_artifact_ids_statement(db_session, access).correlate(None)
+                    ),
                 )
                 .order_by(Artifact.created_at.desc(), Artifact.id.desc())
             )
             if preview is not None:
                 preview_path = paths.managed_path(preview.relative_path)
                 if preview_path.is_file():
-                    return jsonify(
-                        {
-                            "status": "ready",
-                            "artifact_id": preview.id,
-                            "content_url": f"/api/v1/artifacts/{preview.id}/content",
-                            "mime_type": preview.mime_type or "audio/mpeg",
-                        }
-                    )
-
+                    return jsonify({
+                        "status": "ready", "artifact_id": preview.id,
+                        "content_url": f"/api/v1/artifacts/{preview.id}/content",
+                        "mime_type": preview.mime_type or "audio/mpeg",
+                    })
+            owner = artifact_job_ownership(db_session, [source.id])
             active_job = None
             for candidate in db_session.scalars(
-                select(Job)
-                .where(
+                select(Job).where(
                     Job.kind == "audio.preview",
                     Job.status.in_(("queued", "running")),
-                )
-                .order_by(Job.created_at.asc(), Job.id.asc())
+                    Job.workspace_id == owner.workspace_id,
+                    Job.project_id == owner.project_id,
+                    job_visibility_clause(db_session, access),
+                ).order_by(Job.created_at.asc(), Job.id.asc())
             ).all():
                 payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
                 if str(payload.get("source_artifact_id") or "") == source.id:
                     active_job = candidate
                     break
             if active_job is None:
-                active_job = jobs.enqueue_in_session(
-                    db_session,
-                    "audio.preview",
-                    {"source_artifact_id": source.id},
-                    session_id=None,
-                    resource_keys=[f"artifact:audio-preview:{source.id}"],
-                )
+                if not prepare:
+                    return preparation_required(db_session, access, source.id)
+                require_artifact_run_access(db_session, access, source.id)
+                with execution_actor_scope(access.actor):
+                    active_job = jobs.enqueue_in_session(
+                        db_session, "audio.preview", {"source_artifact_id": source.id},
+                        session_id=None, workspace_id=owner.workspace_id,
+                        project_id=owner.project_id,
+                        resource_keys=[f"artifact:audio-preview:{source.id}"],
+                    )
             return jsonify({"status": active_job.status, "job_id": active_job.id}), 202
 
     @app.get("/api/v1/artifacts/<artifact_id>/waveform")
+    @app.post("/api/v1/artifacts/<artifact_id>/waveform")
     @require_auth
     def artifact_waveform(artifact_id: str):
         try:
-            source, _path = artifacts.resolve(artifact_id)
-        except KeyError:
+            return waveform_response(artifact_id, context.guards.access_context())
+        except ArtifactNotFound:
             return error_response("not_found", "Audio artifact not found.", 404)
+
+    def waveform_response(artifact_id: str, access: AccessContext):
+        prepare = request.method == "POST"
+        with database.snapshot_session() as db_session:
+            if prepare:
+                require_artifact_run_access(db_session, access, artifact_id)
+            else:
+                readable_preview_source(db_session, access, artifact_id)
         try:
             points = int(request.args.get("points") or 1600)
             if not 128 <= points <= 5000:
@@ -543,9 +683,7 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
             start_ms = int(raw_start or 0)
             end_ms = int(raw_end) if raw_end is not None else None
             if bounded and (
-                start_ms < 0
-                or end_ms is None
-                or end_ms <= start_ms
+                start_ms < 0 or end_ms is None or end_ms <= start_ms
                 or end_ms - start_ms > 10 * 60 * 1000
             ):
                 raise ValueError
@@ -556,73 +694,106 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
                 422,
             )
         role = "waveform_peaks_window" if bounded else "waveform_peaks"
+        job_payload = {
+            "source_artifact_id": artifact_id, "max_points": points,
+            "start_ms": start_ms, "end_ms": end_ms,
+        }
 
         def cached_peak_id() -> str | None:
-            with database.session() as db_session:
-                peak_candidates = list(
-                    db_session.scalars(
-                        select(Artifact)
-                        .join(
-                            ArtifactEdge,
-                            ArtifactEdge.child_artifact_id == Artifact.id,
+            with database.snapshot_session() as db_session:
+                source = readable_preview_source(db_session, access, artifact_id)
+                candidates = db_session.scalars(
+                    select(Artifact).join(
+                        ArtifactEdge, ArtifactEdge.child_artifact_id == Artifact.id,
+                    ).where(
+                        ArtifactEdge.parent_artifact_id == artifact_id,
+                        Artifact.role == role, Artifact.state == "current",
+                        Artifact.workspace_id == source.workspace_id,
+                        Artifact.project_id == source.project_id,
+                        Artifact.session_id == source.session_id,
+                        Artifact.id.in_(
+                            visible_artifact_ids_statement(db_session, access).correlate(None)
+                        ),
+                    ).order_by(Artifact.created_at.desc())
+                ).all()
+                for candidate in candidates:
+                    metadata = candidate.metadata_json
+                    if not isinstance(metadata, dict):
+                        continue
+                    try:
+                        matches = (
+                            int(metadata.get("max_points") or 0) == points
+                            and int(metadata.get("start_ms") or 0) == start_ms
+                            and (not bounded or int(metadata.get("end_ms") or 0) == end_ms)
                         )
-                        .where(
-                            ArtifactEdge.parent_artifact_id == artifact_id,
-                            Artifact.role == role,
-                            Artifact.state == "current",
-                        )
-                        .order_by(Artifact.created_at.desc())
-                    ).all()
-                )
-                peak_artifact = next(
-                    (
-                        candidate
-                        for candidate in peak_candidates
-                        if int((candidate.metadata_json or {}).get("max_points") or 0) == points
-                        and int((candidate.metadata_json or {}).get("start_ms") or 0) == start_ms
-                        and (
-                            not bounded
-                            or int((candidate.metadata_json or {}).get("end_ms") or 0) == end_ms
-                        )
-                    ),
-                    None,
-                )
-                return peak_artifact.id if peak_artifact is not None else None
+                    except (TypeError, ValueError):
+                        continue
+                    if matches:
+                        return candidate.id
+                return None
 
         def cached_response(peak_id: str | None):
             if not peak_id:
                 return None
-            _artifact, peak_path = artifacts.resolve(peak_id)
-            return send_file(
-                peak_path,
-                mimetype="application/json",
-                conditional=True,
-                etag=_artifact.content_hash if _artifact.content_hash is not None else False,
-            )
+            with database.snapshot_session() as db_session:
+                source = readable_preview_source(db_session, access, artifact_id)
+                try:
+                    peak = require_artifact_access(db_session, access, peak_id)
+                except ArtifactNotFound:
+                    return None
+                if (peak.state != "current" or peak.workspace_id != source.workspace_id
+                        or peak.project_id != source.project_id
+                        or peak.session_id != source.session_id):
+                    return None
+                path = paths.managed_path(peak.relative_path)
+                if not path.is_file():
+                    return None
+                return send_file(
+                    path, mimetype="application/json", conditional=True,
+                    etag=peak.content_hash if peak.content_hash is not None else False,
+                )
+
+        def active_waveform_job(db_session, source):
+            candidates = db_session.scalars(
+                select(Job).where(
+                    Job.kind == "audio.waveform", Job.status.in_(("queued", "running")),
+                    Job.workspace_id == source.workspace_id,
+                    Job.project_id == source.project_id,
+                    job_visibility_clause(db_session, access),
+                ).order_by(Job.created_at.asc(), Job.id.asc())
+            ).all()
+            return next((candidate for candidate in candidates
+                         if isinstance(candidate.payload_json, dict)
+                         and all(candidate.payload_json.get(key) == value
+                                 for key, value in job_payload.items())), None)
 
         cached = cached_response(cached_peak_id())
         if cached is not None:
             return cached
-        job_payload = {
-            "source_artifact_id": artifact_id,
-            "max_points": points,
-            "start_ms": start_ms,
-            "end_ms": end_ms,
-        }
-
-        # Short detail windows are requested interactively while scrubbing. Do
-        # the same generation and registration work as the durable handler
-        # inline so a small cache miss is not queued behind unrelated ASR jobs.
+        if not prepare:
+            with database.snapshot_session() as db_session:
+                source = readable_preview_source(db_session, access, artifact_id)
+                active = active_waveform_job(db_session, source)
+                if active is not None:
+                    return jsonify({"status": active.status, "job_id": active.id}), 202
+                return preparation_required(db_session, access, source.id)
+        # Close the admission writer before bounded synchronous media processing.
         if bounded and end_ms is not None and end_ms - start_ms <= 120_000:
+            with database.immediate_session() as db_session:
+                source = readable_preview_source(db_session, access, artifact_id)
+                active = active_waveform_job(db_session, source)
+                if active is not None:
+                    return jsonify({"status": active.status, "job_id": active.id}), 202
+                require_artifact_run_access(db_session, access, artifact_id)
             try:
-                workflow_handlers.generate_waveform(
-                    job_payload,
-                    lambda *_args: None,
-                    threading.Event(),
-                )
+                with execution_actor_scope(access.actor):
+                    workflow_handlers.generate_waveform(
+                        job_payload, lambda *_args: None, threading.Event(),
+                    )
+            except (AccessDenied, ActorAuthorizationDenied):
+                raise
             except (OSError, RuntimeError, ValueError):
-                # The durable queue remains the fallback for media/runtime
-                # failures (including unavailable FFmpeg/FFprobe).
+                # Preserve the durable fallback for media/runtime failures only.
                 pass
             else:
                 cached = cached_response(cached_peak_id())
@@ -630,31 +801,17 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
                     return cached
 
         with database.immediate_session() as db_session:
-            active_job = next(
-                (
-                    candidate
-                    for candidate in db_session.scalars(
-                        select(Job)
-                        .where(
-                            Job.kind == "audio.waveform",
-                            Job.status.in_(("queued", "running")),
-                        )
-                        .order_by(Job.created_at.asc(), Job.id.asc())
-                    ).all()
-                    if all(
-                        (candidate.payload_json or {}).get(key) == value
-                        for key, value in job_payload.items()
-                    )
-                ),
-                None,
-            )
-            job = active_job or jobs.enqueue_in_session(
-                db_session,
-                "audio.waveform",
-                job_payload,
-                session_id=source.session_id,
-                resource_keys=[f"session:{source.session_id}"]
-                if source.session_id
-                else [f"artifact:waveform:{source.id}"],
-            )
+            source = readable_preview_source(db_session, access, artifact_id)
+            active = active_waveform_job(db_session, source)
+            if active is not None:
+                return jsonify({"status": active.status, "job_id": active.id}), 202
+            require_artifact_run_access(db_session, access, artifact_id)
+            owner = artifact_job_ownership(db_session, [source.id])
+            with execution_actor_scope(access.actor):
+                job = jobs.enqueue_in_session(
+                    db_session, "audio.waveform", job_payload, session_id=source.session_id,
+                    workspace_id=owner.workspace_id, project_id=owner.project_id,
+                    resource_keys=[f"session:{source.session_id}"] if source.session_id
+                    else [f"artifact:waveform:{source.id}"],
+                )
         return jsonify({"status": "queued", "job_id": job.id}), 202

@@ -17,6 +17,8 @@ from pydub.generators import Sine
 from sqlalchemy import event, func, select
 from sqlalchemy.exc import SAWarning
 
+from pandrator.web.accounts.execution_actor import HostActor, execution_actor_scope
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.credentials import (
     auxiliary_credential_key,
@@ -28,7 +30,6 @@ from pandrator.web.credentials import (
 from pandrator.web.database import Database
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
-    AppSetting,
     Artifact,
     ArtifactEdge,
     AudioTake,
@@ -43,6 +44,7 @@ from pandrator.web.models import (
     SessionStageSelection,
     StoredCredential,
     UsageEvent,
+    WorkspaceSetting,
 )
 from pandrator.web.pronunciations import PronunciationLibrary
 from pandrator.web.sessions import SessionService
@@ -336,6 +338,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             ),
         )
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_breeze_preview_identity_includes_design_prompt_and_seed(self):
         settings = {
             "service": "audio_cpp",
@@ -355,7 +358,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 "synthesize",
                 return_value=AudioSegment.silent(duration=25),
             ),
-            mock.patch.object(self.handlers, "_record_tts_usage"),
+            mock.patch.object(self.handlers, "_tts_usage_event", return_value=None),
         ):
             first = self.handlers.preview_tts_voice(
                 {
@@ -771,7 +774,8 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 "late-secret",
             )
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="services.tts",
                     value_json={
                         "provider_configs": [late_provider, unrelated_provider]
@@ -1353,7 +1357,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual("generate_audio", result["target_stage"])
 
     @staticmethod
-    def _fake_llm_hydration(settings, stage):
+    def _fake_llm_hydration(settings, stage, *, session_id=None):
         alias = "correction_model" if stage == "correction" else "translation_model"
         requested = str(settings.get("model_name") or "").strip()
         for key in (alias, "correct_model" if stage == "correction" else "translate_model"):
@@ -2307,7 +2311,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self.assertEqual(reference, saved["provider_configs"][0]["secret_ref"])
             self.assertEqual("fixture-voice", saved["voice"])
             self.assertEqual(source.id, saved["_source_artifact_id"])
-            self.assertEqual(secret, db.get(StoredCredential, key).secret_value)
+            self.assertEqual(secret, db.get(StoredCredential, (initial_personal_workspace(db).id, key)).secret_value)
 
     def test_generation_plan_redacts_nested_secrets_without_mutating_runtime_settings(self):
         settings = {
@@ -2634,7 +2638,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(before, payload)
         self.assertEqual(source_bytes, path.read_bytes())
         with self.database.session() as db:
-            self.assertEqual(secret, db.get(StoredCredential, key).secret_value)
+            self.assertEqual(secret, db.get(StoredCredential, (initial_personal_workspace(db).id, key)).secret_value)
 
     def test_reviewable_start_redacts_snapshot_sections_without_mutating_inputs(self):
         path, source_bytes, source = self._reviewable_start_source()
@@ -3340,7 +3344,6 @@ A single reviewed cue.
     def test_url_download_uses_ytdlp_and_records_provenance(self):
         captured = {}
         progress_updates = []
-        destination = self.session_dir / "sources" / "example-video.mp4"
 
         class FakeYoutubeDL:
             def __init__(self, options):
@@ -3354,6 +3357,8 @@ A single reviewed cue.
 
             def extract_info(self, _url, download):
                 self.download = download
+                destination = Path(captured["outtmpl"]).parent / "example-video.mp4"
+                captured["destination"] = destination
                 for hook in captured["progress_hooks"]:
                     hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 100})
                     hook({"status": "downloading", "downloaded_bytes": 100, "total_bytes": 100})
@@ -3363,7 +3368,7 @@ A single reviewed cue.
                 return {"title": "Example video", "id": "fixture", "ext": "mp4"}
 
             def prepare_filename(self, _information):
-                return str(destination)
+                return str(captured["destination"])
 
         with mock.patch.object(
             self.handlers,
@@ -3377,7 +3382,7 @@ A single reviewed cue.
             )
 
         artifact, output = self.artifacts.resolve(result["artifact_id"])
-        self.assertEqual(output, destination.resolve())
+        self.assertEqual(output, captured["destination"].resolve())
         self.assertEqual(artifact.metadata_json["downloader"], "yt-dlp")
         self.assertTrue(captured["noplaylist"])
         self.assertTrue(captured["restrictfilenames"])

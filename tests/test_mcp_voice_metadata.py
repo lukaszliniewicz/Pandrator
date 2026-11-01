@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 
 from pandrator_mcp.catalog import ACTION_CATALOG, RiskClass
 from pandrator_mcp.clients.application import ApplicationClient
+from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.schemas.voice_metadata import (
     UpdateVoiceMetadataInput,
     VoiceMetadataChanges,
@@ -37,7 +39,7 @@ def test_voice_metadata_changes_require_an_explicit_field_and_preserve_nulls():
     with pytest.raises(ValidationError):
         VoiceMetadataChanges(name=None)
     with pytest.raises(ValidationError):
-        VoiceMetadataChanges(extra="rejected")
+        VoiceMetadataChanges.model_validate({"extra": "rejected"})
 
     changes = VoiceMetadataChanges(
         language=None,
@@ -121,7 +123,7 @@ def test_client_rejects_voice_metadata_body_over_32_kib():
 def test_tool_forwards_changes_and_points_to_voice_catalog():
     application = Mock()
     application.voice_metadata_request.return_value = _response()
-    runtime = SimpleNamespace(require_application=lambda: application)
+    runtime = cast(McpRuntime, SimpleNamespace(require_application=lambda: application))
     arguments = UpdateVoiceMetadataInput(
         voice_id="voice-1",
         expected_revision=3,
@@ -159,7 +161,7 @@ def test_registered_signature_is_flat_and_catalogued():
             return store
 
     register_voice_metadata_tools(
-        Server(), None, lambda *args: args, write_action="write"
+        Server(), cast(McpRuntime, SimpleNamespace()), lambda *args: args, write_action="write"
     )
     function, title, _annotations = recorded["pandrator_update_voice_metadata"]
     assert title == "Update managed voice details"
@@ -168,6 +170,7 @@ def test_registered_signature_is_flat_and_catalogued():
         "voice_id",
         "expected_revision",
         "changes",
+        "workspace_id",
     ]
     assert "arguments" not in signature.parameters
     assert ACTION_CATALOG.get("pandrator_update_voice_metadata").risk == RiskClass.WRITE
@@ -184,7 +187,7 @@ def test_tool_is_exposed_over_mcp_2_2_in_memory_transport():
     async def exercise():
         application = Mock()
         application.voice_metadata_request.return_value = _response()
-        runtime = SimpleNamespace(require_application=lambda: application)
+        runtime = cast(McpRuntime, SimpleNamespace(require_application=lambda: application))
         async with Client(
             build_server(runtime), mode="auto", raise_exceptions=True
         ) as client:
@@ -193,6 +196,7 @@ def test_tool_is_exposed_over_mcp_2_2_in_memory_transport():
             }
             voice_tool = tools["pandrator_update_voice_metadata"]
             assert voice_tool.title == "Update managed voice details"
+            assert voice_tool.annotations is not None
             assert voice_tool.annotations.idempotent_hint is False
             assert set(voice_tool.input_schema["required"]) == {
                 "voice_id",

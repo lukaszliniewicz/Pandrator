@@ -132,6 +132,27 @@ CASES = [
     ),
 ]
 
+CASES.append(
+    Case(
+        "pandrator_create_session",
+        {"name": "Fixture", "idempotency_key": KEY, "workspace_id": "workspace-team"},
+        "create_session",
+        (),
+        {
+            "name": "Fixture",
+            "workflow_kind": "audiobook",
+            "interface_mode": "simple",
+            "source_language": "auto",
+            "target_language": None,
+            "workflow_preset": "custom",
+            "included_stages": (),
+            "multilingual_setup": None,
+            "idempotency_key": KEY,
+            "workspace_id": "workspace-team",
+        },
+    )
+)
+
 UPDATES = [
     ("omitted-setup", {"name": "Renamed"}, {"name": "Renamed"}),
     (

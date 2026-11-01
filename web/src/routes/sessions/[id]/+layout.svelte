@@ -8,12 +8,13 @@
     AudioLines,
     ListMusic,
     Check,
+    Copy,
     FileText,
-    Folder,
     Layers3,
     Languages,
     Pencil,
     Settings2,
+    Users,
     Scissors,
     Sparkles,
     WandSparkles,
@@ -43,6 +44,11 @@
   } from '$lib/project-workspace.svelte';
   import type WorkflowCustomizer from '$lib/WorkflowCustomizer.svelte';
   import GenerationStatusBar from '$lib/GenerationStatusBar.svelte';
+  import ProjectActions from '$lib/ProjectActions.svelte';
+  import type ProjectShareDialog from '$lib/ProjectShareDialog.svelte';
+  import type PublicProjectLinks from '$lib/PublicProjectLinks.svelte';
+  import type ProjectCopyDialog from '$lib/ProjectCopyDialog.svelte';
+  import type { ProjectCopyResult } from '$lib/project-copy-api';
   import {
     GENERATION_WORKSPACES,
     type GenerationWorkspaceState
@@ -60,6 +66,14 @@
   });
   let customizerLoadFailed = $state(false);
   let loadingCustomizer = $state(false);
+  let sharingOpen = $state(false);
+  let publicSharingOpen = $state(false);
+  let PublicLinksComponent = $state<typeof PublicProjectLinks | null>(null);
+  let ShareDialogComponent = $state<typeof ProjectShareDialog | null>(null);
+  let sharingError = $state('');
+  let copyingOpen = $state(false);
+  let CopyDialogComponent = $state<typeof ProjectCopyDialog | null>(null);
+  let copyingError = $state('');
   let mounted = $state(false);
   let sourceProfile = $state('none');
   let editingName = $state(false);
@@ -70,7 +84,9 @@
   let nameInput = $state<HTMLInputElement>();
   let nameMutation: { signature: string; key: string } | null = null;
   let assigningFolders = $state(false);
-  const projectFolders = new ProjectFoldersStore();
+  const projectFolders = new ProjectFoldersStore(
+    appState.collaborationEnabled ? appState.activeWorkspaceId : undefined
+  );
   const folderContextId = $derived(page.url.searchParams.get('folder') ?? '');
   const folderContext = $derived(
     projectFolders.value.items.find((folder) => folder.id === folderContextId)
@@ -103,7 +119,8 @@
       await workspace.load(true);
       await loadSourceProfile();
     },
-    customize: () => void openWorkflowCustomizer()
+    customize: () => void openWorkflowCustomizer(),
+    assignFolders: () => (assigningFolders = true)
   };
   setContext(SESSION_CONTEXT, contextState);
   const sourceContext: SessionContext = {
@@ -128,7 +145,8 @@
     reload: async () => {
       await workspace.source.record.load(true);
     },
-    customize: contextState.customize
+    customize: contextState.customize,
+    assignFolders: contextState.assignFolders
   };
   setContext(SOURCE_SESSION_CONTEXT, sourceContext);
   const projectInterface = new ProjectInterface(
@@ -147,6 +165,97 @@
   const membership = $derived(workspace.membership);
   const sourceSessionId = $derived(workspace.sourceId);
   const sourceSession = $derived(sourceContext.session);
+  const readOnlyProject = $derived(
+    appState.collaborationEnabled &&
+      Boolean(sourceSession?.allowed_actions?.includes('read')) &&
+      !sourceSession?.allowed_actions?.includes('edit')
+  );
+  const canManageViewing = $derived(
+    appState.collaborationEnabled &&
+      !appState.projectLink &&
+      Boolean(sourceSession?.project_id) &&
+      Boolean(sourceSession?.allowed_actions?.includes('manage_members'))
+  );
+  const canCopyProject = $derived(
+    appState.collaborationEnabled &&
+      !appState.projectLink &&
+      Boolean(sourceSession?.project_id) &&
+      Boolean(sourceSession?.allowed_actions?.includes('edit')) &&
+      Boolean(appState.principal?.scopes.includes('app.run'))
+  );
+  const canUsePublicLinks = $derived(
+    appState.publicLinksConfigured &&
+      !appState.projectLink &&
+      Boolean(sourceSession?.project_id) &&
+      (!appState.collaborationEnabled ||
+        Boolean(sourceSession?.allowed_actions?.includes('review')))
+  );
+  const canManagePublicLinks = $derived(
+    canUsePublicLinks &&
+      appState.principal?.scopes.includes('app.write') &&
+      (!appState.collaborationEnabled ||
+        Boolean(sourceSession?.allowed_actions?.includes('manage_members')))
+  );
+  async function openPublicLinks() {
+    sharingError = '';
+    try {
+      const component =
+        PublicLinksComponent ??
+        (await loadLazyModule(() => import('$lib/PublicProjectLinks.svelte')))
+          .default;
+      if (!mounted) return;
+      PublicLinksComponent = component;
+      publicSharingOpen = true;
+    } catch (caught) {
+      sharingError = errorMessage(caught);
+    }
+  }
+  $effect(() => {
+    if (mounted && readOnlyProject)
+      void goto(`/shared/${encodeURIComponent(sourceSessionId)}`, {
+        replaceState: true
+      });
+  });
+  async function openSharing() {
+    const projectId = sourceSession?.project_id;
+    if (!projectId) return;
+    sharingError = '';
+    try {
+      const component =
+        ShareDialogComponent ??
+        (await loadLazyModule(() => import('$lib/ProjectShareDialog.svelte')))
+          .default;
+      if (!mounted || sourceSession?.project_id !== projectId) return;
+      ShareDialogComponent = component;
+      sharingOpen = true;
+    } catch (caught) {
+      if (mounted) sharingError = errorMessage(caught);
+    }
+  }
+  async function openCopying() {
+    const projectId = sourceSession?.project_id;
+    if (!projectId) return;
+    copyingError = '';
+    try {
+      const component =
+        CopyDialogComponent ??
+        (await loadLazyModule(() => import('$lib/ProjectCopyDialog.svelte')))
+          .default;
+      if (!mounted || sourceSession?.project_id !== projectId) return;
+      CopyDialogComponent = component;
+      copyingOpen = true;
+    } catch (caught) {
+      if (mounted) copyingError = errorMessage(caught);
+    }
+  }
+  async function openCopiedProject(result: ProjectCopyResult) {
+    // Navigation runs existing editor draft guards before the root layout adopts
+    // the destination workspace. Do not clear the source store in advance.
+    await goto(
+      `/sessions/${encodeURIComponent(result.source_session_id)}?workspace=${encodeURIComponent(result.workspace_id)}`
+    );
+    if (mounted) copyingOpen = false;
+  }
   const projectName = $derived(
     workspace.source.languages.value?.project?.name ||
       membership?.name ||
@@ -217,7 +326,7 @@
       return;
     }
     const nextSuffix =
-      ['/voice', '/generation'].includes(suffix) &&
+      ['/voice', '/generation', '/speech'].includes(suffix) &&
       version?.workflow_kind === 'subtitles'
         ? '/text'
         : suffix;
@@ -229,6 +338,8 @@
   $effect(() => {
     const id = routeSessionId;
     if (id !== workspace.selectedId) {
+      copyingOpen = false;
+      sharingOpen = false;
       for (const [sessionId, generation] of generationWorkspaces) {
         if (sessionId !== id) generation.dispose();
       }
@@ -382,6 +493,7 @@
     [
       { href: '', label: 'Overview', icon: Sparkles },
       { href: '/generation', label: 'Generation', icon: ListMusic },
+      { href: '/speech', label: 'Speakers & delivery', icon: Users },
       { href: '/sources', label: 'Sources', icon: Layers3 },
       { href: '/edit', label: 'Edit', icon: Scissors },
       { href: '/text', label: 'Text & subtitles', icon: FileText },
@@ -394,7 +506,7 @@
       (tab) =>
         (tab.href !== '/languages' ||
           contextState.session?.workflow_kind !== 'audiobook') &&
-        (!['/voice', '/generation'].includes(tab.href) ||
+        (!['/voice', '/generation', '/speech'].includes(tab.href) ||
           contextState.session?.workflow_kind !== 'subtitles') &&
         (tab.href !== '/edit' ||
           (sourceSession?.workflow_kind ??
@@ -404,6 +516,7 @@
           [
             '',
             '/generation',
+            '/speech',
             '/output',
             '/activity',
             '/languages',
@@ -438,20 +551,25 @@
   <div class="surface grid min-h-64 place-items-center rounded-3xl">
     <div class="section-label animate-pulse">Loading project…</div>
   </div>
+{:else if sourceContext.session && readOnlyProject}
+  <p class="muted text-sm" role="status">
+    Opening the project reader… <a
+      class="underline"
+      href={`/shared/${encodeURIComponent(sourceSessionId)}`}>Open saved work</a
+    >
+  </p>
 {:else if sourceContext.session}
   <div class="session-shell mx-auto min-w-0 max-w-[100rem] overflow-x-clip">
-    <nav
-      aria-label="Project location"
-      class="mb-3 flex flex-wrap items-center gap-2 text-xs"
-    >
-      <a class="muted underline underline-offset-4" href="/sessions">Projects</a
+    {#if folderContext}<nav
+        aria-label="Project location"
+        class="mb-3 flex flex-wrap items-center gap-2 text-xs"
       >
-      {#if folderContext}<span class="muted" aria-hidden="true">/</span><a
+        <a
           class="min-w-0 break-words text-[var(--accent)] underline underline-offset-4"
           href={`/sessions?folder=${encodeURIComponent(folderContext.id)}`}
           >{folderPath(folderContext, projectFolders.value.items)}</a
-        >{/if}
-    </nav>
+        >
+      </nav>{/if}
     <nav
       aria-label="Project sections"
       class="session-tabs scrollbar-on-demand -mx-1 flex gap-1 overflow-x-auto border-b border-[var(--line)] px-1"
@@ -548,6 +666,19 @@
         </div>
       </div>
       <div class="flex flex-wrap items-end gap-3">
+        {#if canCopyProject}<button
+            class="btn btn-secondary"
+            onclick={() => void openCopying()}
+            ><Copy size={16} />Copy to workspace</button
+          >{/if}
+        {#if canManageViewing || canUsePublicLinks}<button
+            class="btn btn-secondary"
+            onclick={() =>
+              void (canUsePublicLinks ? openPublicLinks() : openSharing())}
+            ><Users size={16} />{canManageViewing || canManagePublicLinks
+              ? 'Share'
+              : 'Submitted corrections'}</button
+          >{/if}
         {#if membership && languageVersions.length > 1}
           <label class="text-xs font-semibold"
             >Project language
@@ -569,19 +700,14 @@
             </select>
           </label>
         {/if}
-        <button
-          class="btn btn-secondary"
-          onclick={() => (assigningFolders = true)}
-          ><Folder size={16} />Folders</button
-        >
         <div
-          class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
+          class="inline-flex h-[2.55rem] items-stretch rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
           role="group"
           aria-label="Project interface"
         >
           {#each ['simple', 'advanced'] as mode}<button
               type="button"
-              class="rounded-lg px-3 py-2 text-sm font-semibold capitalize"
+              class="rounded-lg px-3 text-sm font-semibold capitalize"
               class:interface-active={projectInterface.mode === mode}
               aria-pressed={projectInterface.mode === mode}
               disabled={projectInterface.pending}
@@ -590,14 +716,19 @@
               >{mode}</button
             >{/each}
         </div>
-        {#if !simpleMode}<button
-            onclick={openWorkflowCustomizer}
-            disabled={loadingCustomizer}
-            class="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold"
-            ><Settings2 size={16} /> Customize workflow</button
-          >{/if}
       </div>
     </header>
+    {#if sharingError}<p role="alert" class="mt-3 text-sm text-red-500">
+        {sharingError}
+      </p>{/if}
+    {#if currentSuffix}<div class="mt-4 flex justify-end">
+        <ProjectActions
+          onfolders={appState.projectLink
+            ? undefined
+            : contextState.assignFolders}
+          oncustomize={contextState.customize}
+        />
+      </div>{/if}
     {#if membership?.role === 'branch' && page.url.pathname !== `/sessions/${routeSessionId}`}
       <p class="muted mt-4 text-sm">
         This language version uses a pinned copy of the shared source. Voice
@@ -641,6 +772,39 @@
       {/if}
     </div>
   </div>
+  {#if publicSharingOpen && PublicLinksComponent && sourceSession?.project_id}<PublicLinksComponent
+      projectId={sourceSession.project_id}
+      sessionId={routeSessionId}
+      {projectName}
+      canManage={Boolean(canManagePublicLinks)}
+      onclose={() => (publicSharingOpen = false)}
+      onNamedShare={canManageViewing
+        ? () => {
+            publicSharingOpen = false;
+            void openSharing();
+          }
+        : undefined}
+    />{/if}
+  {#if sharingOpen && ShareDialogComponent && sourceSession?.project_id}<ShareDialogComponent
+      projectId={sourceSession.project_id}
+      {sourceSessionId}
+      {projectName}
+      onclose={() => (sharingOpen = false)}
+    />{/if}
+  {#if copyingError}<p
+      class="mt-3 text-sm text-red-700 dark:text-red-300"
+      role="alert"
+    >
+      {copyingError}
+    </p>{/if}
+  {#if copyingOpen && CopyDialogComponent && sourceSession?.project_id}<CopyDialogComponent
+      projectId={sourceSession.project_id}
+      sourceWorkspaceId={sourceSession.workspace_id ??
+        appState.activeWorkspaceId}
+      {projectName}
+      onclose={() => (copyingOpen = false)}
+      onopen={openCopiedProject}
+    />{/if}
   {#if assigningFolders}<ProjectFolderAssignment
       store={projectFolders}
       projectId={sourceSessionId}
@@ -655,7 +819,7 @@
 {:else}<p class="text-red-500">
     {contextState.error || 'Project not found.'}
   </p>{/if}
-{#if contextState.session?.id === routeSessionId && contextState.session.workflow_kind !== 'subtitles'}
+{#if !readOnlyProject && contextState.session?.id === routeSessionId && contextState.session.workflow_kind !== 'subtitles'}
   {#key routeSessionId}
     <GenerationStatusBar
       sessionId={routeSessionId}

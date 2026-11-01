@@ -1083,3 +1083,79 @@ test('switching to Simple does not discard an unfinished instruction editor', as
   );
   expect(f.errors).toEqual([]);
 });
+
+test('delivery comparison retains a failed draft and prevents closing a pending save', async ({
+  page
+}) => {
+  const f = await fixture(page, 2);
+  f.speech.set(0, 'Prepared delivery.');
+  let fail = true;
+  let release: (() => void) | undefined;
+  const bodies: Record<string, unknown>[] = [];
+  await page.route(
+    '**/api/v1/generation-segments/workspace-segment-0',
+    async (route) => {
+      const body = route.request().postDataJSON();
+      bodies.push(body);
+      if (fail)
+        return route.fulfill({
+          status: 409,
+          json: {
+            error: {
+              code: 'revision_conflict',
+              message: 'Synthetic delivery conflict'
+            }
+          }
+        });
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      f.speech.set(0, body.optimized_text);
+      f.revisions.set(0, 2);
+      return route.fulfill({ json: { ...f.segment(0), revision: 2 } });
+    }
+  );
+  await page.goto(`/sessions/${f.id}/generation`);
+  await page
+    .getByRole('button', { name: 'Options for segment 1', exact: true })
+    .click();
+  await page.getByRole('button', { name: /Compare speech delivery/ }).click();
+  const review = page.getByRole('dialog', {
+    name: 'Review speech delivery',
+    exact: true
+  });
+  const field = review.getByLabel('Speech delivery text');
+  await field.fill('Reviewed delivery 字幕.');
+  await review.getByLabel('Regenerate this segment after saving').uncheck();
+  await page.keyboard.press('Escape');
+  const warning = page.getByRole('alertdialog', { name: 'Save your changes?' });
+  await warning.getByRole('button', { name: 'Keep editing' }).click();
+  await review
+    .getByRole('button', { name: 'Save delivery', exact: true })
+    .click();
+  await expect(review.getByRole('alert')).toContainText(
+    'Synthetic delivery conflict'
+  );
+  await expect(field).toHaveValue('Reviewed delivery 字幕.');
+  fail = false;
+  await review
+    .getByRole('button', { name: 'Save delivery', exact: true })
+    .click();
+  await expect.poll(() => typeof release).toBe('function');
+  await expect(
+    review.getByRole('button', {
+      name: 'Close speech delivery review',
+      exact: true
+    })
+  ).toBeDisabled();
+  await page.keyboard.press('Escape');
+  await expect(review).toBeVisible();
+  release!();
+  await expect(review).toBeHidden();
+  expect(bodies).toEqual([
+    { optimized_text: 'Reviewed delivery 字幕.' },
+    { optimized_text: 'Reviewed delivery 字幕.' }
+  ]);
+  expect(f.text.size).toBe(0);
+  expect(f.errors).toEqual([]);
+});

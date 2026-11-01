@@ -7,11 +7,16 @@ import math
 import wave
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .access.sound_execution_policy import (
+    require_sound_input_access,
+    require_sound_processing_session,
+)
+from .accounts.execution_actor import current_execution_actor
 from .models import (
     Artifact,
     AudioTake,
@@ -21,7 +26,7 @@ from .models import (
     SoundVariant,
 )
 from .settings_policy import stable_hash
-from .sound_project_commands import latest_cues
+from .sound_project_commands import latest_cues, validate_sound_cue_workspaces
 from .sound_project_queries import current_header
 
 
@@ -42,10 +47,30 @@ def _artifact_data(artifact: Artifact | None) -> dict[str, Any] | None:
 
 
 def _take_data_in_session(
-    session: Session, take_ids: set[str], session_id: str
+    session: Session,
+    take_ids: set[str],
+    session_id: str,
+    *,
+    authorize_input: Callable[[Session, str], None] | None = None,
 ) -> dict[str, dict[str, Any]]:
     if not take_ids:
         return {}
+    if authorize_input is not None:
+        headers = session.execute(
+            select(AudioTake.id, AudioTake.artifact_id)
+            .join(GenerationSegment, GenerationSegment.id == AudioTake.generation_segment_id)
+            .join(
+                GenerationPlanRevision,
+                GenerationPlanRevision.id == GenerationSegment.plan_revision_id,
+            )
+            .join(GenerationPlan, GenerationPlan.id == GenerationPlanRevision.plan_id)
+            .where(AudioTake.id.in_(take_ids), GenerationPlan.session_id == session_id)
+        ).all()
+        for artifact_id in sorted(
+            {row.artifact_id for row in headers if row.artifact_id is not None}
+        ):
+            with session.no_autoflush:
+                authorize_input(session, artifact_id)
     rows = session.execute(
         select(AudioTake, GenerationSegment, Artifact)
         .join(GenerationSegment, GenerationSegment.id == AudioTake.generation_segment_id)
@@ -77,17 +102,27 @@ def _int(value: Any, label: str, *, minimum: int = 0) -> int:
         raise ValueError(f"{label} must be an integer greater than or equal to {minimum}.")
     return value
 
+
 def _variant_normalized_frames(variant: dict[str, Any], rate: int) -> int | None:
     frames, source_rate = variant.get("frame_count"), variant.get("sample_rate")
     if type(frames) is int and frames > 0 and type(source_rate) is int and source_rate > 0:
         return round(frames * rate / source_rate)
     duration = variant.get("duration_seconds")
-    if isinstance(duration, (int, float)) and not isinstance(duration, bool) and math.isfinite(float(duration)) and duration > 0:
+    if (
+        isinstance(duration, (int, float))
+        and not isinstance(duration, bool)
+        and math.isfinite(float(duration))
+        and duration > 0
+    ):
         return round(float(duration) * rate)
     return None
 
 
-def _read_take_wav(path: Path) -> tuple[int, int, int]:
+def _read_take_wav(
+    path: Path, *, before_io: Callable[[], None] | None = None
+) -> tuple[int, int, int]:
+    if before_io is not None:
+        before_io()
     try:
         with wave.open(str(path), "rb") as reader:
             if reader.getcomptype() != "NONE":
@@ -116,7 +151,8 @@ def _manifest_take_ids(metadata: dict[str, Any], cues: list[dict[str, Any]]) -> 
     segment_ids = {
         str(cue["anchor_json"].get("segment_id") or "")
         for cue in cues
-        if cue["anchor_json"].get("kind") in {"before_segment", "after_segment", "after_word", "next_pause"}
+        if cue["anchor_json"].get("kind")
+        in {"before_segment", "after_segment", "after_word", "next_pause"}
     }
     resolution_ids = {
         str((cue["anchor_json"].get("resolution") or {}).get("take_id") or "")
@@ -127,7 +163,10 @@ def _manifest_take_ids(metadata: dict[str, Any], cues: list[dict[str, Any]]) -> 
     return {
         str(row.get("take_id") or "")
         for row in rows
-        if (str(row.get("segment_id") or "") in segment_ids or str(row.get("take_id") or "") in resolution_ids)
+        if (
+            str(row.get("segment_id") or "") in segment_ids
+            or str(row.get("take_id") or "") in resolution_ids
+        )
         and row.get("take_id")
     }
 
@@ -137,9 +176,48 @@ def _load_snapshot(
     session_id: str,
     base_artifact_id: str,
     timeline_artifact_id: str | None,
+    *,
+    authorization_guard: Callable[[Session], None] | None = None,
+    authorize_input: Callable[[Session, str], None] | None = None,
 ) -> dict[str, Any]:
+    if authorization_guard is not None:
+        with session.no_autoflush:
+            authorization_guard(session)
+    else:
+        require_sound_processing_session(session, session_id)
+    if authorize_input is None and current_execution_actor.get() is not None:
+        def default_input(unit: Session, identifier: str) -> None:
+            require_sound_input_access(
+                unit, session_id, identifier,
+                session_bound=identifier in {base_artifact_id, timeline_artifact_id},
+            )
+        authorize_input = default_input
+    authorized: set[str] = set()
+
+    def authorize(unit: Session, identifier: str) -> None:
+        if authorize_input is not None and identifier not in authorized:
+            with unit.no_autoflush:
+                authorize_input(unit, identifier)
+            authorized.add(identifier)
+
     record, plan, active_speech_revision = current_header(session, session_id)
     cues = latest_cues(session, plan)
+    if authorize_input is not None:
+        authorize(session, base_artifact_id)
+        if timeline_artifact_id is not None:
+            authorize(session, timeline_artifact_id)
+        variant_ids = {str(cue["variant_id"]) for cue in cues}
+        if variant_ids:
+            headers = session.execute(
+                select(SoundVariant.id, SoundVariant.artifact_id).where(
+                    SoundVariant.id.in_(variant_ids),
+                )
+            ).all()
+            for artifact_id in sorted(
+                {row.artifact_id for row in headers if row.artifact_id is not None}
+            ):
+                authorize(session, artifact_id)
+    validate_sound_cue_workspaces(session, session_id, cues)
     base = session.get(Artifact, base_artifact_id)
     timeline = session.get(Artifact, timeline_artifact_id) if timeline_artifact_id else None
     if base is None:
@@ -171,7 +249,12 @@ def _load_snapshot(
             for variant, artifact in rows
         }
     take_ids = _manifest_take_ids(anchor_metadata, included)
-    take_data = _take_data_in_session(session, take_ids, record.id)
+    take_data = _take_data_in_session(
+        session,
+        take_ids,
+        record.id,
+        authorize_input=authorize if authorize_input is not None else None,
+    )
     return {
         "session": {
             "id": record.id,
@@ -181,7 +264,9 @@ def _load_snapshot(
         "plan": {
             "id": plan.id if plan else None,
             "revision": plan.revision if plan else 0,
-            "speech_plan_revision_id": plan.speech_plan_revision_id if plan else active_speech_revision,
+            "speech_plan_revision_id": plan.speech_plan_revision_id
+            if plan
+            else active_speech_revision,
         },
         "active_speech_plan_revision_id": active_speech_revision,
         "base": _artifact_data(base),
@@ -263,7 +348,9 @@ def _snapshot_pins(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "duration_ms": (take or {}).get("duration_ms"),
                 "segment_plan_revision_id": (take or {}).get("segment_plan_revision_id"),
                 "synthesized_text_hash": hashlib.sha256(
-                    str((artifact.get("metadata_json") or {}).get("synthesized_text") or "").encode("utf-8")
+                    str((artifact.get("metadata_json") or {}).get("synthesized_text") or "").encode(
+                        "utf-8"
+                    )
                 ).hexdigest(),
                 "artifact_id": artifact.get("id"),
                 "artifact_hash": artifact.get("content_hash"),
@@ -293,7 +380,9 @@ def _snapshot_pins(snapshot: dict[str, Any]) -> dict[str, Any]:
         "timeline_session_id": timeline["session_id"] if timeline else None,
         "timeline_kind": timeline["kind"] if timeline else None,
         "timeline_path_pin": stable_hash(timeline.get("relative_path")) if timeline else None,
-        "timeline_metadata_hash": _metadata_hash(timeline.get("metadata_json") or {}) if timeline else None,
+        "timeline_metadata_hash": _metadata_hash(timeline.get("metadata_json") or {})
+        if timeline
+        else None,
         "cues": cue_pins,
         "takes": take_pins,
     }

@@ -16,6 +16,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.generation_review import PROJECTABLE_SEGMENT_FIELDS
 from pandrator.web.models import Artifact, AudioTake, GenerationRun, GenerationSegment
 from pandrator.web.openapi import build_openapi_document
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.workspace_settings import WorkspaceSettingsService
 from pandrator_mcp.schemas.generation_fields import GenerationSegmentField
 
@@ -76,8 +77,11 @@ class GenerationSelectedTakeTests(unittest.TestCase):
         with self.database.session() as session:
             artifact_id = None
             if with_artifact:
+                ownership = resolve_artifact_ownership(session, session_id=self.session_id)
                 artifact = Artifact(
                     session_id=self.session_id,
+                    workspace_id=ownership.workspace_id,
+                    project_id=ownership.project_id,
                     kind="audio",
                     role="generation_take",
                     relative_path=f"test/{uuid.uuid4().hex}.wav",

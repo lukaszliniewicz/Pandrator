@@ -15,17 +15,19 @@ from sqlalchemy import select
 from sqlalchemy.exc import SAWarning
 
 from pandrator.logic import tts_handler
+from pandrator.web.accounts.execution_actor import HostActor, execution_actor_scope
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService, sha256_file
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database
 from pandrator.web.models import (
-    AppSetting,
     Artifact,
     ArtifactEdge,
     Job,
     Voice,
     VoiceSample,
+    WorkspaceSetting,
 )
 from pandrator.web.voice_library import BUNDLED_VOICE_KEY
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -430,8 +432,8 @@ class VoiceLibraryApiTests(unittest.TestCase):
 
         with mock.patch.object(
             extension["artifacts"],
-            "register",
-            wraps=extension["artifacts"].register,
+            "register_in_session",
+            wraps=extension["artifacts"].register_in_session,
         ) as register:
             response = self.client.get("/api/v1/voices")
         self.assertEqual(200, response.status_code)
@@ -472,8 +474,8 @@ class VoiceLibraryApiTests(unittest.TestCase):
 
         with mock.patch.object(
             extension["artifacts"],
-            "register",
-            wraps=extension["artifacts"].register,
+            "register_in_session",
+            wraps=extension["artifacts"].register_in_session,
         ) as register:
             response = self.client.get("/api/v1/voices")
         self.assertEqual(200, response.status_code)
@@ -497,8 +499,8 @@ class VoiceLibraryApiTests(unittest.TestCase):
 
         with mock.patch.object(
             extension["artifacts"],
-            "register",
-            wraps=extension["artifacts"].register,
+            "register_in_session",
+            wraps=extension["artifacts"].register_in_session,
         ) as register:
             response = self.client.get("/api/v1/voices")
         self.assertEqual(200, response.status_code)
@@ -523,8 +525,8 @@ class VoiceLibraryApiTests(unittest.TestCase):
 
         with mock.patch.object(
             extension["artifacts"],
-            "register",
-            wraps=extension["artifacts"].register,
+            "register_in_session",
+            wraps=extension["artifacts"].register_in_session,
         ) as register:
             response = self.client.get("/api/v1/voices")
         self.assertEqual(200, response.status_code)
@@ -560,7 +562,13 @@ class VoiceLibraryApiTests(unittest.TestCase):
             sample_path, kind="audio", role="voice_sample"
         )
         with extension["database"].session() as session:
-            session.add(VoiceSample(voice_id=voice["id"], artifact_id=artifact.id))
+            session.add(
+                VoiceSample(
+                    workspace_id=initial_personal_workspace(session).id,
+                    voice_id=voice["id"],
+                    artifact_id=artifact.id,
+                )
+            )
 
         response = self.client.post(
             f"/api/v1/voices/{voice['id']}/providers/kobold_qwen",
@@ -590,7 +598,11 @@ class VoiceLibraryApiTests(unittest.TestCase):
             sample_path, kind="audio", role="voice_sample"
         )
         with extension["database"].session() as session:
-            sample = VoiceSample(voice_id=voice["id"], artifact_id=artifact.id)
+            sample = VoiceSample(
+                workspace_id=initial_personal_workspace(session).id,
+                voice_id=voice["id"],
+                artifact_id=artifact.id,
+            )
             session.add(sample)
             session.flush()
             sample_id = sample.id
@@ -631,6 +643,7 @@ class VoiceLibraryApiTests(unittest.TestCase):
         extension = self.app.extensions["pandrator"]
         with extension["database"].session() as session:
             voice = Voice(
+                workspace_id=initial_personal_workspace(session).id,
                 name="Managed narrator",
                 metadata_json={
                     "providers": {
@@ -673,6 +686,7 @@ class VoiceLibraryApiTests(unittest.TestCase):
         extension = self.app.extensions["pandrator"]
         with extension["database"].session() as session:
             voice = Voice(
+                workspace_id=initial_personal_workspace(session).id,
                 name="Legacy narrator",
                 metadata_json={
                     "providers": {
@@ -703,7 +717,11 @@ class VoiceLibraryApiTests(unittest.TestCase):
         # rows for the same managed artifact. Preserve that historical shape.
         extension = self.app.extensions["pandrator"]
         with extension["database"].session() as session:
-            voice = Voice(name="Historical shared samples", language="en")
+            voice = Voice(
+                workspace_id=initial_personal_workspace(session).id,
+                name="Historical shared samples",
+                language="en",
+            )
             session.add(voice)
             session.flush()
             voice_id = voice.id
@@ -720,8 +738,14 @@ class VoiceLibraryApiTests(unittest.TestCase):
             parent_ids=[artifact.id],
         )
         with extension["database"].session() as session:
-            samples = [VoiceSample(voice_id=voice_id, artifact_id=artifact.id)
-                       for _ in range(2)]
+            samples = [
+                VoiceSample(
+                    workspace_id=initial_personal_workspace(session).id,
+                    voice_id=voice_id,
+                    artifact_id=artifact.id,
+                )
+                for _ in range(2)
+            ]
             session.add_all(samples)
             session.flush()
             sample_ids = [sample.id for sample in samples]
@@ -756,6 +780,7 @@ class VoiceLibraryApiTests(unittest.TestCase):
             self.assertEqual("stale", session.get(Artifact, descendant.id).state)
         self.assertFalse(path.exists())
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_replacing_one_historical_shared_sample_preserves_other_sample(self):
         voice_id, sample_ids, artifact, descendant, path = self._historical_shared_voice_samples()
         original = path.read_bytes()
@@ -822,7 +847,11 @@ class VoiceLibraryApiTests(unittest.TestCase):
             role="voice_sample",
         )
         with extension["database"].session() as session:
-            sample = VoiceSample(voice_id=voice["id"], artifact_id=artifact.id)
+            sample = VoiceSample(
+                workspace_id=initial_personal_workspace(session).id,
+                voice_id=voice["id"],
+                artifact_id=artifact.id,
+            )
             session.add(sample)
             session.flush()
             sample_id = sample.id
@@ -913,13 +942,18 @@ class VoiceLibraryApiTests(unittest.TestCase):
 
 
 class VoiceNormalizationTests(unittest.TestCase):
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_ffmpeg_normalization_registers_a_new_pcm_sample(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="Reference", language="en")
+                    voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
+                        name="Reference",
+                        language="en",
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -950,13 +984,18 @@ class VoiceNormalizationTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_design_normalization_stores_reviewed_transcript_and_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="Designed reference", language="en")
+                    voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
+                        name="Designed reference",
+                        language="en",
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -1019,13 +1058,18 @@ class VoiceNormalizationTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_design_normalization_rejects_audio_changed_after_review(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="Changed design", language="en")
+                    voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
+                        name="Changed design",
+                        language="en",
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -1068,6 +1112,7 @@ class VoiceNormalizationTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_replacement_is_atomic_stales_provider_and_removes_old_audio(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
@@ -1075,6 +1120,7 @@ class VoiceNormalizationTests(unittest.TestCase):
             try:
                 with database.session() as session:
                     voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
                         name="Replaceable",
                         language="en",
                         metadata_json={
@@ -1100,6 +1146,7 @@ class VoiceNormalizationTests(unittest.TestCase):
                 )
                 with database.session() as session:
                     sample = VoiceSample(
+                        workspace_id=initial_personal_workspace(session).id,
                         voice_id=voice_id,
                         artifact_id=old_artifact.id,
                         transcript="Old words.",
@@ -1155,13 +1202,18 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
             first_app = create_app(data_root=directory, testing=True)
             database = first_app.extensions["pandrator"]["database"]
             with database.session() as session:
-                session.get(AppSetting, "defaults.stt").value_json = existing
+                workspace_id = initial_personal_workspace(session).id
+                session.get(WorkspaceSetting, (workspace_id, "defaults.stt")).value_json = existing
             database.dispose()
             app = create_app(data_root=directory, testing=True)
             database = app.extensions["pandrator"]["database"]
             try:
                 with database.session() as session:
-                    self.assertEqual(existing, session.get(AppSetting, "defaults.stt").value_json)
+                    workspace_id = initial_personal_workspace(session).id
+                    self.assertEqual(
+                        existing,
+                        session.get(WorkspaceSetting, (workspace_id, "defaults.stt")).value_json,
+                    )
             finally:
                 database.dispose()
 
@@ -1185,7 +1237,8 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
             database = app.extensions["pandrator"]["database"]
             try:
                 with database.session() as session:
-                    defaults = session.get(AppSetting, "defaults.stt")
+                    workspace_id = initial_personal_workspace(session).id
+                    defaults = session.get(WorkspaceSetting, (workspace_id, "defaults.stt"))
                     self.assertEqual(defaults.value_json["stt_engine"], "auto")
                     self.assertEqual(
                         defaults.value_json["stt_model_quantization"], "q4_k"
@@ -1228,7 +1281,8 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
             database = app.extensions["pandrator"]["database"]
             try:
                 with database.session() as session:
-                    defaults = session.get(AppSetting, "defaults.stt")
+                    workspace_id = initial_personal_workspace(session).id
+                    defaults = session.get(WorkspaceSetting, (workspace_id, "defaults.stt"))
                     self.assertEqual(defaults.value_json["stt_engine"], "auto")
                     self.assertEqual(
                         defaults.value_json["stt_model_quantization"], "q8_0"
@@ -1259,6 +1313,7 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
 
 
 class VoiceProviderPublishTests(unittest.TestCase):
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_audio_cpp_publish_links_local_sample_and_unpublish_never_calls_remote(
         self,
     ):
@@ -1267,7 +1322,11 @@ class VoiceProviderPublishTests(unittest.TestCase):
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="Linked narrator", language="en")
+                    voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
+                        name="Linked narrator",
+                        language="en",
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -1282,6 +1341,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
                 with database.session() as session:
                     session.add(
                         VoiceSample(
+                            workspace_id=initial_personal_workspace(session).id,
                             voice_id=voice_id,
                             artifact_id=artifact.id,
                             transcript="Reviewed audio.cpp reference.",
@@ -1362,16 +1422,22 @@ class VoiceProviderPublishTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_audio_cpp_external_profile_keeps_exact_registration_id(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="External narrator", language="en")
+                    voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
+                        name="External narrator",
+                        language="en",
+                    )
                     session.add(voice)
                     session.add(
-                        AppSetting(
+                        WorkspaceSetting(
+                            workspace_id=initial_personal_workspace(session).id,
                             key="services.tts",
                             value_json={
                                 "provider_configs": [
@@ -1406,6 +1472,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
                 with database.session() as session:
                     session.add(
                         VoiceSample(
+                            workspace_id=initial_personal_workspace(session).id,
                             voice_id=voice_id,
                             artifact_id=artifact.id,
                             transcript="External profile reference.",
@@ -1469,6 +1536,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_managed_fish_publish_resolves_endpoint_when_job_runs(self):
         class FakeManager:
             configured = True
@@ -1488,7 +1556,11 @@ class VoiceProviderPublishTests(unittest.TestCase):
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="Fish narrator", language="en")
+                    voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
+                        name="Fish narrator",
+                        language="en",
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -1504,6 +1576,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
                 with database.session() as session:
                     session.add(
                         VoiceSample(
+                            workspace_id=initial_personal_workspace(session).id,
                             voice_id=voice_id,
                             artifact_id=artifact.id,
                             transcript="Reviewed Fish reference.",
@@ -1538,13 +1611,18 @@ class VoiceProviderPublishTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_provider_publish_persists_returned_voice_id(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="My narrator", language="en")
+                    voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
+                        name="My narrator",
+                        language="en",
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -1558,6 +1636,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
                 with database.session() as session:
                     session.add(
                         VoiceSample(
+                            workspace_id=initial_personal_workspace(session).id,
                             voice_id=voice_id,
                             artifact_id=artifact.id,
                             transcript="Reviewed words.",
@@ -1597,6 +1676,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_provider_removal_clears_registration_only_after_remote_success(self):
         from pandrator.logic import tts_handler
 
@@ -1611,6 +1691,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
                 ).hexdigest()
                 with database.session() as session:
                     voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
                         name="Disposable narrator",
                         metadata_json={
                             "providers": {
@@ -1650,6 +1731,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
                     base_url=base_url,
                     service="Qwen3 TTS",
                     api_key="",
+                    before_io=mock.ANY,
                 )
                 with database.session() as session:
                     stored = session.get(Voice, voice_id)
@@ -1660,6 +1742,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_provider_removal_failure_keeps_registration(self):
         from pandrator.logic import tts_handler
 
@@ -1674,6 +1757,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
                 ).hexdigest()
                 with database.session() as session:
                     voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
                         name="Retained narrator",
                         metadata_json={
                             "providers": {
@@ -1726,6 +1810,7 @@ class VoiceProviderPublishTests(unittest.TestCase):
             try:
                 with database.session() as session:
                     voice = Voice(
+                        workspace_id=initial_personal_workspace(session).id,
                         name="My narrator",
                         language="en",
                         metadata_json={
@@ -1780,7 +1865,10 @@ class VoiceProviderPublishTests(unittest.TestCase):
                 publish.assert_called_once()
                 self.assertEqual(voice_id, publish.call_args.args[0]["voice_id"])
                 self.assertEqual("kobold_qwen", publish.call_args.args[0]["service_id"])
-                self.assertEqual({"my_narrator"}, verified)
+                self.assertEqual(
+                    [[publish.call_args.args[0]["workspace_id"], "my_narrator"]],
+                    [json.loads(key) for key in verified],
+                )
             finally:
                 database.dispose()
 

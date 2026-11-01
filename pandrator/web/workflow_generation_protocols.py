@@ -47,6 +47,12 @@ class StreamingTtsBatchProtocol(Protocol):
     ) -> Iterator[TtsBatchResult]: ...
 
 
+class PrepareAudioCppVoiceReferenceProtocol(Protocol):
+    def __call__(
+        self, settings: dict[str, Any], *, workspace_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+
 class EnsureQwenVoiceProtocol(Protocol):
     def __call__(
         self,
@@ -55,6 +61,7 @@ class EnsureQwenVoiceProtocol(Protocol):
         base_url: str,
         verified: set[str],
         cancel_event: threading.Event,
+        workspace_id: str | None = None,
     ) -> None: ...
 
 
@@ -104,6 +111,8 @@ class HydrateTtsSettingsProtocol(Protocol):
         settings: dict[str, Any],
         *,
         manager_bridge: LocalManagerProxy | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]: ...
 
 

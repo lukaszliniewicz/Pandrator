@@ -42,7 +42,7 @@ class WorkflowSpeechOptimizationTests(unittest.TestCase):
         self.temporary.cleanup()
 
     @staticmethod
-    def _hydrate(settings, _stage):
+    def _hydrate(settings, _stage, *, session_id=None):
         return {
             **settings,
             "llm_provider_configs": [],

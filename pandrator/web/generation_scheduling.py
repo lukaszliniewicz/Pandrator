@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import GenerationRun, Job, utcnow
+from .resource_keys import tts_resource_keys
 
 
 class GenerationJobQueue(Protocol):
@@ -140,13 +141,8 @@ def revoke_regeneration_batons(
 
 
 def generation_resource_keys(session_id: str, snapshot: dict[str, Any]) -> list[str]:
-    tts = snapshot.get("tts", {})
-    service = str(tts.get("service") or "tts").lower().replace(" ", "_")
-    resource_keys = [f"session:{session_id}", f"service:tts:{service}"]
-    compute = str(tts.get("compute_backend") or tts.get("device") or "auto").lower()
-    if compute in {"cuda", "vulkan", "metal", "gpu"}:
-        resource_keys.append(f"gpu:{compute}")
-    return resource_keys
+    tts = snapshot.get("tts") or {}
+    return [f"session:{session_id}", *tts_resource_keys(tts)]
 
 
 def interrupted_run_id(run: GenerationRun) -> str | None:

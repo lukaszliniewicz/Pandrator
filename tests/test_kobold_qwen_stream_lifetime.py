@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import wave
+from contextvars import copy_context
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -289,7 +290,8 @@ def next_in_thread(stream):
         finally:
             finished.set()
 
-    consumer = threading.Thread(target=consume, daemon=True)
+    context = copy_context()
+    consumer = threading.Thread(target=lambda: context.run(consume), daemon=True)
     consumer.start()
     return consumer, finished, outcome
 
@@ -401,7 +403,7 @@ def install_fake_cancel_io_ex(monkeypatch, *, result):
 
 @pytest.mark.parametrize("stalled_server", ["http", "https"], indirect=True, ids=["http", "https"])
 def test_close_after_first_result_retires_stalled_native_reader(
-    stalled_server, readers, native_interruptions
+    stalled_server, readers, native_interruptions, host_model_acquisition
 ):
     stalled_server[1]["first_event"] = True
     stalled_server[3].set()
@@ -422,7 +424,7 @@ def test_close_after_first_result_retires_stalled_native_reader(
 @pytest.mark.parametrize("after_first", [False, True])
 @pytest.mark.parametrize("stalled_server", ["http", "https"], indirect=True, ids=["http", "https"])
 def test_cancel_while_waiting_retires_stalled_native_reader(
-    stalled_server, readers, after_first, native_interruptions
+    stalled_server, readers, after_first, native_interruptions, host_model_acquisition
 ):
     stalled_server[1]["first_event"] = after_first
     stalled_server[3].set()
@@ -443,7 +445,9 @@ def test_cancel_while_waiting_retires_stalled_native_reader(
 
 
 @pytest.mark.parametrize("stalled_server", ["http", "https"], indirect=True, ids=["http", "https"])
-def test_cancel_before_headers_keeps_owner_until_transport_can_be_retired(stalled_server, readers):
+def test_cancel_before_headers_keeps_owner_until_transport_can_be_retired(
+    stalled_server, readers, host_model_acquisition
+):
     cancel = threading.Event()
     stream = stream_for(stalled_server, cancel)
     consumer, finished, outcome = next_in_thread(stream)

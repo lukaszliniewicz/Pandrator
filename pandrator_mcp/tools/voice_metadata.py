@@ -9,6 +9,7 @@ from ..context import McpRuntime
 from ..errors import NextAction
 from ..results import ToolOutcome
 from ..schemas.voice_metadata import UpdateVoiceMetadataInput
+from .voice_lifecycle import safe_scope_projection, safe_voice_projection
 
 
 def update_voice_metadata(
@@ -17,20 +18,32 @@ def update_voice_metadata(
 ) -> ToolOutcome:
     """Apply the supplied managed-voice metadata fields once."""
 
+    request_arguments: dict[str, Any] = {
+        "voice_id": arguments.voice_id,
+        "expected_revision": arguments.expected_revision,
+        "changes": arguments.changes.model_dump(mode="json", exclude_unset=True),
+    }
+    if arguments.workspace_id is not None:
+        request_arguments["workspace_id"] = arguments.workspace_id
     payload = runtime.require_application().voice_metadata_request(
         "update",
-        {
-            "voice_id": arguments.voice_id,
-            "expected_revision": arguments.expected_revision,
-            "changes": arguments.changes.model_dump(mode="json", exclude_unset=True),
-        },
+        request_arguments,
+    )
+    scope = safe_scope_projection(payload)
+    next_workspace_id = scope.get("workspace_id")
+    if next_workspace_id is None:
+        next_workspace_id = arguments.workspace_id
+    next_action_arguments = (
+        {"workspace_id": next_workspace_id}
+        if next_workspace_id is not None
+        else {}
     )
     return ToolOutcome(
-        result=payload,
+        result=safe_voice_projection(payload) | scope,
         next_actions=[
             NextAction(
                 tool="pandrator_get_voice_catalog",
-                arguments={},
+                arguments=next_action_arguments,
                 reason="Inspect the updated managed voice details in the current voice catalog.",
             )
         ],

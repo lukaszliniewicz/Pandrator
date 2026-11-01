@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from .account_openapi import ACCOUNT_SCHEMAS, account_paths
 from .audiobook_openapi import AUDIOBOOK_SCHEMAS, VOICE_SETUP_SCHEMAS, audiobook_paths
 from .comparison_export_openapi import COMPARISON_EXPORT_SCHEMAS, comparison_export_paths
 from .generation_control_openapi import (
@@ -15,10 +16,14 @@ from .generation_review import PROJECTABLE_SEGMENT_FIELDS
 from .generation_summary import GenerationSummary
 from .google_voice_design_schemas import GoogleVoiceDesignCreate
 from .identity import ApplicationIdentityDocument
+from .knowledge_openapi import KNOWLEDGE_SCHEMAS, knowledge_paths
 from .performance_openapi import PERFORMANCE_SCHEMAS, performance_paths
+from .project_copy_openapi import PROJECT_COPY_SCHEMAS, project_copy_paths
 from .project_export_bundle_routes import PROJECT_EXPORT_BUNDLE_SCHEMAS, project_export_bundle_paths
 from .project_folder_routes import PROJECT_FOLDER_SCHEMAS, project_folder_paths
 from .project_operation_routes import PROJECT_OPERATION_SCHEMAS, project_operation_paths
+from .project_sharing_openapi import PROJECT_SHARING_SCHEMAS, project_sharing_paths
+from .public_link_openapi import PUBLIC_LINK_SCHEMAS, public_link_paths
 from .quick_transcription_openapi import transcription_paths
 from .quick_transcription_schemas import (
     TranscriptionCreate,
@@ -33,6 +38,7 @@ from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
 from .session_purge_job_openapi import SESSION_PURGE_JOB_SCHEMAS, session_purge_job_paths
 from .session_purge_openapi import SESSION_PURGE_SCHEMAS, session_purge_paths
 from .sound_openapi import SOUND_SCHEMAS, sound_paths
+from .speech_catalogue_openapi import extend_speech_catalogue_paths
 from .speech_selection_openapi import SPEECH_SELECTION_SCHEMAS, speech_selection_paths
 from .translation_project_routes import PROJECT_SCHEMAS, translation_project_paths
 from .voice_catalog_openapi import (
@@ -42,16 +48,23 @@ from .voice_catalog_openapi import (
 )
 from .work import EventBounds, WorkError, WorkEvent, WorkEventPage, WorkView
 from .workflow_improvements_openapi import WORKFLOW_IMPROVEMENT_SCHEMAS, workflow_improvements_paths
+from .workspace_openapi import WORKSPACE_SCHEMAS, workspace_paths
 
 
 def build_openapi_document() -> dict:
     schemas: dict[str, dict] = dict(SESSION_PURGE_SCHEMAS)
     contract_models = {
+        **PUBLIC_LINK_SCHEMAS,
+        **ACCOUNT_SCHEMAS,
+        **WORKSPACE_SCHEMAS,
         **SCHEMA_MODELS,
         **WORKFLOW_IMPROVEMENT_SCHEMAS,
         **FLOW_SCHEMAS,
         **PROJECT_SCHEMAS,
         **PROJECT_FOLDER_SCHEMAS,
+        **PROJECT_SHARING_SCHEMAS,
+        **PROJECT_COPY_SCHEMAS,
+        **KNOWLEDGE_SCHEMAS,
         **PROJECT_OPERATION_SCHEMAS,
         **PROJECT_EXPORT_BUNDLE_SCHEMAS,
         **COMPARISON_EXPORT_SCHEMAS,
@@ -622,15 +635,34 @@ def build_openapi_document() -> dict:
                 },
                 "post": {
                     "operationId": "createJob",
+                    "description": (
+                        "Submit an approved command: noop accepts duration (0-30 seconds) and echo; "
+                        "session.bundle.export accepts session_id and include_sources. "
+                        "The envelope and payload session IDs must agree. Other worker kinds use "
+                        "their workflow, generation, voice, sound or model endpoints. "
+                        "Current resource authority is required in addition to Administrator scope."
+                    ),
+                    "x-required-scopes": ["app.admin", "app.run"],
                     "requestBody": {
                         "required": True,
                         "content": {
                             "application/json": {
-                                "schema": {"$ref": "#/components/schemas/JobCreate"}
+                                "schema": {
+                                    "allOf": [
+                                        {"$ref": "#/components/schemas/JobCreate"},
+                                        {"properties": {"kind": {"type": "string", "enum": ["noop", "session.bundle.export"]}}},
+                                    ]
+                                }
                             }
                         },
                     },
-                    "responses": {"202": {"description": "Queued"}},
+                    "responses": {
+                        "202": {"description": "Approved command queued"},
+                        "403": {"description": "Current role, scope or resource authority required"},
+                        "404": {"description": "Session or receipt job unavailable"},
+                        "409": {"description": "Command state or idempotency conflict"},
+                        "422": {"description": "Invalid command fields or job_operation_required; use the domain endpoint"},
+                    },
                 },
             },
             "/api/v1/work": {
@@ -724,7 +756,12 @@ def build_openapi_document() -> dict:
             "/api/v1/auth/status": {
                 "get": {
                     "operationId": "getAuthStatus",
-                    "responses": {"200": {"description": "Authentication status"}},
+                    "responses": {"200": {
+                        "description": "Authentication status and current account role",
+                        "content": {"application/json": {"schema": {
+                            "$ref": "#/components/schemas/AuthStatusResponse"
+                        }}},
+                    }},
                 }
             },
             "/api/v1/auth/bootstrap": {
@@ -813,10 +850,13 @@ def build_openapi_document() -> dict:
                     "responses": {"201": {"description": "Created"}},
                 },
             },
+            "/api/v1/auth/tokens/{tokenId}": {
+                "delete": {"operationId": "revokeApiToken", "description": "Revoke a token owned by the current account.", "responses": {"204": {"description": "Revoked"}, "404": {"description": "Token not found"}}}
+            },
             "/api/v1/auth/automation/authorize": {
                 "get": {
                     "operationId": "authorizeAutomationClient",
-                    "description": "Trusted owner consent with exact redirect matching and mandatory S256 PKCE.",
+                    "description": "Account consent with explicit workspace resources, exact redirect matching and mandatory S256 PKCE.",
                     "responses": {
                         "200": {"description": "Consent page"},
                         "302": {"description": "Authorization response"},
@@ -858,7 +898,7 @@ def build_openapi_document() -> dict:
                 },
                 "put": {
                     "operationId": "replaceAutomationLocalPaths",
-                    "description": "Replace the interactive owner's approved local MCP source and output roots.",
+                    "description": "An interactive Administrator can replace approved local MCP source and output roots.",
                     "responses": {
                         "200": {"description": "Updated approved local MCP paths"}
                     },
@@ -902,12 +942,36 @@ def build_openapi_document() -> dict:
             "/api/v1/uploads": {
                 "post": {
                     "operationId": "uploadSource",
+                    "description": "Upload a source. A session-bound source candidate can set attach_to_session=false to retain project ownership without selecting it; the normal source-change impact and confirmation flow applies afterwards.",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"multipart/form-data": {"schema": {
+                            "type": "object", "required": ["file"],
+                            "properties": {
+                                "file": {"type": "string", "format": "binary"},
+                                "session_id": {"type": "string"},
+                                "workspace_id": {"type": "string"},
+                                "purpose": {"type": "string", "default": "source"},
+                                "attach_to_session": {"type": "boolean", "default": True,
+                                    "description": "Literal multipart true/false. False requires purpose=source and an explicit project session; it does not attach or select the candidate."},
+                            },
+                        }}},
+                    },
+                    "parameters": [
+                        {"name": "workspace_id", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 80}, "description": "Destination workspace; defaults to the caller's personal workspace for an unbound source."},
+                        {"name": "session_id", "in": "query", "schema": {"type": "string"}, "description": "Destination project session. Query and multipart selectors must agree."},
+                    ],
                     "responses": {"201": {"description": "Uploaded"}},
                 }
             },
             "/api/v1/sessions/{sessionId}/sources/url": {
                 "post": {
                     "operationId": "downloadSourceUrl",
+                    "security": [
+                        {"cookieAuth": []},
+                        {"bearerToken": []},
+                        {"nativeOAuth": ["app.read", "app.write", "app.run"]},
+                    ],
                     "requestBody": {
                         "required": True,
                         "content": {
@@ -924,6 +988,11 @@ def build_openapi_document() -> dict:
             "/api/v1/sessions/{sessionId}/sources/reuse": {
                 "post": {
                     "operationId": "reuseSource",
+                    "security": [
+                        {"cookieAuth": []},
+                        {"bearerToken": []},
+                        {"nativeOAuth": ["app.read", "app.write", "app.run"]},
+                    ],
                     "requestBody": {
                         "required": True,
                         "content": {
@@ -1281,7 +1350,12 @@ def build_openapi_document() -> dict:
                             "in": "query",
                             "required": False,
                             "schema": {"type": "string"},
-                        }
+                        },
+                        {
+                            "name": "include_referenced", "in": "query", "required": False,
+                            "description": "Also include evidence referenced by this exact subtitle artifact's saved revision. Requires source_artifact_id.",
+                            "schema": {"type": "boolean", "default": False},
+                        },
                     ],
                     "responses": {
                         "200": {"description": "Bounded subtitle evidence requests"}
@@ -1338,6 +1412,8 @@ def build_openapi_document() -> dict:
             "/api/v1/sessions/{sessionId}/pdf/apply": {
                 "post": {
                     "operationId": "applyPdfEdits",
+                    "description": "Create a derived PDF and provenance with current project RUN authority and readable source bytes. The source remains unchanged.",
+                    "x-required-scopes": ["app.read", "app.run"],
                     "requestBody": {
                         "required": True,
                         "content": {
@@ -1348,12 +1424,23 @@ def build_openapi_document() -> dict:
                             }
                         },
                     },
-                    "responses": {"202": {"description": "Queued"}},
+                    "responses": {
+                        "202": {"description": "Queued"},
+                        "403": {"description": "Processing is not permitted"},
+                        "404": {"description": "Session or source artifact not found"},
+                    },
                 }
             },
             "/api/v1/sessions/{sessionId}/bundle": {
                 "post": {
                     "operationId": "exportSessionBundle",
+                    "description": "Queue a session bundle with current project RUN authority. A retry key replays only an authorized matching bundle job.",
+                    "x-required-scopes": ["app.read", "app.run"],
+                    "parameters": [{
+                        "name": "Idempotency-Key", "in": "header", "required": False,
+                        "description": "Required for automation-client writes; optional for browser/API-token writes.",
+                        "schema": {"type": "string", "minLength": 8, "maxLength": 200},
+                    }],
                     "requestBody": {
                         "required": True,
                         "content": {
@@ -1364,12 +1451,19 @@ def build_openapi_document() -> dict:
                             }
                         },
                     },
-                    "responses": {"202": {"description": "Queued"}},
+                    "responses": {
+                        "202": {"description": "Bundle queued or authorized replay"},
+                        "403": {"description": "Project RUN authority required"},
+                        "404": {"description": "Session or receipt job unavailable"},
+                        "409": {"description": "Command state or idempotency conflict"},
+                        "422": {"description": "Invalid bundle command fields"},
+                    },
                 }
             },
             "/api/v1/session-bundles/import": {
                 "post": {
                     "operationId": "importSessionBundle",
+                    "description": "Queue an artifact archive import into the source artifact's workspace with current source READ, workspace creation and RUN authority.",
                     "requestBody": {
                         "required": True,
                         "content": {
@@ -1380,7 +1474,12 @@ def build_openapi_document() -> dict:
                             }
                         },
                     },
-                    "responses": {"202": {"description": "Queued"}},
+                    "responses": {
+                        "202": {"description": "Queued"},
+                        "403": {"description": "Current READ, WRITE and RUN scopes required"},
+                        "404": {"description": "Source artifact or destination workspace unavailable"},
+                        "422": {"description": "Invalid bundle import fields"},
+                    },
                 }
             },
             "/api/v1/providers": {
@@ -1843,8 +1942,12 @@ def build_openapi_document() -> dict:
         "components": {
             "schemas": schemas,
             "securitySchemes": {
+                "projectLinkSession": {
+                    "type": "apiKey", "in": "header", "name": "X-Pandrator-Project-Link",
+                    "description": "Requires the matching HttpOnly pandrator_link_<linkId without hyphens> cookie issued by redeemProjectLink. The header is a nonsecret selector, never authentication by itself. Account cookies and bearer credentials cannot substitute for visitor authentication.",
+                },
                 "bearerToken": {"type": "http", "scheme": "bearer"},
-                "cookieAuth": {"type": "apiKey", "in": "cookie", "name": "session"},
+                "cookieAuth": {"type": "apiKey", "in": "cookie", "name": "pandrator_session"},
                 "nativeOAuth": {
                     "type": "oauth2",
                     "flows": {
@@ -1856,6 +1959,8 @@ def build_openapi_document() -> dict:
                                 "app.write": "Change reversible application state.",
                                 "app.run": "Start durable application work.",
                                 "app.cancel": "Cancel durable application work.",
+                                "app.workspaces.enroll": "Explicitly approve this credential for newly created or invited workspaces.",
+                                "app.admin": "Administer user accounts and authorize model installation. Current Administrator role is also required.",
                                 "app.credentials.read": "Inspect credential status.",
                                 "app.credentials.write": "Change credential references.",
                                 "manager.read": "Inspect Manager state and plans.",
@@ -1902,6 +2007,48 @@ def build_openapi_document() -> dict:
             ),
             "schema": {"type": "string", "minLength": 8, "maxLength": 200},
         }
+
+    def artifact_preview_operation(
+        operation_id: str, *, prepare: bool, waveform: bool = False,
+    ) -> dict:
+        scopes = ["app.read", "app.run"] if prepare else ["app.read"]
+        value = {
+            "operationId": operation_id,
+            "description": (
+                "Prepare a media derivative with current resource RUN permission. "
+                "Browser requests require X-CSRF-Token. Query parameters match the read operation."
+                if prepare else
+                "Read an existing media derivative or authorized active job without creating work. "
+                "A cache miss returns preview_preparation_required with a current can_prepare hint."
+            ),
+            "x-required-scopes": scopes,
+            "security": [
+                {"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": scopes},
+            ],
+            "responses": {
+                "200": {"description": "Existing preview or waveform peaks"},
+                "202": {"description": "Authorized preview job queued or running"},
+                "403": {"description": "Required scope, project role or browser CSRF check denied"},
+                "404": {"description": "Unknown, deleted or inaccessible source"},
+                "409": {"description": (
+                    "Source changed or preparation conflicted" if prepare else
+                    "Preview is not prepared; details.can_prepare is a hint for an explicit POST"
+                )},
+                "410": {"description": "The managed source file is missing"},
+                "422": {"description": "Invalid waveform bounds or unsupported media"},
+            },
+        }
+        if waveform:
+            value["parameters"] = [
+                {"name": "points", "in": "query", "required": False,
+                 "schema": {"type": "integer", "minimum": 128, "maximum": 5000, "default": 1600}},
+                {"name": "start_ms", "in": "query", "required": False,
+                 "schema": {"type": "integer", "minimum": 0}},
+                {"name": "end_ms", "in": "query", "required": False,
+                 "description": "End of a positive window of at most ten minutes.",
+                 "schema": {"type": "integer", "minimum": 1}},
+            ]
+        return value
 
     # Parity-workspace operations are declared alongside their Pydantic DTOs;
     # this block is also the source used to generate the checked-in TS client.
@@ -3074,6 +3221,7 @@ def build_openapi_document() -> dict:
                 "get": {
                     **operation("listSourceAssets", "Reusable source library"),
                     "parameters": [
+                        {"name": "workspace_id", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 80}, "description": "Workspace library to read; defaults to the caller's personal workspace."},
                         {"name": "view", "in": "query", "schema": {"type": "string", "enum": ["full", "compact"], "default": "full"}, "description": "Compact library cards omit stored metadata and filesystem paths."},
                         {"name": "include_trashed", "in": "query", "schema": {"type": "boolean", "default": False}},
                     ],
@@ -3120,37 +3268,16 @@ def build_openapi_document() -> dict:
                 "get": operation("listTimedWords", "Immutable timed words")
             },
             "/api/v1/artifacts/{artifactId}/waveform": {
-                "get": operation(
-                    "getArtifactWaveform",
-                    "Waveform peaks or queued generation",
-                    status="200",
-                )
+                "get": artifact_preview_operation("getArtifactWaveform", prepare=False, waveform=True),
+                "post": artifact_preview_operation("prepareArtifactWaveform", prepare=True, waveform=True),
             },
             "/api/v1/artifacts/{artifactId}/audio-preview": {
-                "get": {
-                    **operation(
-                        "getArtifactAudioPreview",
-                        "Browser-safe source audio preview or queued generation",
-                        status="200",
-                    ),
-                    "responses": {
-                        "200": {
-                            "description": "Browser-safe source audio preview",
-                        },
-                        "202": {
-                            "description": "Preview queued or running",
-                        },
-                    },
-                }
+                "get": artifact_preview_operation("getArtifactAudioPreview", prepare=False),
+                "post": artifact_preview_operation("prepareArtifactAudioPreview", prepare=True),
             },
             "/api/v1/artifacts/{artifactId}/video-preview": {
-                "get": {
-                    "operationId": "getArtifactVideoPreview",
-                    "responses": {"200": {"description": "Cached compatible video preview"},
-                                  "202": {"description": "Durable preview job queued or running"},
-                                  "422": {"description": "Source cannot produce a bounded video preview; audio fallback is available"}},
-                    "security": [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": ["app.read"]}],
-                }
+                "get": artifact_preview_operation("getArtifactVideoPreview", prepare=False),
+                "post": artifact_preview_operation("prepareArtifactVideoPreview", prepare=True),
             },
             "/api/v1/artifacts/{artifactId}/context": {
                 "get": operation(
@@ -3490,7 +3617,7 @@ def build_openapi_document() -> dict:
         (
             "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve",
             "post",
-            "app.run",
+            "app.write",
         ),
         (
             "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs",
@@ -3628,7 +3755,7 @@ def build_openapi_document() -> dict:
         (
             "/api/v1/sessions/{sessionId}/workflow-plans",
             "post",
-            "app.read",
+            "app.run",
         ),
         (
             "/api/v1/workflow-plans/{planId}",
@@ -3687,8 +3814,8 @@ def build_openapi_document() -> dict:
         ),
         ("/api/v1/sources", "get", "app.read"),
         ("/api/v1/sources/{sourceAssetId}/references", "get", "app.read"),
-        ("/api/v1/automation/local-paths", "get", "app.read"),
-        ("/api/v1/automation/local-paths", "put", "app.write"),
+        ("/api/v1/automation/local-paths", "get", "app.admin"),
+        ("/api/v1/automation/local-paths", "put", "app.admin"),
         ("/api/v1/uploads/init", "post", "app.write"),
         ("/api/v1/uploads/{uploadId}", "get", "app.read"),
         ("/api/v1/uploads/{uploadId}", "delete", "app.write"),
@@ -3738,11 +3865,129 @@ def build_openapi_document() -> dict:
             {"nativeOAuth": [scope]},
         ]
 
+    for path, method, scopes in (
+        ("/api/v1/sessions/{sessionId}/bundle", "post", ["app.read", "app.run"]),
+        ("/api/v1/session-bundles/import", "post", ["app.read", "app.write", "app.run"]),
+        ("/api/v1/sessions/{sessionId}/output-mix-preview", "post", ["app.read", "app.run"]),
+        ("/api/v1/sessions/{sessionId}/agent-runs", "get", ["app.read"]),
+        ("/api/v1/sessions/{sessionId}/agent-runs", "post", ["app.read", "app.run"]),
+        ("/api/v1/agent-runs/{runId}/steps", "get", ["app.read"]),
+        ("/api/v1/agent-runs/{runId}/resume", "post", ["app.read", "app.run"]),
+        ("/api/v1/agent-runs/{runId}/accept", "post", ["app.read", "app.write"]),
+    ):
+        paths[path][method]["x-required-scopes"] = scopes
+        paths[path][method]["security"] = [
+            {"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": scopes},
+        ]
+
+    mix_preview = paths["/api/v1/sessions/{sessionId}/output-mix-preview"]["post"]
+    mix_preview["description"] = "Queue a separate soundtrack mix preview with current project RUN authority and readable media inputs."
+    mix_preview["responses"].update({
+        "403": {"description": "Processing is not permitted"},
+        "404": {"description": "Session or media input not found"},
+        "409": {"description": "Mix preview is unavailable"},
+    })
+
+    for path, scopes in (
+        ("/api/v1/sessions/{sessionId}/subtitle-evidence", ["app.read", "app.run"]),
+        ("/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve", ["app.read", "app.write"]),
+    ):
+        paths[path]["post"]["x-required-scopes"] = scopes
+        paths[path]["post"]["security"] = [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": scopes}]
+    decision = paths["/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve"]["post"]
+    decision["responses"]["428"] = {"description": "Latest evidence revision required in collaboration mode"}
+    decision["description"] = "Record an editorial decision with current project editing authority. New collaboration decisions require the latest record.revision token. Exact authorized retries replay their accepted result."
+    paths["/api/v1/subtitle-evidence/{evidenceId}"]["get"]["responses"]["200"]["description"] = "Current authorized evidence and record.revision token for a later editorial decision."
+
+    for settings_path in ("/api/v1/defaults/{section}", "/api/v1/settings/{settingKey}"):
+        for method, settings_operation in paths[settings_path].items():
+            if method not in {"get", "put"}:
+                continue
+            settings_operation.setdefault("parameters", []).append({
+                "name": "workspace_id", "in": "query", "required": False,
+                "description": "Authorized workspace for workspace settings; omission uses the caller's personal home. Installation keys reject this query.",
+                "schema": {"type": "string", "minLength": 1, "maxLength": 80},
+            })
+            if settings_path == "/api/v1/defaults/{section}":
+                settings_operation["parameters"].append({
+                    "name": "session_id", "in": "query", "required": False,
+                    "description": "Resolve this project's workspace with independent session and workspace reading authority.",
+                    "schema": {"type": "string", "minLength": 1, "maxLength": 80},
+                })
+            scopes = ["app.read"] if method == "get" else ["app.read", "app.write"]
+            settings_operation["x-required-scopes"] = scopes
+            settings_operation["security"] = [
+                {"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": scopes}
+            ]
+            settings_operation["description"] = (
+                "Workspace defaults are readable by Members and writable by Managers. "
+                "Other workspace configuration requires management access; service credential "
+                "writes additionally require app.credentials.write. Installation keys require "
+                "an actual Administrator and app.admin, independently of workspace membership. "
+                "Responses identify setting_scope and current can_manage authority."
+            )
+
+    provider_workspace_paths = (
+        "/api/v1/providers",
+        "/api/v1/providers/{providerId}",
+        "/api/v1/providers/{providerId}/models",
+        "/api/v1/providers/{providerId}/models/{modelId}",
+        "/api/v1/providers/{providerId}/models/refresh",
+        "/api/v1/providers/{providerId}/test",
+        "/api/v1/credentials",
+        "/api/v1/credentials/{credentialId}",
+    )
+    for provider_path in provider_workspace_paths:
+        for method, provider_operation in paths[provider_path].items():
+            if method not in {"get", "post", "patch", "put", "delete"}:
+                continue
+            provider_operation.setdefault("parameters", []).append({
+                "name": "workspace_id", "in": "query", "required": False,
+                "description": "Authorized active workspace; omitted scope uses the caller's personal workspace.",
+                "schema": {"type": "string", "minLength": 1, "maxLength": 80},
+            })
+            if method == "get" and provider_path in {
+                "/api/v1/providers", "/api/v1/providers/{providerId}/models"
+            }:
+                provider_operation["parameters"].append({
+                    "name": "session_id", "in": "query", "required": False,
+                    "description": "Select the session's workspace catalogue with independent current session and workspace reading authority.",
+                    "schema": {"type": "string", "minLength": 1, "maxLength": 80},
+                })
+            scopes = ["app.read"] if method == "get" else ["app.read", "app.write", "app.credentials.write"]
+            if provider_path.endswith(("/test", "/models/refresh")):
+                scopes.append("app.run")
+            provider_operation["x-required-scopes"] = scopes
+            provider_operation["security"] = [
+                {"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": scopes}
+            ]
+
+    paths.update(account_paths())
+    paths.update(workspace_paths())
+    paths.update(project_copy_paths())
+    paths.update(knowledge_paths())
+    for plan_path, method in (
+        ("/api/v1/sessions/{sessionId}/workflow-plans", "post"),
+        ("/api/v1/workflow-plans/{planId}/execute", "post"),
+    ):
+        paths[plan_path][method]["x-required-scopes"] = ["app.read", "app.run"]
+    paths["/api/v1/sessions"]["get"].setdefault("parameters", []).append({"name": "workspace_id", "in": "query", "required": False, "description": "Filter sessions visible to this credential by workspace.", "schema": {"type": "string", "minLength": 1, "maxLength": 80}})
+    for credential_path in ("/api/v1/auth/tokens", "/api/v1/auth/tokens/{tokenId}", "/api/v1/auth/automation-clients", "/api/v1/auth/automation-clients/{clientId}"):
+        for method, credential_operation in paths.get(credential_path, {}).items():
+            if method not in {"get", "post", "delete"}:
+                continue
+            scope = "app.credentials.read" if method == "get" else "app.credentials.write"
+            if credential_path == "/api/v1/auth/automation-clients" and method == "post":
+                scope = "app.admin"
+            credential_operation["security"] = [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": [scope]}]
+
     paths.update(transcription_paths())
     paths.update(repair_batch_paths())
     paths.update(session_flow_paths())
     paths.update(translation_project_paths())
     paths.update(project_folder_paths())
+    paths.update(project_sharing_paths())
+    paths.update(public_link_paths())
     paths.update(project_operation_paths())
     paths.update(project_export_bundle_paths())
     paths.update(performance_paths())
@@ -3787,6 +4032,14 @@ def build_openapi_document() -> dict:
         "Required for every caller. Reuse the same key and identical body to "
         "receive the original job and voice."
     )
+    google_voice_design["parameters"].append({
+        "name": "workspace_id", "in": "query", "required": False,
+        "description": "Targets the caller's personal workspace when omitted; current workspace content and run rights are required.",
+        "schema": {"type": "string", "minLength": 1, "maxLength": 80},
+    })
+    google_voice_design["security"] = [{"cookieAuth": []}, {"bearerToken": []},
+        {"nativeOAuth": ["app.read", "app.write", "app.run"]}]
+    google_voice_design["x-required-scopes"] = ["app.read", "app.write", "app.run"]
     google_voice_design["responses"]["409"] = {
         "description": "Idempotency conflict or duplicate local voice name"
     }
@@ -3794,6 +4047,22 @@ def build_openapi_document() -> dict:
         "description": "Invalid request or unavailable Google voice configuration"
     }
     paths["/api/v1/voices/design/google"] = {"post": google_voice_design}
+    paths["/api/v1/services/tts/{serviceId}/preview"]["post"].setdefault("parameters", []).append({
+        "name": "workspace_id", "in": "query", "required": False,
+        "description": "Workspace for this audition. Omit to use the caller's own workspace. Members can audition approved workspace services.",
+        "schema": {"type": "string", "minLength": 1, "maxLength": 80},
+    })
+    paths["/api/v1/services/tts/{serviceId}/preview"]["post"]["security"] = [
+        {"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": ["app.read", "app.write", "app.run"]},
+    ]
+    paths["/api/v1/services/tts/{serviceId}/preview"]["post"]["x-required-scopes"] = [
+        "app.read", "app.write", "app.run",
+    ]
+    paths["/api/v1/services/tts/{serviceId}/preview"]["post"]["description"] = (
+        "Queue an audition in the caller's workspace. A managed voice_id selects "
+        "the exact library voice. Linked audio.cpp samples are retained before "
+        "queueing so later library changes do not change that audition."
+    )
     # Subtitle-first media and immutable speech-plan review operations.
     extra_operations = [
         ("/api/v1/sessions/{sessionId}/sources/subtitle-status", "get", "subtitleSourceStatus", None, "200"),
@@ -3910,6 +4179,10 @@ def build_openapi_document() -> dict:
                 "type": "object",
                 "additionalProperties": True,
                 "properties": {
+                    "workspace_id": {
+                        "type": "string", "minLength": 1, "maxLength": 80,
+                        "description": "Owning workspace for a new audition; an older retained solo receipt may omit it.",
+                    },
                     "preview": {
                         "type": "object",
                         "required": ["directions"],
@@ -3928,6 +4201,60 @@ def build_openapi_document() -> dict:
             },
         },
     }
+    privileged_model_operations = {
+        ("/api/v1/rvc/models", "post"): ("app.read", "app.write"),
+        ("/api/v1/services/tts/xtts/models", "post"): ("app.write",),
+        ("/api/v1/services/tts/xtts/models/{modelId}", "delete"): ("app.write",),
+        ("/api/v1/training", "get"): ("app.read",),
+        ("/api/v1/training", "post"): ("app.read", "app.run"),
+        ("/api/v1/training/{trainingId}/retry", "post"): ("app.read", "app.run"),
+        ("/api/v1/training/{trainingId}/cancel", "post"): ("app.read", "app.cancel"),
+    }
+    for path, path_item in paths.items():
+        for method, definition in path_item.items():
+            if method not in {"get", "post", "put", "patch", "delete"}:
+                continue
+            scopes = privileged_model_operations.get((path, method))
+            if path.startswith("/api/v1/manager/") and method != "get":
+                scopes = (
+                    "manager.read" if path.endswith("/plans")
+                    else "manager.runtime" if "/runtime/" in path
+                    else "manager.mutate",
+                )
+            if scopes is None:
+                continue
+            definition["x-required-role"] = "administrator"
+            definition["x-required-scopes"] = ["app.admin", *scopes]
+            definition["security"] = [
+                {"cookieAuth": []}, {"bearerToken": []},
+                {"nativeOAuth": ["app.admin", *scopes]},
+            ]
+            definition.setdefault("responses", {}).setdefault(
+                "403", {"description": (
+                    "Current Administrator and both delegated scopes required"
+                    if len(scopes) == 1
+                    else "Current Administrator and delegated scopes required"
+                )}
+            )
+
+    for path in (
+        "/api/v1/rvc/models", "/api/v1/rvc/convert", "/api/v1/training",
+        "/api/v1/training/{trainingId}/retry", "/api/v1/training/{trainingId}/cancel",
+    ):
+        for method, definition in paths[path].items():
+            if method in {"get", "post"}:
+                definition["x-workspace-scope"] = "original-personal"
+    for path, method, scopes in (
+        ("/api/v1/rvc/models", "get", ["app.read"]),
+        ("/api/v1/rvc/convert", "post", ["app.read", "app.run"]),
+    ):
+        paths[path][method]["x-required-scopes"] = scopes
+        paths[path][method]["security"] = [
+            {"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": scopes},
+        ]
+
+    extend_speech_catalogue_paths(paths)
+
     # Every templated route must expose its parameters to generated clients.
     # Most operations use the same UUID-like string identifiers, while chunk
     # indices are the one numeric route component.

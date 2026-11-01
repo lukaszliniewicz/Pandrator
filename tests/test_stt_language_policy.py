@@ -90,7 +90,10 @@ class STTLanguagePolicyTests(unittest.TestCase):
             {"stt_engine": "moss", "stt_language": "language-without-a-table"},
             executable="crispasr-test",
         )
-        self.assertNotIn("-l", command)
+        self.assertEqual(
+            command[command.index("-l") + 1], "language-without-a-table"
+        )
+        self.assertNotIn("-dtw", command)
         self.assertEqual(
             validate_stt_language("moss", "language-without-a-table"),
             "language-without-a-table",

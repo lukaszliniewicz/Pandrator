@@ -1,6 +1,15 @@
 import pytest
 
-from pandrator.logic.audiobook_chunking import audiobook_chunk_budget
+from pandrator.logic.audio_cpp_segmentation import narration_character_policy
+from pandrator.logic.audiobook_chunking import (
+    audiobook_chunk_budget,
+    validate_audiobook_chunking_settings,
+)
+from pandrator.logic.narration_packing import (
+    DEFAULT_SENTENCE_PACKING,
+    DEFAULT_SENTENCE_PACKING_THRESHOLD,
+    preserve_sentence_boundaries,
+)
 
 
 def test_default_model_budget_uses_unknown_provider_fallback():
@@ -51,8 +60,8 @@ def test_audio_cpp_qwen_default_and_lower_max_tokens_scale_policy():
         {"audiobook_chunking": "model"},
         {"service": "audio_cpp", "model": "qwen3_tts_1_7b_base_q8_0"},
     )
-    assert default["target_chars"] == 1800
-    assert default["policy_limit_chars"] == 2000
+    assert default["target_chars"] == 350
+    assert default["policy_limit_chars"] == 350
 
     lower = audiobook_chunk_budget(
         {"audiobook_chunking": "model"},
@@ -64,7 +73,7 @@ def test_audio_cpp_qwen_default_and_lower_max_tokens_scale_policy():
             },
         },
     )
-    assert lower["target_chars"] == 900
+    assert lower["target_chars"] == 175
 
     scalar_wins = audiobook_chunk_budget(
         {"audiobook_chunking": "model"},
@@ -75,16 +84,64 @@ def test_audio_cpp_qwen_default_and_lower_max_tokens_scale_policy():
             "audio_cpp_max_tokens": 512,
         },
     )
-    assert scalar_wins["target_chars"] == 450
+    assert scalar_wins["target_chars"] == 87
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"service": "audio_cpp", "model": "qwen3_tts_1_7b_customvoice_q8_0"},
+        {"service": "qwen3_tts", "model": "qwen3-tts"},
+        {"service": "kobold_qwen", "model": "qwen3-tts"},
+        {"service": "qwen", "model": "qwen3-tts"},
+    ],
+)
+def test_qwen_aliases_use_the_same_automatic_350_character_target(settings):
+    budget = audiobook_chunk_budget({}, settings, "ja")
+    assert budget["profile"] == "qwen3_tts"
+    assert budget["policy_limit_chars"] == 350
+    assert budget["target_chars"] == 350
+
+
+def test_qwen_narration_policy_is_language_independent():
+    assert narration_character_policy("qwen3_tts")[0] == 350
+    assert narration_character_policy("qwen3_tts", "ja")[0] == 350
+
+
+@pytest.mark.parametrize("language,expected", [("en", 540), ("zh-Hant", 270), ("ja", 270), ("ko", 270)])
+def test_drama_uses_narration_policy_instead_of_native_split_default(language, expected):
+    model = "fish_drama3_small_iq3_xxs"
+    settings = {"service": "audio_cpp", "model": model}
+    assert audiobook_chunk_budget({}, settings, language)["target_chars"] == expected
+    settings["audio_cpp_model_settings"] = {model: {"max_tokens": 512}}
+    reduced = audiobook_chunk_budget({}, settings, language)
+    assert reduced["target_chars"] == expected // 2
+    assert "scaled to 512 configured max_tokens" in reduced["reason"]
+    manual = audiobook_chunk_budget(
+        {"audiobook_chunking": "manual", "max_sentence_length": 800}, settings, language
+    )
+    assert manual["target_chars"] == 800
+
+
+def test_drama_respects_explicit_chunk_size_and_authoritative_model_options():
+    model = "fish_drama3_small_iq3_xxs"
+    settings = {
+        "service": "audio_cpp", "model": model,
+        "audio_cpp_options": {"text_chunk_size": 128, "max_tokens": 256},
+        "audio_cpp_max_tokens": 512,
+    }
+    assert audiobook_chunk_budget({}, settings)["target_chars"] == 57
+    settings["audio_cpp_model_settings"] = {model: {}}
+    assert audiobook_chunk_budget({}, settings)["target_chars"] == 540
 
 
 @pytest.mark.parametrize(
     ("language", "expected", "policy"),
     [
-        ("en", 1800, 2000),
-        ("zh-Hant", 450, 500),
-        ("ja", 450, 500),
-        ("ko-KR", 450, 500),
+        ("en", 350, 350),
+        ("zh-Hant", 350, 350),
+        ("ja", 350, 350),
+        ("ko-KR", 350, 350),
     ],
 )
 def test_qwen_cjk_budget(language, expected, policy):
@@ -120,7 +177,7 @@ def test_provider_policy_profiles(tts, profile, policy, target, input_limit):
 
 @pytest.mark.parametrize(
     ("model", "default_tokens", "target"),
-    [("qwen3_tts_1_7b_base_q8_0", 2048, 1800), ("breeze_tts_2_q8_0", 1500, 540)],
+    [("qwen3_tts_1_7b_base_q8_0", 2048, 350), ("breeze_tts_2_q8_0", 1500, 540)],
 )
 @pytest.mark.parametrize("source", ["model_map", "scalar", "audio_cpp_options", "options"])
 def test_output_budget_scaling_uses_each_runtime_option_source(model, default_tokens, target, source):
@@ -146,7 +203,7 @@ def test_output_budget_scaling_uses_each_runtime_option_source(model, default_to
 
 @pytest.mark.parametrize(
     ("model", "default_tokens", "target"),
-    [("qwen3_tts_1_7b_base_q8_0", 2048, 1800), ("breeze_tts_2_q8_0", 1500, 540)],
+    [("qwen3_tts_1_7b_base_q8_0", 2048, 350), ("breeze_tts_2_q8_0", 1500, 540)],
 )
 def test_output_budget_does_not_expand_policy_or_borrow_scalar_from_empty_map(model, default_tokens, target):
     base = {"service": "audio_cpp", "model": model}
@@ -183,3 +240,60 @@ def test_invalid_chunking_values_are_rejected(value):
 def test_invalid_mode_is_rejected():
     with pytest.raises(ValueError):
         audiobook_chunk_budget({"audiobook_chunking": "auto"}, {})
+
+
+@pytest.mark.parametrize(
+    ("target_chars", "threshold", "expected"),
+    [(299, 300, False), (300, 300, True), (350, 350, True), (351, 350, True)],
+)
+def test_auto_sentence_packing_uses_inclusive_effective_target_threshold(
+    target_chars, threshold, expected
+):
+    assert preserve_sentence_boundaries(
+        {"audiobook_sentence_packing_threshold": threshold}, target_chars
+    ) is expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "target_chars", "expected"),
+    [
+        ("sentences", 20, True),
+        ("sentences", 8192, True),
+        ("clauses", 20, False),
+        ("clauses", 8192, False),
+    ],
+)
+def test_forced_sentence_packing_modes_ignore_target_and_threshold(
+    mode, target_chars, expected
+):
+    assert preserve_sentence_boundaries(
+        {"audiobook_sentence_packing": mode, "audiobook_sentence_packing_threshold": 1},
+        target_chars,
+    ) is expected
+
+
+def test_sentence_packing_settings_default_and_validate_strictly():
+    assert DEFAULT_SENTENCE_PACKING == "auto"
+    assert DEFAULT_SENTENCE_PACKING_THRESHOLD == 300
+    validate_audiobook_chunking_settings({})
+    validate_audiobook_chunking_settings(
+        {"audiobook_sentence_packing_threshold": "350"}
+    )
+
+    invalid_packing = (None, "", "Auto", "split", 1)
+    for value in invalid_packing:
+        with pytest.raises(
+            ValueError,
+            match="^audiobook_sentence_packing must be 'auto', 'sentences' or 'clauses'.$",
+        ):
+            validate_audiobook_chunking_settings({"audiobook_sentence_packing": value})
+
+    invalid_thresholds = (None, True, False, 0, 8193, 300.0, 300.5, "300.0", "bad")
+    for value in invalid_thresholds:
+        with pytest.raises(
+            ValueError,
+            match="^audiobook_sentence_packing_threshold must be an integer between 1 and 8192.$",
+        ):
+            validate_audiobook_chunking_settings(
+                {"audiobook_sentence_packing_threshold": value}
+            )

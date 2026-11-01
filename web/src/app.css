@@ -127,11 +127,16 @@ body::-webkit-scrollbar-thumb:hover,
   border-color: transparent;
   background-clip: padding-box;
 }
+body:has([data-review-workspace]:modal, [data-workspace-tools]:modal) {
+  overflow: hidden;
+}
 @media (width < 48rem) {
   :root
     :is(dialog:modal, [role='dialog'][aria-modal='true'], .modal-panel):not(
       .compact-confirmation
-    ):not(.app-sidebar) {
+    ):not(.app-sidebar):not([data-review-workspace]):not(
+      [data-workspace-tools]
+    ) {
     position: fixed;
     inset: 0;
     width: 100%;

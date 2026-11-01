@@ -186,11 +186,13 @@ class ApplicationDispatchMethods(ApplicationRequests):
         return self._request_json(f"/api/v1/subtitle-evidence/{quote(evidence_id, safe='')}")
 
     def get_subtitle_evidence_routes(
-        self, *, language: str | None = None, include_languages: bool = False
+        self, *, language: str | None = None, include_languages: bool = False,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         return self._request_json(
             "/api/v1/subtitle-evidence/routes",
             parameters={
+                **({"session_id": session_id} if session_id is not None else {}),
                 **({"language": language} if language else {}),
                 "include_languages": "true" if include_languages else "false",
             },
@@ -206,12 +208,15 @@ class ApplicationDispatchMethods(ApplicationRequests):
         text: str | None,
         note: str,
         idempotency_key: str,
+        expected_revision: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"action": action, "note": note}
         if candidate_id is not None:
             body["candidate_id"] = candidate_id
         if text is not None:
             body["text"] = text
+        if expected_revision is not None:
+            body["expected_revision"] = expected_revision
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/subtitle-evidence/"
             f"{quote(evidence_id, safe='')}/resolve",

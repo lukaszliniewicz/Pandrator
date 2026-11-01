@@ -2,7 +2,6 @@
   import {
     ChevronRight,
     CircleAlert,
-    Crop,
     LoaderCircle,
     Play,
     Sparkles
@@ -17,6 +16,8 @@
   import WorkflowRunDialogs from './WorkflowRunDialogs.svelte';
   import GenerationStartDialog from './GenerationStartDialog.svelte';
   import GuidedTour from './GuidedTour.svelte';
+  import ProjectActions from './ProjectActions.svelte';
+  import { useSessionContext } from './session-context';
   import SpeechPlanSettings from './SpeechPlanSettings.svelte';
   import StageSettingsDialog from './StageSettingsDialog.svelte';
   import { errorMessage } from './errors';
@@ -36,7 +37,6 @@
   import { type WorkflowStore } from './workflow-store.svelte';
   import type PdfEditor from './PdfEditor.svelte';
   import type AddSourceDialog from './AddSourceDialog.svelte';
-  import type { CastDraftController } from './generation-controls';
   import type { GenerationStartMode } from './generation-start';
   import {
     speechPlanState,
@@ -50,6 +50,8 @@
   import type SubtitleReview from './SubtitleReview.svelte';
   import type TextOptimizationReview from './TextOptimizationReview.svelte';
   import type { StageArtifact } from './stage-artifacts';
+
+  const projectContext = useSessionContext();
 
   let {
     session,
@@ -76,7 +78,6 @@
   const projectInterface = useProjectInterface();
   const simpleMode = $derived(projectInterface?.mode === 'simple');
 
-  let audiobookCastPanel = $state<CastDraftController>();
   let speechMultiVoice = $state(false);
 
   type Stage = WorkflowStage;
@@ -325,6 +326,11 @@
   let disposed = false;
 
   let workflowTour = $state(false);
+  const availablePdf = $derived(
+    snapshot?.sources.find((item) =>
+      item.filename.toLowerCase().endsWith('.pdf')
+    )
+  );
 
   const workflowTourSteps = [
     {
@@ -926,10 +932,12 @@
 
 <div class="min-w-0 max-w-full overflow-x-hidden">
   {#if scope !== 'language'}
-    <header class="mb-6 flex flex-wrap items-end justify-between gap-6">
+    <header
+      class="workflow-toolbar mb-6 flex flex-wrap items-end justify-between gap-6"
+    >
       <div>
         {#if session.workflow_kind !== 'subtitles'}<div
-            class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
+            class="workflow-mode inline-flex h-[2.55rem] items-stretch rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
             aria-label="Workflow execution"
           >
             <button
@@ -945,21 +953,16 @@
             >
           </div>{/if}
       </div>
-      {#if !simpleMode}<div class="flex flex-wrap gap-2">
-          <button
-            onclick={() => (workflowTour = true)}
-            class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
-            ><Sparkles size={17} /> Tour</button
-          >{#if snapshot?.sources.find((item) => item.filename
-              .toLowerCase()
-              .endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find(
-              (item) => item.filename.toLowerCase().endsWith('.pdf')
-            )!}<button
-              onclick={() => openPdfEditor(availablePdf)}
-              class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
-              ><Crop size={18} /> Edit PDF</button
-            >{/if}
-        </div>{/if}
+      <div class="flex flex-wrap gap-2">
+        <ProjectActions
+          onfolders={projectContext?.assignFolders}
+          oncustomize={projectContext?.customize}
+          ontour={() => (workflowTour = true)}
+          oneditpdf={!simpleMode && availablePdf
+            ? () => openPdfEditor(availablePdf)
+            : undefined}
+        />
+      </div>
     </header>
   {/if}
   {#if sourceMessage}<div
@@ -1105,9 +1108,6 @@
       {#snippet voiceSetup()}
         {#if session.workflow_kind === 'audiobook' || (session.workflow_kind === 'voiceover' && session.included_stages_json.includes('generate_audio'))}
           <VoiceSetupCard
-            bind:castPanel={audiobookCastPanel}
-            navigationManaged={workspaceMode === 'review' &&
-              Boolean(speechPlan?.selected_revision_id)}
             sessionId={session.id}
             plan={speechPlan}
             busy={planBusy || inputsLocked}
@@ -1140,7 +1140,6 @@
               {planNotice}
             </p>{/if}
           <SpeechPlanCard
-            externalCastPanel={audiobookCastPanel}
             showCasting={false}
             workflowKind={session.workflow_kind}
             multiVoice={speechMultiVoice}
@@ -1375,9 +1374,24 @@
 />
 
 <style>
+  @media (max-width: 639px) {
+    .workflow-toolbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.75rem;
+    }
+    .workflow-mode {
+      width: 100%;
+    }
+    .workflow-mode .mode-choice {
+      min-width: 0;
+      flex: 1;
+      padding-inline: 0.5rem;
+    }
+  }
   .mode-choice {
     border-radius: 0.65rem;
-    padding: 0.55rem 0.85rem;
+    padding: 0 0.85rem;
     font-size: 0.75rem;
     font-weight: 700;
     color: var(--muted);

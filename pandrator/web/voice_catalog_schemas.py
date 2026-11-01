@@ -264,6 +264,29 @@ def canonical_voice_key(ref: VoiceReference) -> str:
     )
 
 
+class CatalogVoiceChanges(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=4000)
+    voice_category: Literal["male", "female", "androgynous", "unspecified"] | None = None
+    profile: VoiceProfile | None = None
+
+    @model_validator(mode="after")
+    def validate_changes(self) -> CatalogVoiceChanges:
+        if not self.model_fields_set:
+            raise ValueError("At least one metadata field is required.")
+        if self.name is not None and not self.name.strip():
+            raise ValueError("Voice name cannot be blank.")
+        return self
+
+
+class CatalogVoiceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reference: VoiceReference
+    expected_revision: int = Field(ge=0)
+    changes: CatalogVoiceChanges
+
+
 class VoiceCollectionCreate(_StrictModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=2000)

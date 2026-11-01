@@ -16,6 +16,7 @@ from ..runtime_specs import (
     PANDRATOR_SERVICE_START_ORDER,
     PANDRATOR_SERVICE_STOP_ORDER,
     PANDRATOR_WORKER_SERVICE,
+    PANDRATOR_WORKER_SERVICES,
     pandrator_runtime_specs,
 )
 from .application_recovery import (
@@ -52,7 +53,14 @@ class ServiceTasks(ComponentSourceTasks):
         return pandrator_runtime_specs(
             execution.context.layout,
             exposure=exposure,
-            preferences=preferences,
+            preferences={
+                **{
+                    key: value
+                    for key, value in execution.context.environment.items()
+                    if key == "PANDRATOR_WORKER_COUNT"
+                },
+                **preferences,
+            },
         )
 
     @staticmethod
@@ -377,6 +385,9 @@ class ServiceTasks(ComponentSourceTasks):
                     if service_id in journal.target:
                         execution.supervisor.replace_spec(journal.target[service_id])
                 service = execution.supervisor.start(PANDRATOR_WORKER_SERVICE)
+                for service_id in PANDRATOR_WORKER_SERVICES[1:]:
+                    if service_id in selected_ids:
+                        execution.supervisor.start(service_id)
                 mcp_error = None
                 if PANDRATOR_MCP_SERVICE in selected_ids:
                     try:
@@ -472,7 +483,25 @@ class ServiceTasks(ComponentSourceTasks):
                         )
                 for service_id in PANDRATOR_SERVICE_START_ORDER:
                     previous = journal.previous[service_id]
-                    if previous.was_running or previous.desired_running:
+                    if service_id == PANDRATOR_MCP_SERVICE and not previous.was_running:
+                        continue
+                    if (
+                        service_id == PANDRATOR_MCP_SERVICE
+                        and previous.was_running
+                        and not journal.previous[PANDRATOR_WORKER_SERVICE].was_running
+                    ):
+                        execution.context.event_sink.emit(
+                            "application.mcp_start_failed",
+                            {"error": "Pandrator MCP was not restored because its primary worker was stopped.",
+                             "action": "install-rollback"},
+                            component_id="pandrator",
+                            operation_id=execution.operation.id,
+                            service_id=PANDRATOR_MCP_SERVICE,
+                        )
+                        continue
+                    if previous.was_running or (
+                        service_id not in PANDRATOR_WORKER_SERVICES and previous.desired_running
+                    ):
                         service = execution.supervisor.start(service_id)
                         if service.health is None or service.health.state != HealthState.HEALTHY:
                             raise RuntimeError(

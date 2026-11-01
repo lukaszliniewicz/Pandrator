@@ -141,8 +141,8 @@ class PlanOrchestratedWorkflowInput(DelegationExecutionMixin):
     export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media"
     audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed"
     subtitle_mode: Literal["none", "soft", "burned"] = "none"
-    subtitle_text_source: Literal["current", "generation_run"] = "current"
-    subtitle_selection: Literal["source", "translation", "dual"] = "translation"
+    subtitle_text_source: Literal["current", "generation_run", "selected_artifact"] = "current"
+    subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None
     subtitle_format: Literal["srt", "vtt"] = "srt"
     materialize: bool = False
     filename: str | None = Field(default=None, max_length=255)

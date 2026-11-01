@@ -5,8 +5,11 @@ from __future__ import annotations
 from flask import jsonify, request
 from pydantic import ValidationError
 
+from .access.job_policy import require_job_access
+from .access.purge_policy import require_purge_deletion_access, require_purge_inspection_access
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
-from .models import Job, SessionRecord
+from .models import SessionRecord
+from .projects.identity import session_project
 from .route_context import RouteContext
 from .session_purge_job_schemas import PurgeAdmissionRequest, PurgeInspectionRequest
 from .session_purge_jobs import INSPECTION_KIND, PURGE_KIND
@@ -16,6 +19,12 @@ def register_session_purge_job_routes(app, context: RouteContext) -> None:
     services, guards = context.services, context.guards
 
     def admit(session_id: str, *, kind: str, schema, operation: str):
+        authorize = require_purge_inspection_access if kind == INSPECTION_KIND else require_purge_deletion_access
+        try:
+            with services.database.snapshot_session() as session:
+                authorize(session, session_id)
+        except KeyError:
+            return guards.error_response("not_found", "Session not found.", 404)
         raw = request.get_json(silent=True)
         try:
             body = schema.model_validate(raw if raw is not None else {}).model_dump(mode="json")
@@ -27,6 +36,7 @@ def register_session_purge_job_routes(app, context: RouteContext) -> None:
             return guards.error_response("authentication_required", "Authentication is required.", 401)
         try:
             with services.database.immediate_session() as session:
+                authorize(session, session_id)
                 reservation = services.idempotency.begin(
                     session,
                     principal=principal,
@@ -48,6 +58,7 @@ def register_session_purge_job_routes(app, context: RouteContext) -> None:
                         raise ValueError("Only a trashed session can be permanently deleted.")
                     if record.revision != body["expected_revision"]:
                         raise IdempotencyConflict("Session revision changed; refresh the purge inspection.")
+                project = session_project(session, record.id)
                 payload = {"target_session_id": session_id}
                 if kind == PURGE_KIND:
                     payload.update({
@@ -57,6 +68,7 @@ def register_session_purge_job_routes(app, context: RouteContext) -> None:
                 job = services.jobs.enqueue_in_session(
                     session, kind, payload,
                     session_id=None, workflow_run_id=None,
+                    workspace_id=project.workspace_id, project_id=project.id,
                     resource_keys=[f"maintenance:session-purge:{session_id}"],
                     max_attempts=3,
                 )
@@ -89,8 +101,11 @@ def register_session_purge_job_routes(app, context: RouteContext) -> None:
     @guards.require_scope("app.read")
     def get_purge_inspection(job_id: str):
         with services.database.session() as session:
-            job = session.get(Job, job_id)
-            if job is None or job.kind != INSPECTION_KIND:
+            try:
+                job = require_job_access(session, guards.access_context(), job_id)
+            except KeyError:
+                return guards.error_response("not_found", "Purge inspection not found.", 404)
+            if job.kind != INSPECTION_KIND:
                 return guards.error_response("not_found", "Purge inspection not found.", 404)
             if job.status == "succeeded" and isinstance(job.result_json, dict):
                 result = dict(job.result_json)

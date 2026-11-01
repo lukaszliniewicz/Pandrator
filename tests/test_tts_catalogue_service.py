@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.database import Database
-from pandrator.web.models import AppSetting
+from pandrator.web.models import WorkspaceSetting
 from pandrator.web.tts_providers import TtsCatalogueService, TtsProviderRegistry
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -48,14 +49,21 @@ def test_settings_fallback_preserves_revisions_without_writing(
     inputs = (("services.tts", connection, 7), ("defaults.tts", defaults, 11))
     try:
         with database.session() as session:
+            workspace_id = initial_personal_workspace(session).id
             for key, value, revision in inputs:
                 if value is not MISSING:
-                    session.add(AppSetting(key=key, value_json=deepcopy(value), revision=revision))
+                    session.add(WorkspaceSetting(
+                        workspace_id=workspace_id,
+                        key=key,
+                        value_json=deepcopy(value),
+                        revision=revision,
+                    ))
         with database.session() as session:
+            workspace_id = initial_personal_workspace(session).id
             persisted = {
                 key: (deepcopy(row.value_json), row.revision, row.updated_at)
                 for key, _, _ in inputs
-                if (row := session.get(AppSetting, key)) is not None
+                if (row := session.get(WorkspaceSetting, (workspace_id, key))) is not None
             }
         result = catalogue._settings()
         assert result == (
@@ -66,8 +74,9 @@ def test_settings_fallback_preserves_revisions_without_writing(
         )
         # Legacy fallback is a read projection, not a persisted settings migration.
         with database.session() as session:
+            workspace_id = initial_personal_workspace(session).id
             for key, _, _ in inputs:
-                row = session.get(AppSetting, key)
+                row = session.get(WorkspaceSetting, (workspace_id, key))
                 if key not in persisted:
                     assert row is None
                 else:
@@ -134,7 +143,13 @@ def test_azure_preview_uses_model_specific_default_and_catalogue(tmp_path):
     }
     try:
         with database.session() as session:
-            session.add(AppSetting(key="services.tts", value_json=connections, revision=7))
+            workspace_id = initial_personal_workspace(session).id
+            session.add(WorkspaceSetting(
+                workspace_id=workspace_id,
+                key="services.tts",
+                value_json=connections,
+                revision=7,
+            ))
         settings = catalogue.preview_settings(
             "azure", model="MAI-Voice-2-Flash", voice=None, language="en"
         )
@@ -150,7 +165,8 @@ def test_azure_preview_uses_model_specific_default_and_catalogue(tmp_path):
             "en-US-Harper:MAI-Voice-2-Flash",
         ]
         with database.session() as session:
-            persisted = session.get(AppSetting, "services.tts")
+            workspace_id = initial_personal_workspace(session).id
+            persisted = session.get(WorkspaceSetting, (workspace_id, "services.tts"))
             assert persisted is not None
             assert persisted.value_json == connections
             assert persisted.revision == 7

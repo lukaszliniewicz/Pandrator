@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import nullcontext
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from pandrator.logic.language_capabilities import language_decision
 from pandrator.logic.tts_language_preflight import (
@@ -313,7 +315,9 @@ def _export_state(
     return result
 
 
-def enrich_project_payload(services: Any, payload: dict[str, Any]) -> dict[str, Any]:
+def enrich_project_payload(
+    services: Any, payload: dict[str, Any], *, session: Session | None = None,
+) -> dict[str, Any]:
     """Add current readiness without mutating the payload or any stored records."""
     result = deepcopy(payload)
     project = result.get("project")
@@ -325,7 +329,7 @@ def enrich_project_payload(services: Any, payload: dict[str, Any]) -> dict[str, 
     ids = [project["source_session_id"], *(b["session_id"] for b in branches)]
     database = _service(services, "database")
     settings_service = _service(services, "workspace_settings")
-    with database.session() as db:
+    with (nullcontext(session) if session is not None else database.snapshot_session()) as db:
         artifacts = list(
             db.scalars(
                 select(Artifact)

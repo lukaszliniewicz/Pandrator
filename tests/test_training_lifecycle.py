@@ -12,6 +12,7 @@ from contextlib import redirect_stderr
 from datetime import timedelta
 from unittest import mock
 
+import pytest
 from sqlalchemy import event, func, select
 
 from pandrator.web import cli
@@ -56,10 +57,13 @@ class TrainingLifecycleTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
-    def upload(self, name, body):
+    def upload(self, name, body, *, session_id=None):
+        data = {"file": (io.BytesIO(body), name)}
+        if session_id is not None:
+            data["session_id"] = session_id
         response = self.client.post(
             "/api/v1/uploads",
-            data={"file": (io.BytesIO(body), name)},
+            data=data,
             content_type="multipart/form-data",
             headers={"X-CSRF-Token": self.csrf},
         )
@@ -99,7 +103,10 @@ class TrainingLifecycleTests(unittest.TestCase):
 
     def seed(self, status="queued", job_status="queued", *, linked=True, error=None):
         with self.database.session() as session:
+            source = session.get(Artifact, self.source_id)
+            assert source is not None
             training = TrainingRun(
+                workspace_id=source.workspace_id,
                 model_name="narrator",
                 source_artifact_id=self.source_id,
                 source_text_artifact_id=self.text_id,
@@ -122,6 +129,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             training_id = training.id
         return training_id
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_unsafe_names_refuse_start_and_retry_without_any_writes(self):
         for name in ("../escape", "/absolute", "__pycache__/voice", " narrator ", "CON", "a\\b"):
             with self.subTest(name=name):
@@ -150,6 +158,7 @@ class TrainingLifecycleTests(unittest.TestCase):
     def test_create_admission_failure_rolls_back_domain_job_events_and_sources(self):
         self.assert_admission_rollback()
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_retry_admission_failure_rolls_back_new_domain_job_and_events(self):
         training_id = self.seed(status="failed", job_status="failed")
         self.assert_admission_rollback(f"/{training_id}/retry")
@@ -172,6 +181,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             event.remove(self.database.engine, "commit", refuse_training_commit)
         self.assertEqual(before, self.snapshot())
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_cancel_failure_after_native_queue_mutation_rolls_back_all_rows(self):
         training_id = self.seed()
         before = self.snapshot()
@@ -186,6 +196,7 @@ class TrainingLifecycleTests(unittest.TestCase):
                 self.post(f"/{training_id}/cancel")
         self.assertEqual(before, self.snapshot())
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_terminal_cancel_preserves_training_job_and_events_and_returns_actual_status(self):
         for status in ("succeeded", "failed", "canceled", "interrupted"):
             with self.subTest(status=status):
@@ -196,6 +207,7 @@ class TrainingLifecycleTests(unittest.TestCase):
                 self.assertEqual(before, self.snapshot())
                 self.assertEqual(status, response.get_json()["status"])
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_queued_cancel_persists_canceled_training_and_job(self):
         training_id = self.seed()
         response = self.post(f"/{training_id}/cancel")
@@ -206,6 +218,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             self.assertEqual("canceled", session.get(Job, training.job_id).status)
         self.assertEqual("canceled", response.get_json()["status"])
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_running_cancel_retains_owned_lease_and_resource_claims(self):
         training_id = self.seed()
         claimed = self.queue.claim("training-worker", lease_seconds=120)
@@ -231,6 +244,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             self.assertEqual(before["jobs"][0][field], after["jobs"][0][field])
         self.assertEqual(before["resource_claims"], after["resource_claims"])
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_list_projects_terminal_job_without_mutating_training(self):
         training_id = self.seed(job_status="failed", error="Worker failed")
         before = self.snapshot()
@@ -242,6 +256,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             self.assertEqual("Worker failed", item["error_message"])
             self.assertEqual(before, self.snapshot())
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_native_queue_failure_persists_training_failure_without_get(self):
         training_id = self.seed()
         claimed = self.queue.claim("training-worker")
@@ -261,6 +276,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             self.assertEqual("Worker failed", training.error_message)
             self.assertEqual("failed", session.get(Job, training.job_id).status)
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_startup_reconcile_repairs_orphans_and_preserves_terminal_training(self):
         queued_id = self.seed(linked=False)
         cancel_id = self.seed(status="cancel_requested", linked=False)
@@ -305,6 +321,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             json=True,
         )
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_local_cli_start_persists_transcript_and_training_resources(self):
         emitted = []
         with (
@@ -327,6 +344,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             self.assertEqual(["gpu:default", "training:xtts"], job.resource_keys_json)
             self.assertEqual(self.text_id, job.payload_json["source_text_artifact_id"])
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_local_cli_admission_failure_rolls_back_domain_job_and_events(self):
         before = self.snapshot()
         with (
@@ -366,6 +384,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             }
         return training_id
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_retry_rejects_legacy_inline_credentials_before_writes(self):
         training_id = self.seed_legacy_credentials()
         before = self.snapshot()
@@ -373,6 +392,7 @@ class TrainingLifecycleTests(unittest.TestCase):
         self.assertEqual(422, response.status_code)
         self.assertEqual(before, self.snapshot())
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_list_redacts_legacy_inline_credentials_without_changing_storage(self):
         training_id = self.seed_legacy_credentials()
         before = self.snapshot()
@@ -409,6 +429,7 @@ class TrainingLifecycleTests(unittest.TestCase):
         self.assertEqual(401, response.status_code)
         self.assertEqual(before, self.snapshot())
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_list_uses_one_joined_query_and_stable_projected_timestamps(self):
         for _ in range(20):
             self.seed(job_status="failed", error="Before execution failed")
@@ -432,6 +453,7 @@ class TrainingLifecycleTests(unittest.TestCase):
         self.assertTrue(all("join jobs" in sql for sql in queries))
         self.assertEqual(before, self.snapshot())
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_retry_can_repair_terminal_job_without_a_prior_get(self):
         previous_id = self.seed(job_status="failed", error="Before execution failed")
         response = self.post(f"/{previous_id}/retry")
@@ -444,6 +466,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             self.assertIsNone(retry.error_message)
             self.assertIsNone(retry.output_artifact_id)
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_retry_with_deleted_source_refuses_atomically(self):
         training_id = self.seed(status="failed", job_status="failed")
         with self.database.session() as session:
@@ -464,6 +487,7 @@ class TrainingLifecycleTests(unittest.TestCase):
             self.assertEqual(event_ids, list(session.scalars(select(JobEvent.id))))
         self.assertEqual(b"training audio fixture", artifact[1].read_bytes())
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_expired_exhausted_job_repairs_training_without_get(self):
         training_id = self.seed()
         claimed = self.queue.claim("lost-worker")
@@ -473,6 +497,7 @@ class TrainingLifecycleTests(unittest.TestCase):
         with self.database.snapshot_session() as session:
             self.assertEqual("failed", session.get(TrainingRun, training_id).status)
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_owned_cancel_repairs_training_and_rejects_stale_generation(self):
         training_id = self.seed()
         claimed = self.queue.claim("training-worker")
@@ -492,6 +517,7 @@ class TrainingLifecycleTests(unittest.TestCase):
         with self.database.snapshot_session() as session:
             self.assertEqual("canceled", session.get(TrainingRun, training_id).status)
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_completion_requires_domain_outcome_and_preserves_published_success(self):
         for published in (False, True):
             with self.subTest(published=published):
@@ -509,6 +535,7 @@ class TrainingLifecycleTests(unittest.TestCase):
                     if not published:
                         self.assertIn("final training outcome", training.error_message)
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_foreign_job_cannot_drive_or_be_canceled_by_training(self):
         for wrong_kind in (False, True):
             with self.subTest(wrong_kind=wrong_kind):
@@ -526,11 +553,14 @@ class TrainingLifecycleTests(unittest.TestCase):
                 self.assertEqual(before["jobs"], self.snapshot()["jobs"])
                 self.assertEqual(before["job_events"], self.snapshot()["job_events"])
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_failure_removes_training_purge_blocker_without_get(self):
         owner = SessionService(self.database).create("Training source owner")
+        self.source_id = self.upload(
+            "owned-training.wav", b"training audio fixture", session_id=owner.id
+        )
+        self.payload["source_artifact_id"] = self.source_id
         training_id = self.seed()
-        with self.database.session() as session:
-            session.get(Artifact, self.source_id).session_id = owner.id
         SessionService(self.database).trash(owner.id, owner.revision)
         purge = SessionPurgeService(self.database, self.paths)
         self.assertIn("unfinished:training_runs:queued", purge.preview(owner.id)["blockers"])
@@ -548,6 +578,7 @@ class TrainingLifecycleTests(unittest.TestCase):
         with self.database.snapshot_session() as session:
             self.assertEqual("failed", session.get(TrainingRun, training_id).status)
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_http_missing_inputs_and_active_retry_preserve_rows(self):
         training_id = self.seed()
         cases = [
@@ -566,6 +597,7 @@ class TrainingLifecycleTests(unittest.TestCase):
                 self.assertEqual(code, response.get_json()["error"]["code"])
                 self.assertEqual(before, self.snapshot())
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_local_cli_list_projects_status_and_preserves_output_fields(self):
         training_id = self.seed(job_status="failed", error="Before execution failed")
         before = self.snapshot()
@@ -594,6 +626,7 @@ class TrainingLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(before, self.snapshot())
 
+    @pytest.mark.usefixtures("host_execution_actor")
     def test_local_cli_cancel_rollback_disposal_and_success(self):
         training_id = self.seed()
         args = Namespace(training_id=training_id, json=True)

@@ -6,11 +6,11 @@ from flask import jsonify, request
 
 from .dispatch_preview import get_dispatch_preview
 from .domain_blueprints import DomainBlueprints
+from .evidence_catalogue import evidence_choices
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .route_context import RouteContext
 from .schemas import ReviewSplitInspection, SpeechOptimizationConfiguration, WorkflowInputSelection
 from .settings_policy import RevisionConflict
-from .subtitle_evidence import evidence_route_catalog
 from .workflow_inputs import (
     configure_speech_optimization,
     get_workflow_inputs,
@@ -125,11 +125,17 @@ def register_workflow_improvements_routes(app: DomainBlueprints, context: RouteC
         language = str(request.args.get("language") or "").strip() or None
         if language and len(language) > 40:
             return error_response("validation_error", "Language must be at most 40 characters.", 422)
-        routes = evidence_route_catalog(None, language, database=services.database, paths=services.paths)
-        if request.args.get("include_languages") != "true":
-            routes = [{key: value for key, value in route.items() if key != "supported_languages"}
-                      for route in routes]
-        return jsonify({"schema_version": "1", "language": language, "routes": routes})
+        session_id = request.args.get("session_id")
+        if session_id is not None and not 1 <= len(session_id) <= 80:
+            return error_response("validation_error", "Session ID must be between 1 and 80 characters.", 422)
+        try:
+            return jsonify(evidence_choices(
+                services.database, services.paths, context.guards.access_context(),
+                session_id=session_id, language=language,
+                include_languages=request.args.get("include_languages") == "true",
+            ))
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
 
     @app.post("/api/v1/sessions/<session_id>/subtitles/split-boundaries")
     @require_scope("app.read")

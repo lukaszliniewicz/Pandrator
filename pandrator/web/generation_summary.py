@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
 from .database import Database
 from .models import (
     Artifact,
@@ -182,6 +184,7 @@ def _generation_run_usage(db: Session, session_id: str, generation_run_id: str) 
 def get_generation_summary(database: Database, session_id: str) -> dict[str, Any]:
     """Read one snapshot without hydrating plans, histories, takes or artifacts."""
     with database.snapshot_session() as db:
+        require_current_session_access(db, session_id, ProjectAction.READ)
         source_artifact_id = GenerationPlanRevision.settings_json[
             "_source_artifact_id"
         ].as_string()

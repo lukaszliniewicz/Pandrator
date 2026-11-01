@@ -9,6 +9,9 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import load_only
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .access.generation_resource_policy import require_generation_content_write
 from .models import (
     Artifact,
     AudioTake,
@@ -28,7 +31,7 @@ EXTRA_SEGMENT_FIELDS = {"take_count", "active_take_id", "has_usable_take"}
 PROJECTABLE_SEGMENT_FIELDS = set(COMPACT_SEGMENT_FIELDS) | {
     "node_kind", "paragraph_break_after", "speaker", "speech_block_provenance",
     "alignment_group", "optimized_text", "speech_plan", "optimization_reviewed",
-    "optimization_model", "voice_id", "voice", "language", "silence_after_ms", "marked", "takes",
+    "optimization_model", "voice_id", "voice", "retained_voice", "language", "silence_after_ms", "marked", "takes",
     "search_matches", "passage_structure", "assembly_silence_after_ms",
     "take_history_loaded",
     "effective_take",
@@ -100,6 +103,7 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
 
         snapshot, _ = WorkspaceSettingsService(database).resolve(session_id)
     with database.session() as session:
+        require_current_session_access(session, session_id, ProjectAction.READ)
         if session.get(SessionRecord, session_id) is None:
             raise KeyError(session_id)
         plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
@@ -348,6 +352,7 @@ def revise_topology_batch_in_session(service, session, session_id: str, expected
     followed through lineage; labels such as 'opening.left' resolve prior batch
     results without another round trip. Ambiguous descendants are never guessed.
     """
+    require_generation_content_write(session, "session", session_id)
     from .settings_policy import RevisionConflict
 
     if not operations or len(operations) > 50:

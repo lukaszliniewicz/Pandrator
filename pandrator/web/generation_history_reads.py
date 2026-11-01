@@ -11,6 +11,7 @@ from typing import Any, TypedDict, overload
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from .access.current_session_policy import require_current_session_access
 from .database import Database
 from .generation_run_history import (
     EARLY_REPAIR_MARKER_KEY,
@@ -838,6 +839,7 @@ class GenerationHistoryReader:
     ) -> list[dict[str, Any]]:
         if limit is not None:
             with self.database.snapshot_session() as session:
+                require_current_session_access(session, session_id)
                 context, runs = self._selected_run_context(
                     session, session_id, include_repairs=include_repairs, limit=limit
                 )
@@ -845,6 +847,7 @@ class GenerationHistoryReader:
                     return []
                 return [self._run_payload(session, run, _context=context) for run in runs]
         with self.database.session() as session:
+            require_current_session_access(session, session_id)
             context = self._run_history_context(session, session_id)
             runs = context["runs"]
             if not include_repairs:
@@ -856,6 +859,7 @@ class GenerationHistoryReader:
 
     def latest_run(self, session_id: str) -> dict[str, Any] | None:
         with self.database.snapshot_session() as session:
+            require_current_session_access(session, session_id)
             context, runs = self._selected_run_context(session, session_id, latest=True)
             if context is None:
                 return None

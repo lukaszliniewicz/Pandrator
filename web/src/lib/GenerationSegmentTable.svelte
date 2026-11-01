@@ -49,6 +49,7 @@
     loading,
     speechOptionsLoading,
     selectedTtsServiceName,
+    selectedTtsAdapter,
     selectedTtsModel,
     inheritedVoice,
     inheritedLanguage,
@@ -115,6 +116,7 @@
     loading: boolean;
     speechOptionsLoading: boolean;
     selectedTtsServiceName?: string | null;
+    selectedTtsAdapter?: string | null;
     selectedTtsModel: string;
     inheritedVoice: string;
     inheritedLanguage: string;
@@ -1197,8 +1199,8 @@
                       <WandSparkles size={12} />
                       <span class="truncate"
                         >{item.speech_plan?.version
-                          ? 'Review speech plan'
-                          : 'Compare speech optimization'}</span
+                          ? 'Review speech delivery'
+                          : 'Compare speech delivery'}</span
                       >
                       <span
                         class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase"
@@ -1242,14 +1244,25 @@
                       <option value="subtitle_cue">Subtitle cue</option>
                     </select></label
                   >
-                  {#if multiVoice}<label
+                  {#if multiVoice}
+                    {@const retainedVoice =
+                      item.retained_voice?.adapter === selectedTtsAdapter
+                        ? item.retained_voice
+                        : undefined}
+                    <label
                       >Voice
                       <select
-                        value={item.voice ?? ''}
-                        onchange={(event) =>
+                        value={retainedVoice
+                          ? `saved:${item.id}`
+                          : (item.voice ?? '')}
+                        onchange={(event) => {
+                          const value = event.currentTarget.value;
+                          if (value === `saved:${item.id}`) return;
                           onpatch(item, {
-                            voice: event.currentTarget.value || null
-                          })}
+                            voice: value || null,
+                            voice_id: null
+                          });
+                        }}
                         aria-label={`Voice for segment ${item.ordinal + 1}`}
                         title={`${selectedTtsServiceName ?? 'TTS service'} · ${selectedTtsModel || 'default model'}`}
                         disabled={speechOptionsLoading}
@@ -1260,6 +1273,14 @@
                             ? ` · ${onvoices(item).find((voice) => voice.id.toLowerCase() === inheritedVoice.toLowerCase())?.name ?? inheritedVoice}`
                             : ' · service default'}
                         </option>
+                        {#if retainedVoice}
+                          <option value={`saved:${item.id}`}>
+                            Saved · {retainedVoice.display_name}{selectedTtsModel &&
+                            retainedVoice.model !== selectedTtsModel
+                              ? ' · choose again for this model'
+                              : ''}
+                          </option>
+                        {/if}
                         {#each onvoices(item) as voice}
                           <option value={voice.id}>{onvoicelabel(voice)}</option
                           >

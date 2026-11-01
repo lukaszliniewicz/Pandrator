@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable, Mapping
 import requests
 
 from .native_speech_http import JsonValue, SpeechCandidatePostOptions
+from .tts_io_policy import check_tts_io, current_tts_io_policy
 
 
 def _is_voxcpm_prompt_pairing_error(response: requests.Response) -> bool:
@@ -42,7 +43,12 @@ def post_voxcpm_speech(
     """Keep the hifi retry local to each candidate and retain the original payload."""
     last_response = None
     for url in urls:
-        response = requests.post(url, **request_options(payload))
+        post = requests.post
+        options: SpeechCandidatePostOptions = request_options(payload)
+        if current_tts_io_policy() is not None:
+            options = {**options, "allow_redirects": False}
+        check_tts_io()
+        response = post(url, **options)
 
         if (
             prompt_pairing_error(response)
@@ -54,7 +60,12 @@ def post_voxcpm_speech(
                 "Retrying VoxCPM request in hifi mode after prompt pairing error for voice '%s'.",
                 hifi_payload.get("voice", ""),
             )
-            response = requests.post(url, **request_options(hifi_payload))
+            post = requests.post
+            options = request_options(hifi_payload)
+            if current_tts_io_policy() is not None:
+                options = {**options, "allow_redirects": False}
+            check_tts_io()
+            response = post(url, **options)
 
         if should_try_next(response.status_code):
             last_response = response

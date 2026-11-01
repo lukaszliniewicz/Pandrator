@@ -33,6 +33,8 @@ from pandrator.web.models import (
     SoundVariant,
     utcnow,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.settings_policy import RevisionConflict
 from pandrator.web.sound_project_commands import write_version
 from pandrator.web.sound_project_models import ProjectSoundCue, ProjectSoundPlan
@@ -76,8 +78,7 @@ def setup(tmp_path, monkeypatch):
     )
     with database.immediate_session() as session:
         record = SessionRecord(name="Book", workflow_kind="audiobook")
-        session.add(record)
-        session.flush()
+        create_session_project(session, record)
         plan = GenerationPlan(session_id=record.id)
         session.add(plan)
         session.flush()
@@ -96,8 +97,11 @@ def setup(tmp_path, monkeypatch):
         session.flush()
         source_path = paths.root / "take.wav"
         _wav(source_path)
+        source_ownership = resolve_artifact_ownership(session, session_id=record.id)
         source = Artifact(
             session_id=record.id,
+            workspace_id=source_ownership.workspace_id,
+            project_id=source_ownership.project_id,
             kind="audio",
             role="generation.take",
             relative_path="take.wav",
@@ -106,7 +110,10 @@ def setup(tmp_path, monkeypatch):
         )
         sound_path = paths.root / "sound.wav"
         _wav(sound_path)
+        variant_ownership = resolve_artifact_ownership(session)
         variant_artifact = Artifact(
+            workspace_id=variant_ownership.workspace_id,
+            project_id=variant_ownership.project_id,
             kind="audio",
             role="sound.original",
             relative_path="sound.wav",
@@ -120,7 +127,10 @@ def setup(tmp_path, monkeypatch):
             status="completed",
             is_active=True,
         )
-        variant = SoundVariant(artifact_id=variant_artifact.id, state="ready", duration_seconds=1.0)
+        variant = SoundVariant(
+            workspace_id=variant_artifact.workspace_id,
+            artifact_id=variant_artifact.id, state="ready", duration_seconds=1.0
+        )
         session.add_all([take, variant])
         session.flush()
         ids = record.id, segment.id, variant.id, take.id, source.id
@@ -582,8 +592,11 @@ def test_replaced_active_take_reselects_ready_cue_and_pins_new_artifact(setup, m
         (service.paths.root / "replacement-take.wav").write_bytes(
             (service.paths.root / old_artifact.relative_path).read_bytes()
         )
+        replacement_ownership = resolve_artifact_ownership(session, session_id=ids[0])
         replacement = Artifact(
             session_id=ids[0], kind="audio", role="generation.take",
+            workspace_id=replacement_ownership.workspace_id,
+            project_id=replacement_ownership.project_id,
             relative_path="replacement-take.wav",
             content_hash=old_artifact.content_hash,
             metadata_json=dict(old_artifact.metadata_json),

@@ -81,6 +81,8 @@ export class StageSettingsDraft {
   audiobookDialogueFlow = $state<'auto' | 'off'>('auto');
   maxSentenceLength = $state(200);
   audiobookChunking = $state<'model' | 'manual'>('model');
+  audiobookSentencePacking = $state<'auto' | 'sentences' | 'clauses'>('auto');
+  audiobookSentencePackingThreshold = $state<number | undefined>(300);
   nemoNormalization = $state(true);
   normalizeAllCaps = $state(true);
   removeDiacritics = $state(false);

@@ -46,6 +46,7 @@ from pathlib import Path
 from . import audio_cpp_assets as assets
 from .audio_cpp_execution import native_audio_cpp_guard
 from .cancellable_process import ProcessCancelled, run_cancellable
+from .media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +226,7 @@ def _normalize_wav(
     command = [
         ffmpeg,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(source),
         "-ac",

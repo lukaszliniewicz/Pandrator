@@ -15,6 +15,7 @@ from sqlalchemy import select
 from .generation_plan_store import DefaultSilenceProtocol
 from .models import Artifact, GenerationPlan, GenerationSegment, SessionRecord, new_id, utcnow
 from .tts_provider_contracts import synthesize_with_optional_timing
+from .voice_execution_identity import voice_execution_workspace
 from .workflow_generation_automatic_output import (
     AutomaticAudioOutput,
     AutomaticTakePublication,
@@ -28,6 +29,7 @@ from .workflow_generation_protocols import (
     HydrateTtsSettingsProtocol,
     NegotiatedTtsBatchProtocol,
     OptimizeGenerationTextsProtocol,
+    PrepareAudioCppVoiceReferenceProtocol,
     Progress,
     RecordTtsUsageProtocol,
     StreamingTtsBatchProtocol,
@@ -58,7 +60,7 @@ class AutomaticGenerationContext:
     _optimize_generation_texts: OptimizeGenerationTextsProtocol
     _tts_urls: Callable[[dict[str, Any]], dict[str, str]]
     _negotiated_tts_batch_size: NegotiatedTtsBatchProtocol
-    prepare_audio_cpp_voice_reference: Callable[[dict[str, Any]], dict[str, Any]]
+    prepare_audio_cpp_voice_reference: PrepareAudioCppVoiceReferenceProtocol
     _ensure_qwen_cloned_voice: EnsureQwenVoiceProtocol
     _start_streaming_tts_batch: StreamingTtsBatchProtocol
     _verification_metadata: Callable[[AudioSegment, str, dict[str, Any]], dict[str, Any] | None]
@@ -85,11 +87,16 @@ def generate_audio(
 ) -> dict[str, Any]:
     from .media_process import MediaProcessCancelled
 
+    with context.database.session() as session:
+        workspace_id = voice_execution_workspace(session, {}, session_id=session_id).id
+
     settings = context._hydrate_tts_settings(
         context.database,
         context.paths,
         settings,
         manager_bridge=context.manager_bridge,
+        session_id=session_id,
+        workspace_id=workspace_id,
     )
 
     if source_path.suffix.lower() != ".json":
@@ -245,12 +252,13 @@ def generate_audio(
             )
             if not casting_enabled:
                 segment_tts_settings = context.prepare_audio_cpp_voice_reference(
-                    segment_tts_settings
+                    segment_tts_settings, workspace_id=workspace_id
                 )
                 context._ensure_qwen_cloned_voice(
                     segment_tts_settings,
                     base_url=tts_urls["kobold_qwen_base_url"],
                     verified=verified_qwen_voices,
+                    workspace_id=workspace_id,
                     cancel_event=cancel_event,
                 )
             batch_contexts[generation_segment_id] = {
@@ -315,12 +323,13 @@ def generate_audio(
             )
             if not casting_enabled:
                 segment_tts_settings = context.prepare_audio_cpp_voice_reference(
-                    segment_tts_settings
+                    segment_tts_settings, workspace_id=workspace_id
                 )
                 context._ensure_qwen_cloned_voice(
                     segment_tts_settings,
                     base_url=tts_urls["kobold_qwen_base_url"],
                     verified=verified_qwen_voices,
+                    workspace_id=workspace_id,
                     cancel_event=cancel_event,
                 )
 
@@ -384,12 +393,13 @@ def generate_audio(
                             "Audio generation was canceled."
                         )
                     prepared = context.prepare_audio_cpp_voice_reference(
-                        part_settings
+                        part_settings, workspace_id=workspace_id
                     )
                     context._ensure_qwen_cloned_voice(
                         prepared,
                         base_url=tts_urls["kobold_qwen_base_url"],
                         verified=verified_qwen_voices,
+                        workspace_id=workspace_id,
                         cancel_event=cancel_event,
                     )
                     audio_part = synthesize_request(

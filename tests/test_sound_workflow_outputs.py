@@ -20,6 +20,7 @@ from pandrator.web.models import (
     SessionRecord,
     SoundVariant,
 )
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.sound_project_models import ProjectSoundCue, ProjectSoundPlan
 from pandrator.web.sound_workflow_outputs import (
     finish_sound_assembly,
@@ -54,8 +55,7 @@ def _write_wav(path: Path, *, frames: int = 800, rate: int = 8000, value: int = 
 def _session(case, workflow_kind: str, name: str) -> SessionRecord:
     with case["database"].immediate_session() as session:
         record = SessionRecord(name=name, workflow_kind=workflow_kind)
-        session.add(record)
-        session.flush()
+        create_session_project(session, record)
         return record
 
 
@@ -90,6 +90,7 @@ def _variant(case, name: str = "workflow-effect.wav") -> str:
     artifact = _artifact(case, record, name, role="sound.original", global_artifact=True)
     with case["database"].immediate_session() as session:
         variant = SoundVariant(
+            workspace_id=artifact.workspace_id,
             artifact_id=artifact.id,
             state="ready",
             sample_rate=8000,

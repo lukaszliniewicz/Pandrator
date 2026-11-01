@@ -35,7 +35,13 @@ from .models import (
     new_id,
 )
 from .sound_book_timing import rebase_book_words, take_base_bounds
-from .workflow_output_context import OutputWorkflowContext
+from .workflow_output_context import (
+    OutputWorkflowContext,
+    check_output_io,
+    output_io_options,
+    publish_output,
+    require_output_access,
+)
 
 CACHE_VERSION = 1
 
@@ -85,7 +91,10 @@ def _integer(value: Any, name: str, *, positive: bool = False) -> int:
 
 
 def _verified_path(context: OutputWorkflowContext, artifact: Artifact) -> Path:
-    path = context.paths.managed_path(artifact.relative_path)
+    current, path = context._resolve_input(artifact.id)
+    if (current.content_hash, current.relative_path) != (artifact.content_hash, artifact.relative_path):
+        raise ValueError("The selected book audio changed.")
+    check_output_io(context)
     if not artifact.content_hash or sha256_file(path) != artifact.content_hash:
         raise ValueError(f"Book audio content hash changed: {artifact.id}.")
     return path
@@ -117,6 +126,7 @@ def _load(
         raise ValueError("Book assembly take IDs are missing or duplicated.")
     artifact_ids = [str(row.get("artifact_id") or "") for row in manifest]
     with context.database.session() as session:
+        require_output_access(context, session)
         takes = {
             take.id: take
             for take in session.scalars(
@@ -133,7 +143,10 @@ def _load(
         artifacts = {
             item.id: item
             for item in session.scalars(
-                select(Artifact).where(Artifact.id.in_([audio.id, *artifact_ids]))
+                select(Artifact).where(
+                    Artifact.id.in_([audio.id, *artifact_ids]),
+                    Artifact.session_id == inputs.session_id,
+                )
             ).all()
         }
         caches = list(
@@ -160,6 +173,7 @@ def _load(
     ):
         raise ValueError("Book assembly changed after selection.")
     audio_path = _verified_path(context, selected_audio)
+    check_output_io(context)
     if _pcm(audio_path) != (frames, rate):
         raise ValueError("Book assembly PCM does not match its frozen frame timeline.")
     frozen = []
@@ -337,9 +351,10 @@ def _write_json(
     registered = False
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        check_output_io(context)
         path.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False), encoding="utf-8")
         _cancel(cancel_event)
-        artifact = context.artifacts.register(
+        artifact = publish_output(context,
             path,
             kind="json",
             role=role,
@@ -383,10 +398,15 @@ def _timed(
     for cached in cache_inventory:
         if (cached.metadata_json or {}).get("cache_key") != key:
             continue
+        _current, path = context._resolve_input(cached.id)
+        check_output_io(context)
         try:
-            path = context.paths.managed_path(cached.relative_path)
             if not cached.content_hash or sha256_file(path) != cached.content_hash:
                 continue
+        except (OSError, ValueError):
+            continue
+        check_output_io(context)
+        try:
             aligned = _validated(
                 json.loads(path.read_text(encoding="utf-8")), take.spoken, take.duration_ms
             )
@@ -399,8 +419,9 @@ def _timed(
         aligned = native[0]
         counters["native"] += 1
     else:
+        check_output_io(context)
         aligned = _validated(
-            align_book_text(take.path, take.spoken, settings, work_dir, cancel_event).as_dict(),
+            align_book_text(take.path, take.spoken, settings, work_dir, cancel_event, **output_io_options(context)).as_dict(),
             take.spoken,
             take.duration_ms,
         )
@@ -625,12 +646,14 @@ def export_book(
         subtitle_dir = output_root / "subtitles"
         subtitle_dir.mkdir(parents=True, exist_ok=True)
         scratch_subtitle = work_dir / f"book.{subtitle_format}"
+        check_output_io(context)
         write_book_subtitles(cues, scratch_subtitle, subtitle_format)
         rendered_video = work_dir / "book.mp4"
         if mode == "video_book":
             from pandrator.logic.book_video import render_book_video
 
             assert layout is not None
+            check_output_io(context)
             render_book_video(
                 audio_path,
                 cues,
@@ -642,6 +665,7 @@ def export_book(
                 duration_ms=end_ms - start_ms,
                 progress=progress,
                 cancel_event=cancel_event,
+                **output_io_options(context),
             )
         publish_options = {
             "session_id": inputs.session_id,

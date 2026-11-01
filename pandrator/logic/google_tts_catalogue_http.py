@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import requests
@@ -96,8 +96,11 @@ def _request_page(
     headers: dict[str, str],
     params: dict[str, str | int],
     request_session: requests.Session | None,
+    before_io: Callable[[], None] | None = None,
 ) -> object:
     getter = request_session.get if request_session is not None else requests.get
+    if before_io is not None:
+        before_io()
     try:
         response = getter(
             endpoint,
@@ -127,6 +130,7 @@ def get_google_voice_catalog(
     headers: dict[str, str],
     vertex: bool = False,
     request_session: requests.Session | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> list[dict[str, object]]:
     """Fetch every page and return only safe, normalized voice metadata."""
     page_size_key = "pageSize" if vertex else "page_size"
@@ -150,6 +154,7 @@ def get_google_voice_catalog(
             headers=headers,
             params=params,
             request_session=request_session,
+            before_io=before_io,
         )
         if not isinstance(payload, dict):
             raise RuntimeError(_RESPONSE_ERROR)
@@ -258,6 +263,7 @@ def create_google_voice(
     prompt: str,
     language_code: str = "",
     request_session: requests.Session | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     """Create one stored prompted Google voice and return safe response fields."""
     if model not in _VOICE_DESIGN_MODELS:
@@ -286,6 +292,8 @@ def create_google_voice(
     session = requests.Session() if owns_session else request_session
     assert session is not None
     try:
+        if before_io is not None:
+            before_io()
         try:
             response = session.post(
                 endpoint,

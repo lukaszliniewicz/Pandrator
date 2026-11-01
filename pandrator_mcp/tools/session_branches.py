@@ -230,7 +230,7 @@ def register_session_branch_tools(
             "Preview a translation-project operation",
             "Create a job-free preview for selected language branches. Review each child's "
             "captured inputs, readiness and required confirmations before execution.",
-            read_only,
+            write_action,
         ),
         (
             GetTranslationProjectOperationInput,
@@ -266,7 +266,7 @@ def register_session_branch_tools(
             "Preview retries for a translation-project operation",
             "Build a fresh guarded preview for retryable children without executing them. "
             "Completed children remain retained and active or partial passive work requires manual resume.",
-            read_only,
+            write_action,
         ),
         (
             GetTranslationProjectExportManifestInput,

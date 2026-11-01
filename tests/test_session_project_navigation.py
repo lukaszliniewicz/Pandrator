@@ -11,6 +11,8 @@ from pandrator.web.models import (
     TranslationProject,
     TranslationProjectBranch,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.session_routes import session_project_memberships
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -33,20 +35,22 @@ def navigation_case(tmp_path, monkeypatch):
     services = app.extensions["pandrator"]
     database = services["database"]
     with database.session() as session:
-        session.add_all(
-            [
-                SessionRecord(id="root", name="Root", source_language="en"),
-                SessionRecord(
-                    id="branch", name="Japanese", source_language="en", target_language="ja"
-                ),
-                SessionRecord(id="other", name="Independent"),
-            ]
+        root_record = SessionRecord(id="root", name="Root", source_language="en")
+        create_session_project(session, root_record)
+        branch_record = SessionRecord(
+            id="branch", name="Japanese", source_language="en", target_language="ja"
         )
+        create_session_project(session, branch_record, project_id=root_record.project_id)
+        other_record = SessionRecord(id="other", name="Independent")
+        create_session_project(session, other_record)
         session.flush()
+        artifact_ownership = resolve_artifact_ownership(session, session_id="root")
         session.add(
             Artifact(
                 id="checkpoint",
                 session_id="root",
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="txt",
                 role="correction",
                 relative_path="root/checkpoint.txt",
@@ -58,6 +62,7 @@ def navigation_case(tmp_path, monkeypatch):
                 id="project",
                 name="Book languages",
                 source_session_id="root",
+                project_root_id=root_record.project_id,
                 checkpoint_artifact_id="checkpoint",
                 source_content_hash="source",
                 source_language="en",

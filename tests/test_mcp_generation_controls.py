@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 
 from pandrator_mcp.catalog import ACTION_CATALOG, RiskClass
 from pandrator_mcp.clients.application import ApplicationClient
+from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.schemas.generation_controls import (
     CastSettings,
     CharacterEntry,
@@ -20,6 +22,10 @@ from pandrator_mcp.tools.generation_controls import (
     generation_controls_action,
     register_generation_controls_tools,
 )
+
+
+def _runtime(application) -> McpRuntime:
+    return cast(McpRuntime, SimpleNamespace(require_application=lambda: application))
 
 
 def _response() -> dict:
@@ -44,17 +50,18 @@ def test_generation_controls_models_are_strict_and_preserve_cast_clear_semantics
     assert character.display_name == "Alice"
     assert character.aliases == ["A"]
     assert character.model_dump()["delivery"] == {
-        "instruction": "", "emotion": "", "pace": "", "cadence": "", "emphasis": "",
+        "instruction": "", "emotion": "", "emotion_intensity": None,
+        "pace": "", "cadence": "", "emphasis": "",
     }
-    directed = CharacterEntry(display_name="Alice", delivery={"instruction": "  warmly  ", "pace": "brisk"})
+    directed = CharacterEntry.model_validate({"display_name": "Alice", "delivery": {"instruction": "  warmly  ", "pace": "brisk"}})
     assert directed.model_dump()["delivery"]["instruction"] == "warmly"
     with pytest.raises(ValidationError):
-        CharacterEntry(display_name="Alice", delivery={"instruction": "[laughs]"})
+        CharacterEntry.model_validate({"display_name": "Alice", "delivery": {"instruction": "[laughs]"}})
     with pytest.raises(ValidationError):
-        CharacterEntry(display_name="Alice", delivery={"emotion": "x" * 81})
+        CharacterEntry.model_validate({"display_name": "Alice", "delivery": {"emotion": "x" * 81}})
 
     with pytest.raises(ValidationError):
-        CharacterEntry(display_name="Alice", unexpected=True)
+        CharacterEntry.model_validate({"display_name": "Alice", "unexpected": True})
     with pytest.raises(ValidationError):
         VoiceBinding()
     with pytest.raises(ValidationError):
@@ -107,7 +114,7 @@ def test_client_routes_only_generation_controls_and_preserves_nested_nulls():
 def test_tool_returns_updated_controls_without_a_redundant_read():
     application = Mock()
     application.generation_controls_request.return_value = _response()
-    runtime = SimpleNamespace(require_application=lambda: application)
+    runtime = _runtime(application)
     arguments = UpdateGenerationControlsInput(
         session_id="session-1",
         expected_revision=3,
@@ -133,7 +140,7 @@ def test_registered_signatures_are_flat_and_match_input_models():
             return store
 
     register_generation_controls_tools(
-        Server(), None, lambda *args: args, read_only="read", write_action="write"
+        Server(), _runtime(Mock()), lambda *args: args, read_only="read", write_action="write"
     )
     assert set(recorded) == {
         "pandrator_get_generation_controls",
@@ -159,7 +166,7 @@ def test_tools_are_exposed_over_mcp_2_2_in_memory_transport():
     async def exercise():
         application = Mock()
         application.generation_controls_request.return_value = _response()
-        runtime = SimpleNamespace(require_application=lambda: application)
+        runtime = _runtime(application)
         async with Client(build_server(runtime), mode="auto", raise_exceptions=True) as client:
             tools = {tool.name: tool for tool in (await client.list_tools()).tools}
             assert tools["pandrator_get_generation_controls"].title == (

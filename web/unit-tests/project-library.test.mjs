@@ -12,6 +12,7 @@ const bundle = await build({
 });
 const {
   libraryProjects,
+  folderMembershipSourceId,
   versionLanguageLabel,
   projectActivity,
   projectActivityStatus,
@@ -74,6 +75,17 @@ test('language activity reflects a running job instead of an idle session', () =
   ];
   assert.equal(projectActivityStatus(item, jobs), 'running');
   assert.equal(projectActivity(item, jobs), 'Recording passage 3 of 8');
+  const waiting = {
+    ...jobs[1],
+    status: 'queued',
+    error_code: 'storage_pressure'
+  };
+  assert.equal(projectActivityStatus(item, [waiting]), 'queued');
+  assert.equal(projectActivity(item, [waiting]), 'Waiting for storage');
+  assert.equal(
+    projectActivity(item, [{ ...waiting, status: 'running' }]),
+    'Recording passage 3 of 8'
+  );
   assert.equal(projectActivity(item, []), 'idle');
 });
 
@@ -91,4 +103,53 @@ test('folder relationships use identities even when names contain path separator
   ];
   assert.equal(folderPath(cycle[0], cycle), 'B / A');
   assert.deepEqual([...folderDescendants('a', cycle)], ['a', 'b']);
+});
+
+test('generic project identity and source navigation remain separate', () => {
+  const membership = {
+    id: 'translation-aggregate',
+    source_session_id: 'source',
+    name: 'Shared course'
+  };
+  const groups = libraryProjects([
+    {
+      id: 'branch',
+      project_id: 'generic-project',
+      name: 'German',
+      source_language: 'en',
+      target_language: 'de',
+      translation_project: { ...membership, role: 'branch' }
+    },
+    {
+      id: 'source',
+      project_id: 'generic-project',
+      name: 'Source',
+      source_language: 'en',
+      translation_project: { ...membership, role: 'source' }
+    },
+    {
+      id: 'other',
+      project_id: 'other-project',
+      name: 'Shared course',
+      source_language: 'en'
+    }
+  ]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].projectId, 'generic-project');
+  assert.equal(groups[0].id, 'source');
+  assert.equal(groups[0].sourceId, 'source');
+  assert.deepEqual(
+    groups[0].versions.map((item) => item.id),
+    ['source', 'branch']
+  );
+  assert.equal(groups[1].projectId, 'other-project');
+  assert.equal(
+    folderMembershipSourceId({
+      project_id: 'legacy',
+      source_session_id: 'source',
+      project_root_id: 'root'
+    }),
+    'source'
+  );
+  assert.equal(folderMembershipSourceId({ project_id: 'legacy' }), 'legacy');
 });

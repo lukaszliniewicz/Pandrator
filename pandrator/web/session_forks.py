@@ -27,6 +27,7 @@ from .models import (
     MediaEditPlan,
     MediaEditPlanRevision,
     OutcomePlan,
+    Project,
     Segment,
     SegmentLineage,
     SessionRecord,
@@ -37,6 +38,8 @@ from .models import (
     TimedWord,
     new_id,
 )
+from .projects.artifact_identity import resolve_artifact_ownership
+from .projects.source_identity import validate_source_attachment
 from .sessions import RevisionConflict, SessionService
 
 CHECKPOINT_STAGES = ("transcription", "correction", "translation")
@@ -67,14 +70,22 @@ class SessionForkService:
         self.artifacts = artifacts
 
     @staticmethod
-    def _unique_name(session: Session, requested: str, source: SessionRecord, stage: str) -> str:
+    def _unique_name(
+        session: Session, requested: str, source: SessionRecord, stage: str,
+        *, workspace_id: str,
+    ) -> str:
         base = str(requested or "").strip() or f"{source.name} — {stage.title()} fork"
         if len(base) > 255:
             raise ValueError("A fork name cannot be longer than 255 characters.")
         active_names = {
             str(name or "").strip().casefold()
             for name in session.scalars(
-                select(SessionRecord.name).where(SessionRecord.trashed_at.is_(None))
+                select(SessionRecord.name)
+                .join(Project, Project.id == SessionRecord.project_id)
+                .where(
+                    SessionRecord.trashed_at.is_(None),
+                    Project.workspace_id == workspace_id,
+                )
             ).all()
         }
         if base.casefold() not in active_names:
@@ -349,6 +360,7 @@ class SessionForkService:
         target_language: str | None = None,
         expected_revision: int | None = None,
         allow_source_checkpoint: bool = False,
+        project_id: str | None = None,
     ) -> SessionForkResult:
         if interface_mode is not None and interface_mode not in (
             "simple",
@@ -373,6 +385,8 @@ class SessionForkService:
                 f"Session revision conflict: expected {expected_revision}, current is {source.revision}."
             )
 
+        source_ownership = resolve_artifact_ownership(session, session_id=source_session_id)
+
         active_edit, render_sources, checkpoints = self.validate_media_checkpoint(
             session, source, checkpoint, carry_media_assets=carry_media_assets,
         )
@@ -391,7 +405,10 @@ class SessionForkService:
         try:
             destination_dir.mkdir(parents=True, exist_ok=False)
             record = SessionService(self.database).create(
-                self._unique_name(session, name, source, checkpoint.role),
+                self._unique_name(
+                    session, name, source, checkpoint.role,
+                    workspace_id=source_ownership.workspace_id,
+                ),
                 workflow_kind=source.workflow_kind,
                 interface_mode=(
                     interface_mode
@@ -408,6 +425,8 @@ class SessionForkService:
                 storage_key=storage_key,
                 db_session=session,
                 seed_voice_mode=False,
+                project_id=project_id,
+                workspace_id=source_ownership.workspace_id,
             )
 
             copied_translation_setting: SessionSetting | None = None
@@ -449,6 +468,8 @@ class SessionForkService:
                 attached_asset = session.get(SourceAsset, attachment.source_asset_id)
                 if attached_asset is None or attached_asset.state != "current":
                     raise ValueError("A current source attachment is unavailable for this fork.")
+                validate_source_attachment(session, source_session_id, attached_asset)
+                validate_source_attachment(session, record.id, attached_asset)
                 session.add(
                     SessionSource(
                         session_id=record.id,
@@ -758,8 +779,11 @@ class SessionForkService:
                 metadata["forked_from_session_id"] = source_session_id
                 metadata["forked_from_artifact_id"] = original.id
                 prepared = self.artifacts.prepare_registration(destination)
+                ownership = resolve_artifact_ownership(session, session_id=record.id)
                 cloned = Artifact(
                     session_id=record.id,
+                    project_id=ownership.project_id,
+                    workspace_id=ownership.workspace_id,
                     kind=original.kind,
                     role=original.role,
                     relative_path=prepared.relative_path,

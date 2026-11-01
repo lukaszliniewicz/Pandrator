@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC
 from pathlib import Path
@@ -21,13 +22,54 @@ from pandrator.logic.xtts_model_paths import (
 from pandrator.logic.xtts_trainer_handler import XTTS_MODEL_BUNDLE_FILENAMES
 from pandrator.runtime import DataPaths
 
+from .access.contracts import AccessDenied
+from .access.local_tools_policy import (
+    LocalToolOperation,
+    require_local_tool_inputs,
+    require_local_tool_workspace,
+)
+from .accounts.execution_actor import HostActor, UserActor, current_execution_actor
 from .artifacts import ArtifactService, sha256_file
 from .database import Database
+from .job_execution import current_job_lease
 from .models import Artifact, Job, TrainingRun, utcnow
 from .training_state import TRAINING_ACTIVE_STATUSES, is_training_job_owner
+from .voice_execution_identity import voice_execution_workspace
+from .voice_identity import training_workspace
 
 logger = logging.getLogger(__name__)
 _MANIFEST_FILENAME = "pandrator-training.json"
+
+
+def require_training_execution_access(session: Session, payload: dict[str, Any]) -> str:
+    """Prove stored owner and input headers before the structural claim reads bodies."""
+    actor = current_execution_actor.get()
+    if type(actor) is UserActor and current_job_lease.get() is None:
+        raise AccessDenied()
+    if actor is not None and type(actor) not in {UserActor, HostActor}:
+        raise AccessDenied()
+    with session.no_autoflush:
+        statement = select(
+            TrainingRun.workspace_id, TrainingRun.voice_id, TrainingRun.source_artifact_id,
+            TrainingRun.source_text_artifact_id, TrainingRun.output_artifact_id,
+        ).where(TrainingRun.id == str(payload.get("training_id") or ""))
+        if type(actor) is UserActor:
+            workspace_id = require_local_tool_workspace(
+                session, LocalToolOperation.TRAINING_RUN, workspace_id=payload.get("workspace_id")
+            )
+            statement = statement.where(TrainingRun.workspace_id == workspace_id)
+        header = session.execute(statement).one_or_none()
+        if header is None:
+            raise ValueError("Training record not found.")
+        if "workspace_id" in payload and payload["workspace_id"] != header.workspace_id:
+            raise ValueError("Training inputs have inconsistent workspace ownership.")
+        return require_local_tool_inputs(
+            session, LocalToolOperation.TRAINING_RUN, workspace_id=header.workspace_id,
+            voice_id=header.voice_id,
+            artifact_ids=[identifier for identifier in (
+                header.source_artifact_id, header.source_text_artifact_id, header.output_artifact_id,
+            ) if identifier is not None],
+        )
 
 
 def require_training_claim(
@@ -43,6 +85,22 @@ def require_training_claim(
     )
     if training is None:
         raise ValueError("Training record not found.")
+    workspace = training_workspace(session, training)
+    voice_execution_workspace(
+        session,
+        payload,
+        voice_id=training.voice_id,
+        artifact_ids=[
+            artifact_id
+            for artifact_id in (
+                training.source_artifact_id,
+                training.source_text_artifact_id,
+                training.output_artifact_id,
+            )
+            if artifact_id
+        ],
+        expected_workspace_id=workspace.id,
+    )
     if (
         payload.get("model_name") != training.model_name
         or payload.get("source_artifact_id") != training.source_artifact_id
@@ -63,6 +121,17 @@ def require_training_claim(
             raise InterruptedError("Training worker has an incomplete job claim.")
         job = session.get(Job, payload.get("_job_id"), populate_existing=True)
         allowed_statuses = {"running", "cancel_requested"} if allow_cancel else {"running"}
+        if job is not None:
+            stored_payload = job.payload_json
+            if not isinstance(stored_payload, Mapping):
+                raise InterruptedError("Training job has invalid frozen workspace context.")
+            worker_has_workspace = "workspace_id" in payload
+            stored_has_workspace = "workspace_id" in stored_payload
+            if worker_has_workspace != stored_has_workspace or (
+                worker_has_workspace
+                and payload.get("workspace_id") != stored_payload.get("workspace_id")
+            ):
+                raise InterruptedError("Training worker workspace does not match its job.")
         if (
             not is_training_job_owner(training, job)
             or job is None
@@ -194,7 +263,8 @@ def publish_training_bundle(
     promoted = False
     try:
         with database.immediate_session() as session:
-            require_training_claim(session, payload, cancel_event)
+            require_training_execution_access(session, payload)
+            training = require_training_claim(session, payload, cancel_event)
             if (
                 session.scalar(
                     select(Artifact.id).where(Artifact.relative_path == prepared.relative_path)
@@ -207,6 +277,7 @@ def publish_training_bundle(
                 final_manifest,
                 kind="model",
                 role="xtts_model",
+                workspace_id=training.workspace_id,
                 parent_ids=parent_ids,
                 settings=settings,
                 metadata={"model_name": model_name},

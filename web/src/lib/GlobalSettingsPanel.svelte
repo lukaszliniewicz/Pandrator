@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
   import { diagnosticsApi } from './admin-api';
   import { sttLanguageProblem } from './stt-language-policy';
   import type { RuntimeCapabilities } from './api-models';
@@ -11,10 +12,21 @@
   import {
     compareSettingOrder,
     GLOBAL_TTS_KEYS,
-    settingApplies
+    optionsFor,
+    settingApplies,
+    settingLabel
   } from './settings-fields';
 
-  let { section }: { section: string } = $props();
+  let {
+    section,
+    workspaceId,
+    workspaceName = 'your projects'
+  }: {
+    section: string;
+    workspaceId?: string;
+    workspaceName?: string;
+  } = $props();
+  let active = true;
   let sttCapabilities = $state<RuntimeCapabilities>({});
   let payload = $state<GlobalDefaultsPayload | null>(null);
   let value = $state<Record<string, unknown>>({});
@@ -30,6 +42,16 @@
   );
   let saving = $state(false);
   let message = $state('');
+  const canManage = $derived(payload?.can_manage === true);
+  function displayValue(key: string, item: unknown) {
+    const choice = optionsFor(section, key)?.find(
+      (option) => String(option.value) === String(item)
+    );
+    if (choice) return choice.label;
+    if (item === null || item === undefined || item === '') return 'Automatic';
+    if (typeof item === 'boolean') return item ? 'On' : 'Off';
+    return typeof item === 'object' ? JSON.stringify(item) : String(item);
+  }
 
   const providerSetting = (key: string) =>
     key === 'provider_configs' ||
@@ -57,18 +79,22 @@
     (value = { ...value, [key]: next });
 
   async function load() {
-    if (section === 'stt')
+    message = '';
+    const result = await sessionApi.defaults(section, { workspaceId });
+    if (!active) return;
+    payload = result;
+    value = { ...(payload.value ?? {}) };
+    if (section === 'stt' && result.can_manage)
       void diagnosticsApi
         .capabilities()
         .then((result) => {
-          sttCapabilities = result;
+          if (active) sttCapabilities = result;
         })
         .catch(() => {});
-    payload = await sessionApi.defaults(section);
-    value = { ...(payload.value ?? {}) };
   }
 
   async function save() {
+    if (!canManage) return;
     if (languageProblem) {
       message = languageProblem;
       return;
@@ -86,8 +112,10 @@
       const result = await sessionApi.saveDefaults(
         section,
         currentPayload.revision,
-        value
+        value,
+        workspaceId
       );
+      if (!active) return;
       payload = {
         ...currentPayload,
         revision: result.revision,
@@ -96,13 +124,14 @@
       };
       message = 'Saved.';
     } catch (caught) {
-      message = errorMessage(caught);
+      if (active) message = errorMessage(caught);
     } finally {
-      saving = false;
+      if (active) saving = false;
     }
   }
 
   async function restoreBuiltins() {
+    if (!canManage) return;
     saving = true;
     message = '';
     try {
@@ -111,8 +140,10 @@
       const result = await sessionApi.saveDefaults(
         section,
         currentPayload.revision,
-        {}
+        {},
+        workspaceId
       );
+      if (!active) return;
       payload = {
         ...currentPayload,
         revision: result.revision,
@@ -122,17 +153,25 @@
       value = {};
       message = 'Restored built-in defaults.';
     } catch (caught) {
-      message = errorMessage(caught);
+      if (active) message = errorMessage(caught);
     } finally {
-      saving = false;
+      if (active) saving = false;
     }
   }
 
-  load();
+  onMount(() => {
+    void load().catch((caught) => {
+      if (active) message = errorMessage(caught);
+    });
+  });
+  onDestroy(() => {
+    active = false;
+  });
 </script>
 
 <div class="mt-4 border-t border-[var(--line)] pt-4">
-  {#if section === 'tts'}
+  {#if message}<p class="muted mb-3 text-sm" role="status">{message}</p>{/if}
+  {#if section === 'tts' && canManage}
     <div
       class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[var(--accent-soft)] p-3"
     >
@@ -146,43 +185,70 @@
     </div>
   {/if}
   {#if payload}
-    <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-      {#each entries as [key, fallback]}
-        {#if section === 'tts' && key === 'service'}<TtsServiceSelect
-            value={String(current(key, fallback) ?? '')}
-            onchange={(next, resetSelection) => {
-              set(key, next);
-              if (resetSelection) {
-                for (const field of ['model', 'xtts_model', 'voice', 'speaker'])
-                  set(field, '');
-              }
-            }}
-          />{:else}<SettingField
-            {section}
-            keyName={key}
-            {sttCapabilities}
-            sourceLanguage={sttEffective.stt_language}
-            value={current(key, fallback)}
-            onchange={(next) => set(key, next)}
-            compact
-          />{/if}
-      {/each}
-    </div>
-    {#if languageProblem}<p class="mt-3 text-sm text-red-600" role="alert">
-        {languageProblem}
-      </p>{/if}
-    <div class="mt-4 flex flex-wrap items-center gap-3">
-      <button
-        onclick={restoreBuiltins}
-        disabled={saving || !Object.keys(value).length}
-        class="btn btn-sm btn-secondary"
-        ><RotateCcw size={13} /> Restore built-in defaults</button
-      ><button
-        onclick={save}
-        disabled={saving || Boolean(languageProblem)}
-        class="btn btn-sm btn-primary"
-        ><Save size={13} />{saving ? 'Saving…' : 'Save global defaults'}</button
-      >{#if message}<span class="muted text-xs">{message}</span>{/if}
-    </div>
+    {#if !canManage}
+      <p class="muted mb-4 text-sm">
+        Defaults for {workspaceName}. Workspace managers can change them.
+      </p>
+      <dl class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {#each entries as [key, fallback]}
+          <div class="min-w-0 rounded-lg border border-[var(--line)] p-3">
+            <dt class="text-xs font-semibold">{settingLabel(key)}</dt>
+            <dd class="muted mt-1 break-words text-sm">
+              {displayValue(key, current(key, fallback))}
+            </dd>
+          </div>
+        {/each}
+      </dl>
+    {:else}
+      <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {#each entries as [key, fallback]}
+          {#if section === 'tts' && key === 'service'}<TtsServiceSelect
+              {workspaceId}
+              value={String(current(key, fallback) ?? '')}
+              onchange={(next, resetSelection) => {
+                set(key, next);
+                if (resetSelection) {
+                  for (const field of [
+                    'model',
+                    'xtts_model',
+                    'voice',
+                    'speaker'
+                  ])
+                    set(field, '');
+                }
+              }}
+            />{:else}<SettingField
+              {section}
+              keyName={key}
+              {sttCapabilities}
+              sourceLanguage={sttEffective.stt_language}
+              value={current(key, fallback)}
+              onchange={(next) => set(key, next)}
+              compact
+            />{/if}
+        {/each}
+      </div>
+      {#if languageProblem}<p class="mt-3 text-sm text-red-600" role="alert">
+          {languageProblem}
+        </p>{/if}
+      <div class="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          onclick={restoreBuiltins}
+          disabled={saving || !Object.keys(value).length}
+          class="btn btn-sm btn-secondary"
+          ><RotateCcw size={13} /> Restore built-in defaults</button
+        ><button
+          onclick={save}
+          disabled={saving || Boolean(languageProblem)}
+          class="btn btn-sm btn-primary"
+          ><Save size={13} />{saving
+            ? 'Saving…'
+            : 'Save workspace defaults'}</button
+        >
+      </div>
+    {/if}
+  {:else if !message}<p class="muted text-sm" role="status">
+      Loading defaults…
+    </p>
   {/if}
 </div>

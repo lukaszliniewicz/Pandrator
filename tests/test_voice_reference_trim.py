@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import select
 
 from pandrator.logic import tts_handler
+from pandrator.web.accounts.execution_actor import HostActor, execution_actor_scope
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.media_process import MediaProcessCancelled
@@ -188,6 +189,7 @@ def test_crop_probe_and_worker_respect_cancellation(tmp_path):
         )
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_import_crops_then_normalizes_preserving_source_and_crop_transcript(
     voice_app,
 ):
@@ -256,6 +258,7 @@ def test_import_crops_then_normalizes_preserving_source_and_crop_transcript(
     assert transcription.get_json()["payload_json"]["sample_artifact_id"] == sample_artifact.id
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_crop_is_applied_before_optional_noise_reduction(voice_app, monkeypatch):
     client, extension, csrf = voice_app
     voice = _make_voice(client, csrf)
@@ -294,6 +297,7 @@ def test_crop_is_applied_before_optional_noise_reduction(voice_app, monkeypatch)
     assert _wave_shape(output) == (1, 24000, 48000)
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_cropped_reference_does_not_inherit_source_transcript(voice_app):
     client, extension, csrf = voice_app
     voice = _make_voice(client, csrf)
@@ -343,6 +347,7 @@ def test_crop_rejects_bounds_beyond_one_frame_without_queuing(voice_app):
     assert response.get_json()["error"]["code"] == "validation_error"
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_worker_rechecks_source_hash_and_voice_revision_before_publication(voice_app):
     client, extension, csrf = voice_app
     voice = _make_voice(client, csrf)

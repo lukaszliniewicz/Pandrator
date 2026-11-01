@@ -24,6 +24,9 @@ from .application_sound_validation import (
 from .application_sound_validation import (
     revision as _revision,
 )
+from .application_sound_validation import (
+    workspace_parameters as _workspace_parameters,
+)
 
 _SOUND_UPDATE_FIELDS = frozenset({"name", "tags", "archived", "preferred_variant_id"})
 
@@ -48,6 +51,7 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
         parameters: dict[str, Any] | None = None,
         seed: int | None = None,
         threads: int | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         if not isinstance(prompt, str) or len(prompt) > 8000:
             raise ValueError("Sound prompts must be strings of at most 8000 characters.")
@@ -115,13 +119,16 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
             body["seed"] = seed
         if threads is not None:
             body["threads"] = threads
-        return self._request_json(
-            "/api/v1/sounds/generate",
-            method="POST",
-            body=body,
-            idempotency_key=_idempotency_key(idempotency_key),
-            maximum_body_bytes=512 * 1024,
-        )
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": body,
+            "idempotency_key": _idempotency_key(idempotency_key),
+            "maximum_body_bytes": 512 * 1024,
+        }
+        scope_parameters = _workspace_parameters(workspace_id)
+        if scope_parameters:
+            request_kwargs["parameters"] = scope_parameters
+        return self._request_json("/api/v1/sounds/generate", **request_kwargs)
 
     def list_sounds(
         self,
@@ -131,6 +138,7 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
         cursor: str | None = None,
         limit: int = 40,
         archived: bool = False,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         if not isinstance(query, str) or len(query) > 200:
             raise ValueError("query must be a string of at most 200 characters.")
@@ -149,6 +157,7 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
             parameters["tag"] = tag
         if cursor is not None:
             parameters["cursor"] = cursor
+        parameters.update(_workspace_parameters(workspace_id))
         return self._request_json("/api/v1/sounds", parameters=parameters)
 
     def get_sound(
@@ -157,10 +166,12 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
         *,
         cursor: str | None = None,
         limit: int = 20,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         parameters: dict[str, Any] = {"limit": _bounded_page(limit)}
         if cursor is not None:
             parameters["cursor"] = cursor
+        parameters.update(_workspace_parameters(workspace_id))
         return self._request_json(
             f"/api/v1/sounds/{quote(_identifier(item_id, 'item_id'), safe='')}",
             parameters=parameters,
@@ -171,16 +182,28 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
         *,
         cursor: str | None = None,
         limit: int = 20,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         parameters: dict[str, Any] = {"limit": _bounded_page(limit)}
         if cursor is not None:
             parameters["cursor"] = cursor
+        parameters.update(_workspace_parameters(workspace_id))
         return self._request_json("/api/v1/sounds/candidates", parameters=parameters)
 
-    def get_sound_candidate(self, candidate_id: str) -> dict[str, Any]:
-        return self._request_json(
-            f"/api/v1/sounds/candidates/{quote(_identifier(candidate_id, 'candidate_id'), safe='')}"
+    def get_sound_candidate(
+        self,
+        candidate_id: str,
+        *,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        path = (
+            f"/api/v1/sounds/candidates/"
+            f"{quote(_identifier(candidate_id, 'candidate_id'), safe='')}"
         )
+        scope_parameters = _workspace_parameters(workspace_id)
+        if not scope_parameters:
+            return self._request_json(path)
+        return self._request_json(path, parameters=scope_parameters)
 
     def save_sound(
         self,
@@ -191,6 +214,7 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
         tags: list[str] | None = None,
         item_id: str | None = None,
         expected_revision: int | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"candidate_id": _identifier(candidate_id, "candidate_id")}
         if item_id is not None:
@@ -210,13 +234,16 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
             body["name"] = name
             if tags is not None:
                 body["tags"] = self._validate_tags(tags)
-        return self._request_json(
-            "/api/v1/sounds/save",
-            method="POST",
-            body=body,
-            idempotency_key=_idempotency_key(idempotency_key),
-            maximum_body_bytes=16 * 1024,
-        )
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": body,
+            "idempotency_key": _idempotency_key(idempotency_key),
+            "maximum_body_bytes": 16 * 1024,
+        }
+        scope_parameters = _workspace_parameters(workspace_id)
+        if scope_parameters:
+            request_kwargs["parameters"] = scope_parameters
+        return self._request_json("/api/v1/sounds/save", **request_kwargs)
 
     def update_sound(
         self,
@@ -225,6 +252,7 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
         expected_revision: int,
         changes: Mapping[str, Any],
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         if not isinstance(changes, Mapping) or not changes:
             raise ValueError("Sound updates require at least one change.")
@@ -247,12 +275,18 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
                     raise ValueError("preferred_variant_id must be a string.")
                 value = _identifier(value, field)
             body[field] = value
+        request_kwargs: dict[str, Any] = {
+            "method": "PATCH",
+            "body": body,
+            "idempotency_key": _idempotency_key(idempotency_key),
+            "maximum_body_bytes": 16 * 1024,
+        }
+        scope_parameters = _workspace_parameters(workspace_id)
+        if scope_parameters:
+            request_kwargs["parameters"] = scope_parameters
         return self._request_json(
             f"/api/v1/sounds/{quote(_identifier(item_id, 'item_id'), safe='')}",
-            method="PATCH",
-            body=body,
-            idempotency_key=_idempotency_key(idempotency_key),
-            maximum_body_bytes=16 * 1024,
+            **request_kwargs,
         )
 
     def discard_sound_candidate(
@@ -260,11 +294,19 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
         candidate_id: str,
         *,
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
+        request_kwargs: dict[str, Any] = {
+            "method": "DELETE",
+            "idempotency_key": _idempotency_key(idempotency_key),
+        }
+        scope_parameters = _workspace_parameters(workspace_id)
+        if scope_parameters:
+            request_kwargs["parameters"] = scope_parameters
         return self._request_json(
-            f"/api/v1/sounds/candidates/{quote(_identifier(candidate_id, 'candidate_id'), safe='')}",
-            method="DELETE",
-            idempotency_key=_idempotency_key(idempotency_key),
+            f"/api/v1/sounds/candidates/"
+            f"{quote(_identifier(candidate_id, 'candidate_id'), safe='')}",
+            **request_kwargs,
         )
 
     def import_audio_reference(
@@ -274,6 +316,7 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
         filename: str,
         body: bytes,
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         if target == "sound":
             path = "/api/v1/sounds/import"
@@ -298,16 +341,27 @@ class ApplicationSoundMethods(ApplicationProjectSoundMethods):
             raise ValueError("Audio imports require a non-empty binary body.")
         if len(body) > MAX_AUDIO_IMPORT_BYTES:
             raise ValueError("MCP audio imports may not exceed 16 MiB.")
-        return self._request_binary_json(
-            path,
-            method="PUT",
-            body=body,
-            content_type="application/octet-stream",
-            extra_headers={
+        request_kwargs: dict[str, Any] = {
+            "method": "PUT",
+            "body": body,
+            "content_type": "application/octet-stream",
+            "extra_headers": {
                 "X-Audio-Filename": quote(filename, safe=""),
                 "Idempotency-Key": _idempotency_key(idempotency_key),
             },
-        )
+        }
+        if workspace_id is not None:
+            if not isinstance(workspace_id, str):
+                raise ValueError(
+                    "workspace_id must be a nonblank string of at most 80 characters."
+                )
+            normalized_workspace_id = workspace_id.strip()
+            if not normalized_workspace_id or len(normalized_workspace_id) > 80:
+                raise ValueError(
+                    "workspace_id must be a nonblank string of at most 80 characters."
+                )
+            request_kwargs["parameters"] = _workspace_parameters(normalized_workspace_id)
+        return self._request_binary_json(path, **request_kwargs)
 
     @staticmethod
     def _validate_tags(value: Any) -> list[str]:

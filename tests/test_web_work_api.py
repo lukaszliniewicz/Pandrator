@@ -11,8 +11,10 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import SecretRedactor
 from pandrator.web.database import Database
 from pandrator.web.http_lifecycle import ApiGuards
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import Job, JobEvent, SessionPurge, SessionRecord, utcnow
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.work import WorkService, _work_state
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -244,16 +246,16 @@ class WorkApiTests(unittest.TestCase):
             missing.get_json()["error"]["code"],
         )
 
-        original = work.cancel_in_session
+        original = work.cancel_authorized_in_session
 
-        def fail_after_cancel(db_session, job_id):
-            original(db_session, job_id)
+        def fail_after_cancel(db_session, access_context, job_id):
+            original(db_session, access_context, job_id)
             raise RuntimeError("injected rollback")
 
         with (
             patch.object(
                 work,
-                "cancel_in_session",
+                "cancel_authorized_in_session",
                 side_effect=fail_after_cancel,
             ),
             self.assertRaisesRegex(
@@ -335,8 +337,8 @@ class WorkServiceListingTests(unittest.TestCase):
         }
         now = utcnow()
         with self.database.session() as session:
-            session.add_all(
-                SessionRecord(
+            for session_id in session_ids:
+                record = SessionRecord(
                     id=session_id,
                     name=session_id,
                     storage_key=f"storage-{session_id}",
@@ -346,11 +348,12 @@ class WorkServiceListingTests(unittest.TestCase):
                     status="idle",
                     revision=1,
                 )
-                for session_id in session_ids
-            )
+                create_session_project(session, record)
+                session.add(record)
             session.flush()
-            session.add_all(
-                Job(
+            jobs = []
+            for row in rows:
+                job = Job(
                     id=row["id"],
                     kind=row.get("kind", "noop"),
                     session_id=row.get("session_id"),
@@ -368,8 +371,13 @@ class WorkServiceListingTests(unittest.TestCase):
                     started_at=row.get("started_at"),
                     finished_at=row.get("finished_at"),
                 )
-                for row in rows
-            )
+                ownership = job_creation_ownership(
+                    session, session_id=row.get("session_id")
+                )
+                job.workspace_id = ownership.workspace_id
+                job.project_id = ownership.project_id
+                jobs.append(job)
+            session.add_all(jobs)
 
     def test_old_matching_active_job_is_not_hidden_by_new_terminal_history(self):
         now = utcnow()
@@ -490,9 +498,11 @@ class WorkServiceListingTests(unittest.TestCase):
             "lease_owner",
             "lease_expires_at",
             "lease_generation",
-            "available_at",
         ):
             self.assertNotIn(excluded_column, select_clause)
+        # Retry scheduling is public work metadata; raw inputs and lease
+        # identity remain excluded, without a lazy read for each listed job.
+        self.assertIn("available_at", select_clause)
         self.assertIn("jobs.session_id =", statement)
         self.assertIn("jobs.kind in", statement.lower())
         self.assertIn("lower(trim(coalesce(nullif(jobs.status", statement.lower())

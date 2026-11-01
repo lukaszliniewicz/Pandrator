@@ -60,7 +60,9 @@ def test_preview_replay_precedes_catalogue_lookup_and_keeps_one_owned_job(
         assert jobs[0].kind == "tts.preview"
         assert jobs[0].max_attempts == 2
         assert jobs[0].resource_keys_json == ["service:tts:xtts"]
-        assert jobs[0].payload_json == {"text": BODY["text"], "settings": SETTINGS}
+        assert jobs[0].payload_json == {
+            "text": BODY["text"], "settings": SETTINGS, "workspace_id": jobs[0].workspace_id,
+        }
 
 
 def test_preview_automation_requires_key_before_catalogue_or_queue(

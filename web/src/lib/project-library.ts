@@ -1,8 +1,10 @@
 import type { JobRecord, SessionRecord } from './api-models';
 import { languageLabel } from './language-registry';
+import { isStorageWait } from './job-status';
 
 export type ProjectFolderRecord = {
   id: string;
+  workspace_id?: string;
   name: string;
   parent_id: string | null;
   revision: number;
@@ -10,19 +12,25 @@ export type ProjectFolderRecord = {
   updated_at: string;
 };
 
-type ProjectFolderMembership = {
+export type ProjectFolderMembership = {
   folder_id: string;
+  /** Legacy source-session alias; use source_session_id for navigation. */
   project_id: string;
+  source_session_id?: string;
+  project_root_id?: string;
   position: number;
 };
 
 export type ProjectFolderSnapshot = {
+  workspace_id?: string;
   items: ProjectFolderRecord[];
   memberships: ProjectFolderMembership[];
 };
 
 export type LibraryProject = {
+  /** Source-session identity retained for existing URLs and folder writes. */
   id: string;
+  projectId: string | null;
   name: string;
   sourceId: string;
   source: SessionRecord | undefined;
@@ -30,32 +38,38 @@ export type LibraryProject = {
   versions: SessionRecord[];
 };
 
-function canonicalProjectId(item: SessionRecord) {
+function canonicalSourceSessionId(item: SessionRecord) {
   return item.translation_project?.source_session_id || item.id;
+}
+
+export function folderMembershipSourceId(member: ProjectFolderMembership) {
+  return member.source_session_id ?? member.project_id;
 }
 
 export function libraryProjects(items: SessionRecord[]): LibraryProject[] {
   const grouped = new Map<string, SessionRecord[]>();
   for (const item of items) {
-    const id = canonicalProjectId(item);
+    const id = item.project_id || canonicalSourceSessionId(item);
     const versions = grouped.get(id) ?? [];
     versions.push(item);
     grouped.set(id, versions);
   }
-  return [...grouped.entries()].map(([id, versions]) => {
-    const source = versions.find((item) => item.id === id);
+  return [...grouped.values()].map((versions) => {
     const membership = versions.find(
       (item) => item.translation_project
     )?.translation_project;
+    const sourceId = membership?.source_session_id || versions[0].id;
+    const source = versions.find((item) => item.id === sourceId);
     return {
-      id,
-      sourceId: id,
+      id: sourceId,
+      projectId: versions.find((item) => item.project_id)?.project_id ?? null,
+      sourceId,
       source,
       membership,
       name: membership?.name || source?.name || versions[0].name,
       versions: [...versions].sort(
         (left, right) =>
-          Number(right.id === id) - Number(left.id === id) ||
+          Number(right.id === sourceId) - Number(left.id === sourceId) ||
           versionLanguageLabel(left).localeCompare(versionLanguageLabel(right))
       )
     };
@@ -86,6 +100,7 @@ export function projectActivityStatus(item: SessionRecord, jobs: JobRecord[]) {
 
 export function projectActivity(item: SessionRecord, jobs: JobRecord[]) {
   const active = activeProjectJob(item, jobs);
+  if (active && isStorageWait(active)) return 'Waiting for storage';
   if (active)
     return active.status === 'running'
       ? active.progress_detail ||

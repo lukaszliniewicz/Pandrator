@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import (
@@ -140,7 +141,7 @@ class CredentialStorageTests(unittest.TestCase):
             )
         with self.database.session() as session:
             self.assertEqual(
-                session.get(StoredCredential, key).secret_value, "shared-secret"
+                session.get(StoredCredential, (initial_personal_workspace(session).id, key)).secret_value, "shared-secret"
             )
 
     def test_stt_shared_credential_is_removed_when_both_azure_profiles_clear_it(self):
@@ -168,7 +169,7 @@ class CredentialStorageTests(unittest.TestCase):
                 previous,
             )
         with self.database.session() as session:
-            self.assertIsNone(session.get(StoredCredential, key))
+            self.assertIsNone(session.get(StoredCredential, (initial_personal_workspace(session).id, key)))
 
     def test_mai_2_hydration_reuses_legacy_credential_without_a_copied_reference(self):
         key = stt_service_credential_key("azure_mai_transcribe_1_5")
@@ -225,7 +226,7 @@ class CredentialStorageTests(unittest.TestCase):
         self.assertNotIn(file_value, json.dumps(settings))
         with self.database.session() as session:
             self.assertEqual(
-                stored_value, session.get(StoredCredential, shared_key).secret_value
+                stored_value, session.get(StoredCredential, (initial_personal_workspace(session).id, shared_key)).secret_value
             )
 
     def test_explicit_environment_reference_overrides_shared_database_for_cloud_providers(self):
@@ -361,7 +362,7 @@ class CredentialStorageTests(unittest.TestCase):
         with self.database.session() as session:
             self.assertEqual(
                 old_secret,
-                session.get(StoredCredential, credential_key).secret_value,
+                session.get(StoredCredential, (initial_personal_workspace(session).id, credential_key)).secret_value,
             )
 
         new_secret = "environment-only-secret"
@@ -384,7 +385,7 @@ class CredentialStorageTests(unittest.TestCase):
             self.assertFalse(payload["previous_credential_retained"])
             self.assertNotIn(new_secret, json.dumps(payload))
         with self.database.session() as session:
-            self.assertIsNone(session.get(StoredCredential, credential_key))
+            self.assertIsNone(session.get(StoredCredential, (initial_personal_workspace(session).id, credential_key)))
 
     def test_absolute_secret_file_is_referenced_without_returning_contents(self):
         secret = "mounted-file-secret"
@@ -437,7 +438,7 @@ class CredentialStorageTests(unittest.TestCase):
                 keyring.get_password(KEYRING_SERVICE_NAME, username),
             )
             with self.database.session() as session:
-                self.assertIsNone(session.get(StoredCredential, username))
+                self.assertIsNone(session.get(StoredCredential, (initial_personal_workspace(session).id, username)))
             cleared = self._patch_provider(
                 provider,
                 {"clear_api_key": True},

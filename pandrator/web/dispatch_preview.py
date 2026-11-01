@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
 from .models import DispatchBatch, DispatchRun
 
 if TYPE_CHECKING:
@@ -165,7 +167,13 @@ def get_dispatch_preview(
         )
 
     with services.database.snapshot_session() as session:
-        run = session.get(DispatchRun, run_id)
+        header = session.execute(
+            select(DispatchRun.id, DispatchRun.session_id).where(DispatchRun.id == run_id)
+        ).one_or_none()
+        if header is None:
+            raise KeyError(run_id)
+        require_current_session_access(session, header.session_id, ProjectAction.READ)
+        run = session.get(DispatchRun, header.id)
         if run is None:
             raise KeyError(run_id)
 

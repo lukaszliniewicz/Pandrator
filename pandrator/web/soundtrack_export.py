@@ -11,13 +11,20 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 
 from pandrator.logic.dubbing.audio_sync import build_mix_filter_complex
+from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 
 from .models import Artifact, new_id
+from .workflow_output_context import (
+    check_output_io,
+    output_io_options,
+    publish_output,
+    require_output_access,
+)
 
 SAMPLE_RATE = 48_000
 MIX_KEYS = (
@@ -41,7 +48,11 @@ def _executable(name: str) -> str:
     return executable
 
 
-def probe_soundtrack_media(path: Path) -> dict[str, Any]:
+def probe_soundtrack_media(
+    path: Path, *, before_io: Callable[[], None] | None = None
+) -> dict[str, Any]:
+    if before_io is not None:
+        before_io()
     result = subprocess.run(
         [
             _executable("ffprobe"),
@@ -49,8 +60,10 @@ def probe_soundtrack_media(path: Path) -> dict[str, Any]:
             "error",
             "-show_streams",
             "-show_format",
+            "-show_chapters",
             "-of",
             "json",
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             str(path),
         ],
         check=True,
@@ -109,6 +122,10 @@ def probe_soundtrack_media(path: Path) -> dict[str, Any]:
         "has_audio": audio is not None,
         "has_video": video is not None,
         "fps": fps,
+        "width": video.get("width") if video else None,
+        "height": video.get("height") if video else None,
+        "stream_types": [item.get("codec_type") for item in streams],
+        "chapter_count": len(data.get("chapters") or []),
         "video_duration": _stream_duration(video),
         "audio_duration": _stream_duration(audio),
         "container_duration": container_duration,
@@ -157,9 +174,14 @@ def resolve_video_tail_extension_ms(
     return extension_ms
 
 
-def run_audio_command(command: list[str], cancel_event: threading.Event) -> None:
+def run_audio_command(
+    command: list[str], cancel_event: threading.Event, *,
+    before_io: Callable[[], None] | None = None,
+) -> None:
     if cancel_event.is_set():
         raise InterruptedError("Soundtrack export cancelled.")
+    if before_io is not None:
+        before_io()
     with subprocess.Popen(
         command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     ) as process:
@@ -213,8 +235,12 @@ def ensure_soundtrack_master(
         raise ValueError(
             "Assemble the selected generated speech before exporting its soundtrack."
         )
-    reference = probe_soundtrack_media(source_path) if source_path is not None else None
-    generated = probe_soundtrack_media(speech_path) if speech_path is not None else None
+    reference = probe_soundtrack_media(
+        source_path, **output_io_options(handler)
+    ) if source_path is not None else None
+    generated = probe_soundtrack_media(
+        speech_path, **output_io_options(handler)
+    ) if speech_path is not None else None
     generated_duration = generated["duration"] if generated is not None else 0
     if audio_mode in {"mixed", "source"}:
         if reference is None:
@@ -292,10 +318,15 @@ def ensure_soundtrack_master(
         "sample_rate": SAMPLE_RATE,
         "match_reference": match_reference,
         "tail_extension_ms": tail_extension_ms,
-        "mix": {key: settings.get(key) for key in MIX_KEYS},
+        "mix": (
+            {key: settings.get(key) for key in MIX_KEYS}
+            if audio_mode == "mixed"
+            else {}
+        ),
     }
     key = hashlib.sha256(json.dumps(definition, sort_keys=True).encode()).hexdigest()
     with handler.database.session() as session:
+        require_output_access(handler, session)
         cached = session.scalar(
             select(Artifact)
             .where(
@@ -313,13 +344,18 @@ def ensure_soundtrack_master(
         ):
             session.expunge(cached)
             return cached
+    from .output_storage import estimated_pcm_bytes, reserve_output_space
+
     destination = (
         handler._operation_dir(session_id, "soundtracks") / f"soundtrack-{new_id()}.wav"
     )
+    check_output_io(handler)
+    reserve_output_space(handler, destination.parent, estimated_pcm_bytes(samples * 1000 / SAMPLE_RATE),
+                         label="soundtrack")
     temporary = destination.with_name(f".{destination.stem}.partial.wav")
     command = [_executable("ffmpeg"), "-nostdin", "-v", "error", "-y"]
     if audio_mode == "mixed":
-        command += ["-i", str(source_path), "-i", str(speech_path)]
+        command += [*LOCAL_MEDIA_INPUT_OPTIONS, "-i", str(source_path), *LOCAL_MEDIA_INPUT_OPTIONS, "-i", str(speech_path)]
         graph = build_mix_filter_complex(
             source_gain_db=settings.get("mix_source_gain_db", 0.0),
             voice_gain_db=settings.get("mix_voice_gain_db", 0.0),
@@ -345,7 +381,7 @@ def ensure_soundtrack_master(
                 graph = graph.replace("duration=first", "duration=longest")
         graph += f";[mixed]aresample={SAMPLE_RATE},apad,atrim=end_sample={samples}[soundtrack]"
     else:
-        command += ["-i", str(source_path if audio_mode == "source" else speech_path)]
+        command += [*LOCAL_MEDIA_INPUT_OPTIONS, "-i", str(source_path if audio_mode == "source" else speech_path)]
         graph = f"[0:a:0]aresample={SAMPLE_RATE},apad,atrim=end_sample={samples}[soundtrack]"
     command += [
         "-filter_complex",
@@ -364,11 +400,11 @@ def ensure_soundtrack_master(
         str(temporary),
     ]
     try:
-        run_audio_command(command, cancel_event)
+        run_audio_command(command, cancel_event, **output_io_options(handler))
         if cancel_event.is_set():
             raise InterruptedError("Soundtrack export cancelled.")
         temporary.replace(destination)
-        return handler.artifacts.register(
+        return publish_output(handler,
             destination,
             kind="audio",
             role="soundtrack_master",
@@ -421,10 +457,18 @@ def export_soundtrack_file(
         f".{destination.stem}-{new_id()}.partial.{format_name}"
     )
     metadata = dict(master.metadata_json or {})
+    from .output_storage import reserve_output_space
+
+    check_output_io(handler)
+    # Encoded audio may be slightly larger than PCM for very short inputs;
+    # a second complete input-size allowance covers supported output formats.
+    reserve_output_space(handler, destination.parent, 2 * source_path.stat().st_size + 65536,
+                         label="audio export")
     try:
         if format_name == "wav":
             if cancel_event.is_set():
                 raise InterruptedError("Soundtrack export cancelled.")
+            check_output_io(handler)
             shutil.copyfile(source_path, temporary)
         else:
             command = [
@@ -433,6 +477,7 @@ def export_soundtrack_file(
                 "-v",
                 "error",
                 "-y",
+                *LOCAL_MEDIA_INPUT_OPTIONS,
                 "-i",
                 str(source_path),
                 "-map",
@@ -446,12 +491,12 @@ def export_soundtrack_file(
             if language:
                 command += ["-metadata:s:a:0", f"language={language}"]
             command += [str(temporary)]
-            run_audio_command(command, cancel_event)
+            run_audio_command(command, cancel_event, **output_io_options(handler))
         if cancel_event.is_set():
             raise InterruptedError("Soundtrack export cancelled.")
         temporary.replace(destination)
         mode = metadata.get("soundtrack", {}).get("audio_mode", "dubbed")
-        return handler.artifacts.register(
+        return publish_output(handler,
             destination,
             kind="export",
             role=f"export_{mode}_audio",

@@ -5,6 +5,25 @@
   import ProviderManager from '$lib/ProviderManager.svelte';
   import ServiceManager from '$lib/ServiceManager.svelte';
   import SttServiceManager from '$lib/SttServiceManager.svelte';
+  import WorkspaceSpeechServices from '$lib/WorkspaceSpeechServices.svelte';
+  import { appState } from '$lib/app-state.svelte';
+  const workspaceId = $derived(
+    appState.collaborationEnabled
+      ? appState.activeWorkspaceId || undefined
+      : undefined
+  );
+  const workspaceName = $derived(
+    appState.collaborationEnabled
+      ? (appState.activeWorkspace?.name ?? 'this workspace')
+      : 'your projects'
+  );
+  const canManageWorkspace = $derived(
+    !appState.collaborationEnabled ||
+      Boolean(appState.activeWorkspace?.allowed_actions.includes('manage'))
+  );
+  const providerScopeKey = $derived(
+    `${appState.contentKey}:${appState.activeWorkspace?.role ?? ''}:${appState.activeWorkspace?.allowed_actions.join(',') ?? ''}`
+  );
   const initialTab = page.url.searchParams.get('tab');
   let tab = $state<'llm' | 'speech' | 'credentials'>(
     initialTab === 'credentials'
@@ -29,8 +48,8 @@
   <header>
     <h1 class="mt-2 text-4xl font-semibold">Providers &amp; services</h1>
     <p class="muted mt-3">
-      Application-wide model, cost, endpoint, catalogue, credential, readiness,
-      and local component settings.
+      LLM connections and API keys for {workspaceName}. Local models and
+      services are managed for this installation.
     </p>
   </header>
   <div class="mt-7 flex gap-2 overflow-x-auto border-b border-[var(--line)]">
@@ -49,44 +68,66 @@
     >
   </div>
   <div class="mt-7">
-    {#if tab === 'llm'}<ProviderManager
-        onback={() => history.back()}
-      />{:else if tab === 'speech'}<section>
-        <div
-          class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
-          aria-label="Speech service location"
-        >
-          <button
-            class="speech-tab"
-            class:active={speechTab === 'local'}
-            onclick={() => (speechTab = 'local')}>Local</button
-          ><button
-            class="speech-tab"
-            class:active={speechTab === 'external'}
-            onclick={() => (speechTab = 'external')}>External</button
+    {#if appState.collaborationEnabled && !appState.workspacesReady}
+      <p class="muted" role="status">Loading workspace…</p>
+    {:else}
+      {#if tab === 'llm'}{#key providerScopeKey}<ProviderManager
+            {workspaceId}
+            {workspaceName}
+            onback={() => history.back()}
+          />{/key}{:else if tab === 'speech'}<section>
+          <div
+            class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
+            aria-label="Speech service location"
           >
-        </div>
-        <div class="mt-6">
-          {#if speechTab === 'local'}<LocalComponentsPanel />{:else}<div
-              class="mb-6 flex gap-2 border-b border-[var(--line)]"
-              aria-label="External speech service type"
+            <button
+              class="speech-tab"
+              class:active={speechTab === 'local'}
+              onclick={() => (speechTab = 'local')}>Local</button
+            ><button
+              class="speech-tab"
+              class:active={speechTab === 'external'}
+              onclick={() => (speechTab = 'external')}>External</button
             >
-              <button
-                class="service-tab"
-                class:active={externalSpeechTab === 'tts'}
-                onclick={() => (externalSpeechTab = 'tts')}
-                >Text to speech</button
-              ><button
-                class="service-tab"
-                class:active={externalSpeechTab === 'stt'}
-                onclick={() => (externalSpeechTab = 'stt')}
-                >Transcription</button
+          </div>
+          <div class="mt-6">
+            {#if speechTab === 'local'}<LocalComponentsPanel />{:else}<div
+                class="mb-6 flex gap-2 border-b border-[var(--line)]"
+                aria-label="External speech service type"
               >
-            </div>
-            {#if externalSpeechTab === 'tts'}<ServiceManager
-              />{:else}<SttServiceManager />{/if}{/if}
-        </div>
-      </section>{:else}<CredentialManager />{/if}
+                <button
+                  class="service-tab"
+                  class:active={externalSpeechTab === 'tts'}
+                  onclick={() => (externalSpeechTab = 'tts')}
+                  >Text to speech</button
+                ><button
+                  class="service-tab"
+                  class:active={externalSpeechTab === 'stt'}
+                  onclick={() => (externalSpeechTab = 'stt')}
+                  >Transcription</button
+                >
+              </div>
+              {#key providerScopeKey}
+                {#if !canManageWorkspace}<WorkspaceSpeechServices
+                    {workspaceId}
+                    {workspaceName}
+                    kind={externalSpeechTab}
+                  />
+                {:else if externalSpeechTab === 'tts'}<ServiceManager
+                    {workspaceId}
+                    {workspaceName}
+                  />{:else}<SttServiceManager
+                    {workspaceId}
+                    {workspaceName}
+                  />{/if}
+              {/key}{/if}
+          </div>
+        </section>{:else}{#key providerScopeKey}{#if canManageWorkspace}<CredentialManager
+              {workspaceId}
+            />{:else}<p class="muted">
+              Workspace managers manage API keys for this workspace.
+            </p>{/if}{/key}{/if}
+    {/if}
   </div>
 </div>
 

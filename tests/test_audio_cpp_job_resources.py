@@ -27,5 +27,9 @@ def test_cpu_native_still_serializes_without_claiming_gpu():
 
 
 def test_unrelated_plain_transcription_retains_resources():
-    assert stt_resource_keys({}) == ["service:stt"]
-    assert stt_resource_keys({"compute_backend": "cuda"}) == ["service:stt", "gpu:cuda"]
+    assert stt_resource_keys({}) == ["service:stt", "gpu:default"]
+    assert stt_resource_keys({"compute_backend": "cpu"}) == ["service:stt"]
+    assert stt_resource_keys({"compute_backend": "cuda"}) == [
+        "service:stt",
+        "gpu:default",
+    ]

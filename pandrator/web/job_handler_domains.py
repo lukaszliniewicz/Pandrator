@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from .job_registry import JobHandlerRegistry, JobPayloadContract
 from .jobs import JobHandler
+from .projects.copy_contracts import PROJECT_COPY_JOB_KIND
 
 if TYPE_CHECKING:
     from pandrator.runtime import DataPaths
@@ -226,6 +227,7 @@ def register_delivery_handlers(
                 "session.bundle.export": "export_session_bundle",
                 "session.bundle.import": "import_session_bundle",
                 "project.exports.bundle": "generate_project_export_bundle",
+                PROJECT_COPY_JOB_KIND: "copy_current_project",
             },
         ),
         payload_contracts=_contracts(
@@ -241,6 +243,11 @@ def register_delivery_handlers(
                 "session.bundle.export": ("session_id",),
                 "session.bundle.import": ("source_artifact_id",),
                 "project.exports.bundle": ("operation_id", "project_id", "manifest_digest", "input_digest", "languages"),
+                PROJECT_COPY_JOB_KIND: (
+                    "copy_version", "copy_id", "source_project_id", "source_session_id",
+                    "destination_workspace_id", "source_fingerprint", "snapshot_sha256",
+                    "snapshot_zlib_b64",
+                ),
             }
         ),
     )

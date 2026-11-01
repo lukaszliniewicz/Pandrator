@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectLinkUrl } from './project-link-context';
   import {
     AlertTriangle,
     AudioLines,
@@ -12,20 +13,20 @@
   } from '@lucide/svelte';
   import { onDestroy, onMount } from 'svelte';
   import AudioPlayer from './AudioPlayer.svelte';
+  import { ApiError } from './api';
   import { sessionApi } from './domain-api';
   import { errorMessage } from './errors';
   import type {
     SubtitleEvidenceCandidate,
     SubtitleEvidenceRecord,
     SubtitleEvidenceRoute,
-    ProviderModelRecord,
-    ProviderRecord,
     SubtitleSegment
   } from './api-models';
 
   let {
     sessionId,
     sourceArtifactId,
+    reason = $bindable(''),
     segment,
     records,
     onupdated,
@@ -36,6 +37,7 @@
   }: {
     sessionId: string;
     sourceArtifactId: string;
+    reason?: string;
     segment: SubtitleSegment;
     records: SubtitleEvidenceRecord[];
     onupdated: (record: SubtitleEvidenceRecord) => void;
@@ -62,23 +64,43 @@
 
   async function loadRoutes() {
     routesLoading = true;
+    const targetSession = sessionId;
     try {
-      const result = await sessionApi.subtitleEvidenceRoutes();
+      const result = await sessionApi.subtitleEvidenceRoutes(
+        undefined,
+        targetSession
+      );
+      if (!panelActive || sessionId !== targetSession) return;
+      canSelectAudioModels = result.can_select_audio_models;
+      audioModels = result.audio_models.map((model) => ({
+        id: model.id,
+        modelId: model.model_id,
+        providerLabel: model.provider_label,
+        custom: model.custom
+      }));
       routeOptions = result.routes.map((route) => ({
         id: route.route,
         label: route.label,
         description:
-          route.reason || `${route.timing_method.replaceAll('_', ' ')} timing`,
+          route.route === 'audio_llm' && !canSelectAudioModels
+            ? "Audio-model choices require access to this workspace's library."
+            : route.reason ||
+              `${route.timing_method.replaceAll('_', ' ')} timing`,
         commercial: route.remote === true,
-        available: route.ready !== false && route.language_supported !== false
+        available:
+          route.ready !== false &&
+          route.language_supported !== false &&
+          (route.route !== 'audio_llm' || canSelectAudioModels)
       }));
       selectedRoutes = selectedRoutes.filter((id) =>
         routeOptions.some((route) => route.id === id && route.available)
       );
     } catch (caught) {
+      if (!panelActive || sessionId !== targetSession) return;
+      selectedRoutes = [];
       error = errorMessage(caught);
     } finally {
-      routesLoading = false;
+      if (panelActive && sessionId === targetSession) routesLoading = false;
     }
   }
 
@@ -91,27 +113,15 @@
 
   let selectedRoutes = $state<SubtitleEvidenceRoute[]>(['whisper', 'moss']);
   let audioModels = $state<AudioModelOption[]>([]);
+  let canSelectAudioModels = $state(false);
   let selectedAudioModelIds = $state<string[]>([]);
-  let loadingAudioModels = $state(false);
-  let audioModelsError = $state('');
-  let reason = $state('');
-  let reasonSegmentId = '';
   let requesting = $state(false);
   let resolving = $state(false);
   let error = $state('');
+  let panelActive = true;
   let polledRecord = $state<SubtitleEvidenceRecord | null>(null);
   let pollingTimer: ReturnType<typeof setTimeout> | null = null;
   let pollCount = 0;
-
-  $effect(() => {
-    const nextSegmentId = segment.id ?? '';
-    if (reasonSegmentId !== nextSegmentId) {
-      reason =
-        segment.review_note ||
-        'The cue is semantically inconsistent with the surrounding utterance.';
-      reasonSegmentId = nextSegmentId;
-    }
-  });
 
   const latestRecord = $derived(
     polledRecord ??
@@ -124,6 +134,27 @@
   );
   const candidates = $derived(
     latestRecord?.candidates ?? latestRecord?.candidates_json ?? []
+  );
+  const resolution = $derived(
+    latestRecord?.resolution ?? latestRecord?.resolution_json
+  );
+  const resolutionLabel = $derived(
+    (
+      {
+        accepted: 'Accepted transcript',
+        edited: 'Edited transcript',
+        deleted: 'Cue deleted',
+        uncertain: 'Marked uncertain',
+        dismissed: 'Uncertainty cleared'
+      } as Record<string, string>
+    )[typeof resolution?.action === 'string' ? resolution.action : '']
+  );
+  const resolvedText = $derived(
+    typeof resolution?.text === 'string'
+      ? resolution.text
+      : candidates.find(
+          (candidate) => candidate.id === resolution?.candidate_id
+        )?.text
   );
   const active = $derived(
     latestRecord?.status === 'queued' || latestRecord?.status === 'running'
@@ -147,43 +178,6 @@
       : [...selectedAudioModelIds, modelId].slice(0, 3);
   }
 
-  async function loadAudioModels() {
-    loadingAudioModels = true;
-    audioModelsError = '';
-    try {
-      const providerPage = await sessionApi.providers();
-      const providers = (providerPage.items as ProviderRecord[]).filter(
-        (provider) => provider.enabled && (provider.kind ?? 'llm') === 'llm'
-      );
-      const modelPages = await Promise.all(
-        providers.map(async (provider) => ({
-          provider,
-          models: (await sessionApi.providerModels(provider.id))
-            .items as ProviderModelRecord[]
-        }))
-      );
-      audioModels = modelPages.flatMap(({ provider, models }) =>
-        models
-          .filter(
-            (model) =>
-              (model.is_active || model.is_default) &&
-              (model.supports_audio_input ||
-                model.input_modalities?.includes('audio'))
-          )
-          .map((model) => ({
-            id: model.id,
-            modelId: model.model_id,
-            providerLabel: provider.label,
-            custom: Boolean(provider.options_json?.is_custom)
-          }))
-      );
-    } catch (caught) {
-      audioModelsError = errorMessage(caught);
-    } finally {
-      loadingAudioModels = false;
-    }
-  }
-
   function stopPolling() {
     if (pollingTimer) clearTimeout(pollingTimer);
     pollingTimer = null;
@@ -193,24 +187,35 @@
     stopPolling();
     if (!['queued', 'running'].includes(record.status) || pollCount >= 400)
       return;
+    const targetSession = sessionId;
+    const targetSegment = segment.id;
+    const targetSource = sourceArtifactId;
+    const currentTarget = () =>
+      panelActive &&
+      sessionId === targetSession &&
+      segment.id === targetSegment &&
+      sourceArtifactId === targetSource;
     pollingTimer = setTimeout(async () => {
       try {
         const next = await sessionApi.subtitleEvidenceRecord(
           evidenceId(record)
         );
+        if (!currentTarget()) return;
         polledRecord = next;
         onupdated(next);
         pollCount += 1;
         schedulePoll(next);
       } catch (caught) {
-        error = errorMessage(caught);
+        if (currentTarget()) error = errorMessage(caught);
       }
     }, 1500);
   }
 
-  onDestroy(stopPolling);
+  onDestroy(() => {
+    panelActive = false;
+    stopPolling();
+  });
   onMount(() => {
-    void loadAudioModels();
     void loadRoutes();
   });
 
@@ -220,6 +225,14 @@
     error = '';
     stopPolling();
     pollCount = 0;
+    const targetSession = sessionId;
+    const targetSegment = segment.id;
+    const targetSource = sourceArtifactId;
+    const currentTarget = () =>
+      panelActive &&
+      sessionId === targetSession &&
+      segment.id === targetSegment &&
+      sourceArtifactId === targetSource;
     try {
       const response = await sessionApi.requestSubtitleEvidence(sessionId, {
         source_artifact_id: sourceArtifactId,
@@ -231,14 +244,15 @@
         padding_after_ms: 2000,
         force_refresh: forceRefresh
       });
+      if (!currentTarget()) return;
       const record = response.evidence;
       polledRecord = record;
       onupdated(record);
       schedulePoll(record);
     } catch (caught) {
-      error = errorMessage(caught);
+      if (currentTarget()) error = errorMessage(caught);
     } finally {
-      requesting = false;
+      if (panelActive) requesting = false;
     }
   }
 
@@ -255,28 +269,55 @@
     }
     resolving = true;
     error = '';
+    const targetSession = sessionId;
+    const targetSegment = segment.id;
+    const targetSource = sourceArtifactId;
+    const decisionNote = reason.trim();
+    const currentTarget = () =>
+      panelActive &&
+      sessionId === targetSession &&
+      segment.id === targetSegment &&
+      sourceArtifactId === targetSource;
     try {
       const updated = await sessionApi.resolveSubtitleEvidence(
         sessionId,
         evidenceId(record),
         {
           action,
+          expected_revision: record.revision,
           candidate_id: candidate?.id,
-          note: reason.trim()
+          note: decisionNote
         }
       );
+      if (!currentTarget()) return;
       polledRecord = updated;
       onupdated(updated);
       if (action === 'accepted' && candidate)
         onaccept(candidate, evidenceId(record));
       if (action === 'deleted') ondelete(evidenceId(record));
-      if (action === 'uncertain')
-        onuncertain(reason.trim(), evidenceId(record));
+      if (action === 'uncertain') onuncertain(decisionNote, evidenceId(record));
       if (action === 'dismissed') onclear();
     } catch (caught) {
-      error = errorMessage(caught);
+      if (!currentTarget()) return;
+      if (
+        caught instanceof ApiError &&
+        caught.code === 'evidence_revision_conflict'
+      ) {
+        error =
+          'Someone updated this decision. Review the current result before saving yours.';
+        try {
+          const current = await sessionApi.subtitleEvidenceRecord(
+            evidenceId(record)
+          );
+          if (!currentTarget()) return;
+          polledRecord = current;
+          onupdated(current);
+        } catch (refreshError) {
+          if (currentTarget()) error = errorMessage(refreshError);
+        }
+      } else error = errorMessage(caught);
     } finally {
-      resolving = false;
+      if (panelActive) resolving = false;
     }
   }
 
@@ -409,12 +450,10 @@
         That declaration is not treated as proof: each result records the wire
         format and whether the provider reported consuming audio tokens.
       </p>
-      {#if loadingAudioModels}
+      {#if routesLoading}
         <p class="muted mt-2 flex items-center gap-2 text-xs">
           <LoaderCircle size={13} class="animate-spin" /> Loading configured models…
         </p>
-      {:else if audioModelsError}
-        <p class="mt-2 text-xs text-red-600">{audioModelsError}</p>
       {:else if !audioModels.length}
         <p class="mt-2 text-xs text-amber-700">
           No active model is marked for audio input. Add that capability in
@@ -488,16 +527,32 @@
   </div>
 
   {#if error}<p
-      class="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-600"
+      role="alert"
+      class="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-[var(--ink)]"
     >
       {error}
     </p>{/if}
+
+  {#if resolutionLabel}
+    <section
+      class="mt-3 rounded-lg border border-[var(--line)] bg-[var(--paper)] p-3 text-xs"
+      aria-label="Current evidence decision"
+    >
+      <p class="font-semibold">Current decision: {resolutionLabel}</p>
+      {#if resolvedText}<p class="mt-1 whitespace-pre-wrap">
+          {resolvedText}
+        </p>{/if}
+      {#if typeof resolution?.note === 'string' && resolution.note}
+        <p class="muted mt-1 whitespace-pre-wrap">{resolution.note}</p>
+      {/if}
+    </section>
+  {/if}
 
   {#if latestRecord?.clip_artifact_id}
     <div class="mt-3">
       <AudioPlayer
         compact
-        src={`/api/v1/artifacts/${latestRecord.clip_artifact_id}/content`}
+        src={projectLinkUrl(`/api/v1/artifacts/${latestRecord.clip_artifact_id}/content`)}
         label="Bounded evidence clip"
       />
       <p class="muted mt-1 text-[.62rem] tabular-nums">

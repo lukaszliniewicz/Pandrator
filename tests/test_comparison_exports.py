@@ -34,6 +34,7 @@ from pandrator.web.generation_audio_versions import (
 )
 from pandrator.web.idempotency import IdempotencyService
 from pandrator.web.job_execution import current_job_lease
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
     Artifact,
@@ -46,6 +47,7 @@ from pandrator.web.models import (
     SessionRecord,
     utcnow,
 )
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.settings_policy import stable_hash
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -76,8 +78,7 @@ class ComparisonRig:
         self.jobs = JobQueue(self.database)
         with self.database.session() as session:
             self.record = SessionRecord(name="Comparison export fixture")
-            session.add(self.record)
-            session.flush()
+            create_session_project(session, self.record)
             self.session_id = self.record.id
             self.storage_key = self.record.storage_key
             plan = GenerationPlan(session_id=self.session_id)
@@ -273,8 +274,15 @@ def test_explicit_historical_take_and_recast_side_are_exact(rig: ComparisonRig) 
     )
     assert explicit.clips[0]["take_id"] == historical_take
 
-    running_job = Job(session_id=rig.session_id, kind="generation.run", status="running")
     with rig.database.session() as session:
+        ownership = job_creation_ownership(session, session_id=rig.session_id)
+        running_job = Job(
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
+            session_id=rig.session_id,
+            kind="generation.run",
+            status="running",
+        )
         session.add(running_job)
         session.flush()
         recast = GenerationRun(
@@ -424,9 +432,20 @@ def test_unavailable_or_foreign_source_artifacts_reject_before_enqueue(
     else:
         with rig.database.session() as session:
             foreign_session = SessionRecord(name="Another session")
-            session.add(foreign_session)
-            session.flush()
-            session.get(Artifact, artifact_id).session_id = foreign_session.id
+            create_session_project(session, foreign_session)
+            foreign_session_id = foreign_session.id
+        foreign_path = rig.paths.artifacts / f"foreign-{foreign_session_id}.wav"
+        _write_pcm(foreign_path, [100, 100])
+        foreign_artifact = rig.artifacts.register(
+            foreign_path,
+            kind="audio",
+            role="generation_take",
+            session_id=foreign_session_id,
+        )
+        with rig.database.session() as session:
+            selected_take = session.get(AudioTake, take_id)
+            assert selected_take is not None
+            selected_take.artifact_id = foreign_artifact.id
     with pytest.raises((KeyError, ValueError)):
         prepare_comparison_export(
             rig.database,
@@ -466,7 +485,7 @@ def test_same_idempotency_key_replays_one_job_and_small_receipt(rig: ComparisonR
             return principal
 
         @staticmethod
-        def require_scope(_scope):
+        def require_scope(*_scopes):
             return lambda function: function
 
         @staticmethod

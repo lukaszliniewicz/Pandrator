@@ -1,9 +1,19 @@
 # Install Pandrator
 
 The native Pandrator Manager is the recommended installation path. It includes
-its own runtime, creates one explicit workspace, and lets you add, update,
+its own runtime, keeps runtimes and data in one explicit installation directory,
+and lets you add, update,
 repair, or remove local speech and transcription components without requiring
 Docker, WSL, or a suitable system Python.
+
+Pandrator starts in **Solo** mode. To use it with a team, finish installation,
+set the initial Administrator password, then enable collaboration in Settings.
+The same opt-in works later on an existing Solo installation; existing work stays
+private. See [Solo, accounts and shared workspaces](../guides/collaboration.md).
+
+The Manager's filesystem **workspace** is the installation location. Application
+workspaces are separate personal/team ownership boundaries; project folders
+organize content inside them.
 
 ## Choose the download
 
@@ -47,6 +57,8 @@ as:
 For example, selecting `D:\Applications` creates
 `D:\Applications\Pandrator`. Selecting `/srv` creates `/srv/Pandrator`.
 Cancelling the chooser makes no installation changes.
+Choose a directory writable by your account; `/srv` is an example for a server
+where that access has already been arranged.
 
 The launcher remembers the canonical location. Selection precedence is:
 

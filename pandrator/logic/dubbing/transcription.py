@@ -14,8 +14,9 @@ from typing import Any
 import pandrator.logic.dubbing.cloud_stt as cloud_stt
 
 from ..cancellable_process import ProcessCancelled, run_cancellable
+from ..media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 from ..source_media import is_audio_source
-from .crispasr import CrispASRTranscriptionResult, transcribe
+from .crispasr import CrispASRTranscriptionResult, _BeforeIoOptions, transcribe
 from .srt_utils import renumber_subtitles
 from .subtitle_finalization import compose_from_transcript_json
 
@@ -147,6 +148,7 @@ def apply_vocal_isolation(
     # to the 16 kHz mono transcription contract (same shape as extract_audio).
     command = [
         ffmpeg_executable,
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(raw_output),
         "-vn",
@@ -218,6 +220,7 @@ def extract_audio(
         pass
     command = [
         ffmpeg_executable,
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(source_path),
         "-vn",
@@ -289,6 +292,7 @@ def extract_audio_excerpt(
         return f"{value / 1000:.3f}".rstrip("0").rstrip(".")
     command = [
         ffmpeg_executable,
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(source_path),
         "-ss",
@@ -389,6 +393,7 @@ def transcribe_source_file_with_metadata(
     require_word_timestamps: bool = True,
     runtime_statuses: dict[str, Any] | None = None,
     language_detector: Callable[..., Any] | None = None,
+    before_io: Callable[[], None] | None = None,
     **_legacy_kwargs,
 ) -> CrispASRTranscriptionResult:
     from .stt_backends import detect_stt_backend_statuses, normalize_stt_backend
@@ -396,6 +401,9 @@ def transcribe_source_file_with_metadata(
     from .stt_languages import normalize_stt_language
     from .stt_routing import resolve_stt_route
 
+    hook_options: _BeforeIoOptions = {"before_io": before_io} if before_io is not None else {}
+    if before_io is not None:
+        before_io()
     configured_engine = normalize_stt_backend(
         settings.get("stt_engine") or settings.get("stt_backend") or ""
     )
@@ -418,11 +426,15 @@ def transcribe_source_file_with_metadata(
         )
 
     session_path = Path(session_dir)
+    if before_io is not None:
+        before_io()
     session_path.mkdir(parents=True, exist_ok=True)
     source_path = Path(source_file)
     source_name = source_path.stem
     if progress_callback is not None:
         progress_callback(0.0, "Normalizing source audio")
+    if before_io is not None:
+        before_io()
     if source_is_normalized:
         if source_path.suffix.lower() != ".wav" or not source_path.is_file():
             raise ValueError("A pre-normalized transcription source must be a WAV file.")
@@ -442,6 +454,8 @@ def transcribe_source_file_with_metadata(
         logger.info("Normalized audio source for transcription: %s", audio_path)
     # Optional vocal isolation runs on a derivative only; the normalized
     # original above is retained for playback/export.
+    if before_io is not None:
+        before_io()
     transcribe_path, isolation_provenance = apply_vocal_isolation(
         audio_path,
         session_path,
@@ -452,11 +466,15 @@ def transcribe_source_file_with_metadata(
         ffmpeg_executable=ffmpeg_executable,
         run_func=run_func,
     )
+    if before_io is not None:
+        before_io()
     language = requested_language
     language_source = "native" if language == "auto" else "declared"
     confidence = None
     detection_reason = ""
     if language == "auto" and configured_engine in {"auto", "parakeet", "qwen3"}:
+        if before_io is not None:
+            before_io()
         try:
             detected = (language_detector or detect_source_language)(
                 transcribe_path, settings=settings, cancel_event=cancel_event,
@@ -475,6 +493,8 @@ def transcribe_source_file_with_metadata(
         raise ProcessCancelled("Transcription was canceled.")
     active_statuses = runtime_statuses
     if configured_engine == "auto" and active_statuses is None:
+        if before_io is not None:
+            before_io()
         active_statuses = detect_stt_backend_statuses(run_func=run_func)
     route = resolve_stt_route(
         settings, resolved_language=language, language_source=language_source,
@@ -506,6 +526,8 @@ def transcribe_source_file_with_metadata(
     # inject a transport function while making the cloud boundary explicit.
     cloud_request_func = cloud_request_func or _legacy_kwargs.pop("request_func", None)
     cloud_session = cloud_session or _legacy_kwargs.pop("session", None)
+    if before_io is not None:
+        before_io()
     if cloud_stt.is_cloud_stt_engine(configured_engine):
         result = cloud_stt.transcribe(
             transcribe_path,
@@ -514,6 +536,7 @@ def transcribe_source_file_with_metadata(
             settings=resolved_settings,
             request_func=cloud_request_func,
             session=cloud_session,
+            **hook_options,
         )
     elif configured_engine == "qwen3":
         import pandrator.logic.dubbing.qwen_asr as qwen_asr
@@ -537,6 +560,7 @@ def transcribe_source_file_with_metadata(
                 if progress_callback is not None
                 else None
             ),
+            **hook_options,
         )
     else:
         result = transcribe(
@@ -548,11 +572,14 @@ def transcribe_source_file_with_metadata(
             run_func=run_func,
             cancel_event=cancel_event,
             require_word_timestamps=require_word_timestamps,
+            **hook_options,
         )
     # Freeze the route before language-aware subtitle composition. Native
     # Whisper can report its language when preflight detection was unnecessary.
     routing = route.as_dict()
     words_path = Path(result.word_timestamps_path)
+    if before_io is not None:
+        before_io()
     payload = json.loads(words_path.read_text(encoding="utf-8"))
     effective_language = route.resolved_language
     if effective_language == "auto":
@@ -572,9 +599,13 @@ def transcribe_source_file_with_metadata(
         payload["crispasr"]["language"] = effective_language
         if "language_detected" in payload["crispasr"]:
             payload["crispasr"]["language_detected"] = effective_language
+    if before_io is not None:
+        before_io()
     words_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     resolved_settings = {**resolved_settings, "stt_language": effective_language}
     if isolation_provenance is not None:
+        if before_io is not None:
+            before_io()
         _record_isolation_provenance(
             result.word_timestamps_path, isolation_provenance, audio_path
         )
@@ -583,10 +614,14 @@ def transcribe_source_file_with_metadata(
     if require_word_timestamps:
         if progress_callback is not None:
             progress_callback(0.82, "Speech recognition complete; composing subtitles")
+        if before_io is not None:
+            before_io()
         Path(result.srt_path).write_text(
             compose_from_transcript_json(result.word_timestamps_path, resolved_settings),
             encoding="utf-8",
         )
+        if before_io is not None:
+            before_io()
         result_srt_path = postprocess_transcribed_srt(result.srt_path)
         if progress_callback is not None:
             progress_callback(1.0, "Subtitle timing and word metadata ready")

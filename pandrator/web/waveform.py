@@ -8,6 +8,8 @@ import re
 import threading
 from dataclasses import dataclass
 
+from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+
 from .media_process import (
     MediaProcessCancelled,
     probe_audio_stream,
@@ -103,6 +105,7 @@ def generate_waveform_peaks(
             "-loglevel",
             "error",
             *seek_arguments,
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             "-i",
             os.fspath(source),
             "-map",

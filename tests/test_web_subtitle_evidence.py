@@ -503,12 +503,14 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
         )
         with self.services.database.session() as session:
             media_asset = SourceAsset(
+                workspace_id=session.get_one(Artifact, foreign_media.id).workspace_id,
                 artifact_id=foreign_media.id,
                 display_name="Attached foreign media",
                 kind="mp4",
                 mime_type="video/mp4",
             )
             transcript_asset = SourceAsset(
+                workspace_id=session.get_one(Artifact, foreign_transcript.id).workspace_id,
                 artifact_id=foreign_transcript.id,
                 display_name="Attached foreign transcript",
                 kind="srt",
@@ -583,6 +585,7 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
         )
         with self.services.database.session() as session:
             media_asset = SourceAsset(
+                workspace_id=session.get_one(Artifact, foreign_media.id).workspace_id,
                 artifact_id=foreign_media.id,
                 display_name="Attached foreign media",
                 kind="mp4",
@@ -805,7 +808,9 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
                     ),
                     patch(
                         "pandrator.web.subtitle_evidence.hydrate_stt_settings",
-                        side_effect=lambda _database, _paths, values: dict(values),
+                        side_effect=lambda _database, _paths, values, *, session_id: (
+                            self.assertEqual(self.session.id, session_id) or dict(values)
+                        ),
                     ),
                 ):
                     result = self.services.subtitle_evidence.run_request(
@@ -1424,9 +1429,15 @@ class SubtitleEvidenceSchemaAndExcerptTests(unittest.TestCase):
             )
         command = calls[0][0]
         self.assertEqual(output, str(Path(directory) / "excerpt.wav"))
+        self.assertEqual(command[:3], ["ffmpeg-test", "-protocol_whitelist", "file,pipe"])
+        self.assertEqual(command[3], "-format_whitelist")
+        formats = set(command[4].split(","))
+        self.assertIn("mov", formats)
+        self.assertFalse(formats.intersection({"hls", "concat", "dash", "sdp", "rtsp"}))
+        input_index = command.index("-i")
         self.assertEqual(
-            command[:7],
-            ["ffmpeg-test", "-i", "/managed/source.mp4", "-ss", "1.5", "-t", "5"],
+            command[input_index:input_index + 6],
+            ["-i", "/managed/source.mp4", "-ss", "1.5", "-t", "5"],
         )
         self.assertIn("-acodec", command)
         self.assertIn("pcm_s16le", command)

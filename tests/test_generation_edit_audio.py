@@ -18,6 +18,7 @@ from pandrator.web.models import (
     Job,
     OutputAssembly,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.workflow_generation_finalization import finalize_generation_run
 
 
@@ -68,8 +69,19 @@ def test_capture_selection_guards_uses_narrow_take_queries(case):
     with case.database.session() as session:
         revision_id = session.get(GenerationSegment, case.segment_ids[0]).plan_revision_id
         session.get(GenerationSegment, case.segment_ids[2]).removed = True
-        active_artifact = Artifact(kind="audio", relative_path="guards-active.wav")
-        inactive_artifact = Artifact(kind="audio", relative_path="guards-inactive.wav")
+        ownership = resolve_artifact_ownership(session)
+        active_artifact = Artifact(
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
+            kind="audio",
+            relative_path="guards-active.wav",
+        )
+        inactive_artifact = Artifact(
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
+            kind="audio",
+            relative_path="guards-inactive.wav",
+        )
         session.add_all((active_artifact, inactive_artifact))
         session.flush()
         session.add_all((
@@ -736,8 +748,11 @@ def test_standalone_partial_run_pins_guarded_audio_through_later_selection(case)
             sequence_number=selected_run.sequence_number + 1,
             status="completed",
         )
+        ownership = resolve_artifact_ownership(session, session_id=selected_run.session_id)
         later_artifact = Artifact(
             session_id=selected_run.session_id,
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             kind="audio",
             relative_path="later-selection.wav",
         )
@@ -850,8 +865,11 @@ def test_partial_run_ignores_cross_plan_and_unguarded_clones(case):
             row["id"] for row in current["items"] if row["id"] != requested_id
         ]
         cross_plan_target, unguarded_target = untouched_ids
+        ownership = resolve_artifact_ownership(session, session_id=foreign_session_id)
         foreign_artifact = Artifact(
             session_id=foreign_session_id,
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             kind="audio",
             relative_path="foreign-baseline.wav",
         )

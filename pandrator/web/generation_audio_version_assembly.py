@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, select
+from sqlalchemy.orm import Session, load_only
 
 from .generation_audio_versions import audio_version_take_ids
 from .models import (
@@ -16,13 +16,16 @@ from .models import (
     GenerationRun,
     GenerationSegment,
     Job,
+    SessionRecord,
 )
+from .projects.models import Project
 from .settings_policy import RevisionConflict, stable_hash
 from .speech_plan_context import SIGNATURE_FIELDS
 
 
 def audio_version_assembly_selection(
     session: Session, session_id: str, run: GenerationRun | None, side: str,
+    *, scope_session: bool = False,
 ) -> tuple[dict[str, Any] | None, list[tuple[GenerationSegment, AudioTake, Artifact]]]:
     """Read a bounded exact selection; never compile speech or inspect files."""
     if side not in {"before", "after"}:
@@ -35,14 +38,31 @@ def audio_version_assembly_selection(
     if run.session_id != session_id or run.output_generation_run_id is not None:
         raise ValueError("The recast audio version does not belong to this session.")
     if side == "after":
-        job = session.get(Job, run.job_id) if run.job_id else None
+        if scope_session:
+            project = select(SessionRecord.project_id).where(SessionRecord.id == session_id).scalar_subquery()
+            workspace = select(Project.workspace_id).where(Project.id == project).scalar_subquery()
+            job = session.execute(select(Job.status).where(
+                Job.id == run.job_id, Job.session_id == session_id,
+                Job.project_id == project, Job.workspace_id == workspace,
+            )).one_or_none() if run.job_id else None
+        else:
+            job = session.get(Job, run.job_id) if run.job_id else None
         if (run.status not in {"completed", "partial", "failed", "canceled"}
                 or (job is None or job.status not in {
                     "succeeded", "failed", "canceled", "interrupted",
                 })):
             raise ValueError("Wait for recast generation and its job to finish before assembling after audio.")
-    revision = session.get(GenerationPlanRevision, run.plan_revision_id)
-    plan = session.get(GenerationPlan, revision.plan_id) if revision else None
+    if scope_session:
+        revision = session.scalar(select(GenerationPlanRevision)
+            .join(GenerationPlan, GenerationPlan.id == GenerationPlanRevision.plan_id)
+            .where(GenerationPlanRevision.id == run.plan_revision_id,
+                   GenerationPlan.session_id == session_id))
+        plan = session.scalar(select(GenerationPlan).where(
+            GenerationPlan.id == revision.plan_id, GenerationPlan.session_id == session_id,
+        )) if revision else None
+    else:
+        revision = session.get(GenerationPlanRevision, run.plan_revision_id)
+        plan = session.get(GenerationPlan, revision.plan_id) if revision else None
     if plan is None or plan.session_id != session_id:
         raise ValueError("The recast speech plan is no longer available.")
     segments = list(session.scalars(select(GenerationSegment).where(
@@ -54,9 +74,31 @@ def audio_version_assembly_selection(
     ids = list(take_ids.values())
     takes: dict[str, tuple[AudioTake, Artifact | None]] = {}
     for offset in range(0, len(ids), 500):
-        for take, artifact in session.execute(select(AudioTake, Artifact).outerjoin(
-            Artifact, Artifact.id == AudioTake.artifact_id,
-        ).where(AudioTake.id.in_(ids[offset:offset + 500]))):
+        if scope_session:
+            project = select(SessionRecord.project_id).where(SessionRecord.id == session_id).scalar_subquery()
+            workspace = select(Project.workspace_id).where(Project.id == project).scalar_subquery()
+            statement = (select(AudioTake, Artifact)
+                .join(GenerationRun, GenerationRun.id == AudioTake.generation_run_id)
+                .outerjoin(Artifact, and_(Artifact.id == AudioTake.artifact_id,
+                    Artifact.session_id == session_id, Artifact.project_id == project,
+                    Artifact.workspace_id == workspace, Artifact.kind == "audio", Artifact.state == "current"))
+                .options(load_only(
+                    Artifact.id, Artifact.workspace_id, Artifact.project_id, Artifact.session_id,
+                    Artifact.relative_path, Artifact.content_hash, Artifact.state,
+                    Artifact.size_bytes, Artifact.kind, raiseload=True,
+                ))
+                .where(AudioTake.id.in_(ids[offset:offset + 500]),
+                       AudioTake.generation_segment_id.in_([item.id for item in segments]),
+                       AudioTake.generation_run_id == run.id,
+                       AudioTake.status.in_(("completed", "stale")),
+                       GenerationRun.session_id == session_id,
+                       GenerationRun.plan_revision_id == run.plan_revision_id,
+                       GenerationRun.sequence_number <= run.sequence_number))
+        else:
+            statement = select(AudioTake, Artifact).outerjoin(
+                Artifact, Artifact.id == AudioTake.artifact_id,
+            ).where(AudioTake.id.in_(ids[offset:offset + 500]))
+        for take, artifact in session.execute(statement):
             takes[take.id] = take, artifact
     rows: list[tuple[GenerationSegment, AudioTake, Artifact]] = []
     evidence = []

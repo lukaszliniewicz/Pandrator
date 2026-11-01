@@ -5,17 +5,18 @@ from types import SimpleNamespace
 
 from sqlalchemy import func, select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.audiobook_setup import (
     configure_audiobook_setup,
     get_audiobook_setup,
 )
 from pandrator.web.database import Database
 from pandrator.web.models import (
-    AppSetting,
     OutcomePlan,
     OutcomePlanHistory,
     SessionSetting,
     SessionSettingHistory,
+    WorkspaceSetting,
 )
 from pandrator.web.sessions import SessionService
 from pandrator.web.workspace import (
@@ -176,14 +177,17 @@ class AudiobookSetupTests(unittest.TestCase):
 
     def test_multi_voice_does_not_copy_inherited_defaults_into_overrides(self):
         with self.database.session() as session:
+            workspace_id = initial_personal_workspace(session).id
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=workspace_id,
                     key="defaults.text",
                     value_json={"inherited_marker": "text-default"},
                 )
             )
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=workspace_id,
                     key="defaults.tts",
                     value_json={
                         "performance_enabled": True,

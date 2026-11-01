@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from flask import jsonify, request
+from sqlalchemy.orm import Session
 
 from .auth import Principal
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
@@ -86,6 +88,8 @@ class MutationIdempotency:
         payload: dict[str, Any],
         *,
         etag_key: str | None = None,
+        authorize: Callable[[Session], None] | None = None,
+        principal: Principal | None = None,
     ):
         """Replay a completed mutation before inspecting mutable state.
 
@@ -99,10 +103,12 @@ class MutationIdempotency:
             return None
         try:
             with self.context.services.database.immediate_session() as db_session:
+                if authorize is not None:
+                    authorize(db_session)
                 try:
                     reservation = self.context.services.idempotency.begin(
                         db_session,
-                        principal=self.principal(),
+                        principal=principal if principal is not None else self.principal(),
                         operation_id=operation_id,
                         idempotency_key=idempotency_key,
                         payload=payload,

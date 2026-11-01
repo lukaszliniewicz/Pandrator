@@ -3,21 +3,33 @@
 from __future__ import annotations
 
 import logging
+import os
+import stat
 import threading
 from collections.abc import Callable
+from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
+from pandrator.logic.local_audio_decode import load_local_audio_segment
 from pandrator.logic.tts_retry import DEFAULT_TTS_MAX_ATTEMPTS
 
+from .access.generation_execution_policy import (
+    GenerationExecutionProof,
+    generation_child_scope,
+    require_generation_execution,
+)
 from .assembly_silences import remap_render_parts_after_rvc
 from .jobs import JobQueue
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, new_id, utcnow
+from .speech_input_contracts import SpeechInputOwner
 from .tts_provider_contracts import TtsSynthesisResult, synthesize_with_optional_timing
+from .voice_execution_identity import voice_execution_workspace
 from .workflow_generation_finalization import (
     finalize_generation_run,
     restore_optional_pass_status,
@@ -28,6 +40,7 @@ from .workflow_generation_protocols import (
     HydrateTtsSettingsProtocol,
     NegotiatedTtsBatchProtocol,
     OptimizeGenerationTextsProtocol,
+    PrepareAudioCppVoiceReferenceProtocol,
     Progress,
     StreamingTtsBatchProtocol,
     TtsUsageEventProtocol,
@@ -44,6 +57,7 @@ if TYPE_CHECKING:
     from pandrator.runtime import DataPaths
 
     from .artifacts import ArtifactService
+    from .credentials import SecretRedactor
     from .database import Database
     from .manager_proxy import LocalManagerProxy
     from .models import SessionRecord
@@ -63,7 +77,7 @@ class GenerationExecutionContext:
     _optimize_generation_texts: OptimizeGenerationTextsProtocol
     _tts_urls: Callable[[dict[str, Any]], dict[str, str]]
     _negotiated_tts_batch_size: NegotiatedTtsBatchProtocol
-    prepare_audio_cpp_voice_reference: Callable[[dict[str, Any]], dict[str, Any]]
+    prepare_audio_cpp_voice_reference: PrepareAudioCppVoiceReferenceProtocol
     _ensure_qwen_cloned_voice: EnsureQwenVoiceProtocol
     _start_streaming_tts_batch: StreamingTtsBatchProtocol
     _verification_metadata: Callable[[AudioSegment, str, dict[str, Any]], dict[str, Any] | None]
@@ -80,6 +94,7 @@ class GenerationExecutionContext:
     _logger: logging.Logger
     _repair_early_generation_blocks: Callable[[str, Progress, threading.Event], dict[str, Any]]
     _regroup_generation_blocks: Callable[[str, Progress, threading.Event], dict[str, Any]]
+    secret_redactor: SecretRedactor | None = None
 
 
 def run_generation(
@@ -88,8 +103,124 @@ def run_generation(
     progress: Progress,
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
+    """Keep current generation authority across speech transport and publication."""
+    from pandrator.logic.tts_io_policy import tts_io_scope
+
+    with context.database.snapshot_session() as session:
+        captured = require_generation_execution(session, payload)
+
+    def prove_root(current: Session | None = None) -> GenerationExecutionProof:
+        if current is not None:
+            return require_generation_execution(current, payload, expected=captured)
+        with context.database.snapshot_session() as session:
+            return prove_root(session)
+
+    from .generation_runtime_speech import GenerationSpeechRuntime
+    from .generation_speech_inputs import GenerationSpeechInputs
+
+    with ExitStack() as stack:
+        secrets: set[str] = set()
+
+        def remember_secret(value: str) -> None:
+            if value and value not in secrets and context.secret_redactor is not None:
+                stack.enter_context(context.secret_redactor.scoped_values((value,)))
+                secrets.add(value)
+
+        speech = GenerationSpeechRuntime(
+            context.database, context.paths, context.tts_providers, context.manager_bridge,
+            captured, prove_root, context._hydrate_tts_settings, remember_secret,
+        )
+        stack.callback(speech.close)
+
+        def prove(current: Session | None = None) -> GenerationExecutionProof:
+            if current is None:
+                with context.database.snapshot_session() as session:
+                    return prove(session)
+            proof = prove_root(current)
+            speech.check(current)
+            inputs.check(current)
+            return proof
+
+        def before_io() -> None:
+            if cancel_event.is_set():
+                raise ValueError("Audio generation was cancelled before its next request.")
+            prove()
+
+        inputs = GenerationSpeechInputs(
+            context.database, context.paths,
+            SpeechInputOwner(captured.workspace_id, captured.project_id, captured.session_id),
+            before_io,
+        )
+
+        def prepare_reference(settings: dict[str, Any]) -> dict[str, Any]:
+            def legacy_prepare(value: dict[str, Any]) -> dict[str, Any]:
+                from .access.voice_policy import require_current_voice_library_read
+                from .speech_inputs import speech_input_adapter
+
+                if speech_input_adapter(value)[0] == "audio_cpp" and "audio_cpp_voice_ref" not in value:
+                    before_io()
+                    with context.database.snapshot_session() as current:
+                        require_current_voice_library_read(current, captured.workspace_id)
+                return context.prepare_audio_cpp_voice_reference(value, workspace_id=captured.workspace_id)
+
+            return inputs.prepare(settings, legacy_prepare=legacy_prepare)
+
+        with tts_io_scope(
+            before_io,
+            allow_environment_credentials=captured.host_credentials_allowed,
+            allow_host_adc=captured.host_credentials_allowed,
+            redact_diagnostic=context.secret_redactor.redact if context.secret_redactor else None,
+        ):
+            try:
+                return _run_generation(
+                    context, payload, progress, cancel_event, prove=prove,
+                    hydrate=speech.hydrate, validate=speech.validate,
+                    prepare_reference=prepare_reference,
+                )
+            except Exception as error:
+                if context.secret_redactor is None:
+                    raise
+                from pandrator.logic.tts_io_policy import TtsIoDenied
+
+                from .access.contracts import AccessDenied
+
+                if isinstance(error, (AccessDenied, TtsIoDenied)):
+                    raise
+                visible: BaseException | None = error
+                seen: set[int] = set()
+                needs_redaction = False
+                while visible is not None and id(visible) not in seen:
+                    seen.add(id(visible))
+                    if context.secret_redactor.redact(visible) != str(visible):
+                        needs_redaction = True
+                        break
+                    visible = visible.__cause__ or (
+                        None if visible.__suppress_context__ else visible.__context__
+                    )
+                if not needs_redaction:
+                    raise
+                from .tts_provider_contracts import TtsProviderError
+
+                message = context.secret_redactor.redact(error)
+                if isinstance(error, TtsProviderError):
+                    raise TtsProviderError(
+                        error.service_id, error.operation, message, retryable=error.retryable
+                    ) from None
+                raise RuntimeError(message) from None
+
+
+def _run_generation(
+    context: GenerationExecutionContext,
+    payload: dict[str, Any],
+    progress: Progress,
+    cancel_event: threading.Event,
+    *,
+    prove: Callable[[Session | None], GenerationExecutionProof],
+    hydrate: Callable[[dict[str, Any]], dict[str, Any]],
+    validate: Callable[[dict[str, Any]], dict[str, Any]],
+    prepare_reference: Callable[[dict[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
     """Generate immutable per-segment takes with safe pause and resume boundaries."""
-    from pydub import AudioSegment
 
     from pandrator.logic import rvc_handler
 
@@ -100,11 +231,26 @@ def run_generation(
         str(value) for value in (payload.get("segment_ids") or []) if str(value)
     }
     operation = str(payload.get("operation") or "generate")
+    speech_input_parents: dict[str, set[str]] = {}
+    input_parent_lock = threading.RLock()
+    identity_catalogue_cache: dict[Any, Any] | None = None
+
+    def prepare_segment_reference(settings: dict[str, Any], segment_id: str) -> dict[str, Any]:
+        from .generation_speech_inputs import retained_generation_input
+
+        prepared = prepare_reference(settings)
+        retained = retained_generation_input(prepared)
+        if retained is not None and retained.pin is not None:
+            with input_parent_lock:
+                speech_input_parents.setdefault(segment_id, set()).add(retained.pin["artifact_id"])
+        return prepared
     progress(0.0, "Checking speech plan and voice references")
     with context.database.session() as session:
+        prove(session)
         run = session.get(GenerationRun, run_id)
         if run is None:
             raise KeyError(run_id)
+        workspace_id = voice_execution_workspace(session, {}, session_id=run.session_id).id
         output_run_id = str(run.output_generation_run_id or run.id)
         output_run = session.get(GenerationRun, output_run_id)
         if (
@@ -232,12 +378,10 @@ def run_generation(
     )
     selected_tts_override = dict(selected_segment_override.get("tts") or {})
     selected_rvc_override = dict(selected_segment_override.get("rvc") or {})
-    tts_settings = context._hydrate_tts_settings(
-        context.database,
-        context.paths,
-        tts_settings,
-        manager_bridge=context.manager_bridge,
-    )
+    prove(None)
+    if operation != "rvc" and not selected_tts_override:
+        tts_settings = hydrate(tts_settings)
+    prove(None)
     selected_tts_runtime: dict[str, Any] | None = None
     if selected_tts_override:
         # Alternate settings are a small UI payload, not a complete TTS
@@ -275,20 +419,28 @@ def run_generation(
         # for normal catalogue choices.  An alternate payload that names
         # an endpoint explicitly is authoritative, however.
         selected_tts_runtime.update(explicit_endpoints)
-        selected_tts_runtime = context._hydrate_tts_settings(
-            context.database,
-            context.paths,
-            selected_tts_runtime,
-            manager_bridge=context.manager_bridge,
-        )
+        if operation != "rvc":
+            selected_tts_runtime = hydrate(selected_tts_runtime)
         selected_tts_runtime.update(explicit_endpoints)
+        if operation != "rvc":
+            selected_tts_runtime = validate(selected_tts_runtime)
 
     def _assert_current_audio_identity(segment_id: str) -> None:
+        nonlocal identity_catalogue_cache
         from .generation_audio_identity import AudioIdentityContext
 
+        # Share pure catalogue data within this attempt; identities stay fresh.
+        if identity_catalogue_cache is None:
+            with input_parent_lock:
+                if identity_catalogue_cache is None:
+                    identity_catalogue_cache = {}
         with context.database.session() as session:
+            prove(session)
             segment = session.get(GenerationSegment, segment_id)
-            if segment is None or AudioIdentityContext(session, settings_snapshot).for_segment(segment) != audio_identities[segment_id]:
+            if segment is None or AudioIdentityContext(
+                session, settings_snapshot,
+                _service_config_cache=identity_catalogue_cache,
+            ).for_segment(segment) != audio_identities[segment_id]:
                 raise ValueError("A voice reference or segment delivery setting changed during generation. Start a new run to keep its audio consistent.")
 
     def _tts_settings_for_segment(
@@ -527,13 +679,15 @@ def run_generation(
                     segment_tts_settings, settings_snapshot, segment_id, synthesized_text,
                     contexts=performance_contexts,
                 )
-                segment_tts_settings = context.prepare_audio_cpp_voice_reference(
-                    segment_tts_settings
+                segment_tts_settings = validate(segment_tts_settings)
+                segment_tts_settings = prepare_segment_reference(
+                    segment_tts_settings, segment_id
                 )
                 context._ensure_qwen_cloned_voice(
                     segment_tts_settings,
                     base_url=tts_urls["kobold_qwen_base_url"],
                     verified=verified_qwen_voices,
+                    workspace_id=workspace_id,
                     cancel_event=cancel_event,
                 )
                 batch_contexts[segment_id] = {
@@ -659,6 +813,7 @@ def run_generation(
             f"Generating segment {index + 1} of {len(segment_ids)}",
         )
         take_path: Path | None = None
+        take_file_identity: tuple[int, int] | None = None
         take_committed = False
         take_parent_ids: list[str] = []
         render_manifest: list[dict[str, Any]] = []
@@ -714,7 +869,7 @@ def run_generation(
                     take_parent_ids = [source_artifact.id]
                     source_take_id = source_take.id
                 source_path = context.paths.managed_path(source_artifact.relative_path)
-                source_audio = AudioSegment.from_file(source_path)
+                source_audio = load_local_audio_segment(source_path)
                 audio = rvc_handler.process_with_rvc(source_audio, rvc_settings)
                 render_manifest = remap_render_parts_after_rvc(
                     (source_artifact.metadata_json or {}).get("render_parts") or [],
@@ -771,14 +926,16 @@ def run_generation(
                         segment_tts_settings, settings_snapshot, segment_id, synthesized_text,
                         contexts=performance_contexts,
                     )
+                    segment_tts_settings = validate(segment_tts_settings)
                     if not segment_tts_settings.get("casting_enabled"):
-                        segment_tts_settings = context.prepare_audio_cpp_voice_reference(
-                            segment_tts_settings
+                        segment_tts_settings = prepare_segment_reference(
+                            segment_tts_settings, segment_id
                         )
                         context._ensure_qwen_cloned_voice(
                             segment_tts_settings,
                             base_url=tts_urls["kobold_qwen_base_url"],
                             verified=verified_qwen_voices,
+                            workspace_id=workspace_id,
                             cancel_event=cancel_event,
                         )
                     _assert_current_audio_identity(segment_id)
@@ -836,10 +993,14 @@ def run_generation(
                         part_settings: dict[str, Any],
                         segment_id: str = segment_id,
                     ) -> TtsSynthesisResult:
-                        prepared = context.prepare_audio_cpp_voice_reference(part_settings)
+                        part_settings = validate(part_settings)
+                        prepared = prepare_segment_reference(
+                            part_settings, segment_id
+                        )
                         context._ensure_qwen_cloned_voice(
                             prepared, base_url=tts_urls["kobold_qwen_base_url"],
-                            verified=verified_qwen_voices, cancel_event=cancel_event,
+                            verified=verified_qwen_voices,
+                            workspace_id=workspace_id, cancel_event=cancel_event,
                         )
                         _assert_current_audio_identity(segment_id)
                         return synthesize_request(
@@ -923,6 +1084,7 @@ def run_generation(
                     speech_timing = None
                     take_kind = "tts_rvc"
                     take_settings = {**segment_tts_settings, "rvc": rvc_settings}
+            prove(None)
             verification = context._verification_metadata(
                 audio,
                 synthesized_text,
@@ -938,7 +1100,9 @@ def run_generation(
             )
             take_dir.mkdir(parents=True, exist_ok=True)
             take_path = take_dir / f"{take_kind}-{new_id()}.wav"
-            with take_path.open("wb") as output:
+            with take_path.open("xb") as output:
+                info = os.fstat(output.fileno())
+                take_file_identity = (info.st_dev, info.st_ino)
                 audio.export(output, format="wav")
             stored_take_settings = context._secret_free_tts_settings(take_settings)
             prepared_artifact = context.artifacts.prepare_registration(
@@ -946,6 +1110,7 @@ def run_generation(
                 settings=stored_take_settings,
             )
             with context.database.immediate_session() as session:
+                prove(session)
                 if cast_render:
                     current_run = session.get(GenerationRun, run_id)
                     if cancel_event.is_set() or current_run is None or current_run.cancel_requested:
@@ -965,7 +1130,9 @@ def run_generation(
                         path=take_path,
                         kind=take_kind,
                         duration_ms=duration_ms,
-                        parent_ids=take_parent_ids,
+                        parent_ids=list(dict.fromkeys([
+                            *take_parent_ids, *sorted(speech_input_parents.get(segment_id, set())),
+                        ])),
                         parent_take_id=parent_take_id,
                         settings=stored_take_settings,
                         metadata={
@@ -1018,9 +1185,15 @@ def run_generation(
                 f"Generated segment {index + 1} of {len(segment_ids)}",
             )
         except Exception:
-            if take_path is not None and not take_committed:
+            if take_path is not None and take_file_identity is not None and not take_committed:
                 try:
-                    take_path.unlink(missing_ok=True)
+                    info = take_path.lstat()
+                    if stat.S_ISREG(info.st_mode) and (
+                        info.st_dev, info.st_ino
+                    ) == take_file_identity:
+                        take_path.unlink(missing_ok=True)
+                except FileNotFoundError:
+                    pass
                 except OSError:
                     context._logger.warning(
                         "Could not remove uncommitted generation take %s",
@@ -1093,11 +1266,12 @@ def run_generation(
         result["resumed_source_job_id"] = resumed_job_id
     if final_status == "completed" and repair_requested:
         try:
-            result.update(context._repair_early_generation_blocks(
-                run_id,
-                lambda value, detail=None: completion_progress(0.85 + 0.14 * value, detail),
-                cancel_event,
-            ))
+            with generation_child_scope(prove(None), payload):
+                result.update(context._repair_early_generation_blocks(
+                    run_id,
+                    lambda value, detail=None: completion_progress(0.85 + 0.14 * value, detail),
+                    cancel_event,
+                ))
         except Exception:
             context._logger.warning("Optional voiceover repair could not finish; the generated audio remains available.", exc_info=True)
             result["early_repair_status"] = "failed"
@@ -1112,11 +1286,12 @@ def run_generation(
         completion_progress(1.0, f"Voiceover timing checked; {result.get('repaired_blocks', 0)} block(s) repaired")
     if final_status == "completed" and regroup_requested:
         try:
-            result.update(context._regroup_generation_blocks(
-                run_id,
-                lambda value, detail=None: completion_progress(0.85 + 0.14 * value, detail),
-                cancel_event,
-            ))
+            with generation_child_scope(prove(None), payload):
+                result.update(context._regroup_generation_blocks(
+                    run_id,
+                    lambda value, detail=None: completion_progress(0.85 + 0.14 * value, detail),
+                    cancel_event,
+                ))
         except Exception:
             context._logger.warning("Optional voiceover regroup could not finish; the generated audio remains available.", exc_info=True)
             result["regroup_status"] = "failed"

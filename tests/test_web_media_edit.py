@@ -21,6 +21,7 @@ from pandrator.web.models import (
     SessionSource,
     SourceAsset,
 )
+from pandrator.web.projects.identity import create_session_project
 
 
 class MediaEditServiceTests(unittest.TestCase):
@@ -32,14 +33,13 @@ class MediaEditServiceTests(unittest.TestCase):
         self.artifacts = ArtifactService(self.database, self.paths)
         self.session_id = "11111111-1111-4111-8111-111111111111"
         with self.database.session() as session:
-            session.add(
-                SessionRecord(
-                    id=self.session_id,
-                    name="Media edit",
-                    storage_key="22222222-2222-4222-8222-222222222222",
-                    workflow_kind="media_edit",
-                )
+            record = SessionRecord(
+                id=self.session_id,
+                name="Media edit",
+                storage_key="22222222-2222-4222-8222-222222222222",
+                workflow_kind="media_edit",
             )
+            create_session_project(session, record)
 
     def tearDown(self):
         self.database.dispose()
@@ -69,6 +69,7 @@ class MediaEditServiceTests(unittest.TestCase):
     def _attach(self, artifact, role: str, kind: str):
         with self.database.session() as session:
             asset = SourceAsset(
+                workspace_id=artifact.workspace_id,
                 artifact_id=artifact.id,
                 display_name=artifact.relative_path,
                 kind=kind,

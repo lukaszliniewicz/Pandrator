@@ -10,7 +10,7 @@ from collections import Counter
 from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from pandrator.logic.tts_service_identity import normalize_service_id
 
@@ -25,6 +25,18 @@ from .voice_catalog_schemas import (
 
 class VoiceCatalogQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=80, strict=True)
+    session_id: str | None = Field(default=None, min_length=1, max_length=80, strict=True)
+
+    @field_validator("workspace_id", "session_id", mode="before")
+    @classmethod
+    def strict_root(cls, value):
+        if value is not None and (
+            type(value) is not str or not value or value != value.strip()
+        ):
+            raise ValueError("Choose a valid voice workspace or session scope.")
+        return value
 
     query: str = Field(default="", max_length=300)
     language: str = Field(default="", max_length=40)
@@ -352,11 +364,12 @@ def catalog_entries(
                     and registration.get("resource_kind") == "designed_voice"
                 )
                 if google_design:
-                    ready = registration.get("voice_id") in service.get("managed_google_voice_ids", [])
+                    scope_known = "managed_google_voice_ids" in service
+                    ready = scope_known and registration.get("voice_id") in service.get("managed_google_voice_ids", [])
                     status = (
-                        "scope_mismatch" if not ready
+                        "scope_mismatch" if scope_known and not ready
                         else "unavailable" if service.get("available") is False
-                        else "ready" if service.get("available") is True
+                        else "ready" if ready and service.get("available") is True
                         else "unknown"
                     )
                     compatibility.append(
@@ -366,7 +379,7 @@ def catalog_entries(
                             model_id=model["id"],
                             status=status,
                             ready=status == "ready",
-                            prepared=status != "scope_mismatch",
+                            prepared=registration.get("status") == "ready" and status != "scope_mismatch",
                             voice=registration.get("voice_id"),
                             modes=modes,
                             languages=supported_languages(service, model),
@@ -649,7 +662,10 @@ def query_catalog(
         compatibility = [
             c
             for c in item["compatibility"]
-            if (not query.service_id or c["service_id"] == query.service_id)
+            if (
+                not query.service_id
+                or normalize_service_id(c["service_id"]) == normalize_service_id(query.service_id)
+            )
             and (not query.model or c["model"] == query.model)
         ]
         if query.language:

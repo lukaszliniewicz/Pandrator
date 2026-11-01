@@ -1,7 +1,8 @@
 <script lang="ts">
   import { apiJson } from './api';
   import { errorMessage } from './errors';
-  import { modalDialog } from './modal-dialog';
+  import ReviewWorkspace from './ReviewWorkspace.svelte';
+  let versionsOpen = $state(true);
   import AudioReuseNotice from './AudioReuseNotice.svelte';
   import RepairBatchPanel from './RepairBatchPanel.svelte';
   import { loadRepairBatch, type RepairBatch } from './repair-batches';
@@ -257,16 +258,16 @@
     onclick={openHistory}>Speech plans</button
   >{/if}
 {#if open}
-  <dialog
-    use:modalDialog={{
-      onclose: () => {
-        if (!busy) close();
-      }
-    }}
-    aria-labelledby="speech-plan-history-title"
-    class="history-dialog"
+  <ReviewWorkspace
+    closeLabel="Close speech-plan history"
+    titleId="speech-plan-history-title"
+    onclose={close}
+    {busy}
+    bind:toolsOpen={versionsOpen}
+    toolsTitle="Versions"
+    toolsSide="left"
   >
-    <header class="history-header">
+    {#snippet header()}
       <div>
         <h2 id="speech-plan-history-title" class="text-lg font-semibold">
           Versioned speech plans
@@ -276,14 +277,14 @@
           active plan unchanged.
         </p>
       </div>
-      <button type="button" class="btn" disabled={busy} onclick={close}
-        >Close</button
-      >
-    </header>
-    {#if error}<p role="alert" class="mx-5 mb-3 text-sm text-red-700">
-        {error}
-      </p>{/if}
-    <div class="history-body">
+    {/snippet}
+    {#snippet notices()}{#if error}<p
+          role="alert"
+          class="px-4 py-2 text-sm text-red-600"
+        >
+          {error}
+        </p>{/if}{/snippet}
+    {#snippet tools()}
       <nav aria-label="Plan versions" class="version-list">
         {#if busy && !revisions.length}<p
             class="muted p-3 text-sm"
@@ -336,214 +337,170 @@
             onclick={() => void loadHistory(true)}
             >Load earlier revisions</button
           >{/if}
-      </nav>
-      <section
-        aria-label="Version preview"
-        class="version-preview"
-        aria-busy={previewLoading}
-      >
-        {#if current}
-          {#if current.repair_batch}
-            {#key current.entry_id}
-              <RepairBatchPanel
-                {sessionId}
-                batch={current.repair_batch}
-                disabled={disabled || busy || previewLoading || detailLoading}
-                onpreview={(revisionId) => void preview(revisionId)}
-                onundone={async (revisionId) => {
-                  serverActiveRevisionId = revisionId;
-                  await loadHistory();
-                }}
-              />
-            {/key}
-          {/if}
-          <div class="mb-5 border-b border-[var(--line)] pb-4">
-            <h3 class="text-lg font-semibold">
-              {inspectingCheckpoint
-                ? selected === current.repair_batch?.base_revision_id
-                  ? 'Original plan before repairs'
-                  : 'Repair checkpoint preview'
-                : current.repair_batch
-                  ? current.is_repair_checkpoint
-                    ? 'Selected repair checkpoint'
-                    : current.repair_batch.applied_count
-                      ? 'Repaired plan'
-                      : 'Original plan — no repairs applied'
-                  : `Version ${current.revision_number}`}
-            </h3>
-            <p class="mt-1 text-sm">{current.summary}</p>
-            {#if current.repair_status}
-              <p class="mt-3 text-sm">
-                <strong>Repair: {repairLabel(current.repair_status)}</strong
-                >{#if current.source_block_ordinal != null}
-                  · Original block {current.source_block_ordinal + 1}{/if}
-              </p>
-              {#if current.repair_reason}<p class="muted mt-1 text-sm">
-                  {repairDetail(current.repair_reason)}
-                </p>{/if}
-              {#if current.repair_status === 'unknown'}<p
-                  class="muted mt-1 text-sm"
-                >
-                  This older version has no recorded repair outcome.
-                </p>{/if}
-            {/if}
-            {#if !inspectingCheckpoint}
-              {#if current.audio_reuse_checked}
-                <p class="muted mt-3 text-xs">
-                  {current.reusable_segment_count} reusable · {current.stale_segment_count}
-                  missing or stale
-                  {#if parentRevision}
-                    · Based on version {parentRevision.revision_number}{/if}
-                </p>
-                <AudioReuseNotice
-                  settingsStale={current.audio_settings_stale_segment_count ??
-                    undefined}
-                  identityUnknown={current.audio_identity_unknown_segment_count ??
-                    undefined}
-                />
-              {:else}
-                <p class="muted mt-3 text-xs" role="status">
-                  {#if detailLoading}Checking audio status…{:else}Audio status
-                    not checked for this version.{/if}
-                </p>
-              {/if}
-            {/if}
-            {#if detailError}<p role="alert" class="mt-3 text-sm text-red-700">
-                {detailError}
-                <button
-                  type="button"
-                  class="btn mt-2"
-                  disabled={detailLoading}
-                  onclick={() => current && void loadRevisionDetail(current)}
-                  >Retry audio check</button
-                >
+      </nav>{/snippet}
+
+    <section
+      aria-label="Version preview"
+      class="version-preview min-h-0 flex-1"
+      aria-busy={previewLoading}
+    >
+      {#if current}
+        {#if current.repair_batch}
+          {#key current.entry_id}
+            <RepairBatchPanel
+              {sessionId}
+              batch={current.repair_batch}
+              disabled={disabled || busy || previewLoading || detailLoading}
+              onpreview={(revisionId) => void preview(revisionId)}
+              onundone={async (revisionId) => {
+                serverActiveRevisionId = revisionId;
+                await loadHistory();
+              }}
+            />
+          {/key}
+        {/if}
+        <div class="mb-5 border-b border-[var(--line)] pb-4">
+          <h3 class="text-lg font-semibold">
+            {inspectingCheckpoint
+              ? selected === current.repair_batch?.base_revision_id
+                ? 'Original plan before repairs'
+                : 'Repair checkpoint preview'
+              : current.repair_batch
+                ? current.is_repair_checkpoint
+                  ? 'Selected repair checkpoint'
+                  : current.repair_batch.applied_count
+                    ? 'Repaired plan'
+                    : 'Original plan — no repairs applied'
+                : `Version ${current.revision_number}`}
+          </h3>
+          <p class="mt-1 text-sm">{current.summary}</p>
+          {#if current.repair_status}
+            <p class="mt-3 text-sm">
+              <strong>Repair: {repairLabel(current.repair_status)}</strong
+              >{#if current.source_block_ordinal != null}
+                · Original block {current.source_block_ordinal + 1}{/if}
+            </p>
+            {#if current.repair_reason}<p class="muted mt-1 text-sm">
+                {repairDetail(current.repair_reason)}
               </p>{/if}
-            <div class="mt-4 flex flex-wrap gap-2">
-              {#if selected !== effectiveActiveRevisionId}
-                {#if onselect}<button
-                    type="button"
-                    class="btn btn-primary"
-                    disabled={busy ||
-                      disabled ||
-                      previewLoading ||
-                      detailLoading}
-                    onclick={() => void restore(false)}
-                    >Select this revision</button
-                  >{/if}
-                <button
-                  type="button"
-                  class="btn"
-                  disabled={busy || disabled || previewLoading || detailLoading}
-                  onclick={() => void restore()}
-                  >Restore as a new active revision</button
-                >
-              {:else}
-                <button
+            {#if current.repair_status === 'unknown'}<p
+                class="muted mt-1 text-sm"
+              >
+                This older version has no recorded repair outcome.
+              </p>{/if}
+          {/if}
+          {#if !inspectingCheckpoint}
+            {#if current.audio_reuse_checked}
+              <p class="muted mt-3 text-xs">
+                {current.reusable_segment_count} reusable · {current.stale_segment_count}
+                missing or stale
+                {#if parentRevision}
+                  · Based on version {parentRevision.revision_number}{/if}
+              </p>
+              <AudioReuseNotice
+                settingsStale={current.audio_settings_stale_segment_count ??
+                  undefined}
+                identityUnknown={current.audio_identity_unknown_segment_count ??
+                  undefined}
+              />
+            {:else}
+              <p class="muted mt-3 text-xs" role="status">
+                {#if detailLoading}Checking audio status…{:else}Audio status not
+                  checked for this version.{/if}
+              </p>
+            {/if}
+          {/if}
+          {#if detailError}<p role="alert" class="mt-3 text-sm text-red-700">
+              {detailError}
+              <button
+                type="button"
+                class="btn mt-2"
+                disabled={detailLoading}
+                onclick={() => current && void loadRevisionDetail(current)}
+                >Retry audio check</button
+              >
+            </p>{/if}
+          <div class="mt-4 flex flex-wrap gap-2">
+            {#if selected !== effectiveActiveRevisionId}
+              {#if onselect}<button
                   type="button"
                   class="btn btn-primary"
-                  disabled={busy || disabled || previewLoading}
-                  onclick={async () => {
-                    close();
-                    await ongenerate(false);
-                  }}>Regenerate everything…</button
-                >
-                <button
-                  type="button"
-                  class="btn"
-                  disabled={busy || disabled || previewLoading}
-                  title="The server calculates which blocks are missing or stale, even before audio status is checked."
-                  onclick={async () => {
-                    close();
-                    await ongenerate(true);
-                  }}>Refresh changed audio…</button
-                >
-              {/if}
-            </div>
-            <details class="muted mt-4 text-xs">
-              <summary class="cursor-pointer">Revision details</summary>
-              <p class="mt-2 break-all">Revision ID: {selected}</p>
-              {#if current.parent_revision_id}<p class="mt-1 break-all">
-                  Parent ID: {current.parent_revision_id}
-                </p>{/if}
-            </details>
-          </div>
-        {/if}
-        {#if previewLoading && !blocks.length}<p
-            class="muted text-sm"
-            role="status"
-          >
-            Loading blocks…
-          </p>{/if}
-        <div class="space-y-3">
-          {#each blocks as block (block.id)}
-            <article class="rounded-xl border border-[var(--line)] p-4">
-              <div class="muted mb-2 break-words text-xs">
-                Block {block.ordinal + 1} · {block.status} · source cues {block.source_segment_ids.join(
-                  ', '
-                ) || '—'}
-              </div>
-              <p
-                class="whitespace-pre-wrap break-words text-sm leading-relaxed"
+                  disabled={busy || disabled || previewLoading || detailLoading}
+                  onclick={() => void restore(false)}
+                  >Select this revision</button
+                >{/if}
+              <button
+                type="button"
+                class="btn"
+                disabled={busy || disabled || previewLoading || detailLoading}
+                onclick={() => void restore()}
+                >Restore as a new active revision</button
               >
-                {block.text}
-              </p>
-            </article>
-          {/each}
+            {:else}
+              <button
+                type="button"
+                class="btn btn-primary"
+                disabled={busy || disabled || previewLoading}
+                onclick={async () => {
+                  close();
+                  await ongenerate(false);
+                }}>Regenerate everything…</button
+              >
+              <button
+                type="button"
+                class="btn"
+                disabled={busy || disabled || previewLoading}
+                title="The server calculates which blocks are missing or stale, even before audio status is checked."
+                onclick={async () => {
+                  close();
+                  await ongenerate(true);
+                }}>Refresh changed audio…</button
+              >
+            {/if}
+          </div>
+          <details class="muted mt-4 text-xs">
+            <summary class="cursor-pointer">Revision details</summary>
+            <p class="mt-2 break-all">Revision ID: {selected}</p>
+            {#if current.parent_revision_id}<p class="mt-1 break-all">
+                Parent ID: {current.parent_revision_id}
+              </p>{/if}
+          </details>
         </div>
-        {#if nextCursor !== null}<button
-            type="button"
-            class="btn mt-3"
-            disabled={previewLoading}
-            onclick={() => void preview(selected, true)}
-            >Load more blocks</button
-          >{/if}
-      </section>
-    </div>
-  </dialog>
+      {/if}
+      {#if previewLoading && !blocks.length}<p
+          class="muted text-sm"
+          role="status"
+        >
+          Loading blocks…
+        </p>{/if}
+      <div class="space-y-3">
+        {#each blocks as block (block.id)}
+          <article class="rounded-xl border border-[var(--line)] p-4">
+            <div class="muted mb-2 break-words text-xs">
+              Block {block.ordinal + 1} · {block.status} · source cues {block.source_segment_ids.join(
+                ', '
+              ) || '—'}
+            </div>
+            <p class="whitespace-pre-wrap break-words text-sm leading-relaxed">
+              {block.text}
+            </p>
+          </article>
+        {/each}
+      </div>
+      {#if nextCursor !== null}<button
+          type="button"
+          class="btn mt-3"
+          disabled={previewLoading}
+          onclick={() => void preview(selected, true)}>Load more blocks</button
+        >{/if}
+    </section>
+  </ReviewWorkspace>
 {/if}
 
 <style>
-  .history-dialog {
-    width: min(70rem, calc(100vw - 2rem));
-    height: min(54rem, 88dvh);
-    max-height: 88dvh;
-    max-width: none;
-    margin: auto;
-    padding: 0;
-    overflow: hidden;
-    border: 1px solid var(--line);
-    border-radius: 1.2rem;
-    background: var(--paper);
-    color: var(--ink);
-    box-shadow: var(--shadow);
-  }
-  .history-dialog[open] {
-    display: flex;
-    flex-direction: column;
-  }
-  .history-dialog::backdrop {
-    background: rgb(0 0 0 / 40%);
-    backdrop-filter: blur(3px);
-  }
-  .history-header {
-    display: flex;
-    flex: none;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 1.25rem;
-    border-bottom: 1px solid var(--line);
-  }
-  .history-body {
-    display: grid;
-    grid-template-columns: minmax(16rem, 19rem) minmax(0, 1fr);
-    flex: 1;
-    min-height: 0;
-  }
   .version-list {
     overflow: auto;
-    padding: 0.75rem;
-    border-right: 1px solid var(--line);
+    padding: 0;
     background: var(--paper-strong);
   }
   .version-card {
@@ -592,18 +549,5 @@
     min-width: 0;
     overflow: auto;
     padding: 1.25rem;
-  }
-  @media (max-width: 700px) {
-    .history-body {
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: minmax(8rem, 32%) minmax(0, 1fr);
-    }
-    .version-list {
-      border-right: 0;
-      border-bottom: 1px solid var(--line);
-    }
-    .version-preview {
-      padding: 1rem;
-    }
   }
 </style>

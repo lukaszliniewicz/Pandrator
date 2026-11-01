@@ -3,6 +3,7 @@
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from sqlalchemy import event, func, select
@@ -127,6 +128,7 @@ class SessionSourcePathTests(unittest.TestCase):
     def test_competing_outcome_updates_preserve_one_revision_and_history(self):
         service = OutcomePlanService(self.extension["database"])
         initial = service.get(self.session_id)
+        initial = service.update(self.session_id, initial["revision"], initial["value"])
         first = {**initial["value"], "focus": "first"}
         second = {**initial["value"], "focus": "second"}
         results = self._compete(
@@ -144,19 +146,36 @@ class SessionSourcePathTests(unittest.TestCase):
             self.assertEqual(1, len(history))
             self.assertEqual(initial["value"], history[0].value_json)
 
-    def test_competing_outcome_initialization_returns_the_same_plan(self):
+    def test_concurrent_outcome_reads_are_pure_and_return_the_same_defaults(self):
         database = self.extension["database"]
         with database.session() as session:
             existing = session.get(OutcomePlan, self.session_id)
             if existing is not None:
                 session.delete(existing)
         service = OutcomePlanService(database)
-        results = self._compete(
-            lambda: service.get(self.session_id), lambda: service.get(self.session_id),
-            "INSERT INTO outcome_plans ",
-        )
-        self.assertIsInstance(results["first"], dict)
-        self.assertEqual(results["first"], results["second"])
+        writes = []
+        barrier = threading.Barrier(2)
+
+        def observe(_connection, _cursor, statement, _parameters, _context, _many):
+            if statement.strip().upper().startswith(("INSERT ", "UPDATE ", "DELETE ")):
+                writes.append(statement)
+
+        def read():
+            barrier.wait(timeout=5)
+            return service.get(self.session_id)
+
+        event.listen(database.engine, "before_cursor_execute", observe)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first, second = executor.submit(read), executor.submit(read)
+                results = [first.result(timeout=10), second.result(timeout=10)]
+        finally:
+            event.remove(database.engine, "before_cursor_execute", observe)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(0, results[0]["revision"])
+        self.assertEqual([], writes)
+        with database.snapshot_session() as session:
+            self.assertIsNone(session.get(OutcomePlan, self.session_id))
 
     def test_competing_source_promotion_preserves_one_asset_identity(self):
         artifact = self._new_artifact("promotion.txt")

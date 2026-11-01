@@ -6,9 +6,11 @@ from datetime import timedelta
 
 import pytest
 
+from pandrator.web.accounts.private_work_models import QuickTranscriptionOwner
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import Job, QuickTranscription, utcnow
+from pandrator.web.job_identity import job_creation_ownership
+from pandrator.web.models import Job, QuickTranscription, Workspace, utcnow
 from pandrator.web.openapi import build_openapi_document
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -18,11 +20,11 @@ def job_case(tmp_path_factory):
     root = tmp_path_factory.mktemp("scoped-jobs")
     prepare_web_test_data_root(root)
     tokens = BootstrapTokenStore()
-    app = create_app(data_root=root, testing=True, bootstrap_tokens=tokens)
+    app = create_app(data_root=root, testing=True, bootstrap_tokens=tokens, background_maintenance=False)
     client = app.test_client()
     assert (
         client.post(
-            "/api/v1/auth/bootstrap", json={"token": tokens.issue(subject="scope-owner")}
+            "/api/v1/auth/bootstrap", json={"token": tokens.issue()}
         ).status_code
         == 200
     )
@@ -31,34 +33,47 @@ def job_case(tmp_path_factory):
     other = services.sessions.create("Other output")
     now = utcnow()
     with services.database.session() as db:
+        target_owner = job_creation_ownership(db, session_id=target.id)
+        other_owner = job_creation_ownership(db, session_id=other.id)
         old = Job(
+            workspace_id=target_owner.workspace_id,
+            project_id=target_owner.project_id,
             kind="dubbing.export",
             session_id=target.id,
             status="succeeded",
             created_at=now - timedelta(days=2),
         )
         newer = Job(
+            workspace_id=target_owner.workspace_id,
+            project_id=target_owner.project_id,
             kind="dubbing.export",
             session_id=target.id,
             status="succeeded",
             created_at=now - timedelta(days=1),
         )
         private = Job(
-            kind="dubbing.export",
-            session_id=target.id,
+            workspace_id=target_owner.workspace_id,
+            kind="transcription.quick",
             status="succeeded",
             created_at=now - timedelta(hours=12),
         )
         db.add_all([old, newer, private])
         db.flush()
-        db.add(
-            QuickTranscription(
-                owner_subject="scope-owner",
+        transcription = QuickTranscription(
+                owner_subject="owner",
                 job_id=private.id,
                 source_suffix=".wav",
                 size_bytes=1,
                 sha256="a" * 64,
                 expires_at=now + timedelta(days=1),
+            )
+        db.add(transcription)
+        db.flush()
+        db.add(
+            QuickTranscriptionOwner(
+                transcription_id=transcription.id,
+                workspace_id=target_owner.workspace_id,
+                user_id=db.get(Workspace, target_owner.workspace_id).personal_owner_user_id,
             )
         )
         # Each filter alone still sees >100 newer unrelated jobs. Both filters
@@ -66,6 +81,8 @@ def job_case(tmp_path_factory):
         for index in range(260):
             db.add(
                 Job(
+                    workspace_id=other_owner.workspace_id,
+                    project_id=other_owner.project_id,
                     kind="dubbing.export",
                     session_id=other.id,
                     status="succeeded",
@@ -74,6 +91,8 @@ def job_case(tmp_path_factory):
             )
             db.add(
                 Job(
+                    workspace_id=target_owner.workspace_id,
+                    project_id=target_owner.project_id,
                     kind="dubbing.generate",
                     session_id=target.id,
                     status="succeeded",
@@ -91,7 +110,7 @@ def _ids(items):
 
 def test_queue_and_facade_filter_before_limit(job_case):
     _, services, _, _, target_id, _, ids = job_case
-    expected = [ids["private"], ids["newer"], ids["old"]]
+    expected = [ids["newer"], ids["old"]]
     assert _ids(services.jobs.list(session_id=target_id, kind="dubbing.export")) == expected
     assert (
         _ids(services.work.diagnostic_list(session_id=target_id, kind="dubbing.export")) == expected
@@ -163,32 +182,35 @@ def test_unfiltered_shape_order_and_limit_normalization_are_preserved(job_case):
     assert len(client.get("/api/v1/jobs?limit=invalid").get_json()["items"]) == 100
 
 
-def test_http_authentication_and_quick_transcription_privacy_are_preserved(job_case):
+def test_http_authentication_and_stable_private_owner_across_credentials(job_case):
     app, services, client, tokens, target_id, _, ids = job_case
-    query = {"session_id": target_id, "kind": "dubbing.export"}
+    query = {"kind": "transcription.quick"}
     assert app.test_client().get("/api/v1/jobs", query_string=query).status_code == 401
     second = app.test_client()
+    _, raw_token = services.auth.create_api_token(
+        "Separate diagnostic credential", scopes=["app.read"], subject="other-owner"
+    )
+    second_headers = {"Authorization": f"Bearer {raw_token}"}
     assert (
-        second.post(
-            "/api/v1/auth/bootstrap",
-            json={"token": tokens.issue(subject="other-owner", kind="owner_session")},
+        second.get(
+            "/api/v1/jobs", query_string=query, headers=second_headers
         ).status_code
         == 200
     )
-    # Diagnostic service reads retain the legacy complete queue contract; the
-    # HTTP boundary applies the same owner privacy filter after scoped reads.
+    # Distinct credential subjects belong to the same actual account.
     assert ids["private"] in _ids(
-        services.work.diagnostic_list(session_id=target_id, kind="dubbing.export")
+        services.work.diagnostic_list(kind="transcription.quick")
     )
     assert ids["private"] in [
         item["id"] for item in client.get("/api/v1/jobs", query_string=query).get_json()["items"]
     ]
     assert [
-        item["id"] for item in second.get("/api/v1/jobs", query_string=query).get_json()["items"]
-    ] == [ids["newer"], ids["old"]]
-    assert ids["private"] not in second.get("/api/v1/jobs", query_string=query).get_data(
-        as_text=True
-    )
+        item["id"]
+        for item in second.get(
+            "/api/v1/jobs", query_string=query, headers=second_headers
+        ).get_json()["items"]
+    ] == [ids["private"]]
+    assert second.get(f"/api/v1/jobs/{ids['private']}", headers=second_headers).status_code == 200
 
 
 def test_jobs_get_openapi_documents_optional_filters():

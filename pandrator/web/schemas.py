@@ -31,6 +31,7 @@ ApiScope = Literal[
     "app.write",
     "app.run",
     "app.cancel",
+    "app.workspaces.enroll",
     "app.credentials.read",
     "app.credentials.write",
     "manager.read",
@@ -74,6 +75,10 @@ class SessionCreate(StrictModel):
     workflow_preset: str = "custom"
     included_stages: list[str] = Field(default_factory=list)
     overwrite_session_id: str | None = None
+    overwrite_revision: int | None = Field(default=None, ge=1)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=80)
+    folder_id: str | None = Field(default=None, min_length=1, max_length=80)
+    folder_revision: int | None = Field(default=None, strict=True, ge=1)
     multilingual_setup: MultilingualSetup | None = None
 
     @model_validator(mode="after")
@@ -86,6 +91,10 @@ class SessionCreate(StrictModel):
                 target_language=self.target_language,
                 included_stages=self.included_stages,
             )
+        if self.overwrite_revision is not None and self.overwrite_session_id is None:
+            raise ValueError("overwrite_revision requires overwrite_session_id.")
+        if (self.folder_id is None) != (self.folder_revision is None):
+            raise ValueError("folder_id and folder_revision must be provided together.")
         return self
 
 
@@ -132,7 +141,8 @@ class JobCreate(StrictModel):
 
 
 class LoginRequest(StrictModel):
-    password: str
+    password: str = Field(max_length=1024)
+    login_name: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class BootstrapRequest(StrictModel):
@@ -471,6 +481,8 @@ class SubtitleEvidenceResolveRequest(StrictModel):
     candidate_id: str | None = Field(default=None, max_length=120)
     text: str | None = Field(default=None, max_length=16000)
     note: str = Field(default="", max_length=4000)
+    expected_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", strict=True,
+        description="Latest record.revision token; required for a new decision when collaboration is enabled.")
 
     @model_validator(mode="after")
     def _validate_resolution(self) -> SubtitleEvidenceResolveRequest:
@@ -660,14 +672,22 @@ class StageSelectionUpdate(StrictModel):
 
 
 class ChunkUploadInitialize(StrictModel):
+    attach_to_session: StrictBool = True
     filename: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(gt=0)
     mime_type: str | None = Field(default=None, max_length=160)
     session_id: str | None = None
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=80)
     sha256: str | None = Field(default=None, min_length=64, max_length=64)
     chunk_size: int = Field(
         default=8 * 1024 * 1024, ge=1024 * 1024, le=16 * 1024 * 1024
     )
+
+    @model_validator(mode="after")
+    def staged_upload_requires_session(self):
+        if not self.attach_to_session and not self.session_id:
+            raise ValueError("Staged uploads require an explicit session.")
+        return self
 
 
 class GenerationSegmentCreate(StrictModel):
@@ -919,6 +939,10 @@ class TtsVoicePreviewRequest(StrictModel):
     text: str = Field(min_length=1, max_length=1000)
     model: str = Field(default="", max_length=300)
     voice: str = Field(default="", max_length=300)
+    voice_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=80,
+        description="Managed voice to select. Linked audio.cpp samples are retained for this audition.",
+    )
     language: str = Field(default="", max_length=40)
     generation_prompt: str | None = Field(
         default=None,
@@ -926,6 +950,11 @@ class TtsVoicePreviewRequest(StrictModel):
         description="Omit or use null to inherit saved directions; an empty string clears them for this audition.",
     )
     seed: int | None = Field(default=None, ge=0, le=4_294_967_295)
+
+    @field_validator("voice_id", mode="before")
+    @classmethod
+    def trim_voice_identifier(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
 
 class ManagerDesiredComponentState(StrictModel):

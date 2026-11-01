@@ -438,9 +438,12 @@ def _run_tool(
     timeout: float | None = None,
     backend: str = "auto",
     guard_executable: str | os.PathLike[str] | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> Any:
     """Run CrispASR through the shared cancellable child and finite watchdog."""
 
+    if before_io is not None:
+        before_io()
     check_cancelled(cancel_event)
     timeout_value = float(timeout) if timeout is not None else None
     if timeout_value is not None and (
@@ -482,9 +485,13 @@ def _run_tool(
             with native_audio_cpp_guard(
                 [str(guard_executable), "--backend", backend], combined
             ):
+                if before_io is not None:
+                    before_io()
                 return run_cancellable(
                     command, cancel_event=combined, check=True, capture_output=True
                 )
+        if before_io is not None:
+            before_io()
         return run_func(command, check=True, capture_output=True)
     except ProcessCancelled:
         if cancel_event is not None and cancel_event.is_set():
@@ -602,7 +609,11 @@ def transcribe(
     cancel_event: threading.Event | None = None,
     progress_callback: Callable[[float, str | None], None] | None = None,
     require_word_timestamps: bool = True,
+    before_io: Callable[[], None] | None = None,
 ) -> crispasr.CrispASRTranscriptionResult:
+    hook_options: crispasr._BeforeIoOptions = {"before_io": before_io} if before_io is not None else {}
+    if before_io is not None:
+        before_io()
     check_cancelled(cancel_event)
     options = dict(settings or {})
     validated = validate_transcription_settings(
@@ -614,20 +625,32 @@ def transcribe(
             "before this call (isolated derivative input)."
         )
     source = Path(audio_path)
+    if before_io is not None:
+        before_io()
     if not source.is_file():
         raise QwenASRError(f"Qwen3 ASR audio does not exist: {source}")
+    if before_io is not None:
+        before_io()
     cli = str(executable) if executable is not None else str(resolve_executable(options))
+    if before_io is not None:
+        before_io()
     try:
         guard_executable = resolve_audio_cpp_executable(options)
     except AudioAssetsError:
         guard_executable = None
+    if before_io is not None:
+        before_io()
     if run_func is subprocess.run:
         _verify_qwen_runtime(cli)
     if progress_callback is not None:
         progress_callback(0.0, "Preparing Qwen3 ASR")
+    if before_io is not None:
+        before_io()
     model = ensure_asr_model(validated["model_id"], options, cancel_event)
     check_cancelled(cancel_event)
     aligner: Path | str | None = None
+    if before_io is not None:
+        before_io()
     if require_word_timestamps:
         if timing_plan_for_language(validated["language"]) == "qwen3_forced_aligner":
             aligner = ensure_aligner_model(options, cancel_event)
@@ -659,6 +682,7 @@ def transcribe(
                 timeout=validated["timeout"],
                 backend=validated["backend"],
                 guard_executable=guard_executable,
+                **hook_options,
             )
         except (FileNotFoundError, subprocess.CalledProcessError) as error:
             reason = _native_error_tail(error) or type(error).__name__
@@ -684,11 +708,14 @@ def transcribe(
             model_path=model,
             aligner_model_path=aligner,
             require_word_timestamps=require_word_timestamps,
+            **hook_options,
         )
     except ProcessCancelled:
         raise
     except crispasr.CrispASRError as error:
         raise QwenASRError(str(error)) from error
+    if before_io is not None:
+        before_io()
     check_cancelled(cancel_event)
     if progress_callback is not None:
         progress_callback(1.0, "Qwen3 ASR complete")

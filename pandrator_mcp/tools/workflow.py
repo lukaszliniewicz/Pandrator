@@ -505,10 +505,11 @@ def plan_orchestrated_workflow(
                 "audio_mode": arguments.audio_mode,
                 "subtitle_mode": arguments.subtitle_mode,
                 "subtitle_text_source": arguments.subtitle_text_source,
-                "subtitle_selection": arguments.subtitle_selection,
                 "subtitle_format": arguments.subtitle_format,
             }
         )
+        if arguments.subtitle_selection is not None:
+            merged_output["subtitle_selection"] = arguments.subtitle_selection
         if arguments.generation_run_id:
             merged_output["generation_run_id"] = arguments.generation_run_id
             merged_output["audio_version_side"] = arguments.audio_version_side

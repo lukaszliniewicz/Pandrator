@@ -43,7 +43,7 @@ def route_domain(rule: str) -> str:
         )
     ):
         return "workflow"
-    if rule.startswith("/api/v1/auth/"):
+    if rule.startswith(("/api/v1/auth/", "/api/v1/admin/", "/api/v1/workspaces", "/api/v1/workspace-invitations")):
         return "auth"
     if rule.startswith("/api/v1/services/tts"):
         return "tts"
@@ -111,6 +111,9 @@ def route_domain(rule: str) -> str:
         (
             "/api/v1/sessions",
             "/api/v1/project-folders",
+            "/api/v1/projects",
+            "/api/v1/project-copies",
+            "/api/v1/knowledge",
             "/api/v1/defaults",
             "/api/v1/settings",
         )

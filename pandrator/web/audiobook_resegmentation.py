@@ -13,8 +13,14 @@ from pandrator.logic.speech_markup import parse_speech_markup, plain_speech_mark
 from pandrator.logic.speech_markup_edits import join_speech_markup, slice_speech_markup
 
 from . import models as m
+from .access.generation_resource_policy import require_generation_content_write
 from .generation_cast_runtime import remap_markup
 from .generation_controls import get_generation_controls
+from .project_speech_references import (
+    list_project_speech_references,
+    normalize_speech_reference_slot,
+    segment_speech_reference_identity,
+)
 
 
 def copy_unchanged_annotations(
@@ -268,6 +274,41 @@ def prepare_resegmentation(
             raise ValueError(
                 f"Range resegmentation cannot combine different {field} overrides."
             )
+
+    slots_by_segment: dict[str, str] = {}
+    for row in selected:
+        try:
+            slots_by_segment[row.id] = normalize_speech_reference_slot(
+                "segment:" + row.id
+            )
+        except ValueError:
+            # Legacy non-UUID IDs have no canonical saved-selection slot.
+            continue
+
+    def required_current_generation_content_write(guarded_session) -> None:
+        require_generation_content_write(guarded_session, "session", session_id)
+
+    references = list_project_speech_references(
+        session,
+        session_id,
+        authorization_guard=required_current_generation_content_write,
+        slot_keys=list(slots_by_segment.values()),
+    )
+    references_by_segment = {
+        reference.slot_key[len("segment:") :]: reference for reference in references
+    }
+    if len(
+        {
+            segment_speech_reference_identity(
+                references_by_segment.get(row.id)
+            )
+            for row in selected
+        }
+    ) > 1:
+        raise ValueError(
+            "These segments use different saved voice selections. Keep their boundary or choose one voice before merging."
+        )
+
     if any(row.optimized_text and row.optimized_text != row.text for row in selected):
         raise ValueError(
             "Range resegmentation requires matching display and speech text; use mapped split/merge for optimized variants."

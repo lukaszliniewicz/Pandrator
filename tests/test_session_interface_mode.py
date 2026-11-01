@@ -17,6 +17,8 @@ from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import sqlite_url, upgrade_database
 from pandrator.web.models import SessionRecord
+from pandrator.web.projects.identity import create_session_project
+from pandrator.web.projects.models import Project
 from pandrator.web.schemas import SessionCreate, SessionForkRequest, SessionUpdate
 from pandrator_mcp.clients.application_sessions import ApplicationSessionMethods
 from pandrator_mcp.schemas.sessions import CreateSessionInput
@@ -83,6 +85,14 @@ def test_old_database_rows_migrate_to_advanced_and_keep_their_ids(tmp_path: Path
             sa.text("SELECT version_num FROM alembic_version")
         ).scalar_one() == ScriptDirectory.from_config(config).get_current_head()
         sessions = sa.Table("sessions", sa.MetaData(), autoload_with=connection)
+        workspace_id = connection.execute(
+            sa.select(Project.workspace_id).where(Project.source_session_id == legacy["id"])
+        ).scalar_one()
+        project_id = connection.execute(
+            Project.__table__.insert().values(
+                workspace_id=workspace_id, name="Database default session"
+            )
+        ).inserted_primary_key[0]
         connection.execute(
             sessions.insert().values(
                 **{
@@ -90,8 +100,13 @@ def test_old_database_rows_migrate_to_advanced_and_keep_their_ids(tmp_path: Path
                     "id": "database-default-session",
                     "name": "Database default session",
                     "storage_key": "database-default-storage",
+                    "project_id": project_id,
                 }
             )
+        )
+        connection.execute(
+            sa.update(Project).where(Project.id == project_id)
+            .values(source_session_id="database-default-session")
         )
         rows = connection.execute(
             sa.text(
@@ -121,8 +136,7 @@ def test_creation_defaults_and_enum_validation(web_application):
     _client, _headers, services = web_application
     with services.database.session() as database_session:
         model_default = SessionRecord(name="Model default")
-        database_session.add(model_default)
-        database_session.flush()
+        create_session_project(database_session, model_default)
         assert model_default.interface_mode == "advanced"
 
     simple = services.sessions.create("Direct default")

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectLinkUrl } from './project-link-context';
   import { errorMessage } from './errors';
   import {
     ArrowLeft,
@@ -13,6 +14,7 @@
   import { toolApi } from './admin-api';
   import { artifactApi } from './domain-api';
   import { appState } from './app-state.svelte';
+  import { ApiError } from './api';
   import type { ArtifactCandidate, JobRecord } from './api-models';
   import AudioPlayer from './AudioPlayer.svelte';
 
@@ -90,6 +92,13 @@
   let busy = $state(false);
   let message = $state('');
   let error = $state('');
+  let rvcAccess = $state<'loading' | 'allowed' | 'restricted' | 'failed'>(
+    'loading'
+  );
+  let trainingAccess = $state<'loading' | 'allowed' | 'restricted' | 'failed'>(
+    'loading'
+  );
+  let loadRequest = 0;
 
   const trainingAudioArtifacts = $derived(
     artifacts.filter(
@@ -160,29 +169,56 @@
   );
 
   async function load() {
+    const current = ++loadRequest;
+    candidateRequest += 1;
     error = '';
+    if (mode !== 'training') rvcAccess = 'loading';
+    if (mode !== 'rvc') trainingAccess = 'loading';
+    const restricted = (caught: unknown) =>
+      caught instanceof ApiError && [403, 404].includes(caught.status);
+    async function loadRvc() {
+      try {
+        const models = await toolApi.rvcModels();
+        if (current !== loadRequest) return;
+        rvc = models;
+        rvcModel ||= models.items[0] ?? '';
+        rvcAccess = 'allowed';
+        await loadCandidates();
+      } catch (caught) {
+        if (current !== loadRequest) return;
+        candidates = [];
+        rvcAccess = restricted(caught) ? 'restricted' : 'failed';
+        if (!restricted(caught)) throw caught;
+      }
+    }
+    async function loadTraining() {
+      if (!appState.isAdministrator) {
+        trainingAccess = 'restricted';
+        artifacts = [];
+        training = [];
+        return;
+      }
+      try {
+        const runs = await toolApi.training<Training>();
+        if (current !== loadRequest) return;
+        training = runs.items;
+        trainingAccess = 'allowed';
+        const available = await toolApi.artifacts();
+        if (current === loadRequest) artifacts = available.items;
+      } catch (caught) {
+        if (current !== loadRequest) return;
+        artifacts = [];
+        training = [];
+        trainingAccess = restricted(caught) ? 'restricted' : 'failed';
+        if (!restricted(caught)) throw caught;
+      }
+    }
     try {
       const results = await Promise.allSettled([
-        ...(mode !== 'training'
-          ? [
-              toolApi.rvcModels().then((models) => {
-                rvc = models;
-                rvcModel ||= models.items[0] ?? '';
-              }),
-              loadCandidates()
-            ]
-          : []),
-        ...(mode !== 'rvc'
-          ? [
-              toolApi.artifacts().then((payload) => {
-                artifacts = payload.items;
-              }),
-              toolApi.training<Training>().then((payload) => {
-                training = payload.items;
-              })
-            ]
-          : [])
+        ...(mode !== 'training' ? [loadRvc()] : []),
+        ...(mode !== 'rvc' ? [loadTraining()] : [])
       ]);
+      if (current !== loadRequest) return;
       const failed = results.find((result) => result.status === 'rejected');
       if (failed?.status === 'rejected') error = errorMessage(failed.reason);
     } catch (caught) {
@@ -195,7 +231,13 @@
   }
 
   async function uploadModel() {
-    if (!weights || !index) return;
+    if (
+      rvcAccess !== 'allowed' ||
+      !appState.isAdministrator ||
+      !weights ||
+      !index
+    )
+      return;
     busy = true;
     error = '';
     message = 'Uploading model…';
@@ -217,7 +259,7 @@
   }
 
   async function convert() {
-    if (!sourceArtifact || !rvcModel) return;
+    if (rvcAccess !== 'allowed' || !sourceArtifact || !rvcModel) return;
     busy = true;
     error = '';
     try {
@@ -242,6 +284,7 @@
   }
 
   async function train() {
+    if (trainingAccess !== 'allowed' || !appState.isAdministrator) return;
     if (!sourceArtifact || !modelName.trim()) return;
     busy = true;
     error = '';
@@ -288,11 +331,25 @@
   }
 
   async function cancel(item: Training) {
-    if (!item.job_id) return;
-    await toolApi.cancelTraining(item.id);
-    await load();
+    if (
+      trainingAccess !== 'allowed' ||
+      !appState.isAdministrator ||
+      !item.job_id
+    )
+      return;
+    busy = true;
+    error = '';
+    try {
+      await toolApi.cancelTraining(item.id);
+      await load();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      busy = false;
+    }
   }
   async function retry(item: Training) {
+    if (trainingAccess !== 'allowed' || !appState.isAdministrator) return;
     busy = true;
     error = '';
     try {
@@ -362,176 +419,197 @@
         </div>
         <div>
           <h2 class="text-xl font-semibold">RVC conversion</h2>
-          <p class="muted text-sm">
-            Service {rvc.available ? 'ready' : 'unavailable'}
-          </p>
+          {#if rvcAccess === 'allowed'}
+            <p class="muted text-sm">
+              Service {rvc.available ? 'ready' : 'unavailable'}
+            </p>
+          {/if}
         </div>
       </div>
-      <div class="mt-6 grid gap-4">
-        <label class="text-sm font-semibold"
-          >Weights (.pth)<input
-            type="file"
-            accept=".pth"
-            onchange={(event) =>
-              (weights =
-                (event.currentTarget as HTMLInputElement).files?.[0] ?? null)}
-            class="mt-1 block w-full text-xs"
-          /></label
-        ><label class="text-sm font-semibold"
-          >Index (.index)<input
-            type="file"
-            accept=".index,.idx"
-            onchange={(event) =>
-              (index =
-                (event.currentTarget as HTMLInputElement).files?.[0] ?? null)}
-            class="mt-1 block w-full text-xs"
-          /></label
-        ><button
-          onclick={uploadModel}
-          disabled={busy || !rvc.available || !weights || !index}
-          class="flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 font-semibold text-white disabled:opacity-40"
-          >{#if busy}<LoaderCircle
-              class="animate-spin"
-              size={16}
-            />{:else}<Upload size={16} />{/if} Install model</button
-        >
-      </div>
-      <div class="my-6 border-t border-[var(--line)]"></div>
-      <div class="mb-4 grid gap-3 sm:grid-cols-2">
-        <label class="text-sm font-semibold"
-          >Project<select
-            class="field"
-            bind:value={candidateProject}
-            onchange={() => void loadCandidates()}
-            ><option value="">All projects</option
-            >{#each appState.sessions as project (project.id)}<option
-                value={project.id}>{project.name}</option
-              >{/each}</select
-          ></label
-        >
-        <label class="text-sm font-semibold"
-          >Find audio<input
-            class="field"
-            type="search"
-            bind:value={audioSearch}
-            placeholder="Project, output, speaker or passage…"
-          /></label
-        >
-        <label class="flex items-center gap-2 text-sm sm:col-span-2"
-          ><input
-            type="checkbox"
-            bind:checked={includeTakes}
-            onchange={() => void loadCandidates()}
-          />Include individual takes &amp; recordings</label
-        >
-      </div>
-      {#if candidateError}<p class="mb-3 text-sm text-red-500" role="alert">
-          {candidateError}<button
-            class="btn btn-sm btn-secondary ml-2"
-            onclick={() => void loadCandidates()}>Retry audio list</button
-          >
-        </p>{/if}
-      <div class="grid gap-4 sm:grid-cols-2">
-        <label class="text-sm font-semibold sm:col-span-2"
-          >Audio recording<select
-            bind:value={sourceArtifact}
-            class="field"
-            disabled={candidatesLoading}
-            ><option value=""
-              >{candidatesLoading ? 'Loading audio…' : 'Choose audio'}</option
-            >{#each audioArtifacts as item}<option value={item.id}
-                >{audioLabel(item)}</option
-              >{/each}</select
-          ></label
-        ><label class="text-sm font-semibold"
-          >RVC model<select bind:value={rvcModel} class="field"
-            >{#each rvc.items as item}<option value={item}>{item}</option
-              >{/each}</select
-          ></label
-        ><label class="text-sm font-semibold"
-          >Pitch<input
-            type="number"
-            bind:value={pitch}
-            min="-24"
-            max="24"
-            class="field"
-          /></label
-        >
-      </div>
-      <div
-        class="muted mt-3 flex flex-wrap items-center justify-between gap-2 text-xs"
-      >
-        <span
-          >{audioArtifacts.length} matching recordings in {candidates.length} loaded
-          · {candidateTotal} available</span
-        >{#if candidateOffset !== null}<button
-            class="btn btn-sm btn-secondary"
-            disabled={candidatesLoading}
-            onclick={() => void loadCandidates(true)}>Load more audio</button
-          >{/if}
-      </div>
-      {#if sourceArtifact && !candidatesLoading}<div class="mt-3">
-          <AudioPlayer
-            src={`/api/v1/artifacts/${sourceArtifact}/content`}
-            label="Selected recording"
-          />
-        </div>{/if}
-      <details class="mt-4 rounded-2xl border border-[var(--line)] p-4">
-        <summary class="cursor-pointer text-sm font-semibold"
-          >Conversion settings</summary
-        >
-        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+      {#if rvcAccess === 'allowed'}
+        {#if appState.isAdministrator}
+          <div class="mt-6 grid gap-4">
+            <label class="text-sm font-semibold"
+              >Weights (.pth)<input
+                type="file"
+                accept=".pth"
+                onchange={(event) =>
+                  (weights =
+                    (event.currentTarget as HTMLInputElement).files?.[0] ??
+                    null)}
+                class="mt-1 block w-full text-xs"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Index (.index)<input
+                type="file"
+                accept=".index,.idx"
+                onchange={(event) =>
+                  (index =
+                    (event.currentTarget as HTMLInputElement).files?.[0] ??
+                    null)}
+                class="mt-1 block w-full text-xs"
+              /></label
+            ><button
+              onclick={uploadModel}
+              disabled={busy || !rvc.available || !weights || !index}
+              class="flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 font-semibold text-white disabled:opacity-40"
+              >{#if busy}<LoaderCircle
+                  class="animate-spin"
+                  size={16}
+                />{:else}<Upload size={16} />{/if} Install model</button
+            >
+          </div>
+        {:else}
+          <p class="muted mt-5 text-sm">
+            An Administrator installs RVC models. Choose an installed model
+            below for conversion.
+          </p>
+        {/if}
+        <div class="my-6 border-t border-[var(--line)]"></div>
+        <div class="mb-4 grid gap-3 sm:grid-cols-2">
           <label class="text-sm font-semibold"
-            >Pitch detector<select bind:value={f0Method} class="field"
-              ><option value="rmvpe">RMVPE</option><option value="harvest"
-                >Harvest</option
-              ><option value="crepe">CREPE</option><option value="pm">PM</option
-              ></select
+            >Project<select
+              class="field"
+              bind:value={candidateProject}
+              onchange={() => void loadCandidates()}
+              ><option value="">All projects</option
+              >{#each appState.sessions as project (project.id)}<option
+                  value={project.id}>{project.name}</option
+                >{/each}</select
+            ></label
+          >
+          <label class="text-sm font-semibold"
+            >Find audio<input
+              class="field"
+              type="search"
+              bind:value={audioSearch}
+              placeholder="Project, output, speaker or passage…"
+            /></label
+          >
+          <label class="flex items-center gap-2 text-sm sm:col-span-2"
+            ><input
+              type="checkbox"
+              bind:checked={includeTakes}
+              onchange={() => void loadCandidates()}
+            />Include individual takes &amp; recordings</label
+          >
+        </div>
+        {#if candidateError}<p class="mb-3 text-sm text-red-500" role="alert">
+            {candidateError}<button
+              class="btn btn-sm btn-secondary ml-2"
+              onclick={() => void loadCandidates()}>Retry audio list</button
+            >
+          </p>{/if}
+        <div class="grid gap-4 sm:grid-cols-2">
+          <label class="text-sm font-semibold sm:col-span-2"
+            >Audio recording<select
+              bind:value={sourceArtifact}
+              class="field"
+              disabled={candidatesLoading}
+              ><option value=""
+                >{candidatesLoading ? 'Loading audio…' : 'Choose audio'}</option
+              >{#each audioArtifacts as item}<option value={item.id}
+                  >{audioLabel(item)}</option
+                >{/each}</select
             ></label
           ><label class="text-sm font-semibold"
-            >Filter radius<input
-              class="field"
-              type="number"
-              bind:value={filterRadius}
-              min="0"
-              max="7"
-            /></label
+            >RVC model<select bind:value={rvcModel} class="field"
+              >{#each rvc.items as item}<option value={item}>{item}</option
+                >{/each}</select
+            ></label
           ><label class="text-sm font-semibold"
-            >Index rate<input
-              class="field"
+            >Pitch<input
               type="number"
-              bind:value={indexRate}
-              min="0"
-              max="1"
-              step="0.05"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Volume envelope<input
+              bind:value={pitch}
+              min="-24"
+              max="24"
               class="field"
-              type="number"
-              bind:value={volumeEnvelope}
-              min="0"
-              max="1"
-              step="0.05"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Protect unvoiced sounds<input
-              class="field"
-              type="number"
-              bind:value={protect}
-              min="0"
-              max="0.5"
-              step="0.05"
             /></label
           >
         </div>
-      </details>
-      <button
-        onclick={convert}
-        disabled={busy || !rvc.available || !sourceArtifact || !rvcModel}
-        class="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 font-semibold disabled:opacity-40"
-        ><Play size={16} /> Queue conversion</button
-      >
+        <div
+          class="muted mt-3 flex flex-wrap items-center justify-between gap-2 text-xs"
+        >
+          <span
+            >{audioArtifacts.length} matching recordings in {candidates.length} loaded
+            · {candidateTotal} available</span
+          >{#if candidateOffset !== null}<button
+              class="btn btn-sm btn-secondary"
+              disabled={candidatesLoading}
+              onclick={() => void loadCandidates(true)}>Load more audio</button
+            >{/if}
+        </div>
+        {#if sourceArtifact && !candidatesLoading}<div class="mt-3">
+            <AudioPlayer
+              src={projectLinkUrl(`/api/v1/artifacts/${sourceArtifact}/content`)}
+              label="Selected recording"
+            />
+          </div>{/if}
+        <details class="mt-4 rounded-2xl border border-[var(--line)] p-4">
+          <summary class="cursor-pointer text-sm font-semibold"
+            >Conversion settings</summary
+          >
+          <div class="mt-4 grid gap-4 sm:grid-cols-2">
+            <label class="text-sm font-semibold"
+              >Pitch detector<select bind:value={f0Method} class="field"
+                ><option value="rmvpe">RMVPE</option><option value="harvest"
+                  >Harvest</option
+                ><option value="crepe">CREPE</option><option value="pm"
+                  >PM</option
+                ></select
+              ></label
+            ><label class="text-sm font-semibold"
+              >Filter radius<input
+                class="field"
+                type="number"
+                bind:value={filterRadius}
+                min="0"
+                max="7"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Index rate<input
+                class="field"
+                type="number"
+                bind:value={indexRate}
+                min="0"
+                max="1"
+                step="0.05"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Volume envelope<input
+                class="field"
+                type="number"
+                bind:value={volumeEnvelope}
+                min="0"
+                max="1"
+                step="0.05"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Protect unvoiced sounds<input
+                class="field"
+                type="number"
+                bind:value={protect}
+                min="0"
+                max="0.5"
+                step="0.05"
+              /></label
+            >
+          </div>
+        </details>
+        <button
+          onclick={convert}
+          disabled={busy || !rvc.available || !sourceArtifact || !rvcModel}
+          class="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 font-semibold disabled:opacity-40"
+          ><Play size={16} /> Queue conversion</button
+        >
+      {:else if rvcAccess === 'loading'}
+        <p class="muted mt-6 text-sm" role="status">Checking access…</p>
+      {:else if rvcAccess === 'restricted'}
+        <p class="muted mt-6 text-sm">
+          RVC is currently available to the original installation owner for
+          personal recordings. Shared workspace conversion is not available yet.
+        </p>
+      {/if}
     </section>
     <section class:hidden={mode === 'rvc'} class="surface rounded-3xl p-6">
       <div class="flex items-center gap-3">
@@ -545,206 +623,223 @@
           <p class="muted text-sm">Long-running, recoverable worker job</p>
         </div>
       </div>
-      <div class="mt-6 grid gap-4 sm:grid-cols-2">
-        <label class="text-sm font-semibold sm:col-span-2"
-          >Model name<input bind:value={modelName} class="field" /></label
-        ><label class="text-sm font-semibold sm:col-span-2"
-          >Training audio<select bind:value={sourceArtifact} class="field"
-            >{#each trainingAudioArtifacts as item}<option value={item.id}
-                >{item.role} · {item.relative_path.split('/').at(-1)}</option
-              >{/each}</select
-          ></label
-        ><label class="text-sm font-semibold sm:col-span-2"
-          >Optional source text<select
-            bind:value={sourceTextArtifact}
-            class="field"
-            ><option value="">Automatic transcription</option
-            >{#each textArtifacts as item}<option value={item.id}
-                >{item.role} · {item.relative_path.split('/').at(-1)}</option
-              >{/each}</select
-          ></label
-        ><label class="text-sm font-semibold"
-          >Language<input bind:value={language} class="field" /></label
-        ><label class="text-sm font-semibold"
-          >Epochs<input
-            type="number"
-            bind:value={epochs}
-            min="1"
-            max="100"
-            class="field"
-          /></label
-        >
-      </div>
-      <details class="mt-4 rounded-2xl border border-[var(--line)] p-4">
-        <summary class="cursor-pointer text-sm font-semibold"
-          >Dataset and training settings</summary
-        >
-        <div class="mt-4 grid gap-4 sm:grid-cols-3">
-          <label class="text-sm font-semibold"
-            >Whisper model<input
-              bind:value={whisperModel}
+      {#if trainingAccess === 'allowed'}
+        <div class="mt-6 grid gap-4 sm:grid-cols-2">
+          <label class="text-sm font-semibold sm:col-span-2"
+            >Model name<input bind:value={modelName} class="field" /></label
+          ><label class="text-sm font-semibold sm:col-span-2"
+            >Training audio<select bind:value={sourceArtifact} class="field"
+              >{#each trainingAudioArtifacts as item}<option value={item.id}
+                  >{item.role} · {item.relative_path.split('/').at(-1)}</option
+                >{/each}</select
+            ></label
+          ><label class="text-sm font-semibold sm:col-span-2"
+            >Optional source text<select
+              bind:value={sourceTextArtifact}
               class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Sample rate<select bind:value={sampleRate} class="field"
-              ><option value={22050}>22,050 Hz</option><option value={44100}
-                >44,100 Hz</option
-              ></select
+              ><option value="">Automatic transcription</option
+              >{#each textArtifacts as item}<option value={item.id}
+                  >{item.role} · {item.relative_path.split('/').at(-1)}</option
+                >{/each}</select
             ></label
           ><label class="text-sm font-semibold"
-            >Max clip seconds<input
+            >Language<input bind:value={language} class="field" /></label
+          ><label class="text-sm font-semibold"
+            >Epochs<input
               type="number"
-              bind:value={maxDuration}
+              bind:value={epochs}
               min="1"
-              step="0.1"
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Max text length<input
-              type="number"
-              bind:value={maxTextLength}
-              min="20"
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Training split<input
-              bind:value={trainingSplit}
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Method proportion<input
-              bind:value={methodProportion}
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Sampling<select bind:value={sampleMethod} class="field"
-              ><option value="random">Random</option><option value="length"
-                >By length</option
-              ><option value="sequential">Sequential</option></select
-            ></label
-          ><label class="text-sm font-semibold"
-            >Alignment model<input
-              bind:value={alignmentModel}
-              placeholder="Automatic"
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Chapters per audio<input
-              type="number"
-              bind:value={chapterPerAudio}
-              min="1"
-              max="50"
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Voice sample mode<input
-              bind:value={voiceSampleMode}
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Voice samples<input
-              type="number"
-              bind:value={voiceSamplesCount}
-              min="1"
-              max="20"
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Batches<input
-              type="number"
-              bind:value={batches}
-              min="1"
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Gradient accumulation<input
-              type="number"
-              bind:value={gradient}
-              min="1"
-              class="field"
-            /></label
-          ><label class="check"
-            ><input type="checkbox" bind:checked={voiceSampleOnlySentence} /> Complete
-            sentences only</label
-          >
-        </div>
-      </details>
-      <details class="mt-3 rounded-2xl border border-[var(--line)] p-4">
-        <summary class="cursor-pointer text-sm font-semibold"
-          >Audio preparation</summary
-        >
-        <div class="mt-4 grid gap-3 sm:grid-cols-2">
-          <label class="check"
-            ><input type="checkbox" bind:checked={enableDenoise} /> Denoise</label
-          ><label class="check"
-            ><input type="checkbox" bind:checked={enableBreathRemoval} /> Remove breaths</label
-          ><label class="check"
-            ><input type="checkbox" bind:checked={enableNormalize} /> Loudness normalization</label
-          ><label class="check"
-            ><input type="checkbox" bind:checked={enableCompress} /> Compression</label
-          ><label class="check"
-            ><input type="checkbox" bind:checked={enableDess} /> De-ess</label
-          ><label class="text-sm font-semibold"
-            >Target LUFS<input
-              type="number"
-              bind:value={lufsValue}
-              min="-30"
-              max="-8"
-              class="field"
-            /></label
-          ><label class="text-sm font-semibold"
-            >Compression profile<input
-              bind:value={compressProfile}
+              max="100"
               class="field"
             /></label
           >
         </div>
-      </details>
-      <button
-        onclick={train}
-        disabled={busy || !sourceArtifact || !modelName.trim()}
-        class="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 font-semibold text-white disabled:opacity-40"
-        ><BrainCircuit size={16} /> Start training</button
-      >
-      <div class="mt-6 space-y-2">
-        {#each training.slice(0, 6) as item}<div
-            class="flex items-center gap-3 rounded-xl border border-[var(--line)] px-3 py-2.5"
+        <details class="mt-4 rounded-2xl border border-[var(--line)] p-4">
+          <summary class="cursor-pointer text-sm font-semibold"
+            >Dataset and training settings</summary
           >
-            <span
-              class="size-2 rounded-full"
-              class:bg-green-500={item.status === 'succeeded'}
-              class:bg-amber-500={[
-                'queued',
-                'running',
-                'cancel_requested'
-              ].includes(item.status)}
-              class:bg-red-500={['failed', 'interrupted', 'canceled'].includes(
-                item.status
-              )}
-            ></span>
-            <div class="min-w-0 flex-1">
-              <div class="truncate text-sm font-semibold">
-                {item.model_name}
+          <div class="mt-4 grid gap-4 sm:grid-cols-3">
+            <label class="text-sm font-semibold"
+              >Whisper model<input
+                bind:value={whisperModel}
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Sample rate<select bind:value={sampleRate} class="field"
+                ><option value={22050}>22,050 Hz</option><option value={44100}
+                  >44,100 Hz</option
+                ></select
+              ></label
+            ><label class="text-sm font-semibold"
+              >Max clip seconds<input
+                type="number"
+                bind:value={maxDuration}
+                min="1"
+                step="0.1"
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Max text length<input
+                type="number"
+                bind:value={maxTextLength}
+                min="20"
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Training split<input
+                bind:value={trainingSplit}
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Method proportion<input
+                bind:value={methodProportion}
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Sampling<select bind:value={sampleMethod} class="field"
+                ><option value="random">Random</option><option value="length"
+                  >By length</option
+                ><option value="sequential">Sequential</option></select
+              ></label
+            ><label class="text-sm font-semibold"
+              >Alignment model<input
+                bind:value={alignmentModel}
+                placeholder="Automatic"
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Chapters per audio<input
+                type="number"
+                bind:value={chapterPerAudio}
+                min="1"
+                max="50"
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Voice sample mode<input
+                bind:value={voiceSampleMode}
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Voice samples<input
+                type="number"
+                bind:value={voiceSamplesCount}
+                min="1"
+                max="20"
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Batches<input
+                type="number"
+                bind:value={batches}
+                min="1"
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Gradient accumulation<input
+                type="number"
+                bind:value={gradient}
+                min="1"
+                class="field"
+              /></label
+            ><label class="check"
+              ><input type="checkbox" bind:checked={voiceSampleOnlySentence} /> Complete
+              sentences only</label
+            >
+          </div>
+        </details>
+        <details class="mt-3 rounded-2xl border border-[var(--line)] p-4">
+          <summary class="cursor-pointer text-sm font-semibold"
+            >Audio preparation</summary
+          >
+          <div class="mt-4 grid gap-3 sm:grid-cols-2">
+            <label class="check"
+              ><input type="checkbox" bind:checked={enableDenoise} /> Denoise</label
+            ><label class="check"
+              ><input type="checkbox" bind:checked={enableBreathRemoval} /> Remove
+              breaths</label
+            ><label class="check"
+              ><input type="checkbox" bind:checked={enableNormalize} /> Loudness normalization</label
+            ><label class="check"
+              ><input type="checkbox" bind:checked={enableCompress} /> Compression</label
+            ><label class="check"
+              ><input type="checkbox" bind:checked={enableDess} /> De-ess</label
+            ><label class="text-sm font-semibold"
+              >Target LUFS<input
+                type="number"
+                bind:value={lufsValue}
+                min="-30"
+                max="-8"
+                class="field"
+              /></label
+            ><label class="text-sm font-semibold"
+              >Compression profile<input
+                bind:value={compressProfile}
+                class="field"
+              /></label
+            >
+          </div>
+        </details>
+        <button
+          onclick={train}
+          disabled={!appState.isAdministrator ||
+            busy ||
+            !sourceArtifact ||
+            !modelName.trim()}
+          class="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 font-semibold text-white disabled:opacity-40"
+          ><BrainCircuit size={16} /> Start training</button
+        >
+        <div class="mt-6 space-y-2">
+          {#each training.slice(0, 6) as item}<div
+              class="flex items-center gap-3 rounded-xl border border-[var(--line)] px-3 py-2.5"
+            >
+              <span
+                class="size-2 rounded-full"
+                class:bg-green-500={item.status === 'succeeded'}
+                class:bg-amber-500={[
+                  'queued',
+                  'running',
+                  'cancel_requested'
+                ].includes(item.status)}
+                class:bg-red-500={[
+                  'failed',
+                  'interrupted',
+                  'canceled'
+                ].includes(item.status)}
+              ></span>
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-sm font-semibold">
+                  {item.model_name}
+                </div>
+                <div class="muted text-xs">
+                  {item.status}{item.error_message
+                    ? ` · ${item.error_message}`
+                    : ''}
+                </div>
               </div>
-              <div class="muted text-xs">
-                {item.status}{item.error_message
-                  ? ` · ${item.error_message}`
-                  : ''}
-              </div>
-            </div>
-            {#if ['queued', 'running'].includes(item.status)}<button
-                onclick={() => cancel(item)}
-                class="text-xs font-semibold">Cancel</button
-              >{:else if ['failed', 'interrupted', 'canceled'].includes(item.status)}<button
-                onclick={() => retry(item)}
-                disabled={busy}
-                class="text-xs font-semibold">Retry</button
-              >{:else if item.output_artifact_id}<a
-                href={`/api/v1/artifacts/${item.output_artifact_id}/content`}
-                class="text-xs font-semibold">Manifest</a
-              >{/if}
-          </div>{:else}<p class="muted text-sm">No training runs yet.</p>{/each}
-      </div>
+              {#if ['queued', 'running'].includes(item.status)}<button
+                  onclick={() => cancel(item)}
+                  class="text-xs font-semibold">Cancel</button
+                >{:else if ['failed', 'interrupted', 'canceled'].includes(item.status)}<button
+                  onclick={() => retry(item)}
+                  disabled={!appState.isAdministrator || busy}
+                  class="text-xs font-semibold">Retry</button
+                >{:else if item.output_artifact_id}<a
+                  href={projectLinkUrl(`/api/v1/artifacts/${item.output_artifact_id}/content`)}
+                  class="text-xs font-semibold">Manifest</a
+                >{/if}
+            </div>{:else}<p class="muted text-sm">
+              No training runs yet.
+            </p>{/each}
+        </div>
+      {:else if trainingAccess === 'loading'}
+        <p class="muted mt-6 text-sm" role="status">Checking access…</p>
+      {:else if trainingAccess === 'restricted'}
+        <p class="muted mt-6 text-sm">
+          The original installation Administrator manages XTTS training and its
+          private datasets. Shared workspace training is not available yet.
+        </p>
+      {/if}
     </section>
   </div>
 </div>

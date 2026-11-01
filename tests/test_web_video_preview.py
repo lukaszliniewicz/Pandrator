@@ -42,7 +42,8 @@ def harness(tmp_path):
     bootstrap = BootstrapTokenStore()
     app = create_app(data_root=tmp_path, testing=True, bootstrap_tokens=bootstrap)
     client = app.test_client()
-    client.post("/api/v1/auth/bootstrap", json={"token": bootstrap.issue()})
+    bootstrap_response = client.post("/api/v1/auth/bootstrap", json={"token": bootstrap.issue()})
+    csrf_token = bootstrap_response.get_json()["csrf_token"]
     extension = app.extensions["pandrator"]
     session = extension["sessions"].create("Disposable video preview")
     folder = paths.sessions / session.storage_key
@@ -51,7 +52,7 @@ def harness(tmp_path):
     yield SimpleNamespace(paths=paths, app=app, client=client, extension=extension,
                           database=extension["database"], artifacts=extension["artifacts"],
                           session=session, folder=folder, service=service,
-                          handlers=extension["workflow_handlers"])
+                          handlers=extension["workflow_handlers"], csrf_token=csrf_token)
     extension["database"].dispose()
 
 
@@ -93,6 +94,13 @@ def _request(harness, source):
     return harness.client.get(f"/api/v1/artifacts/{source.id}/video-preview")
 
 
+def _prepare(harness, source):
+    return harness.client.post(
+        f"/api/v1/artifacts/{source.id}/video-preview",
+        headers={"X-CSRF-Token": harness.csrf_token},
+    )
+
+
 def _generate(harness, source, cancel_event=None):
     return harness.handlers.generate_video_preview(
         {"source_artifact_id": source.id, "source_content_hash": source.content_hash,
@@ -125,7 +133,7 @@ def _mock_video(harness, monkeypatch, *, info=None, output=None, content=b"previ
 def test_real_codec_conversion_source_integrity_lineage_and_ready_cache(harness, ffmpeg, audio):
     source, source_path = _real_source(harness, ffmpeg, audio=audio, large=audio)
     original = source_path.read_bytes()
-    queued = _request(harness, source)
+    queued = _prepare(harness, source)
     assert queued.status_code == 202, queued.get_json()
     assert _request(harness, source).get_json() == queued.get_json()
     with harness.database.session() as session:
@@ -174,7 +182,7 @@ def test_request_rejects_audio_only_malformed_deleted_missing_and_unauthenticate
     audio = harness.artifacts.register(audio_path, kind="audio", role="upload", session_id=harness.session.id)
     source, _path = _source(harness)
     for candidate in (audio, source):
-        response = _request(harness, candidate)
+        response = _prepare(harness, candidate)
         assert response.status_code == 422
         assert "audio playback" in response.get_json()["error"]["message"]
     assert harness.app.test_client().get(f"/api/v1/artifacts/{source.id}/video-preview").status_code == 401
@@ -194,7 +202,7 @@ def test_source_duration_must_be_known_finite_positive_and_bounded(harness, monk
     payload = {"streams": [{"codec_type": "video", "codec_name": "h264", "width": 96,
                              "height": 64, "duration": duration}], "format": {"duration": duration}}
     monkeypatch.setattr(video_previews, "run_media_process", lambda *_args, **_kwargs: MediaProcessResult(0, json.dumps(payload)))
-    response = _request(harness, source)
+    response = _prepare(harness, source)
     assert response.status_code == 422
     assert "finite duration" in response.get_json()["error"]["message"]
 
@@ -244,17 +252,29 @@ def test_cache_requires_parent_hash_version_state_and_existing_file(harness, mon
     for field, wrong in (("source_content_hash", "wrong"), ("preview_version", "old"), ("source_artifact_id", "other")):
         with harness.database.session() as session:
             session.get(Artifact, result["artifact_id"]).metadata_json = {**original_metadata, field: wrong}
-        assert _request(harness, source).status_code == 202
+        response = _request(harness, source)
+        if response.status_code == 409:
+            assert response.get_json()["error"]["details"]["can_prepare"] is True
+            response = _prepare(harness, source)
+        assert response.status_code == 202
         assert output.read_bytes() == b"preview"
     with harness.database.session() as session:
         preview = session.get(Artifact, result["artifact_id"])
         preview.metadata_json = original_metadata
         preview.state = "stale"
-    assert _request(harness, source).status_code == 202
+    response = _request(harness, source)
+    if response.status_code == 409:
+        assert response.get_json()["error"]["details"]["can_prepare"] is True
+        response = _prepare(harness, source)
+    assert response.status_code == 202
     with harness.database.session() as session:
         session.get(Artifact, result["artifact_id"]).state = "current"
     output.unlink()
-    assert _request(harness, source).status_code == 202
+    response = _request(harness, source)
+    if response.status_code == 409:
+        assert response.get_json()["error"]["details"]["can_prepare"] is True
+        response = _prepare(harness, source)
+    assert response.status_code == 202
 
 
 def test_unbound_preview_stays_unbound_and_old_source_hash_does_not_deduplicate(harness, monkeypatch):
@@ -385,7 +405,10 @@ def test_cache_needs_parent_edge_and_successful_registration_commit(harness, mon
                                           metadata={"source_artifact_id": source.id,
                                                     "source_content_hash": source.content_hash,
                                                     "preview_version": PREVIEW_VERSION})
-    assert _request(harness, source).status_code == 202
+    response = _request(harness, source)
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "preview_preparation_required"
+    assert response.get_json()["error"]["details"]["can_prepare"] is True
     immediate = harness.database.immediate_session
 
     @contextmanager
@@ -422,7 +445,7 @@ def test_handler_binding_uses_existing_durable_registry(harness, monkeypatch):
 def test_durable_worker_failure_retry_ready_and_owned_purge(harness, monkeypatch):
     source, source_path = _source(harness)
     _mock_video(harness, monkeypatch, failure=MediaProcessError("encoder interrupted"))
-    first = _request(harness, source).get_json()
+    first = _prepare(harness, source).get_json()
     worker = Worker(harness.extension["jobs"], "disposable-video-preview-worker", harness.handlers.handlers())
     assert worker.run_once()
     with harness.database.session() as session:
@@ -430,7 +453,7 @@ def test_durable_worker_failure_retry_ready_and_owned_purge(harness, monkeypatch
         assert failed.status == "failed" and "encoder interrupted" in failed.error_message
     assert source_path.read_bytes() == b"source"
     _mock_video(harness, monkeypatch)
-    retry = _request(harness, source)
+    retry = _prepare(harness, source)
     assert retry.status_code == 202 and retry.get_json()["job_id"] != first["job_id"]
     assert worker.run_once()
     with harness.database.session() as session:

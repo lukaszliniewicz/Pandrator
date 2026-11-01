@@ -14,42 +14,37 @@ import time
 import unicodedata
 from collections import OrderedDict
 from copy import deepcopy
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from sqlalchemy import select
 
 from pandrator.logic.dubbing.settings import normalize_correction_style
-from pandrator.logic.dubbing.srt_utils import (
-    split_speaker_label,
-)
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.logic.tts_retry import DEFAULT_TTS_MAX_ATTEMPTS
 from pandrator.runtime import DataPaths
 
+from .access.speech_preview_policy import preview_execution_workspace
 from .artifact_selection import canonical_stage_key, selected_artifacts
 from .artifacts import ArtifactService, sha256_file
 from .audio_verification import add_run_rms_warning, run_rms_outliers, verify_audio
+from .audit import AuditService
 from .credentials import (
-    auxiliary_credential_key,
-    database_reference,
     hydrate_stt_settings,
     hydrate_tts_settings,
     redact_inline_secrets,
-    resolve_secret_reference,
+    resolve_auxiliary_credential,
 )
 from .database import Database
 from .export_contract import export_requires_generation_assembly
 from .generation_plan_store import GenerationPlanStoreContext
 from .generation_plan_store import store_generation_plan as _store_generation_plan_impl
 from .google_voice_design import design_google_voice as _design_google_voice_impl
+from .job_inputs import artifact_job_ownership
 from .jobs import JobQueue
 from .logical_passages import (
-    attach_passages,
     load_timing_reference,
     map_output_passages,
-    passage_review_metadata,
     passage_srt,
     pin_raw_source_passages,
     same_timing_language,
@@ -65,7 +60,6 @@ from .models import (
     OutcomePlan,
     OutputAssembly,
     Segment,
-    SegmentLineage,
     SessionRecord,
     SessionSetting,
     SessionSource,
@@ -135,6 +129,10 @@ from .workflow_speech_optimization import optimize_tts as _optimize_tts_impl
 from .workflow_speech_optimization import (
     save_speech_plan_proposals as _save_speech_plan_proposals_impl,
 )
+from .workflow_srt_documents import _dominant_speaker as _dominant_speaker
+from .workflow_srt_documents import _hash_segments as _hash_segments
+from .workflow_srt_documents import _structured_speaker as _structured_speaker
+from .workflow_srt_documents import store_srt_document_in_session
 from .workflow_subtitle_transforms import SubtitleTransformContext
 from .workflow_subtitle_transforms import correct as _correct_impl
 from .workflow_subtitle_transforms import translate as _translate_impl
@@ -276,46 +274,7 @@ def _source_cleaning_progress_callback(
     return report
 
 
-def _structured_speaker(segment: Any) -> str:
-    speaker = str(getattr(segment, "speaker", None) or "").strip()
-    if speaker:
-        return speaker
-    legacy_speaker, _text = split_speaker_label(str(getattr(segment, "text", "") or ""))
-    return str(legacy_speaker or "").strip()
 
-
-def _dominant_speaker(start_ms: int, end_ms: int, candidates: list[Any]) -> str:
-    weighted: dict[str, tuple[str, int, int]] = {}
-    for order, candidate in enumerate(candidates):
-        speaker = _structured_speaker(candidate)
-        candidate_start = getattr(candidate, "start_ms", None)
-        candidate_end = getattr(candidate, "end_ms", None)
-        if not speaker or candidate_start is None or candidate_end is None:
-            continue
-        overlap = min(end_ms, int(candidate_end)) - max(start_ms, int(candidate_start))
-        if overlap <= 0:
-            continue
-        key = speaker.casefold()
-        raw, total, first_order = weighted.get(key, (speaker, 0, order))
-        weighted[key] = (raw, total + overlap, first_order)
-    if not weighted:
-        return ""
-    return max(weighted.values(), key=lambda value: (value[1], -value[2]))[0]
-
-
-def _hash_segments(segments) -> str:
-    payload = [
-        {
-            "start_ms": segment.start_ms,
-            "end_ms": segment.end_ms,
-            "text": segment.text,
-            "speaker": _structured_speaker(segment) or None,
-        }
-        for segment in segments
-    ]
-    return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
 
 
 def _next_available_path(path: Path) -> Path:
@@ -514,6 +473,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         jobs: JobQueue | None = None,
         subtitle_evidence: SubtitleEvidenceService | None = None,
         sound_mixes: SoundMixService | None = None,
+        audit: AuditService | None = None,
     ):
         self.database = database
         self.paths = paths
@@ -528,6 +488,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         self.tts_providers = tts_providers
         self.manager_bridge = manager_bridge
         self.jobs = jobs or JobQueue(database)
+        self._copy_audit = audit
         from .sound_mix_service import SoundMixService
 
         self.sound_mixes = sound_mixes or SoundMixService(
@@ -562,10 +523,23 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         """Delegate the durable subtitle-evidence job to its service."""
         if self.subtitle_evidence is None:
             raise RuntimeError("Subtitle evidence service is not configured.")
-        return self.subtitle_evidence.run_request(
-            str(payload.get("evidence_id") or ""), progress, cancel_event,
-            **({"force_refresh": True} if payload.get("force_refresh", False) else {}),
-        )
+        from .evidence_execution import prepare_evidence_execution
+
+        execution = prepare_evidence_execution(self.database, self.jobs, payload)
+        if execution is not None:
+            return self.subtitle_evidence.run_request(
+                execution.evidence_id,
+                progress,
+                cancel_event,
+                force_refresh=payload.get("force_refresh", False),
+                _execution=execution,
+            )
+        evidence_id = str(payload.get("evidence_id") or "")
+        if payload.get("force_refresh", False):
+            return self.subtitle_evidence.run_request(
+                evidence_id, progress, cancel_event, force_refresh=True
+            )
+        return self.subtitle_evidence.run_request(evidence_id, progress, cancel_event)
 
     def _resume_generation_after_regeneration(
         self,
@@ -613,8 +587,14 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
     def prepare_audio_cpp_voice_reference(
         self,
         settings: dict[str, Any],
+        *,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         """Link the selected local voice to the newest ready WAV reference."""
+        from .voice_identity import voice_creation_workspace
+
+        with self.database.session() as session:
+            workspace_id = voice_creation_workspace(session, workspace_id=workspace_id).id
         prepared = deepcopy(settings or {})
         if self.tts_providers.service_id_for_settings(prepared) != "audio_cpp":
             return prepared
@@ -624,7 +604,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         from .voice_library import resolve_audio_cpp_voice_reference
 
         with self.database.session() as session:
-            match = resolve_audio_cpp_voice_reference(session, self.paths, prepared)
+            match = resolve_audio_cpp_voice_reference(
+                session, self.paths, prepared, workspace_id=workspace_id
+            )
 
         if match is None:
             return prepared
@@ -654,63 +636,161 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
     _prepare_audio_cpp_voice_reference = prepare_audio_cpp_voice_reference
 
     def preview_tts_voice(self, payload, progress, cancel_event):
-        """Generate a short managed preview without mutating a session plan."""
+        """Generate a workspace audition under current execution and IO fences."""
+        from sqlalchemy.orm import Session
 
+        from pandrator.logic import tts_handler
+        from pandrator.logic.tts_io_policy import TtsIoDenied, tts_io_scope
+        from pandrator.logic.tts_service_identity import normalize_service_id
+
+        from .credential_identity import credential_namespace
+        from .speech_input_contracts import SpeechInputOwner, validate_speech_input_pin
+        from .speech_inputs import check_speech_input, load_speech_input
+        from .speech_preview_settings import public_preview_settings
+        from .usage_identity import bind_usage_ownership
+        from .voice_provider_settings import check_voice_provider_settings
+
+        captured_workspace: str | None = None
+        host_allowed: bool | None = None
+        speech_input = validate_speech_input_pin(payload.get("speech_input"))
+        retained_audio_hash: str | None = None
+
+        def prove(session: Session | None = None) -> str:
+            if session is None:
+                with self.database.snapshot_session() as current:
+                    return prove(current)
+            owner = preview_execution_workspace(
+                session, payload, expected_workspace_id=captured_workspace
+            )
+            check_voice_provider_settings(session, payload, owner)
+            if (
+                host_allowed is not None
+                and credential_namespace(session, owner).host_credentials_allowed != host_allowed
+            ):
+                raise ValueError("The host credential policy changed during execution.")
+            if speech_input is not None:
+                check_speech_input(
+                    session, speech_input, owner=SpeechInputOwner(owner),
+                    audio_sha256=retained_audio_hash,
+                )
+            return owner
+
+        with self.database.snapshot_session() as session:
+            workspace_id = prove(session)
+            captured_workspace = workspace_id
+            host_allowed = credential_namespace(session, workspace_id).host_credentials_allowed
         text = str(payload.get("text") or "").strip()
-        settings = hydrate_tts_settings(
-            self.database,
-            self.paths,
-            dict(payload.get("settings") or {}),
-            manager_bridge=self.manager_bridge,
-        )
         if not text:
             raise ValueError("Preview text is required.")
+        submitted = dict(payload.get("settings") or {})
+
+        def hydrate() -> tuple[dict[str, Any], str, str]:
+            prove()
+            current = hydrate_tts_settings(
+                self.database, self.paths, submitted,
+                manager_bridge=self.manager_bridge, workspace_id=workspace_id,
+            )
+            prove()
+            selected = str(current.get("service") or current.get("tts_service") or "XTTS")
+            if selected.strip().lower() in {"openai compatible", "openai-compatible", "custom"}:
+                selected = str(current.get("openai_audio_endpoint") or selected)
+            profile = tts_handler.get_service_config(current, selected) or {}
+            connection_id = normalize_service_id(profile.get("id") or profile.get("name"))
+            if not connection_id or (
+                current.get("preview_service_id")
+                and normalize_service_id(current["preview_service_id"]) != connection_id
+            ):
+                raise ValueError("The preview service no longer matches its saved connection.")
+            key_env = str(profile.get("api_key_env") or "")
+            key = str(profile.get("api_key") or "")
+            if host_allowed and key_env:
+                key = os.getenv(key_env, "").strip() or key
+            identity = {name: profile.get(name) for name in (
+                "id", "adapter", "api_base", "base_url", "connection_mode",
+                "vertex_project", "vertex_location", "location",
+            )}
+            identity["credential"] = key
+            pin = hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
+            return current, pin, key
+
+        settings, credential_pin, credential_value = hydrate()
+
+        def before_io() -> None:
+            if cancel_event.is_set():
+                raise ValueError("Voice preview was cancelled before its next request.")
+            _current, current_pin, _credential = hydrate()
+            if current_pin != credential_pin:
+                raise ValueError("The preview connection or credential changed during execution.")
+
         if cancel_event.is_set():
             return {}
         progress(0.1, "Requesting voice preview")
         urls = self._tts_urls(settings)
-        service_id = str(settings.get("preview_service_id") or "").lower()
+        service_id = normalize_service_id(
+            settings.get("preview_service_id") or self.tts_providers.service_id_for_settings(settings)
+        )
+        adapter_id = self.tts_providers.service_id_for_settings(settings)
         api_base = str(settings.get("preview_api_base") or "").strip()
         url_key = {
-            "audio_cpp": "audio_cpp_base_url",
-            "xtts": "xtts_base_url",
-            "voxcpm": "voxcpm_base_url",
-            "fishs2": "fishs2_base_url",
-            "voxtral": "voxtral_base_url",
-            "kokoro": "kokoro_base_url",
-            "silero": "silero_base_url",
-            "chatterbox": "chatterbox_base_url",
-            "kobold_qwen": "kobold_qwen_base_url",
-            "magpie": "magpie_base_url",
-        }.get(service_id)
+            "audio_cpp": "audio_cpp_base_url", "xtts": "xtts_base_url",
+            "voxcpm": "voxcpm_base_url", "fishs2": "fishs2_base_url",
+            "voxtral": "voxtral_base_url", "kokoro": "kokoro_base_url",
+            "silero": "silero_base_url", "chatterbox": "chatterbox_base_url",
+            "kobold_qwen": "kobold_qwen_base_url", "magpie": "magpie_base_url",
+        }.get(adapter_id)
         if url_key and api_base:
             urls[url_key] = api_base
-        settings = self.prepare_audio_cpp_voice_reference(settings)
-        self._ensure_qwen_cloned_voice(
-            settings,
-            base_url=urls["kobold_qwen_base_url"],
-            verified=set(),
-            cancel_event=cancel_event,
-        )
-        audio = self.tts_providers.synthesize(
-            text,
-            settings,
-            max_attempts=int(
-                settings.get("max_attempts") or DEFAULT_TTS_MAX_ATTEMPTS
-            ),
-            cancel_event=cancel_event,
-            retry_callback=lambda attempt, total, delay: progress(
-                0.1,
-                f"Voice preview retry {attempt} of {total} in {delay:.1f}s",
-            ),
-            recovery_callback=lambda cycle, total, timeout: progress(
-                0.1,
-                f"Waiting for Qwen3 TTS to recover ({cycle}/{total}, up to {timeout:.0f}s)",
-            ),
-            **urls,
-        )
+        with self.jobs.secret_redactor.scoped_values((credential_value,)):
+            try:
+                with tts_io_scope(
+                    before_io,
+                    allow_environment_credentials=host_allowed,
+                    allow_host_adc=host_allowed,
+                    redact_diagnostic=self.jobs.secret_redactor.redact,
+                ):
+                    before_io()
+                    if "speech_input" not in payload:
+                        settings = self.prepare_audio_cpp_voice_reference(settings, workspace_id=workspace_id)
+                    elif speech_input is not None:
+                        settings = load_speech_input(
+                            self.database, self.paths, speech_input, settings,
+                            owner=SpeechInputOwner(workspace_id), before_io=before_io,
+                        )
+                        retained_audio_hash = str(settings.get("audio_cpp_voice_ref_hash") or "")
+                        if not retained_audio_hash:
+                            raise ValueError("The retained speech reference is unavailable.")
+                    before_io()
+                    self._ensure_qwen_cloned_voice(
+                        settings, base_url=urls["kobold_qwen_base_url"], verified=set(),
+                        cancel_event=cancel_event, workspace_id=workspace_id,
+                    )
+                    before_io()
+                    audio = self.tts_providers.synthesize(
+                        text, settings,
+                        max_attempts=int(settings.get("max_attempts") or DEFAULT_TTS_MAX_ATTEMPTS),
+                        cancel_event=cancel_event,
+                        retry_callback=lambda attempt, total, delay: progress(
+                            0.1, f"Voice preview retry {attempt} of {total} in {delay:.1f}s",
+                        ),
+                        recovery_callback=lambda cycle, total, timeout: progress(
+                            0.1, f"Waiting for Qwen3 TTS to recover ({cycle}/{total}, up to {timeout:.0f}s)",
+                        ),
+                        **urls,
+                    )
+            except TtsIoDenied:
+                raise
+            except Exception as error:
+                import traceback
+
+                message = self.jobs.secret_redactor.redact(error)
+                trace = self.jobs.secret_redactor.redact(traceback.format_exc())
+                logger.error("Voice preview failed: %s\n%s", message, trace)
+                raise RuntimeError(message) from None
+        if cancel_event.is_set():
+            return {}
         if audio is None:
             raise RuntimeError("The speech service did not return preview audio.")
+        prove()
         generation_prompt = str(settings.get("generation_prompt") or "").strip()
         seed = settings.get("seed")
         if seed is None:
@@ -721,50 +801,59 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             "model": str(settings.get("model") or ""),
             "voice": str(settings.get("voice") or ""),
             "language": str(settings.get("language") or ""),
-            "preview_text": text,
-            "generation_prompt": generation_prompt,
+            "preview_text": text, "generation_prompt": generation_prompt,
             "seed": seed if seed is not None else None,
         }
-        # A preview is an auditioned source artifact, not a cache entry.  Keep
-        # each job on its own immutable path so regenerating the same inputs
-        # cannot replace audio that a promotion job has already selected.
         preview_job_id = str(payload.get("_job_id") or "").strip() or new_id()
-        preview_key = hashlib.sha256(
-            json.dumps(
-                {**preview_identity, "preview_job_id": preview_job_id},
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        target_dir = self.paths.artifacts / "tts-previews"
+        preview_key = hashlib.sha256(json.dumps(
+            {**preview_identity, "preview_job_id": preview_job_id, "attempt_id": new_id()},
+            sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        prove()
+        target_dir = self.paths.artifacts / "tts-previews" / workspace_id
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{preview_key}.wav"
-        with target.open("wb") as output:
-            audio.export(output, format="wav")
-        artifact = self.artifacts.register(
-            target,
-            kind="audio",
-            role="tts_voice_preview",
-            settings=_secret_free_tts_settings(settings),
-            metadata={
-                **preview_identity,
-                "preview_job_id": preview_job_id,
-                "service": settings.get("service"),
-                "generation_settings": redact_inline_secrets(
-                    _secret_free_tts_settings(settings)
-                ),
-            },
-        )
-        self._record_tts_usage(
-            "",
-            settings,
-            text,
-            len(audio),
-            job_id=str(payload.get("_job_id") or "") or None,
-            artifact_id=artifact.id,
-        )
+        identity = None
+        committed = False
+        try:
+            prove()
+            with target.open("xb") as output:
+                stat = os.fstat(output.fileno())
+                identity = stat.st_dev, stat.st_ino
+                audio.export(output, format="wav")
+            preview_settings = public_preview_settings(settings)
+            prepared = self.artifacts.prepare_registration(target, settings=preview_settings)
+            with self.database.immediate_session() as session:
+                prove(session)
+                artifact = self.artifacts.register_in_session(
+                    session, target, kind="audio", role="tts_voice_preview",
+                    workspace_id=workspace_id, settings=preview_settings,
+                    parent_ids=[speech_input["artifact_id"]] if speech_input is not None else None,
+                    metadata={
+                        **preview_identity, "preview_job_id": preview_job_id,
+                        "service": settings.get("service"), "generation_settings": preview_settings,
+                    },
+                    _prepared=prepared,
+                )
+                session.flush()
+                usage = self._tts_usage_event(
+                    "", settings, text, len(audio),
+                    job_id=str(payload.get("_job_id") or "") or None, artifact_id=artifact.id,
+                )
+                if usage is not None:
+                    bind_usage_ownership(session, usage)
+                    session.add(usage)
+            committed = True
+        finally:
+            if not committed and identity is not None:
+                try:
+                    stat = target.lstat()
+                    if (stat.st_dev, stat.st_ino) == identity:
+                        target.unlink()
+                except OSError:
+                    pass
         progress(1.0, "Preview ready")
-        return {"artifact_id": artifact.id, "duration_ms": len(audio)}
+        return {"artifact_id": artifact.id, "duration_ms": len(audio), "workspace_id": workspace_id}
 
     @staticmethod
     def _validate_download_url(raw_url: str) -> str:
@@ -831,19 +920,33 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
 
     def continue_workflow(self, payload, progress, cancel_event):
         """Run only missing/stale included prerequisites, then the requested outcome stage."""
+        from .access.delivery_execution_policy import (
+            capture_delivery_execution,
+            delivery_child_scope,
+            require_delivery_execution,
+        )
+        from .access.source_preparation_policy import source_processing_child_scope
+        from .delivery_runtime import DeliveryRuntime
+        from .workflow_output_context import output_access_options
         from .workflows import AUDIOBOOK_STAGES, DUBBING_STAGES, MEDIA_EDIT_STAGES
 
+        with self.database.snapshot_session() as session:
+            delivery = capture_delivery_execution(session, payload, entry="continue_workflow")
+        source_context = DeliveryRuntime(
+            self._output_workflow_context(), delivery, cancel_event
+        ).input_context()
         session_id = str(payload.get("session_id") or "")
         target_key = str(payload.get("target_stage") or "generate_audio")
         expected_speech_revision = str(payload.get("speech_plan_revision_id") or "")
         if expected_speech_revision:
             with self.database.session() as session:
+                require_delivery_execution(session, delivery)
                 current_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
                 if current_plan is None or current_plan.active_revision_id != expected_speech_revision:
                     from .settings_policy import RevisionConflict
 
                     raise RevisionConflict("The speech plan changed after this workflow was queued. Review the current revision and start again.")
-        record = self._session_record(session_id)
+        record = source_context._session_record(session_id)
         definitions = (
             AUDIOBOOK_STAGES
             if record.workflow_kind == "audiobook"
@@ -853,7 +956,10 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         )
         is_srt_source = False
         if record.workflow_kind != "audiobook":
-            upload = self._latest_stage_input(session_id, ("upload",))
+            upload = self._latest_stage_input(
+                session_id, ("upload",),
+                **output_access_options(source_context),
+            )
             filename = (
                 str(
                     (upload.metadata_json or {}).get("original_filename")
@@ -875,6 +981,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             raise ValueError(f"Unknown continuation stage: {target_key}")
         included = set(record.included_stages_json or [])
         with self.database.session() as session:
+            require_delivery_execution(session, delivery)
             outcome = session.scalar(
                 select(OutcomePlan).where(OutcomePlan.session_id == session_id)
             )
@@ -914,7 +1021,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             "edit_media",
         }:
             rendered_subtitles = self._latest_stage_input(
-                session_id, ("media_edit_subtitles",)
+                session_id, ("media_edit_subtitles",),
+                **output_access_options(source_context),
             )
             if not self._matches_active_media_edit_revision(
                 session_id, rendered_subtitles
@@ -949,6 +1057,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         for index, definition in enumerate(runnable):
             if cancel_event.is_set():
                 return {"artifacts": produced}
+            with self.database.snapshot_session() as session:
+                require_delivery_execution(session, delivery)
             raw_stage_settings = stage_settings.get(definition.key)
             settings: dict[str, Any] = (
                 dict(raw_stage_settings)
@@ -969,6 +1079,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 )
             )
             with self.database.session() as session:
+                require_delivery_execution(session, delivery)
                 existing = (
                     selected_artifacts(session, session_id).get(
                         canonical_stage_key(definition.key)
@@ -993,9 +1104,13 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                         source = self._persisted_translation_input(
                             session_id,
                             persisted_source_id,
+                            **output_access_options(source_context),
                         )
             if source is None:
-                source = self._latest_stage_input(session_id, input_roles)
+                source = self._latest_stage_input(
+                    session_id, input_roles,
+                    **output_access_options(source_context),
+                )
             if (
                 definition.prerequisite_roles
                 and source is None
@@ -1039,6 +1154,12 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 "settings": settings,
                 "_job_id": str(payload.get("_job_id") or "") or None,
             }
+            # Trusted direct callers omit both worker fields. A real queued
+            # continuation must preserve its complete lease pair in children.
+            if "_lease_generation" in payload:
+                handler_payload["_lease_generation"] = payload["_lease_generation"]
+            elif handler_payload["_job_id"] is None:
+                handler_payload.pop("_job_id")
             requested_agent_runs = payload.get("_agent_run_ids")
             if isinstance(requested_agent_runs, dict):
                 run_kind = {
@@ -1059,12 +1180,11 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     handler_payload["display_subtitle_snapshot"] = payload[
                         "display_subtitle_snapshot"
                     ]
-            if definition.key == "export" and deferred_export_assembly:
-                result = self.export_variant(
-                    handler_payload,
-                    stage_progress,
-                    cancel_event,
-                )
+            if definition.key == "export":
+                entry = "export_variant" if deferred_export_assembly else "export"
+                export_handler = self.export_variant if deferred_export_assembly else handler
+                with delivery_child_scope(delivery, entry, handler_payload):
+                    result = export_handler(handler_payload, stage_progress, cancel_event)
             elif definition.key == "generate_audio":
                 handler_payload["speech_plan_revision_id"] = expected_speech_revision or None
                 result = self._run_reviewable_generation(
@@ -1075,6 +1195,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     settings_hash=str(payload.get("settings_hash") or "") or None,
                     job_id=str(payload.get("_job_id") or "") or None,
                 )
+            elif job_kind in {"source.clean", "text.prepare", "text.optimize_tts"}:
+                with source_processing_child_scope(delivery, job_kind, handler_payload):
+                    result = handler(handler_payload, stage_progress, cancel_event)
             else:
                 result = handler(handler_payload, stage_progress, cancel_event)
             if result:
@@ -1461,17 +1584,20 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         if parent_artifact:
             with self.database.session() as session:
                 managed_parent = session.get(Artifact, parent_artifact.id)
-                parent_revision_id = str(
-                    (
-                        (
-                            managed_parent.metadata_json
-                            if managed_parent is not None
-                            else parent_artifact.metadata_json
-                        )
-                        or {}
-                    ).get("revision_id")
-                    or ""
-                )
+                if managed_parent is not None and managed_parent.session_id is not None:
+                    candidate_revision_id = str(
+                        (managed_parent.metadata_json or {}).get("revision_id") or ""
+                    )
+                    if candidate_revision_id:
+                        parent_revision_id = session.scalar(
+                            select(DocumentRevision.id)
+                            .join(Document, DocumentRevision.document_id == Document.id)
+                            .where(
+                                DocumentRevision.id == candidate_revision_id,
+                                Document.session_id == managed_parent.session_id,
+                                Document.session_id.is_not(None),
+                            )
+                        ) or ""
         parent_file_segments: list[Any] = []
         if parent_artifact and not parent_revision_id:
             try:
@@ -1494,141 +1620,27 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 list(
                     session.scalars(
                         select(Segment)
-                        .where(Segment.revision_id == parent_revision_id)
+                        .join(DocumentRevision, Segment.revision_id == DocumentRevision.id)
+                        .join(Document, DocumentRevision.document_id == Document.id)
+                        .join(Artifact, Document.session_id == Artifact.session_id)
+                        .where(
+                            Segment.revision_id == parent_revision_id,
+                            Artifact.id == parent_artifact.id,
+                            Artifact.session_id.is_not(None),
+                        )
                         .order_by(Segment.ordinal)
                     ).all()
                 )
-                if parent_revision_id
+                if parent_revision_id and parent_artifact is not None
                 else []
             )
-            speaker_candidates: list[Any] = parents or parent_file_segments
-            resolved_segments = []
-            speaker_sources: list[str] = []
-            for item in segments:
-                reviewed_speaker = str(
-                    (speaker_overrides or {}).get(item.index) or ""
-                ).strip()
-                inherited_speaker = str(
-                    item.speaker
-                    or _dominant_speaker(
-                        item.start_ms,
-                        item.end_ms,
-                        speaker_candidates,
-                    )
-                    or ""
-                ).strip()
-                resolved_segments.append(
-                    replace(
-                        item,
-                        speaker=reviewed_speaker or inherited_speaker,
-                    )
-                )
-                speaker_sources.append(
-                    "model_reviewed" if reviewed_speaker else "timing_inherited"
-                )
-            document = Document(session_id=session_id, stage=stage, language=language)
-            session.add(document)
-            session.flush()
-            revision = DocumentRevision(
-                document_id=document.id,
-                revision_number=1,
-                content_hash=_hash_segments(resolved_segments),
+            return store_srt_document_in_session(
+                session, session_id, artifact, managed, stage,
+                segments, parents, parent_file_segments,
+                language=language, speaker_overrides=speaker_overrides,
+                logical_passages=logical_passages, parent_artifact=parent_artifact,
+                hash_segments_func=_hash_segments, speaker_resolver=_dominant_speaker,
             )
-            session.add(revision)
-            session.flush()
-            child_records: list[Segment] = []
-            speech_markup = (artifact.metadata_json or {}).get("speech_markup") or {}
-            speech_metadata: dict[int, dict[str, str]] = {}
-            if speech_markup:
-                from .generation_cast_runtime import remap_markup
-                from .generation_controls import get_generation_controls
-                characters = get_generation_controls(session, session_id)["characters"]
-                for ordinal, item in enumerate(resolved_segments):
-                    cue_markup = speech_markup.get(str(ordinal + 1))
-                    if cue_markup:
-                        speech_metadata[ordinal] = {
-                            "speech_xml": remap_markup(
-                                cue_markup, str(ordinal + 1), item.text, characters
-                            )
-                        }
-            for ordinal, item in enumerate(resolved_segments):
-                child = Segment(
-                    revision_id=revision.id,
-                    ordinal=ordinal,
-                    start_ms=item.start_ms,
-                    end_ms=item.end_ms,
-                    text=item.text,
-                    speaker=item.speaker or None,
-                    metadata_json={
-                        "speaker_source": speaker_sources[ordinal],
-                        **speech_metadata.get(ordinal, {}),
-                        **(
-                            passage_review_metadata(
-                                [
-                                    row
-                                    for row in logical_passages
-                                    if min(item.end_ms, row["end_ms"])
-                                    > max(item.start_ms, row["start_ms"])
-                                ]
-                            )
-                            if logical_passages is not None
-                            else {}
-                        ),
-                    },
-                )
-                session.add(child)
-                child_records.append(child)
-            session.flush()
-            document.active_revision_id = revision.id
-
-            for child in child_records:
-                overlaps = [
-                    parent
-                    for parent in parents
-                    if child.start_ms is not None
-                    and child.end_ms is not None
-                    and parent.start_ms is not None
-                    and parent.end_ms is not None
-                    and min(child.end_ms, parent.end_ms)
-                    > max(child.start_ms, parent.start_ms)
-                ]
-                for sequence, parent in enumerate(overlaps):
-                    session.add(
-                        SegmentLineage(
-                            parent_segment_id=parent.id,
-                            child_segment_id=child.id,
-                            relation="temporal_overlap",
-                            sequence=sequence,
-                        )
-                    )
-
-            speakers = {
-                child.speaker.casefold(): child.speaker
-                for child in child_records
-                if child.speaker
-            }
-            managed.metadata_json = {
-                **(managed.metadata_json or {}),
-                "document_id": document.id,
-                "revision_id": revision.id,
-                "stage": stage,
-                "language": language,
-                "has_speaker_metadata": bool(speakers),
-                "speaker_count": len(speakers),
-                "speaker_reviewed_by_model": any(
-                    source == "model_reviewed" for source in speaker_sources
-                ),
-            }
-            if logical_passages is not None and parent_artifact is not None:
-                attach_passages(managed, logical_passages, source=parent_artifact)
-                managed.metadata_json = {
-                    **managed.metadata_json,
-                    "uncertain_segment_count": sum(
-                        child.metadata_json.get("review_state") == "uncertain"
-                        for child in child_records
-                    ),
-                }
-            return document.id, revision.id
 
     def _store_timed_words(
         self,
@@ -1828,7 +1840,21 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             model = "deepl"
         provider = model.split("/", 1)[0] if "/" in model else "default"
         commercial = self._llm_usage_is_commercial(settings, model, cost is not None)
-        with self.database.session() as session:
+        from .usage_identity import bind_usage_ownership
+
+        with self.database.immediate_session() as session:
+            candidate = UsageEvent(
+                session_id=session_id,
+                stage=stage,
+                job_id=job_id or None,
+                artifact_id=artifact_id or None,
+                generation_run_id=generation_run_id or None,
+                agent_run_id=agent_run_id or None,
+                request_key=request_key or None,
+                provider_key=provider,
+                model_id=model,
+            )
+            owner = bind_usage_ownership(session, candidate)
             event = None
             if agent_run_id and request_key:
                 event = session.scalar(
@@ -1838,20 +1864,18 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     )
                 )
             if event is None:
-                event = UsageEvent(
-                    session_id=session_id,
-                    stage=stage,
-                    job_id=job_id or None,
-                    artifact_id=artifact_id or None,
-                    generation_run_id=generation_run_id or None,
-                    agent_run_id=agent_run_id or None,
-                    request_key=request_key or None,
-                    provider_key=provider,
-                    model_id=model,
-                )
+                event = candidate
                 session.add(event)
+            else:
+                if bind_usage_ownership(session, event) != owner:
+                    raise ValueError("The usage replay belongs to another owner.")
+                for field in ("session_id", "generation_run_id", "agent_run_id"):
+                    previous, submitted = getattr(event, field), getattr(candidate, field)
+                    if previous is not None and submitted is not None and previous != submitted:
+                        raise ValueError("The usage replay references another execution root.")
             event.job_id = job_id or event.job_id
             event.artifact_id = artifact_id or event.artifact_id
+            bind_usage_ownership(session, event)
             event.provider_key = provider
             event.model_id = model
             event.input_tokens = int(usage.get("prompt_tokens") or 0)
@@ -1888,7 +1912,10 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         )
         if event is None:
             return
-        with self.database.session() as session:
+        from .usage_identity import bind_usage_ownership
+
+        with self.database.immediate_session() as session:
+            bind_usage_ownership(session, event)
             session.add(event)
 
     @staticmethod
@@ -2018,6 +2045,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             self.database,
             self.paths,
             submitted_settings,
+            session_id=session_id,
         )
         from pandrator.logic.dubbing.caption_alignment import (
             normalize_alignment_settings,
@@ -2188,45 +2216,19 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         """Start or resume a transform and return its durable checkpoint sink."""
         from types import SimpleNamespace
 
-        from .agentic_runs import AgenticRunStore, stable_payload_hash
+        from .agentic_runs import AgenticRunStore, operation_settings_snapshot
 
         store = AgenticRunStore(self.database)
-        resolved_execution = {
-            "model": str(
-                usage_settings.get(f"{kind}_model")
-                or usage_settings.get("model_name")
-                or usage_settings.get("llm_default_model")
-                or ""
-            ),
-            "backend": str(
-                usage_settings.get("translation_backend")
-                or usage_settings.get("backend")
-                or "llm"
-            ),
-            "reasoning_effort": str(
-                usage_settings.get("reasoning_effort")
-                or usage_settings.get(f"{kind}_reasoning_effort")
-                or ""
-            ),
-        }
-        settings_hash = stable_payload_hash(
-            {
-                "kind": kind,
-                "settings": requested_settings,
-                "instructions": instructions,
-                "resolved_execution": resolved_execution,
-            }
+        settings_hash, stored_settings = operation_settings_snapshot(
+            kind=kind, requested_settings=requested_settings,
+            instructions=instructions, usage_settings=usage_settings,
         )
         started = store.start(
             kind=kind,
             session_id=str(payload.get("session_id") or ""),
             source_artifact=source_artifact,
             settings_hash=settings_hash,
-            settings={
-                "settings": requested_settings,
-                "instructions": instructions,
-                "resolved_execution": resolved_execution,
-            },
+            settings=stored_settings,
             job_id=str(payload.get("_job_id") or "") or None,
             requested_run_id=str(payload.get("_agent_run_id") or "") or None,
         )
@@ -2293,9 +2295,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             database=self.database,
             paths=self.paths,
             _subtitle_speaker_map=self._subtitle_speaker_map,
-            _resolve_secret_reference=resolve_secret_reference,
-            _database_reference=database_reference,
-            _auxiliary_credential_key=auxiliary_credential_key,
+            _resolve_auxiliary_credential=resolve_auxiliary_credential,
             _fraction_message_callback=_fraction_message_callback,
         )
 
@@ -2350,9 +2350,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             _stage_settings_fingerprint=_stage_settings_fingerprint,
             _scaled_progress_callback=_scaled_progress_callback,
             _normalize_correction_style=normalize_correction_style,
-            _resolve_secret_reference=resolve_secret_reference,
-            _database_reference=database_reference,
-            _auxiliary_credential_key=auxiliary_credential_key,
+            _resolve_auxiliary_credential=resolve_auxiliary_credential,
         )
 
     def correct(self, payload, progress, cancel_event):
@@ -2396,7 +2394,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         if not cues:
             raise ValueError("The selected media-edit revision has no cues to review.")
         settings = dict(payload.get("settings") or {})
-        settings = self._with_database_llm_settings(settings, "correction")
+        settings = self._with_database_llm_settings(
+            settings, "correction", session_id=session_id
+        )
         correction_model = str(
             settings.get("correction_model") or settings.get("llm_default_model") or ""
         ).strip()
@@ -2763,10 +2763,16 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         base_url: str,
         verified: set[str],
         cancel_event,
+        workspace_id: str | None = None,
     ) -> None:
         """Restore a stale managed Qwen voice once, without silent fallback."""
         from pandrator.logic import tts_handler
 
+        from .voice_identity import voice_creation_workspace
+        from .voice_queries import voices_in_workspace
+
+        with self.database.session() as session:
+            workspace_id = voice_creation_workspace(session, workspace_id=workspace_id).id
         if self.tts_providers.service_id_for_settings(settings) != "kobold_qwen":
             return
         model = tts_handler.resolve_kobold_qwen_model(settings)
@@ -2784,52 +2790,66 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         voice_key = requested_voice.removesuffix(".wav").lower()
         if not voice_key or voice_key == tts_handler.KOBOLD_QWEN_SAMPLE_VOICE.lower():
             return
-        if voice_key in verified:
+        # A remote catalogue entry or a verified-cache hit cannot authorize a
+        # managed reference registered only in another workspace.
+        managed_voice_id = ""
+        metadata_service_id = "kobold_qwen"
+        foreign_match = False
+
+        def matching_provider(name, metadata):
+            for provider_id, record in dict((metadata or {}).get("providers") or {}).items():
+                normalized_provider = (
+                    str(provider_id).strip().lower().replace("-", "_").replace(" ", "_")
+                )
+                if normalized_provider not in {
+                    "kobold_qwen", "qwen", "qwen3", "qwen3_tts",
+                } or not isinstance(record, dict):
+                    continue
+                provider_voice = (
+                    str(record.get("voice_id") or name).removesuffix(".wav").lower()
+                )
+                if provider_voice == voice_key:
+                    return str(provider_id)
+            return None
+
+        with self.database.session() as session:
+            for managed_voice in voices_in_workspace(session, workspace_id=workspace_id):
+                provider_id = matching_provider(managed_voice.name, managed_voice.metadata_json)
+                if provider_id is not None:
+                    managed_voice_id = managed_voice.id
+                    metadata_service_id = provider_id
+                    break
+            if not managed_voice_id:
+                foreign_match = any(
+                    matching_provider(name, metadata) is not None
+                    for name, metadata in session.execute(
+                        select(Voice.name, Voice.metadata_json).where(
+                            Voice.workspace_id != workspace_id
+                        )
+                    )
+                )
+        if foreign_match:
+            raise ValueError("The Qwen voice reference is unavailable in this workspace.")
+        verified_key = json.dumps([workspace_id, voice_key], separators=(",", ":"))
+        if verified_key in verified:
             return
 
-        catalogue = tts_handler.get_kobold_qwen_voice_catalog(base_url)
+        from pandrator.logic.tts_io_policy import current_tts_io_policy
+
+        if current_tts_io_policy() is not None:
+            catalogue = tts_handler.get_kobold_qwen_voice_catalog(
+                base_url, api_key=tts_handler._resolve_kobold_qwen_api_key(settings)
+            )
+        else:
+            catalogue = tts_handler.get_kobold_qwen_voice_catalog(base_url)
         available = {
             str(item.get("id") or "").removesuffix(".wav").lower()
             for item in catalogue
             if str(item.get("type") or "").lower() != "preset"
         }
         if voice_key in available:
-            verified.add(voice_key)
+            verified.add(verified_key)
             return
-
-        managed_voice_id = ""
-        metadata_service_id = "kobold_qwen"
-        with self.database.session() as session:
-            for managed_voice in session.scalars(select(Voice)).all():
-                providers = dict(
-                    (managed_voice.metadata_json or {}).get("providers") or {}
-                )
-                for provider_id, record in providers.items():
-                    normalized_provider = (
-                        str(provider_id)
-                        .strip()
-                        .lower()
-                        .replace("-", "_")
-                        .replace(" ", "_")
-                    )
-                    if normalized_provider not in {
-                        "kobold_qwen",
-                        "qwen",
-                        "qwen3",
-                        "qwen3_tts",
-                    } or not isinstance(record, dict):
-                        continue
-                    provider_voice = (
-                        str(record.get("voice_id") or managed_voice.name)
-                        .removesuffix(".wav")
-                        .lower()
-                    )
-                    if provider_voice == voice_key:
-                        managed_voice_id = managed_voice.id
-                        metadata_service_id = str(provider_id)
-                        break
-                if managed_voice_id:
-                    break
 
         if not managed_voice_id:
             raise ValueError(
@@ -2838,6 +2858,10 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             )
         if cancel_event is not None and cancel_event.is_set():
             return
+        if current_tts_io_policy() is not None:
+            raise ValueError(
+                "The selected Qwen reference is no longer installed. Prepare it in the Voice Library before auditioning."
+            )
         logger.info(
             "Qwen voice '%s' is absent from the live catalogue; republishing managed voice %s.",
             requested_voice,
@@ -2846,6 +2870,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         self.publish_voice(
             {
                 "voice_id": managed_voice_id,
+                "workspace_id": workspace_id,
                 "service_id": metadata_service_id,
                 "service": "Qwen3 TTS",
                 "base_url": base_url,
@@ -2853,7 +2878,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             lambda _value, detail=None: logger.info("%s", detail) if detail else None,
             cancel_event,
         )
-        verified.add(voice_key)
+        verified.add(verified_key)
 
     @staticmethod
     def _optimization_text_hash(text: str) -> str:
@@ -3133,6 +3158,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             _logger=logger,
             _repair_early_generation_blocks=self._repair_early_generation_blocks,
             _regroup_generation_blocks=self._regroup_generation_blocks,
+            secret_redactor=self.jobs.secret_redactor,
         )
 
     def _repair_early_generation_blocks(
@@ -3173,88 +3199,107 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
 
         context = self._output_workflow_context()
         result = _assemble_generation_output(context, payload, progress, cancel_event)
+        if result.get("artifact_id"):
+            from .access.assembly_execution_policy import require_assembly_execution
+            from .delivery_runtime import DeliveryRuntime
+
+            with self.database.snapshot_session() as session:
+                proof = require_assembly_execution(session, payload)
+            # Inline exports apply sounds afterward with their frozen delivery
+            # settings. Keep this assembly as reusable clean speech and avoid
+            # rendering a mix when the export explicitly disables sounds.
+            if proof.job_kind in {"export.variant", "workflow.continue"}:
+                return result
+            context = DeliveryRuntime(
+                context, proof, cancel_event, assembly_payload=payload
+            ).input_context()
         return finish_sound_assembly(context, result, payload, progress, cancel_event)
 
     def generate_waveform(self, payload, progress, cancel_event):
-        """Create a compact, reusable peak artifact for browser review."""
+        """Create an independent peak file and fence its publication."""
+        from .access.media_execution_policy import (
+            MediaSourceSnapshot,
+            require_media_execution_artifact,
+        )
         from .media_process import MediaProcessCancelled
         from .waveform import generate_waveform_peaks
 
-        source, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
-        )
+        if cancel_event.is_set():
+            return {}
+        with self.database.snapshot_session() as session:
+            source = require_media_execution_artifact(session, payload, "audio.waveform")
+            snapshot = MediaSourceSnapshot.from_artifact(source)
+            source_path = self.paths.managed_path(source.relative_path)
+            if not source_path.is_file():
+                raise FileNotFoundError("The source audio file is missing.")
         max_points = max(128, min(5000, int(payload.get("max_points") or 1600)))
         start_ms = max(0, int(payload.get("start_ms") or 0))
         raw_end_ms = payload.get("end_ms")
         end_ms = int(raw_end_ms) if raw_end_ms is not None else None
         bounded = raw_end_ms is not None or start_ms > 0
         destination_dir = (
-            self._session_dir(source.session_id)
-            if source.session_id
+            self._session_dir(source.session_id) if source.session_id
             else self.paths.artifacts / "waveforms"
         )
         destination_dir.mkdir(parents=True, exist_ok=True)
         progress(0.1, "Downsampling audio for waveform")
         try:
             waveform = generate_waveform_peaks(
-                source_path,
-                max_points=max_points,
-                work_dir=destination_dir,
-                cancel_event=cancel_event,
-                start_ms=start_ms,
-                end_ms=end_ms,
+                source_path, max_points=max_points, work_dir=destination_dir,
+                cancel_event=cancel_event, start_ms=start_ms, end_ms=end_ms,
             )
         except MediaProcessCancelled:
             return {}
         if cancel_event.is_set():
             return {}
         progress(0.9, "Writing waveform peaks")
+        if cancel_event.is_set():
+            return {}
         destination = destination_dir / (
-            f"waveform-{source.id}-{waveform.start_ms}-{waveform.end_ms}-"
-            f"{max_points}.json"
+            f"waveform-{source.id}-{waveform.start_ms}-{waveform.end_ms}-{max_points}-{new_id()}.json"
         )
-        destination.write_text(
-            json.dumps(
-                {
+        created = False
+        committed = False
+        settings = {"max_points": max_points, "start_ms": waveform.start_ms,
+                    "end_ms": waveform.end_ms}
+        try:
+            with destination.open("x", encoding="utf-8") as output:
+                created = True
+                output.write(json.dumps({
                     "duration_ms": waveform.duration_ms,
-                    "start_ms": waveform.start_ms,
-                    "end_ms": waveform.end_ms,
-                    "channels": waveform.channels,
-                    "points": waveform.points,
-                },
-                separators=(",", ":"),
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        artifact = self.artifacts.register(
-            destination,
-            kind="json",
-            role="waveform_peaks_window" if bounded else "waveform_peaks",
-            session_id=source.session_id,
-            parent_ids=[source.id],
-            settings={
-                "max_points": max_points,
-                "start_ms": waveform.start_ms,
-                "end_ms": waveform.end_ms,
-            },
-            metadata={
-                "source_artifact_id": source.id,
-                "duration_ms": waveform.duration_ms,
-                "start_ms": waveform.start_ms,
-                "end_ms": waveform.end_ms,
-                "max_points": max_points,
-                "analysis_sample_rate_hz": waveform.analysis_sample_rate_hz,
-            },
-        )
-        progress(1.0, "Waveform ready")
-        return {
-            "artifact_id": artifact.id,
-            "source_artifact_id": source.id,
-            "point_count": len(waveform.points),
-            "start_ms": waveform.start_ms,
-            "end_ms": waveform.end_ms,
-        }
+                    "start_ms": waveform.start_ms, "end_ms": waveform.end_ms,
+                    "channels": waveform.channels, "points": waveform.points,
+                }, separators=(",", ":")) + "\n")
+            prepared = self.artifacts.prepare_registration(destination, settings=settings)
+            if cancel_event.is_set():
+                return {}
+            with self.database.immediate_session() as session:
+                current = require_media_execution_artifact(
+                    session, payload, "audio.waveform", expected_source=snapshot,
+                )
+                if cancel_event.is_set():
+                    return {}
+                artifact = self.artifacts.register_in_session(
+                    session, destination, kind="json",
+                    role="waveform_peaks_window" if bounded else "waveform_peaks",
+                    session_id=current.session_id, workspace_id=current.workspace_id,
+                    project_id=current.project_id, parent_ids=[current.id],
+                    settings=settings,
+                    metadata={"source_artifact_id": current.id,
+                              "duration_ms": waveform.duration_ms,
+                              "start_ms": waveform.start_ms, "end_ms": waveform.end_ms,
+                              "max_points": max_points,
+                              "analysis_sample_rate_hz": waveform.analysis_sample_rate_hz},
+                    _prepared=prepared,
+                )
+            committed = True
+            progress(1.0, "Waveform ready")
+            return {"artifact_id": artifact.id, "source_artifact_id": source.id,
+                    "point_count": len(waveform.points), "start_ms": waveform.start_ms,
+                    "end_ms": waveform.end_ms}
+        finally:
+            if created and not committed:
+                destination.unlink(missing_ok=True)
 
     def generate_project_export_bundle(self, payload, progress, cancel_event):
         """Publish frozen export receipts without constructing request services."""
@@ -3266,6 +3311,15 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             database=self.database, paths=self.paths, artifacts=self.artifacts
         )
         return ProjectExportBundleService(worker_services).generate(payload, progress, cancel_event)
+
+    def copy_current_project(self, payload, progress, cancel_event):
+        """Copy frozen saved state through the existing leased queue."""
+        from .projects.copy_jobs import ProjectCopyWorker
+
+        audit = self._copy_audit or AuditService(self.database, self.jobs.secret_redactor)
+        return ProjectCopyWorker(self.database, self.paths, self.jobs, audit).run(
+            payload, progress, cancel_event
+        )
 
     def generate_video_preview(self, payload, progress, cancel_event):
         """Generate a bounded compatible derivative without changing its source."""
@@ -3306,68 +3360,77 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
     ) -> str | None:
         """Reuse or synchronously build the exact assembly required by an export plan."""
 
+        from .access.assembly_execution_policy import require_export_assembly_job
         from .workspace import find_matching_output_assembly
 
-        with self.database.session() as session:
+        cached_artifact_id = None
+        assembly_id = None
+        with self.database.immediate_session() as session:
+            parent_job_id = require_export_assembly_job(session, session_id)
             run = session.get(GenerationRun, generation_run_id)
             if run is None or run.session_id != session_id:
-                raise ValueError(
-                    "The selected generation run does not belong to this session."
-                )
+                raise ValueError("The selected generation run does not belong to this session.")
             if run.status != "completed" and run.audio_version_json is None:
                 raise ValueError("Only a completed generation run can be exported.")
-            existing, assembly_snapshot, settings_hash = (
-                find_matching_output_assembly(
-                    session,
-                    session_id=session_id,
-                    run=run,
-                    resolved_settings_snapshot=resolved_settings_snapshot,
-                    audio_version_side=audio_version_side,
-                )
+            existing, assembly_snapshot, settings_hash = find_matching_output_assembly(
+                session, session_id=session_id, run=run,
+                resolved_settings_snapshot=resolved_settings_snapshot,
+                audio_version_side=audio_version_side,
             )
             if existing is not None and existing.artifact_id:
                 output = resolved_settings_snapshot.get("output", {})
                 record = session.get(SessionRecord, session_id)
-                book_timing = output.get("export_mode") in {"video_book", "subtitles"} and record is not None and record.workflow_kind == "audiobook"
+                book_timing = (
+                    output.get("export_mode") in {"video_book", "subtitles"}
+                    and record is not None and record.workflow_kind == "audiobook"
+                )
                 artifact = session.get(Artifact, existing.artifact_id)
                 if not book_timing or (artifact is not None and (artifact.metadata_json or {}).get("audio_timeline")):
-                    progress(0.68, "Using the selected generation run assembly")
-                    return existing.artifact_id
-            from .generation_audio_version_assembly import audio_version_assembly_selection
+                    cached_artifact_id = existing.artifact_id
+            if cached_artifact_id is None:
+                from .generation_audio_version_assembly import audio_version_assembly_selection
 
-            selection, _rows = audio_version_assembly_selection(session, session_id, run, audio_version_side)
-            assembly = OutputAssembly(
-                session_id=session_id,
-                generation_run_id=generation_run_id,
-                status="queued",
-                settings_json={
-                    "resolved": assembly_snapshot,
-                    "plan_revision_id": run.plan_revision_id,
-                    **(selection or {}),
-                },
-                settings_hash=settings_hash,
-            )
-            session.add(assembly)
-            session.flush()
-            assembly_id = assembly.id
-
+                selection, _rows = audio_version_assembly_selection(
+                    session, session_id, run, audio_version_side,
+                )
+                assembly = OutputAssembly(
+                    session_id=session_id, generation_run_id=generation_run_id,
+                    job_id=parent_job_id, status="queued",
+                    settings_json={
+                        "resolved": assembly_snapshot,
+                        "plan_revision_id": run.plan_revision_id,
+                        **(selection or {}),
+                    },
+                    settings_hash=settings_hash,
+                )
+                session.add(assembly)
+                session.flush()
+                assembly_id = assembly.id
+        if cached_artifact_id is not None:
+            progress(0.68, "Using the selected generation run assembly")
+            return cached_artifact_id
+        assert assembly_id is not None
         result = self.assemble_generation_output(
             {"output_assembly_id": assembly_id},
-            _scaled_progress_callback(progress, 0.0, 0.68),
-            cancel_event,
+            _scaled_progress_callback(progress, 0.0, 0.68), cancel_event,
         )
         if cancel_event.is_set():
             return None
         artifact_id = str((result or {}).get("artifact_id") or "")
         if not artifact_id:
-            raise ValueError(
-                "The selected generation run could not be assembled for export."
-            )
+            raise ValueError("The selected generation run could not be assembled for export.")
         return artifact_id
 
     def export_variant(self, payload, progress, cancel_event):
         """Assemble the selected completed generation run when needed, then export once."""
 
+        from .access.delivery_execution_policy import (
+            capture_delivery_execution,
+            delivery_child_scope,
+        )
+
+        with self.database.snapshot_session() as session:
+            delivery = capture_delivery_execution(session, payload, entry="export_variant")
         settings = dict(payload.get("settings") or {})
         generation_run_id = str(settings.get("generation_run_id") or "").strip()
         resolved_snapshot = payload.get("resolved_settings_snapshot")
@@ -3403,61 +3466,117 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             if pinned_assembly_artifact_id
             else payload
         )
-        return self.export(export_payload, export_progress, cancel_event)
+        with delivery_child_scope(delivery, "export", export_payload):
+            return self.export(export_payload, export_progress, cancel_event)
 
     def export(self, payload, progress, cancel_event):
         """Create immutable, managed exports from the explicitly selected inputs."""
-        return _export(
-            self._output_workflow_context(), payload, progress, cancel_event
-        )
+        from .access.delivery_execution_policy import capture_delivery_execution
+        from .accounts.execution_actor import current_execution_actor
+        from .delivery_runtime import DeliveryRuntime
+
+        with self.database.snapshot_session() as session:
+            delivery = capture_delivery_execution(session, payload, entry="export")
+        context = self._output_workflow_context()
+        # Captured anonymous jobs are confined to the original legacy workspace
+        # and have no actor record. Keep those trusted adapters on their existing
+        # IO path; authenticated workers use the scoped delivery fences below.
+        if delivery.job_id is None or current_execution_actor.get() is None:
+            return _export(context, payload, progress, cancel_event)
+        with DeliveryRuntime(context, delivery, cancel_event) as scoped:
+            return _export(scoped, payload, progress, cancel_event)
 
     def apply_pdf_edits(self, payload, progress, cancel_event):
         import tempfile
 
+        from .access.pdf_edit_policy import PdfEditInput, require_pdf_edit_access
+        from .accounts.execution_actor import current_execution_actor
+        from .artifacts import sha256_file
+        from .job_execution import current_job_lease
         from .pdf_editor import PdfEditPlan, apply_pdf_edit_plan
         from .pdf_publication import publish_pdf_edit
 
-        source_artifact, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
-        )
+        source_id = str(payload.get("source_artifact_id") or "")
+        session_id = str(payload.get("session_id") or "") or None
+        captured: PdfEditInput | None = None
+        if current_execution_actor.get() is not None:
+            with self.database.snapshot_session() as unit:
+                captured = require_pdf_edit_access(unit, session_id, source_id)
+        if captured is not None:
+            source_path = self.paths.managed_path(captured.relative_path)
+            if not source_path.is_file():
+                raise FileNotFoundError(source_path)
+            source_id = captured.source_artifact_id
+            session_id = captured.target_session_id
+            output_dir = self.paths.sessions / captured.storage_key
+        else:
+            source_artifact, source_path = self._resolve_input(source_id)
+            if source_path.suffix.lower() != ".pdf":
+                raise ValueError("PDF edit jobs require a PDF source artifact.")
+            source_id = source_artifact.id
+            session_id = str(payload.get("session_id") or source_artifact.session_id or "") or None
+            output_dir = self._session_dir(session_id) if session_id else self.paths.artifacts
         if source_path.suffix.lower() != ".pdf":
             raise ValueError("PDF edit jobs require a PDF source artifact.")
-        session_id = (
-            str(payload.get("session_id") or source_artifact.session_id or "") or None
-        )
-        output_dir = (
-            self._session_dir(session_id) if session_id else self.paths.artifacts
-        )
         output_path = output_dir / f"{source_path.stem}_edited.pdf"
         progress(0.1, "Validating PDF edit plan")
         plan = PdfEditPlan.from_value(dict(payload.get("plan") or {}))
         if cancel_event.is_set():
             return {}
-        job_id = str(payload.get("_job_id") or "").strip() or None
-        raw_generation = payload.get("_lease_generation")
-        lease_generation = int(raw_generation) if raw_generation is not None else None
-        with tempfile.TemporaryDirectory(prefix=".pdf-edit-", dir=output_dir) as directory:
-            destination, manifest, provenance = apply_pdf_edit_plan(
-                source_path,
-                Path(directory) / output_path.name,
-                plan,
-                parent_artifact_id=source_artifact.id,
-            )
-            progress(0.85, "Registering edited PDF")
-            output_artifact, manifest_artifact = publish_pdf_edit(
-                self.database,
-                self.paths,
-                self.artifacts,
-                destination,
-                manifest,
-                provenance,
-                output_path,
-                source_artifact_id=source_artifact.id,
-                session_id=session_id,
-                cancel_event=cancel_event,
-                job_id=job_id,
-                lease_generation=lease_generation,
-            )
+        if captured is not None:
+            with self.database.snapshot_session() as unit:
+                require_pdf_edit_access(unit, session_id, source_id, expected=captured)
+            lease = current_job_lease.get()
+            job_id = lease["job_id"] if lease is not None else None
+            lease_generation = lease["lease_generation"] if lease is not None else None
+            output_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            job_id = str(payload.get("_job_id") or "").strip() or None
+            raw_generation = payload.get("_lease_generation")
+            lease_generation = int(raw_generation) if raw_generation is not None else None
+        source_digest = (
+            (captured.content_hash or sha256_file(source_path)) if captured is not None else None
+        )
+        publication_kwargs: dict[str, Any] = {}
+        if captured is not None:
+            publication_kwargs["_expected_input"] = captured
+        try:
+            with tempfile.TemporaryDirectory(prefix=".pdf-edit-", dir=output_dir) as directory:
+                destination, manifest, provenance = apply_pdf_edit_plan(
+                    source_path,
+                    Path(directory) / output_path.name,
+                    plan,
+                    parent_artifact_id=source_id,
+                )
+                if captured is not None:
+                    source_provenance = provenance.get("source")
+                    if (
+                        not isinstance(source_provenance, dict)
+                        or source_provenance.get("sha256") != source_digest
+                    ):
+                        raise ValueError("The PDF source changed before publication.")
+                progress(0.85, "Registering edited PDF")
+                if cancel_event.is_set():
+                    return {}
+                output_artifact, manifest_artifact = publish_pdf_edit(
+                    self.database,
+                    self.paths,
+                    self.artifacts,
+                    destination,
+                    manifest,
+                    provenance,
+                    output_path,
+                    source_artifact_id=source_id,
+                    session_id=session_id,
+                    cancel_event=cancel_event,
+                    job_id=job_id,
+                    lease_generation=lease_generation,
+                    **publication_kwargs,
+                )
+        except InterruptedError:
+            if cancel_event.is_set():
+                return {}
+            raise
         progress(1.0, "Edited PDF ready")
         return {
             "artifact_id": output_artifact.id,
@@ -3466,44 +3585,112 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         }
 
     def export_session_bundle(self, payload, progress, cancel_event):
+        from dataclasses import replace
+
+        from .access.session_bundle_policy import BundleExportInput, require_bundle_export_access
+        from .accounts.execution_actor import current_execution_actor
         from .bundles import SessionBundleService
 
         session_id = str(payload.get("session_id") or "")
-        record = self._session_record(session_id)
-        destination = (
-            self._session_dir(session_id)
-            / "exports"
-            / f"{record.storage_key}.pandrator-session"
-        )
+        if current_execution_actor.get() is None:
+            record = self._session_record(session_id)
+            destination = (
+                self._session_dir(session_id)
+                / "exports"
+                / f"{record.storage_key}.pandrator-session"
+            )
+            progress(0.02, "Preparing session bundle export")
+            result = SessionBundleService(self.database, self.paths).export_bundle(
+                session_id,
+                destination,
+                include_sources=bool(payload.get("include_sources", True)),
+                progress_callback=_scaled_progress_callback(progress, 0.02, 0.95),
+            )
+            if cancel_event.is_set():
+                return {}
+            progress(0.97, "Registering session bundle")
+            artifact = self.artifacts.register(
+                Path(result.get("path") or destination),
+                kind="bundle",
+                role="session_bundle",
+                session_id=session_id,
+            )
+            progress(1.0, "Session bundle ready")
+            return {**result, "artifact_id": artifact.id}
+
+        def publish(
+            path: Path, digest: str, identities: tuple[BundleExportInput, ...]
+        ) -> dict[str, Any]:
+            progress(0.97, "Registering session bundle")
+            if cancel_event.is_set():
+                raise InterruptedError("Session bundle export was canceled.")
+            prepared = replace(
+                self.artifacts.prepare_registration(path, calculate_hash=False), content_hash=digest
+            )
+            if cancel_event.is_set():
+                raise InterruptedError("Session bundle export was canceled.")
+            with self.database.immediate_session() as unit:
+                require_bundle_export_access(unit, session_id, inputs=identities)
+                artifact = self.artifacts.register_in_session(
+                    unit,
+                    path,
+                    kind="bundle",
+                    role="session_bundle",
+                    session_id=session_id,
+                    _prepared=prepared,
+                )
+                result = {"artifact_id": artifact.id}
+            return result
+
         progress(0.02, "Preparing session bundle export")
-        result = SessionBundleService(self.database, self.paths).export_bundle(
-            session_id,
-            destination,
-            include_sources=bool(payload.get("include_sources", True)),
-            progress_callback=_scaled_progress_callback(progress, 0.02, 0.95),
-        )
-        if cancel_event.is_set():
-            return {}
-        progress(0.97, "Registering session bundle")
-        artifact = self.artifacts.register(
-            destination, kind="bundle", role="session_bundle", session_id=session_id
-        )
+        try:
+            result = SessionBundleService(self.database, self.paths).export_bundle(
+                session_id,
+                None,
+                include_sources=bool(payload.get("include_sources", True)),
+                progress_callback=_scaled_progress_callback(progress, 0.02, 0.95),
+                cancel_event=cancel_event,
+                publish_callback=publish,
+            )
+        except InterruptedError:
+            if cancel_event.is_set():
+                return {}
+            raise
         progress(1.0, "Session bundle ready")
-        return {**result, "artifact_id": artifact.id}
+        return result
 
     def import_session_bundle(self, payload, progress, cancel_event):
+        from .accounts.execution_actor import current_execution_actor
         from .bundles import SessionBundleService
 
-        _artifact, source = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
-        )
+        if current_execution_actor.get() is None:
+            _artifact, source = self._resolve_input(str(payload.get("source_artifact_id") or ""))
+            with self.database.session() as session:
+                owner = artifact_job_ownership(session, [_artifact.id], project_scoped=False)
+            progress(0.02, "Preparing session bundle import")
+            if cancel_event.is_set():
+                return {}
+            result = SessionBundleService(self.database, self.paths).import_bundle(
+                source,
+                name=payload.get("name"),
+                workspace_id=owner.workspace_id,
+                progress_callback=_scaled_progress_callback(progress, 0.02, 0.98),
+            )
+            progress(1.0, "Session imported")
+            return result
+
         progress(0.02, "Preparing session bundle import")
-        if cancel_event.is_set():
-            return {}
-        result = SessionBundleService(self.database, self.paths).import_bundle(
-            source,
-            name=payload.get("name"),
-            progress_callback=_scaled_progress_callback(progress, 0.02, 0.98),
-        )
+        try:
+            result = SessionBundleService(self.database, self.paths).import_bundle(
+                None,
+                source_artifact_id=str(payload.get("source_artifact_id") or ""),
+                name=payload.get("name"),
+                progress_callback=_scaled_progress_callback(progress, 0.02, 0.98),
+                cancel_event=cancel_event,
+            )
+        except InterruptedError:
+            if cancel_event.is_set():
+                return {}
+            raise
         progress(1.0, "Session imported")
         return result

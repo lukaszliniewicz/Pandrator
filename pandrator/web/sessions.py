@@ -25,6 +25,7 @@ from .multilingual_setup import (
     write_setup,
 )
 from .outcome_plans import OutcomePlanService, derive_legacy_outcome
+from .projects.identity import create_session_project, sync_project_name
 
 
 class RevisionConflict(RuntimeError):
@@ -115,6 +116,8 @@ class SessionService:
         storage_key: str | None = None,
         db_session: Session | None = None,
         seed_voice_mode: bool = True,
+        project_id: str | None = None,
+        workspace_id: str | None = None,
         multilingual_setup: MultilingualSetup | dict | None = None,
     ) -> SessionRecord:
         normalized_name = str(name or "").strip()
@@ -141,8 +144,9 @@ class SessionService:
             included_stages_json=stages,
         )
         if db_session is not None:
-            db_session.add(record)
-            db_session.flush()
+            create_session_project(
+                db_session, record, project_id=project_id, workspace_id=workspace_id
+            )
             if setup is not None:
                 write_setup(db_session, record.id, setup)
                 db_session.add(OutcomePlan(
@@ -155,8 +159,9 @@ class SessionService:
                 db_session.add(SessionSetting(session_id=record.id, section="tts", value_json={"voice_mode_version": 1}, revision=0))
             return record
         with self.database.session() as session:
-            session.add(record)
-            session.flush()
+            create_session_project(
+                session, record, project_id=project_id, workspace_id=workspace_id
+            )
             if setup is not None:
                 write_setup(session, record.id, setup)
                 session.add(OutcomePlan(
@@ -256,6 +261,8 @@ class SessionService:
                 setattr(record, key, value)
         if not str(record.name or "").strip():
             raise ValueError("Session name is required.")
+        if "name" in changes:
+            sync_project_name(session, record.id)
         if setup is not None and (
             current_setup is None
             or workflow_change_requested
@@ -336,20 +343,35 @@ class SessionService:
                 raise KeyError(session_id)
             return record
 
-    def restore(self, session_id: str, revision: int) -> SessionRecord:
+    def restore(
+        self,
+        session_id: str,
+        revision: int,
+        *,
+        db_session: Session | None = None,
+    ) -> SessionRecord:
+        if db_session is not None:
+            return self.restore_in_session(db_session, session_id, revision)
         with self.database.immediate_session() as session:
-            record = session.get(SessionRecord, session_id)
-            if record is None:
-                raise KeyError(session_id)
-            if record.revision != revision:
-                raise RevisionConflict(f"Expected revision {revision}, found {record.revision}.")
-            if record.status == "purging":
-                raise ValueError("Session purge has already started.")
-            record.trashed_at = None
-            record.purge_after = None
-            record.status = "idle"
-            record.revision += 1
-            record.updated_at = utcnow()
-            session.flush()
+            record = self.restore_in_session(session, session_id, revision)
             session.expunge(record)
             return record
+
+    @staticmethod
+    def restore_in_session(
+        session: Session,
+        session_id: str,
+        revision: int,
+    ) -> SessionRecord:
+        record = SessionService._locked_current(session, session_id)
+        if record.revision != revision:
+            raise RevisionConflict(f"Expected revision {revision}, found {record.revision}.")
+        if record.status == "purging":
+            raise ValueError("Session purge has already started.")
+        record.trashed_at = None
+        record.purge_after = None
+        record.status = "idle"
+        record.revision += 1
+        record.updated_at = utcnow()
+        session.flush()
+        return record

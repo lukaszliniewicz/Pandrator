@@ -111,6 +111,19 @@ Other supported routes bypass native splitting. See
 
 ## UI and MCP authoring
 
+Drama 3 through audio.cpp has its own expressive profile. General directions use
+inline square brackets, phrase directions use paired tags, and vocal events use
+Drama-specific spellings. Speech XML and legacy pSSML share this lowering while
+preserving the transcript used for subtitles and alignment. Unlike Fish S2 reset
+hints, paired tags explicitly mark the authored phrase; acoustic adherence is
+still model-interpreted. [Control syntax](https://arxiv.org/html/2610.18010v2).
+
+The current workflow supplies one linked reference per voice part and renders
+cast voices sequentially. Native multi-speaker dialogue, acoustic take history,
+relative retake directions and infill are not integrated. Surrounding text is not
+silently sent as Drama 3 acoustic history. Those capabilities require additional
+workflow and artifact handling, rather than more pSSML vocabulary.
+
 In **Generation → Editing**, select words for directions, or place the caret
 for a vocal cue. **Speaker & voice** requires project-wide **Multiple voices**.
 Whole-segment instructions have a field beneath the text; phrase directions

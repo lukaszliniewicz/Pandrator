@@ -240,7 +240,6 @@ class OrchestrationToolTests(unittest.TestCase):
                 "audio_mode": "dubbing_only",
                 "subtitle_mode": "burned",
                 "subtitle_text_source": "generation_run",
-                "subtitle_selection": "translation",
                 "subtitle_format": "srt",
             },
             final["arguments"]["overrides"]["output"],
@@ -249,6 +248,19 @@ class OrchestrationToolTests(unittest.TestCase):
         self.assertIn(
             "not an immutable execution snapshot", outcome.result["immutability"]
         )
+
+    def test_omitted_typed_selector_preserves_override_and_explicit_auto_wins(self):
+        runtime = SimpleNamespace(require_application=lambda: _Application())
+        arguments = PlanOrchestratedWorkflowInput(
+            session_id="session-1", goal="Export existing media",
+            overrides={"output": {"subtitle_selection": "source"}},
+        )
+        output = plan_orchestrated_workflow(runtime, arguments).result["phases"][0]["arguments"]["overrides"]["output"]
+        self.assertEqual("source", output["subtitle_selection"])
+        output = plan_orchestrated_workflow(
+            runtime, arguments.model_copy(update={"subtitle_selection": "auto"})
+        ).result["phases"][0]["arguments"]["overrides"]["output"]
+        self.assertEqual("auto", output["subtitle_selection"])
 
     def test_delivery_controls_are_not_native_output_settings(self):
         application = _Application()

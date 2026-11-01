@@ -207,35 +207,81 @@ def test_export_variant_forwards_explicit_and_default_version_side(side):
     application = Mock()
     application.create_workflow_plan.return_value = {"id": "plan-1"}
     runtime = SimpleNamespace(require_application=lambda: application)
-    assert plan_export_variant(runtime, PlanExportVariantInput(**arguments)).result == {"id": "plan-1"}
+    assert plan_export_variant(runtime, PlanExportVariantInput(**arguments)).result == {
+        "id": "plan-1"
+    }
     application.create_workflow_plan.assert_called_once_with(
-        "session-1", target_stage="export", overrides={"output": {
-            "generation_run_id": "run-1", "audio_version_side": side or "after",
-            "export_mode": "media", "audio_mode": "mixed", "subtitle_mode": "none",
-            "subtitle_text_source": "current",
-            "subtitle_selection": "translation", "subtitle_format": "srt",
-        }}, expires_in_minutes=30, continuation=False,
+        "session-1",
+        target_stage="export",
+        overrides={
+            "output": {
+                "generation_run_id": "run-1",
+                "audio_version_side": side or "after",
+                "export_mode": "media",
+                "audio_mode": "mixed",
+                "subtitle_mode": "none",
+                "subtitle_text_source": "current",
+                "subtitle_format": "srt",
+            }
+        },
+        expires_in_minutes=30,
+        continuation=False,
     )
 
 
-def test_export_variant_forwards_and_validates_subtitle_text_source():
+@pytest.mark.parametrize("source", ["generation_run", "selected_artifact"])
+def test_export_variant_forwards_and_validates_subtitle_text_source(source):
     application = Mock()
     application.create_workflow_plan.return_value = {"id": "plan-1"}
     runtime = SimpleNamespace(require_application=lambda: application)
-    arguments = PlanExportVariantInput(
-        session_id="session-1", subtitle_text_source="generation_run"
-    )
+    arguments = PlanExportVariantInput(session_id="session-1", subtitle_text_source=source)
 
     plan_export_variant(runtime, arguments)
 
     output = application.create_workflow_plan.call_args.kwargs["overrides"]["output"]
-    assert output["subtitle_text_source"] == "generation_run"
+    assert output["subtitle_text_source"] == source
     assert PlanExportVariantInput(session_id="session-1").subtitle_text_source == "current"
     for invalid in (None, "history"):
         with pytest.raises(ValidationError):
-            PlanExportVariantInput(
-                session_id="session-1", subtitle_text_source=invalid
-            )
+            PlanExportVariantInput(session_id="session-1", subtitle_text_source=invalid)
+
+
+def test_native_export_selector_omission_and_explicit_choices():
+    from mcp import Client
+
+    from pandrator_mcp.server import build_server
+
+    async def exercise():
+        runtime, application = _runtime(RUN)
+        application.create_workflow_plan.return_value = {"id": "plan-1"}
+        application.get_session.return_value = {"id": "session/a", "workflow_kind": "voiceover"}
+        application.get_workflow.return_value = {"stages": []}
+        async with Client(build_server(runtime), mode="auto", raise_exceptions=True) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            for name in ("pandrator_plan_export_variant", "pandrator_plan_orchestrated_workflow"):
+                schema = tools[name].input_schema["properties"]["subtitle_selection"]
+                assert schema["default"] is None
+                assert next(branch["enum"] for branch in schema["anyOf"] if "enum" in branch) == [
+                    "auto", "source", "translation", "dual"
+                ]
+                for selection in (None, "auto", "source", "translation", "dual"):
+                    arguments = {"session_id": "session/a", "response_mode": "structured"}
+                    if "orchestrated" in name:
+                        arguments["goal"] = "Export existing media"
+                    if selection is not None:
+                        arguments["subtitle_selection"] = selection
+                    result = await client.call_tool(name, arguments)
+                    assert not result.is_error
+                    if "orchestrated" in name:
+                        output = result.structured_content["result"]["phases"][0]["arguments"]["overrides"]["output"]
+                    else:
+                        output = application.create_workflow_plan.call_args.kwargs["overrides"]["output"]
+                    if selection is None:
+                        assert "subtitle_selection" not in output
+                    else:
+                        assert output["subtitle_selection"] == selection
+
+    asyncio.run(exercise())
 
 
 def test_native_transport_exposes_flat_schemas_preserves_nulls_and_forwards_sides():
@@ -250,59 +296,89 @@ def test_native_transport_exposes_flat_schemas_preserves_nulls_and_forwards_side
         application.create_workflow_plan.return_value = {"id": "export-plan-1"}
         async with Client(build_server(runtime), mode="auto", raise_exceptions=True) as client:
             tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-            for name in ("pandrator_preview_recast", "pandrator_recast_voices",
-                         "pandrator_preview_undo_recast", "pandrator_undo_recast"):
+            for name in (
+                "pandrator_preview_recast",
+                "pandrator_recast_voices",
+                "pandrator_preview_undo_recast",
+                "pandrator_undo_recast",
+            ):
                 assert "arguments" not in tools[name].input_schema["properties"]
                 spec = ACTION_CATALOG.get(name)
                 assert spec.risk == (RiskClass.READ if "preview" in name else RiskClass.WRITE)
                 assert spec.requires_idempotency == ("preview" not in name)
             props = tools["pandrator_preview_recast"].input_schema["properties"]
-            assert {branch["type"] for branch in props["selector_keys"]["anyOf"]} == {"array", "null"}
+            assert {branch["type"] for branch in props["selector_keys"]["anyOf"]} == {
+                "array",
+                "null",
+            }
             for selected in (None, [], ["narrator"]):
-                result = await client.call_tool("pandrator_recast_voices", {
-                    "session_id": "session/a", "selector_keys": selected,
-                    "speech_plan_revision_id": None, "expected_selection_hash": "hash",
-                    "idempotency_key": KEY,
-                })
+                result = await client.call_tool(
+                    "pandrator_recast_voices",
+                    {
+                        "session_id": "session/a",
+                        "selector_keys": selected,
+                        "speech_plan_revision_id": None,
+                        "expected_selection_hash": "hash",
+                        "idempotency_key": KEY,
+                    },
+                )
                 assert not result.is_error
-                assert application.generation_recast_request.call_args.args[1]["selector_keys"] == selected
+                assert (
+                    application.generation_recast_request.call_args.args[1]["selector_keys"]
+                    == selected
+                )
             for name in ("pandrator_list_generation_segments", "pandrator_assemble_generation_run"):
                 props = tools[name].input_schema["properties"]
                 assert props["audio_version_side"]["enum"] == ["before", "after"]
                 for side in ("before", "after"):
-                    args = {"session_id": "session/a", "generation_run_id": "run-1",
-                            "audio_version_side": side}
+                    args = {
+                        "session_id": "session/a",
+                        "generation_run_id": "run-1",
+                        "audio_version_side": side,
+                    }
                     if "assemble" in name:
                         args["idempotency_key"] = KEY
                     result = await client.call_tool(name, args)
                     assert not result.is_error
-                    method = (application.create_output_assembly if "assemble" in name
-                              else application.list_generation_segments)
+                    method = (
+                        application.create_output_assembly
+                        if "assemble" in name
+                        else application.list_generation_segments
+                    )
                     assert method.call_args.kwargs["audio_version_side"] == side
 
             export_schema = tools["pandrator_plan_export_variant"].input_schema["properties"]
             assert export_schema["audio_version_side"]["enum"] == ["before", "after"]
             assert export_schema["audio_version_side"]["default"] == "after"
             assert export_schema["subtitle_text_source"]["enum"] == [
-                "current", "generation_run"
+                "current",
+                "generation_run",
+                "selected_artifact",
             ]
             assert export_schema["subtitle_text_source"]["default"] == "current"
-            orchestrated_schema = tools[
-                "pandrator_plan_orchestrated_workflow"
-            ].input_schema["properties"]
+            orchestrated_schema = tools["pandrator_plan_orchestrated_workflow"].input_schema[
+                "properties"
+            ]
             assert orchestrated_schema["subtitle_text_source"]["enum"] == [
-                "current", "generation_run"
+                "current",
+                "generation_run",
+                "selected_artifact",
             ]
             assert orchestrated_schema["subtitle_text_source"]["default"] == "current"
             for side in ("before", "after", None):
-                args = {"session_id": "session/a", "generation_run_id": "run-1"}
-                if side is not None:
-                    args["audio_version_side"] = side
-                result = await client.call_tool("pandrator_plan_export_variant", args)
-                assert not result.is_error
-                output = application.create_workflow_plan.call_args.kwargs["overrides"]["output"]
-                assert output["generation_run_id"] == "run-1"
-                assert output["audio_version_side"] == (side or "after")
-                assert output["subtitle_text_source"] == "current"
+                for source in ("current", "selected_artifact"):
+                    args = {"session_id": "session/a", "generation_run_id": "run-1"}
+                    if side is not None:
+                        args["audio_version_side"] = side
+                    if source != "current":
+                        args["subtitle_text_source"] = source
+                    result = await client.call_tool("pandrator_plan_export_variant", args)
+                    assert not result.is_error
+                    output = application.create_workflow_plan.call_args.kwargs["overrides"][
+                        "output"
+                    ]
+                    assert output["generation_run_id"] == "run-1"
+                    assert output["audio_version_side"] == (side or "after")
+                    assert output["subtitle_text_source"] == source
 
     asyncio.run(exercise())

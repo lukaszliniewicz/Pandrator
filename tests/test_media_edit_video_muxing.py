@@ -210,6 +210,7 @@ def test_converted_voiceover_exports_cut_footage_and_retimed_subtitles(tmp_path)
         )
         with database.session() as session:
             asset = SourceAsset(
+                workspace_id=session.get_one(Artifact, source.id).workspace_id,
                 artifact_id=source.id,
                 display_name=source_path.name,
                 kind="mp4",

@@ -86,7 +86,7 @@ def test_package_and_nested_paths_cannot_escape_through_symlinks(tmp_path):
         generation_assets.file_path(model_id, "tokenizer/tokenizer.json", settings)
 
 
-def test_ensure_downloads_and_verifies_only_the_selected_direct_model(tmp_path, monkeypatch):
+def test_ensure_downloads_and_verifies_only_the_selected_direct_model(tmp_path, monkeypatch, host_model_acquisition):
     model_id = "stable_audio_3_small_music_q8_0"
     asset_path = registry.get_model(model_id).model_path_asset.path
     spec, payloads = _small_spec(model_id, {asset_path: b"synthetic stable weights"})
@@ -119,7 +119,7 @@ def test_ensure_downloads_and_verifies_only_the_selected_direct_model(tmp_path, 
 
 @pytest.mark.parametrize("model_id", ("minimax_music3_q4_0", "yue2_main_q8_0"))
 def test_directory_model_waits_for_every_manifest_file_before_returning(
-    tmp_path, monkeypatch, model_id
+    tmp_path, monkeypatch, model_id, host_model_acquisition
 ):
     manifest = registry.get_model(model_id)
     selected_paths = tuple(asset.path for asset in manifest.files)
@@ -148,7 +148,7 @@ def test_directory_model_waits_for_every_manifest_file_before_returning(
     assert set(selected_paths) == {asset.path for asset in manifest.files}
 
 
-def test_h3_selects_exact_dit_but_verifies_every_package_file(tmp_path, monkeypatch):
+def test_h3_selects_exact_dit_but_verifies_every_package_file(tmp_path, monkeypatch, host_model_acquisition):
     model_id = "minimax_h3_q4_k_int8_dit"
     manifest = registry.get_model(model_id)
     selected_paths = tuple(asset.path for asset in manifest.files)
@@ -174,7 +174,7 @@ def test_h3_selects_exact_dit_but_verifies_every_package_file(tmp_path, monkeypa
 
 
 def test_corrupt_file_is_not_installed_and_retries_do_not_leave_partial_files(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, host_model_acquisition
 ):
     model_id = "heartmula_q8_0"
     path = registry.get_model(model_id).model_path_asset.path

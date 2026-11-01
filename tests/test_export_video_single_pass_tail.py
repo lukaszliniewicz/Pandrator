@@ -130,7 +130,7 @@ class SinglePassTailExportTests(unittest.TestCase):
         self.fast_calls: list[dict] = []
 
     def probe(self, path):
-        is_video = Path(path) == self.source_path
+        is_video = Path(path).suffix == ".mp4"
         return {
             "duration": self.video_dur if is_video else self.speech_dur,
             "video_duration": self.video_dur if is_video else None,

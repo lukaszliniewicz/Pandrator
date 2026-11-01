@@ -14,6 +14,12 @@ def generation_control_paths() -> dict:
         ("put", "updateGenerationControls", "app.write"),
     ]:
         parameters = []
+        if method == "get":
+            parameters.append({
+                "name": "include_retained", "in": "query", "required": False,
+                "description": "Include safe retained cast-slot model hints for the project UI; no input IDs, paths or library records.",
+                "schema": {"type": "boolean", "default": False},
+            })
         if method == "put":
             parameters.append(
                 {

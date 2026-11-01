@@ -14,7 +14,10 @@ from typing import Any
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from .models import Job, SoundItem, SoundVariant
+from .access.contracts import ProjectAction, WorkspaceNotFound
+from .access.sound_library_policy import require_sound_library_workspace
+from .models import Artifact, Job, SoundItem, SoundVariant
+from .sound_identity import sound_variant_workspace
 
 MAX_PAGE_SIZE = 100
 MAX_QUERY_LENGTH = 200
@@ -29,7 +32,10 @@ _COMPACT_PROVENANCE = (
     "duration_seconds",
 )
 _RUNTIME_IDENTITY_FIELDS = (
-    "model_sha256", "model_revision", "runtime_version", "runtime_sha256",
+    "model_sha256",
+    "model_revision",
+    "runtime_version",
+    "runtime_sha256",
     "minimum_runtime_version",
 )
 _HEX_SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
@@ -152,9 +158,8 @@ def _safe_parameters(value: Any) -> dict[str, str | bool | int | float] | None:
         if not isinstance(key, str) or len(key) > 64 or _sensitive_parameter_key(key):
             continue
         if isinstance(item, str):
-            safe_text = (
-                key.casefold() in _TEXTUAL_PARAMETER_KEYS
-                and not _looks_like_native_path(item)
+            safe_text = key.casefold() in _TEXTUAL_PARAMETER_KEYS and not _looks_like_native_path(
+                item
             )
             if (
                 len(item) <= 2000
@@ -259,7 +264,12 @@ def _provenance(value: Any, *, include_detail: bool = False) -> dict[str, Any]:
             if type(item) is int and item >= 1:
                 result[key] = item
         guidance = source.get("guidance_scale")
-        if isinstance(guidance, (int, float)) and not isinstance(guidance, bool) and math.isfinite(guidance) and guidance >= 0:
+        if (
+            isinstance(guidance, (int, float))
+            and not isinstance(guidance, bool)
+            and math.isfinite(guidance)
+            and guidance >= 0
+        ):
             result["guidance_scale"] = guidance
         identity = _safe_runtime_identity(source.get("runtime_identity"))
         if identity:
@@ -299,7 +309,8 @@ def _item_summary(
         "archived": bool(item.archived),
         "preferred_variant": (
             candidate_summary(preferred, preferred_job_status, include_detail=include_detail)
-            if preferred else None
+            if preferred
+            else None
         ),
         "created_at": _created_text(item.created_at),
         "updated_at": _created_text(item.updated_at),
@@ -314,18 +325,55 @@ def _preferred_joins():
 
 def _sounds_query():
     preferred, preferred_job = _preferred_joins()
+    preferred_artifact_matches = (
+        preferred.artifact_id.is_(None)
+        | select(1)
+        .select_from(Artifact)
+        .where(
+            Artifact.id == preferred.artifact_id,
+            Artifact.workspace_id == SoundItem.workspace_id,
+        )
+        .exists()
+    )
     query = (
         select(SoundItem, preferred, preferred_job.status)
+        .select_from(SoundItem)
         .outerjoin(
             preferred,
             and_(
                 preferred.id == SoundItem.preferred_variant_id,
                 preferred.item_id == SoundItem.id,
+                preferred.workspace_id == SoundItem.workspace_id,
+                preferred_artifact_matches,
             ),
         )
         .outerjoin(preferred_job, preferred_job.id == preferred.job_id)
     )
     return query, preferred
+
+
+def _variant_owner_matches_workspace(workspace_id: str):
+    item_owner_matches = (
+        SoundVariant.item_id.is_(None)
+        | select(1)
+        .select_from(SoundItem)
+        .where(
+            SoundItem.id == SoundVariant.item_id,
+            SoundItem.workspace_id == workspace_id,
+        )
+        .exists()
+    )
+    artifact_owner_matches = (
+        SoundVariant.artifact_id.is_(None)
+        | select(1)
+        .select_from(Artifact)
+        .where(
+            Artifact.id == SoundVariant.artifact_id,
+            Artifact.workspace_id == workspace_id,
+        )
+        .exists()
+    )
+    return and_(item_owner_matches, artifact_owner_matches)
 
 
 def _validate_query(query: str, tag: str | None, archived: bool) -> tuple[str, str | None]:
@@ -380,11 +428,18 @@ def list_sounds(
     cursor: str | None = None,
     limit: int = 40,
     archived: bool = False,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
+    workspace = require_sound_library_workspace(
+        session, ProjectAction.READ, workspace_id=workspace_id
+    )
     query, tag = _validate_query(query, tag, archived)
     cursor_at, cursor_id, page_size = _page_arguments(cursor, limit)
     statement, _preferred = _sounds_query()
-    statement = statement.where(SoundItem.archived.is_(archived))
+    statement = statement.where(
+        SoundItem.workspace_id == workspace.id,
+        SoundItem.archived.is_(archived),
+    )
     if query:
         statement = statement.where(_name_or_tag_match(query))
     if tag is not None:
@@ -393,8 +448,7 @@ def list_sounds(
     rows = list(session.execute(statement).all())
     page = _page_result(rows, page_size, lambda row: row[0].id)
     page["items"] = [
-        _item_summary(item, preferred, job_status)
-        for item, preferred, job_status in page["items"]
+        _item_summary(item, preferred, job_status) for item, preferred, job_status in page["items"]
     ]
     return page
 
@@ -405,18 +459,37 @@ def get_sound(
     *,
     cursor: str | None = None,
     limit: int = 20,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
+    workspace = require_sound_library_workspace(
+        session, ProjectAction.READ, workspace_id=workspace_id
+    )
     cursor_at, cursor_id, page_size = _page_arguments(cursor, limit)
     item_statement, _preferred = _sounds_query()
-    row = session.execute(item_statement.where(SoundItem.id == item_id)).first()
+    row = session.execute(
+        item_statement.where(
+            SoundItem.id == item_id,
+            SoundItem.workspace_id == workspace.id,
+        )
+    ).first()
     if row is None:
-        raise KeyError(item_id)
+        raise WorkspaceNotFound()
     item, preferred, preferred_job_status = row
-
+    if item.preferred_variant_id is not None:
+        if preferred is None:
+            raise ValueError(
+                f"Sound item {item.id!r} references a preferred variant that is missing "
+                "or outside its workspace."
+            )
+        sound_variant_workspace(session, preferred, workspace_id=workspace.id)
     statement = (
         select(SoundVariant, Job.status)
         .outerjoin(Job, Job.id == SoundVariant.job_id)
-        .where(SoundVariant.item_id == item_id)
+        .where(
+            SoundVariant.item_id == item_id,
+            SoundVariant.workspace_id == workspace.id,
+            _variant_owner_matches_workspace(workspace.id),
+        )
     )
     statement = _apply_page(statement, SoundVariant, cursor_at, cursor_id).limit(page_size + 1)
     rows = list(session.execute(statement).all())
@@ -438,9 +511,17 @@ def list_candidates(
     *,
     cursor: str | None = None,
     limit: int = 20,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
+    workspace = require_sound_library_workspace(
+        session, ProjectAction.READ, workspace_id=workspace_id
+    )
     cursor_at, cursor_id, page_size = _page_arguments(cursor, limit)
     statement = select(SoundVariant, Job.status).outerjoin(Job, Job.id == SoundVariant.job_id)
+    statement = statement.where(
+        SoundVariant.workspace_id == workspace.id,
+        _variant_owner_matches_workspace(workspace.id),
+    )
     statement = _apply_page(statement, SoundVariant, cursor_at, cursor_id).limit(page_size + 1)
     rows = list(session.execute(statement).all())
     page = _page_result(rows, page_size, lambda result: result[0].id)
@@ -448,12 +529,25 @@ def list_candidates(
     return page
 
 
-def get_candidate(session: Session, candidate_id: str) -> dict[str, Any]:
+def get_candidate(
+    session: Session,
+    candidate_id: str,
+    *,
+    workspace_id: str | None = None,
+) -> dict[str, Any]:
+    workspace = require_sound_library_workspace(
+        session, ProjectAction.READ, workspace_id=workspace_id
+    )
     row = session.execute(
         select(SoundVariant, Job.status)
         .outerjoin(Job, Job.id == SoundVariant.job_id)
-        .where(SoundVariant.id == candidate_id)
+        .where(
+            SoundVariant.id == candidate_id,
+            SoundVariant.workspace_id == workspace.id,
+            _variant_owner_matches_workspace(workspace.id),
+        )
     ).first()
     if row is None:
-        raise KeyError(candidate_id)
+        raise WorkspaceNotFound()
+    sound_variant_workspace(session, row[0], workspace_id=workspace.id)
     return candidate_summary(row[0], row[1], include_detail=True)

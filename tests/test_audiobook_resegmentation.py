@@ -8,6 +8,7 @@ from sqlalchemy import select
 from pandrator.logic.speech_markup import parse_speech_markup
 from pandrator.web import models as m
 from pandrator.web.generation_cast_runtime import remap_markup
+from pandrator.web.projects.identity import session_project
 from pandrator.web.speech_boundaries import assembly_pause, freeze_boundaries
 from tests.test_performance_plans import adopt, create, edit
 from tests.test_performance_plans import case as case
@@ -288,7 +289,10 @@ def test_copy_does_not_reuse_annotation_after_structural_change(case, change):
         elif change == "pause":
             row.silence_after_ms += 100
         else:
-            voice = m.Voice(name="New reference")
+            voice = m.Voice(
+                workspace_id=session_project(session, case["session_id"]).workspace_id,
+                name="New reference",
+            )
             session.add(voice)
             session.flush()
             row.voice_id = voice.id

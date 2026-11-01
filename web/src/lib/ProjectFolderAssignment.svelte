@@ -3,7 +3,11 @@
   import { FolderPlus, LoaderCircle, X } from '@lucide/svelte';
   import { modalFocus } from './modal-focus';
   import { errorMessage } from './errors';
-  import { folderPath, type ProjectFolderSnapshot } from './project-library';
+  import {
+    folderMembershipSourceId,
+    folderPath,
+    type ProjectFolderSnapshot
+  } from './project-library';
   import type { ProjectFoldersStore } from './project-folders-store.svelte';
 
   let {
@@ -35,11 +39,12 @@
   );
   function readSelection() {
     baseline = {
+      workspace_id: store.value.workspace_id,
       items: [...store.value.items],
       memberships: [...store.value.memberships]
     };
     selected = store.value.memberships
-      .filter((item) => item.project_id === projectId)
+      .filter((item) => folderMembershipSourceId(item) === projectId)
       .map((item) => item.folder_id);
   }
   onMount(() => {

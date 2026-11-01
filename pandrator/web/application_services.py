@@ -23,17 +23,18 @@ from .dispatch import DispatchRunService
 from .global_settings import GlobalSettingsService
 from .idempotency import IdempotencyService
 from .identity import ApplicationIdentityService
-from .jobs import JobQueue
+from .jobs import JobQueue, noop_handler
 from .legacy_migration import import_legacy_data
 from .manager_proxy import LocalManagerProxy
 from .media_edit import MediaEditService
 from .media_edit_dispatch import MediaEditDispatchRunService
-from .models import AppSetting, SessionRecord
+from .models import SessionRecord, WorkspaceSetting
 from .outcome_plans import OutcomePlanService
 from .pronunciations import PronunciationLibrary
 from .quick_transcription import QuickTranscriptionService
 from .session_forks import SessionForkService
 from .sessions import SessionService
+from .settings_identity import settings_workspace_id, workspace_setting_in_workspace
 from .sound_mix_service import SoundMixService
 from .sound_project_service import ProjectSoundService
 from .sound_registration import register_sound_jobs
@@ -129,10 +130,12 @@ class ApplicationServices:
 
             stt_preferences = crispasr_install_preferences(paths)
             if stt_preferences["configured"]:
-                with database.session() as settings_session:
-                    if settings_session.get(AppSetting, "defaults.stt") is None:
+                with database.immediate_session() as settings_session:
+                    workspace_id = settings_workspace_id(settings_session)
+                    if workspace_setting_in_workspace(settings_session, workspace_id, "defaults.stt") is None:
                         settings_session.add(
-                            AppSetting(
+                            WorkspaceSetting(
+                                workspace_id=workspace_id,
                                 key="defaults.stt",
                                 value_json={
                                     "stt_engine": "auto",
@@ -204,10 +207,12 @@ class ApplicationServices:
                 jobs=jobs,
                 subtitle_evidence=subtitle_evidence,
                 sound_mixes=sound_mixes,
+                audit=audit,
             )
             register_sound_jobs(
                 workflow_handlers.handler_registry, sounds, sound_mixes, sound_resolution
             )
+            workflow_handlers.handler_registry.register("noop", noop_handler, domain="system")
             workflow_plans = WorkflowExecutionPlanService(
                 database,
                 workflows,

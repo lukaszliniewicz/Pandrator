@@ -7,10 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
+from sqlalchemy.orm import load_only
 
 from pandrator.runtime import DataPaths
 
+from .access.comparison_export_policy import (
+    COMPARISON_AUDIO_FIELDS,
+    require_comparison_export_access,
+)
 from .artifacts import sha256_file
 from .comparison_export_schemas import ComparisonExportRequest
 from .generation_audio_version_assembly import audio_version_assembly_selection
@@ -101,18 +106,25 @@ def _require_session(session, session_id: str) -> SessionRecord:
 
 
 def _require_run(session, session_id: str, run_id: str) -> tuple[GenerationRun, GenerationPlanRevision]:
-    run = session.get(GenerationRun, run_id)
+    run = session.scalar(select(GenerationRun).where(
+        GenerationRun.id == run_id, GenerationRun.session_id == session_id,
+    ))
     if run is None or run.session_id != session_id:
         raise KeyError(run_id)
-    revision = session.get(GenerationPlanRevision, run.plan_revision_id)
-    plan = session.get(GenerationPlan, revision.plan_id) if revision else None
-    if revision is None or plan is None or plan.session_id != session_id:
+    revision = session.scalar(select(GenerationPlanRevision)
+        .join(GenerationPlan, GenerationPlan.id == GenerationPlanRevision.plan_id)
+        .where(GenerationPlanRevision.id == run.plan_revision_id,
+               GenerationPlan.session_id == session_id))
+    if revision is None:
         raise ValueError("The selected generation run has no speech plan in this session.")
     return run, revision
 
 
 def _require_segment(session, segment_id: str, plan_revision_id: str) -> GenerationSegment:
-    segment = session.get(GenerationSegment, segment_id)
+    segment = session.scalar(select(GenerationSegment).where(
+        GenerationSegment.id == segment_id, GenerationSegment.plan_revision_id == plan_revision_id,
+        GenerationSegment.removed.is_(False),
+    ))
     if (
         segment is None
         or segment.plan_revision_id != plan_revision_id
@@ -129,54 +141,42 @@ def _select_regular_take(
     selected_run: GenerationRun,
     segment: GenerationSegment,
     explicit_take_id: str | None,
-) -> tuple[AudioTake, Artifact]:
+) -> tuple[AudioTake, Artifact, GenerationRun]:
+    target_project = select(SessionRecord.project_id).where(SessionRecord.id == session_id).scalar_subquery()
+    from .projects.models import Project
+
+    workspace = select(Project.workspace_id).where(Project.id == target_project).scalar_subquery()
+    statement = (select(AudioTake, GenerationRun, Artifact)
+        .join(GenerationRun, AudioTake.generation_run_id == GenerationRun.id)
+        .outerjoin(Artifact, and_(
+            Artifact.id == AudioTake.artifact_id, Artifact.session_id == session_id,
+            Artifact.project_id == target_project, Artifact.workspace_id == workspace,
+            Artifact.kind == "audio", Artifact.state == "current",
+        ))
+        .options(load_only(*COMPARISON_AUDIO_FIELDS, raiseload=True))
+        .where(AudioTake.generation_segment_id == segment.id,
+               AudioTake.status.in_(tuple(TERMINAL_TAKE_STATUSES)),
+               GenerationRun.session_id == session_id,
+               GenerationRun.plan_revision_id == selected_run.plan_revision_id,
+               GenerationRun.sequence_number <= selected_run.sequence_number))
     if explicit_take_id is not None:
-        take = session.get(AudioTake, explicit_take_id)
-        origin_run = session.get(GenerationRun, take.generation_run_id) if take and take.generation_run_id else None
-        if (
-            take is None
-            or take.generation_segment_id != segment.id
-            or take.status not in TERMINAL_TAKE_STATUSES
-            or origin_run is None
-            or origin_run.session_id != session_id
-            or origin_run.plan_revision_id != selected_run.plan_revision_id
-            or origin_run.sequence_number > selected_run.sequence_number
-        ):
+        statement = statement.where(AudioTake.id == explicit_take_id)
+    else:
+        statement = statement.order_by(GenerationRun.sequence_number.desc(),
+                                      AudioTake.created_at.desc(), AudioTake.id.desc()).limit(1)
+    selected = session.execute(statement).one_or_none()
+    if selected is None:
+        if explicit_take_id is not None:
             raise ValueError(
                 "The explicit take must be a completed or stale take for this segment, session, and run cutoff."
             )
-    else:
-        selected = session.execute(
-            select(AudioTake, GenerationRun, Artifact)
-            .join(GenerationRun, AudioTake.generation_run_id == GenerationRun.id)
-            .outerjoin(Artifact, Artifact.id == AudioTake.artifact_id)
-            .where(
-                AudioTake.generation_segment_id == segment.id,
-                AudioTake.status.in_(tuple(TERMINAL_TAKE_STATUSES)),
-                GenerationRun.session_id == session_id,
-                GenerationRun.plan_revision_id == selected_run.plan_revision_id,
-                GenerationRun.sequence_number <= selected_run.sequence_number,
-            )
-            .order_by(
-                GenerationRun.sequence_number.desc(),
-                AudioTake.created_at.desc(),
-                AudioTake.id.desc(),
-            )
-            .limit(1)
-        ).one_or_none()
-        if selected is None:
-            raise ValueError(
-                f"Segment {segment.ordinal + 1} has no completed or stale audio take at the selected run cutoff."
-            )
-        take, _origin_run, artifact = selected
-        if artifact is None:
-            raise ValueError(f"Segment {segment.ordinal + 1} references a missing audio artifact.")
-        return take, artifact
-
-    artifact = session.get(Artifact, take.artifact_id) if take.artifact_id else None
+        raise ValueError(
+            f"Segment {segment.ordinal + 1} has no completed or stale audio take at the selected run cutoff."
+        )
+    take, _origin_run, artifact = selected
     if artifact is None:
         raise ValueError("The selected audio take has no available artifact.")
-    return take, artifact
+    return take, artifact, _origin_run
 
 
 def _validate_source_file(
@@ -185,6 +185,7 @@ def _validate_source_file(
     *,
     session_id: str,
     segment_ordinal: int,
+    before_io=None,
 ) -> tuple[Path, str, int]:
     if (
         artifact.state != "current"
@@ -194,6 +195,8 @@ def _validate_source_file(
         or not artifact.content_hash
     ):
         raise ValueError(f"Segment {segment_ordinal + 1} references an unavailable audio artifact.")
+    if before_io is not None:
+        before_io()
     try:
         relative = Path(artifact.relative_path)
         if relative.is_absolute():
@@ -204,19 +207,23 @@ def _validate_source_file(
         raise ValueError("The selected audio artifact path is not managed by this application.") from error
     if unmanaged.is_symlink() or not path.is_file():
         raise ValueError(f"Audio take file is missing or unsafe for segment {segment_ordinal + 1}.")
+    if before_io is not None:
+        before_io()
     try:
         content_hash = sha256_file(path)
     except OSError as error:
         raise ValueError(f"Audio take file could not be read for segment {segment_ordinal + 1}.") from error
     if content_hash != artifact.content_hash:
         raise ValueError(f"Audio take content hash changed for segment {segment_ordinal + 1}.")
-    duration_ms = _audio_duration_ms(path)
+    duration_ms = _audio_duration_ms(path, **({"before_io": before_io} if before_io is not None else {}))
     if duration_ms <= 0:
         raise ValueError(f"Audio take has no usable duration for segment {segment_ordinal + 1}.")
     return path, paths.relative_managed_path(path), duration_ms
 
 
-def _audio_duration_ms(path: Path) -> int:
+def _audio_duration_ms(path: Path, *, before_io=None) -> int:
+    if before_io is not None:
+        before_io()
     try:
         with wave.open(str(path), "rb") as reader:
             if reader.getcomptype() == "NONE" and reader.getframerate() > 0:
@@ -225,6 +232,8 @@ def _audio_duration_ms(path: Path) -> int:
         pass
     from .media_process import probe_audio_stream
 
+    if before_io is not None:
+        before_io()
     return int(probe_audio_stream(path).duration_ms)
 
 
@@ -240,12 +249,14 @@ def _descriptor(
     artifact: Artifact,
     paths: DataPaths,
     recast_selection_hash: str | None,
+    before_io=None,
 ) -> dict[str, Any]:
     path, managed_relative_path, duration_ms = _validate_source_file(
         paths,
         artifact,
         session_id=selected_run.session_id,
         segment_ordinal=segment.ordinal,
+        **({"before_io": before_io} if before_io is not None else {}),
     )
     del path
     direction_source_refs = _direction_source_refs(segment)
@@ -296,9 +307,10 @@ def prepare_comparison_export(
 ) -> PreparedComparisonExport:
     """Resolve exact selected takes and hash all source bytes before enqueue."""
 
-    body = ComparisonExportRequest.model_validate(request).model_dump(mode="json")
     clips: list[dict[str, Any]] = []
     with database.session() as session:
+        access = require_comparison_export_access(session, session_id)
+        body = ComparisonExportRequest.model_validate(request).model_dump(mode="json")
         _require_session(session, session_id)
         for ordinal, requested in enumerate(body["clips"], start=1):
             run, revision = _require_run(
@@ -316,7 +328,8 @@ def prepare_comparison_export(
             recast_selection_hash = None
             if is_recast:
                 selection, pinned_rows = audio_version_assembly_selection(
-                    session, session_id, run, requested["audio_version_side"]
+                    session, session_id, run, requested["audio_version_side"],
+                    **({"scope_session": True} if access is not None else {}),
                 )
                 if selection is None:
                     raise ValueError("The selected recast audio side is unavailable.")
@@ -328,24 +341,20 @@ def prepare_comparison_export(
                 selected_segment, take, artifact = chosen
                 if requested.get("take_id") is not None and requested["take_id"] != take.id:
                     raise ValueError("An explicit recast take must match the selected pinned side.")
-                origin_run = session.get(GenerationRun, take.generation_run_id) if take.generation_run_id else None
-                if origin_run is None:
-                    raise ValueError("The pinned recast take has no origin generation run.")
+                origin_run = run
                 recast_selection_hash = selection["audio_version_selection_hash"]
                 segment = selected_segment
             else:
                 if requested["audio_version_side"] != "after":
                     raise ValueError("Before audio is available only for a recast generation run.")
-                take, artifact = _select_regular_take(
+                take, artifact, origin_run = _select_regular_take(
                     session,
                     session_id=session_id,
                     selected_run=run,
                     segment=segment,
                     explicit_take_id=requested.get("take_id"),
                 )
-                origin_run = session.get(GenerationRun, take.generation_run_id) if take.generation_run_id else None
-                if origin_run is None:
-                    raise ValueError("The selected take has no origin generation run.")
+
             clips.append(
                 _descriptor(
                     ordinal=ordinal,
@@ -358,6 +367,9 @@ def prepare_comparison_export(
                     artifact=artifact,
                     paths=paths,
                     recast_selection_hash=recast_selection_hash,
+                    **({"before_io": lambda: require_comparison_export_access(
+                        session, session_id, expected=access,
+                    )} if access is not None else {}),
                 )
             )
         selection_hash = comparison_export_selection_hash(
@@ -389,6 +401,7 @@ def revalidate_comparison_export_in_session(
         else prepared_or_payload
     )
     session_id = str(payload.get("session_id") or "")
+    access = require_comparison_export_access(session, session_id, payload=payload)
     _require_session(session, session_id)
     if payload.get("version") != COMPARISON_EXPORT_VERSION:
         raise ValueError("The comparison export payload version is unsupported.")
@@ -434,7 +447,8 @@ def revalidate_comparison_export_in_session(
             cache_key = (run.id, side)
             selection = recast_cache.get(cache_key)
             if selection is None:
-                selection, rows = audio_version_assembly_selection(session, session_id, run, side)
+                selection, rows = audio_version_assembly_selection(session, session_id, run, side,
+                    **({"scope_session": True} if access is not None else {}))
                 if selection is None:
                     raise ValueError("The selected recast audio side is no longer available.")
                 recast_cache[cache_key] = {
@@ -448,7 +462,7 @@ def revalidate_comparison_export_in_session(
             if chosen is None or chosen[1].id != descriptor.get("take_id"):
                 raise ValueError("The pinned recast take changed after it was prepared.")
             take, artifact = chosen[1], chosen[2]
-            origin_run = session.get(GenerationRun, take.generation_run_id) if take.generation_run_id else None
+            origin_run = run
             if (
                 take.revision != descriptor.get("take_revision")
                 or take.parent_take_id != descriptor.get("take_parent_id")
@@ -469,8 +483,10 @@ def revalidate_comparison_export_in_session(
         else:
             if side != "after" or descriptor.get("audio_version_selection_hash") is not None:
                 raise ValueError("The selected generation run has an invalid audio-version side.")
-            take = session.get(AudioTake, str(descriptor.get("take_id") or ""))
-            origin_run = session.get(GenerationRun, take.generation_run_id) if take and take.generation_run_id else None
+            take, artifact, origin_run = _select_regular_take(
+                session, session_id=session_id, selected_run=run, segment=segment,
+                explicit_take_id=str(descriptor.get("take_id") or ""),
+            )
             if (
                 take is None
                 or take.generation_segment_id != segment.id
@@ -492,7 +508,6 @@ def revalidate_comparison_export_in_session(
                 or stable_hash(origin_run.settings_snapshot_json or {}) != descriptor.get("origin_run_settings_snapshot_hash")
             ):
                 raise ValueError("The selected comparison take changed after it was prepared.")
-            artifact = session.get(Artifact, take.artifact_id) if take.artifact_id else None
 
         if (
             artifact is None

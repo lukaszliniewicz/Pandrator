@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from .database import Database
 from .models import Provider, ProviderModel
+from .provider_identity import provider_namespace
 
 DEFAULT_CONTEXT_WINDOW_TOKENS = 262_144
 DEFAULT_MAX_OUTPUT_TOKENS = 8_192
@@ -41,6 +42,20 @@ def _split_model_reference(value: str) -> tuple[str, str]:
         return (native_model if separator else remainder), provider_hint
     if "/" in model_value:
         provider_hint, native_model = model_value.rsplit("/", 1)
+        return native_model, provider_hint
+    return model_value, ""
+
+
+def _split_noninitial_model_reference(value: str) -> tuple[str, str]:
+    """Parse only the canonical provider ID/key hint forms for workspaces."""
+
+    model_value = str(value or "").strip()
+    if model_value.casefold().startswith("custom:"):
+        remainder = model_value[len("custom:") :]
+        provider_hint, separator, native_model = remainder.partition("/")
+        return (native_model if separator else remainder), provider_hint
+    if "/" in model_value:
+        provider_hint, _separator, native_model = model_value.partition("/")
         return native_model, provider_hint
     return model_value, ""
 
@@ -76,22 +91,33 @@ class ContextBudgetService:
         fixed_prompt: Any = "",
         ledger: Any = "",
         tools: Any = "",
+        session_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> ContextBudget:
         model_value = str(model or "")
-        model_id, provider_hint = _split_model_reference(model_value)
-        with self.database.session() as session:
+        with self.database.snapshot_session() as session:
+            namespace = provider_namespace(
+                session, session_id=session_id, workspace_id=workspace_id
+            )
+            if namespace.legacy_host_access:
+                model_id, provider_hint = _split_model_reference(model_value)
+            else:
+                model_id, provider_hint = _split_noninitial_model_reference(model_value)
             candidates = list(
                 session.execute(
                     select(ProviderModel, Provider)
                     .join(Provider, Provider.id == ProviderModel.provider_id)
-                    .where(ProviderModel.model_id == model_id)
+                    .where(
+                        Provider.workspace_id == namespace.workspace_id,
+                        ProviderModel.model_id == model_id,
+                    )
                     .order_by(
                         ProviderModel.is_default.desc(),
                         ProviderModel.updated_at.desc(),
                     )
                 ).all()
             )
-        if provider_hint:
+        if provider_hint and namespace.legacy_host_access:
             matched = next(
                 (
                     model_record
@@ -106,9 +132,21 @@ class ContextBudgetService:
                 ),
                 None,
             )
+        elif provider_hint:
+            matched = next(
+                (
+                    model_record
+                    for model_record, provider in candidates
+                    if provider_hint in {str(provider.id), str(provider.provider_key)}
+                ),
+                None,
+            )
         else:
             matched = None
-        record = matched or (candidates[0][0] if candidates else None)
+        if provider_hint:
+            record = matched
+        else:
+            record = matched or (candidates[0][0] if candidates else None)
         context = max(
             4_096,
             int(

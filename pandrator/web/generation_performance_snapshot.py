@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 
 from . import models as m
+from .speech_input_contracts import MissingSpeechSelection, RootSpeechBinding
 from .speech_plan_context import semantic_context_units, semantic_context_window
 
 
@@ -38,6 +39,9 @@ def freeze_generation_performance_snapshot(
     session, revision_id: str, snapshot: dict[str, Any], _service_config_cache=None,
     *, _settings_copy=None, cast_segment_ids: Collection[str] | None = None,
     _voice_reference_index: dict[str, list[dict[str, Any]]] | None = None,
+    _missing_selection: MissingSpeechSelection | None = None,
+    _root_binding: RootSpeechBinding | None = None,
+    _carried_snapshot: dict[str, Any] | None = None,
 ) -> bool:
     """Bind a new run to current adoption and immutable semantic source text.
 
@@ -70,13 +74,34 @@ def freeze_generation_performance_snapshot(
         m.GenerationSegment.removed.is_(False),
         (m.GenerationSegment.voice_id.is_not(None) | m.GenerationSegment.voice.is_not(None)),
     ).limit(1)) is not None
-    if settings.get("performance_enabled") or settings.get("casting_enabled") or has_block_voice:
+    from .project_segment_speech import (
+        SegmentSpeechReferenceIndex,
+        has_selected_voice_override,
+        uses_segment_speech_references,
+    )
+
+    segment_references = None
+    if uses_segment_speech_references(settings):
+        session_id = session.scalar(
+            select(m.GenerationPlan.session_id)
+            .join(m.GenerationPlanRevision, m.GenerationPlanRevision.plan_id == m.GenerationPlan.id)
+            .where(m.GenerationPlanRevision.id == revision_id)
+        )
+        if session_id is None:
+            raise ValueError("The speech plan is unavailable.")
+        segment_references = SegmentSpeechReferenceIndex(session).for_revision(session_id, revision_id)
+        has_block_voice = has_block_voice or bool(segment_references)
+    if (settings.get("performance_enabled") or settings.get("casting_enabled") or has_block_voice
+            or has_selected_voice_override(snapshot) or _carried_snapshot is not None):
         from .generation_cast_runtime import freeze_cast_snapshot
         freeze_cast_snapshot(
             session, revision_id, snapshot, settings, _service_config_cache,
             _settings_copy=_settings_copy,
             validate_segment_ids=cast_segment_ids,
             _voice_reference_index=_voice_reference_index,
+            _segment_references=segment_references,
+            _missing_selection=_missing_selection, _root_binding=_root_binding,
+            _carried_snapshot=_carried_snapshot,
         )
     if mode != "off":
         context_settings = {

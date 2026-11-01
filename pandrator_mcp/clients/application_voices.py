@@ -7,7 +7,19 @@ import math
 from typing import Any
 from urllib.parse import quote
 
+from ..errors import PandratorMcpError
 from .application_requests import ApplicationRequests
+
+
+def _workspace_parameters(value: Any) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, str):
+        raise ValueError("workspace_id must be a nonblank string of at most 80 characters.")
+    workspace_id = value.strip()
+    if not workspace_id or len(workspace_id) > 80:
+        raise ValueError("workspace_id must be a nonblank string of at most 80 characters.")
+    return {"workspace_id": workspace_id}
 
 
 class ApplicationVoiceMethods(ApplicationRequests):
@@ -40,6 +52,7 @@ class ApplicationVoiceMethods(ApplicationRequests):
         voice_id = values.pop("voice_id", None)
         expected_revision = values.pop("expected_revision", None)
         changes = values.pop("changes", None)
+        workspace_parameters = _workspace_parameters(values.pop("workspace_id", None))
         if values:
             raise ValueError("Voice metadata requests contain unsupported fields.")
         if not isinstance(voice_id, str) or not voice_id:
@@ -69,12 +82,17 @@ class ApplicationVoiceMethods(ApplicationRequests):
             raise ValueError(
                 f"Voice metadata requests may not exceed {maximum_body_bytes // 1024} KiB."
             )
+        request_kwargs: dict[str, Any] = {
+            "method": "PATCH",
+            "body": dict(changes),
+            "if_match_revision": expected_revision,
+            "maximum_body_bytes": maximum_body_bytes,
+        }
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
         return self._request_json(
             f"/api/v1/voices/{quote(voice_id, safe='')}",
-            method="PATCH",
-            body=dict(changes),
-            if_match_revision=expected_revision,
-            maximum_body_bytes=maximum_body_bytes,
+            **request_kwargs,
         )
 
     def voice_catalog(self, **filters: Any) -> dict[str, Any]:
@@ -96,6 +114,8 @@ class ApplicationVoiceMethods(ApplicationRequests):
             "origin",
             "service_id",
             "model",
+            "workspace_id",
+            "session_id",
             "ready_only",
             "reviewed_only",
             "sort",
@@ -119,10 +139,17 @@ class ApplicationVoiceMethods(ApplicationRequests):
         *,
         service_id: str | None = None,
         model: str | None = None,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         parameters = {
             key: value
-            for key, value in {"service_id": service_id, "model": model}.items()
+            for key, value in {
+                "service_id": service_id,
+                "model": model,
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+            }.items()
             if value is not None and value != ""
         }
         return self._request_json(
@@ -139,7 +166,9 @@ class ApplicationVoiceMethods(ApplicationRequests):
         voice_category: str,
         profile: dict[str, Any] | None,
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
+        workspace_parameters = _workspace_parameters(workspace_id)
         body: dict[str, Any] = {
             "name": name,
             "voice_category": voice_category,
@@ -151,13 +180,15 @@ class ApplicationVoiceMethods(ApplicationRequests):
         }.items():
             if value is not None:
                 body[key] = value
-        return self._request_json(
-            "/api/v1/voices",
-            method="POST",
-            body=body,
-            idempotency_key=idempotency_key,
-            maximum_body_bytes=64 * 1024,
-        )
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": body,
+            "idempotency_key": idempotency_key,
+            "maximum_body_bytes": 64 * 1024,
+        }
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
+        return self._request_json("/api/v1/voices", **request_kwargs)
 
     def design_google_voice(
         self,
@@ -169,7 +200,9 @@ class ApplicationVoiceMethods(ApplicationRequests):
         language: str,
         voice_category: str,
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
+        workspace_parameters = _workspace_parameters(workspace_id)
         body = {
             "service_id": service_id,
             "model": model,
@@ -178,16 +211,30 @@ class ApplicationVoiceMethods(ApplicationRequests):
             "language": language,
             "voice_category": voice_category,
         }
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": body,
+            "idempotency_key": idempotency_key,
+            "maximum_body_bytes": 16 * 1024,
+        }
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
         return self._request_json(
             "/api/v1/voices/design/google",
-            method="POST",
-            body=body,
-            idempotency_key=idempotency_key,
-            maximum_body_bytes=16 * 1024,
+            **request_kwargs,
         )
 
-    def get_voice_samples(self, voice_id: str) -> dict[str, Any]:
-        return self._request_json(f"/api/v1/voices/{quote(voice_id, safe='')}/samples")
+    def get_voice_samples(
+        self,
+        voice_id: str,
+        *,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        path = f"/api/v1/voices/{quote(voice_id, safe='')}/samples"
+        workspace_parameters = _workspace_parameters(workspace_id)
+        if not workspace_parameters:
+            return self._request_json(path)
+        return self._request_json(path, parameters=workspace_parameters)
 
     def promote_voice_design(
         self,
@@ -199,6 +246,7 @@ class ApplicationVoiceMethods(ApplicationRequests):
         expected_voice_revision: int,
         idempotency_key: str,
         recipe_signature: str | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "artifact_id": artifact_id,
@@ -209,11 +257,17 @@ class ApplicationVoiceMethods(ApplicationRequests):
             body["language"] = language
         if recipe_signature is not None:
             body["recipe_signature"] = recipe_signature
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": body,
+            "idempotency_key": idempotency_key,
+        }
+        workspace_parameters = _workspace_parameters(workspace_id)
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
         return self._request_json(
             f"/api/v1/voices/{quote(voice_id, safe='')}/samples/from-preview",
-            method="POST",
-            body=body,
-            idempotency_key=idempotency_key,
+            **request_kwargs,
         )
 
     def import_voice_reference(
@@ -228,6 +282,7 @@ class ApplicationVoiceMethods(ApplicationRequests):
         idempotency_key: str,
         start_seconds: float | None = None,
         end_seconds: float | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "artifact_id": artifact_id,
@@ -256,12 +311,18 @@ class ApplicationVoiceMethods(ApplicationRequests):
             body["start_seconds"] = start_seconds
         if end_seconds is not None:
             body["end_seconds"] = end_seconds
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": body,
+            "idempotency_key": idempotency_key,
+            "maximum_body_bytes": 64 * 1024,
+        }
+        workspace_parameters = _workspace_parameters(workspace_id)
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
         return self._request_json(
             f"/api/v1/voices/{quote(voice_id, safe='')}/samples/from-artifact",
-            method="POST",
-            body=body,
-            idempotency_key=idempotency_key,
-            maximum_body_bytes=64 * 1024,
+            **request_kwargs,
         )
 
     def transcribe_voice_sample(
@@ -271,14 +332,21 @@ class ApplicationVoiceMethods(ApplicationRequests):
         *,
         settings: dict[str, Any],
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": settings,
+            "idempotency_key": idempotency_key,
+            "maximum_body_bytes": 32 * 1024,
+        }
+        workspace_parameters = _workspace_parameters(workspace_id)
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
         return self._request_json(
             f"/api/v1/voices/{quote(voice_id, safe='')}/samples/"
             f"{quote(sample_id, safe='')}/transcribe",
-            method="POST",
-            body=settings,
-            idempotency_key=idempotency_key,
-            maximum_body_bytes=32 * 1024,
+            **request_kwargs,
         )
 
     def review_voice_transcript(
@@ -290,6 +358,7 @@ class ApplicationVoiceMethods(ApplicationRequests):
         language: str | None,
         expected_voice_revision: int,
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "transcript": transcript,
@@ -297,14 +366,20 @@ class ApplicationVoiceMethods(ApplicationRequests):
         }
         if language is not None:
             body["language"] = language
+        request_kwargs: dict[str, Any] = {
+            "method": "PATCH",
+            "body": body,
+            "idempotency_key": idempotency_key,
+            "if_match_revision": expected_voice_revision,
+            "maximum_body_bytes": 32 * 1024,
+        }
+        workspace_parameters = _workspace_parameters(workspace_id)
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
         return self._request_json(
             f"/api/v1/voices/{quote(voice_id, safe='')}/samples/"
             f"{quote(sample_id, safe='')}/transcript",
-            method="PATCH",
-            body=body,
-            idempotency_key=idempotency_key,
-            if_match_revision=expected_voice_revision,
-            maximum_body_bytes=32 * 1024,
+            **request_kwargs,
         )
 
     def publish_voice(
@@ -317,7 +392,9 @@ class ApplicationVoiceMethods(ApplicationRequests):
         sample_id: str | None = None,
         sample_sha256: str | None = None,
         recipe_signature: str | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
+        workspace_parameters = _workspace_parameters(workspace_id)
         body = {}
         if sample_id is not None:
             body["sample_id"] = sample_id
@@ -325,12 +402,39 @@ class ApplicationVoiceMethods(ApplicationRequests):
             body["sample_sha256"] = sample_sha256
         if recipe_signature is not None:
             body["recipe_signature"] = recipe_signature
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": body,
+            "idempotency_key": idempotency_key,
+            "if_match_revision": expected_revision,
+        }
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
         return self._request_json(
             f"/api/v1/voices/{quote(voice_id, safe='')}/providers/{quote(service_id, safe='')}",
-            method="POST",
-            body=body,
-            idempotency_key=idempotency_key,
-            if_match_revision=expected_revision,
+            **request_kwargs,
+        )
+
+    def unpublish_voice(
+        self,
+        voice_id: str,
+        service_id: str,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        workspace_parameters = _workspace_parameters(workspace_id)
+        request_kwargs: dict[str, Any] = {
+            "method": "DELETE",
+            "idempotency_key": idempotency_key,
+            "if_match_revision": expected_revision,
+        }
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
+        return self._request_json(
+            f"/api/v1/voices/{quote(voice_id, safe='')}/providers/{quote(service_id, safe='')}",
+            **request_kwargs,
         )
 
     def audition_voice(
@@ -344,27 +448,54 @@ class ApplicationVoiceMethods(ApplicationRequests):
         generation_prompt: str | None,
         seed: int | None,
         idempotency_key: str,
+        workspace_id: str | None = None,
+        voice_id: str | None = None,
     ) -> dict[str, Any]:
+        workspace_parameters = _workspace_parameters(workspace_id)
         body: dict[str, Any] = {
             "text": text,
             "model": model,
             "voice": voice,
             "language": language,
         }
+        if voice_id is not None:
+            body["voice_id"] = voice_id
         if generation_prompt is not None:
             body["generation_prompt"] = generation_prompt
         if seed is not None:
             body["seed"] = seed
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": body,
+            "idempotency_key": idempotency_key,
+            "maximum_body_bytes": 64 * 1024,
+        }
+        if workspace_parameters:
+            request_kwargs["parameters"] = workspace_parameters
         return self._request_json(
             f"/api/v1/services/tts/{quote(service_id, safe='')}/preview",
-            method="POST",
-            body=body,
-            idempotency_key=idempotency_key,
-            maximum_body_bytes=64 * 1024,
+            **request_kwargs,
         )
 
-    def list_voice_collections(self) -> dict[str, Any]:
-        return self._request_json("/api/v1/voice-collections")
+    def list_voice_collections(
+        self,
+        *,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        parameters = {
+            key: value
+            for key, value in {
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+            }.items()
+            if value is not None
+        }
+        if not parameters:
+            return self._request_json("/api/v1/voice-collections")
+        return self._request_json(
+            "/api/v1/voice-collections", parameters=parameters
+        )
 
     def create_voice_collection(
         self,
@@ -372,17 +503,20 @@ class ApplicationVoiceMethods(ApplicationRequests):
         name: str,
         description: str | None,
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"name": name}
         if description is not None:
             body["description"] = description
-        return self._request_json(
-            "/api/v1/voice-collections",
-            method="POST",
-            body=body,
-            idempotency_key=idempotency_key,
-            maximum_body_bytes=32 * 1024,
-        )
+        request_kwargs: dict[str, Any] = {
+            "method": "POST",
+            "body": body,
+            "idempotency_key": idempotency_key,
+            "maximum_body_bytes": 32 * 1024,
+        }
+        if workspace_id is not None:
+            request_kwargs["parameters"] = {"workspace_id": workspace_id}
+        return self._request_json("/api/v1/voice-collections", **request_kwargs)
 
     def update_voice_collection(
         self,
@@ -395,6 +529,7 @@ class ApplicationVoiceMethods(ApplicationRequests):
         add_members: list[dict[str, Any]] | None = None,
         remove_members: list[dict[str, Any]] | None = None,
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"expected_revision": expected_revision}
         if name is not None:
@@ -405,12 +540,17 @@ class ApplicationVoiceMethods(ApplicationRequests):
             body["add_members"] = list(add_members)
         if remove_members:
             body["remove_members"] = list(remove_members)
+        request_kwargs: dict[str, Any] = {
+            "method": "PATCH",
+            "body": body,
+            "idempotency_key": idempotency_key,
+            "maximum_body_bytes": 64 * 1024,
+        }
+        if workspace_id is not None:
+            request_kwargs["parameters"] = {"workspace_id": workspace_id}
         return self._request_json(
             f"/api/v1/voice-collections/{quote(collection_id, safe='')}",
-            method="PATCH",
-            body=body,
-            idempotency_key=idempotency_key,
-            maximum_body_bytes=64 * 1024,
+            **request_kwargs,
         )
 
     def update_catalog_voice_metadata(
@@ -420,27 +560,83 @@ class ApplicationVoiceMethods(ApplicationRequests):
         expected_revision: int,
         changes: dict[str, Any],
         idempotency_key: str,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
-        return self._request_json(
-            "/api/v1/voice-catalog/metadata",
-            method="PATCH",
-            body={
+        request_kwargs: dict[str, Any] = {
+            "method": "PATCH",
+            "body": {
                 "reference": reference,
                 "expected_revision": expected_revision,
                 "changes": changes,
             },
-            idempotency_key=idempotency_key,
-            maximum_body_bytes=64 * 1024,
-        )
+            "idempotency_key": idempotency_key,
+            "maximum_body_bytes": 64 * 1024,
+        }
+        if workspace_id is not None:
+            request_kwargs["parameters"] = {"workspace_id": workspace_id}
+        return self._request_json("/api/v1/voice-catalog/metadata", **request_kwargs)
 
     def tts_catalog(
-        self, *, refresh: bool = False, service_id: str | None = None,
+        self,
+        *,
+        refresh: bool = False,
+        service_id: str | None = None,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        model: str | None = None,
+        view: str = "summary",
     ) -> dict[str, Any]:
-        parameters = {"refresh": "true"} if refresh else {}
+        if refresh:
+            raise PandratorMcpError(
+                "validation_error",
+                "The TTS catalogue read is passive; use "
+                "pandrator_refresh_tts_catalog to refresh TTS connections.",
+            )
+        parameters: dict[str, Any] = {}
         if service_id:
             parameters["service_id"] = service_id
+        if workspace_id is not None:
+            parameters["workspace_id"] = workspace_id
+        if session_id is not None:
+            parameters["session_id"] = session_id
+        if model is not None and service_id:
+            parameters.pop("service_id", None)
+            parameters["model"] = model
+            payload = self._request_json(
+                f"/api/v1/services/tts/{quote(service_id, safe='')}",
+                parameters=parameters,
+                maximum_body_bytes=8 * 1024 * 1024,
+            )
+            return {
+                **{key: value for key, value in payload.items() if key != "service"},
+                "services": [payload["service"]],
+            }
+        parameters["view"] = view
+        if view == "full":
+            return self._request_json(
+                "/api/v1/services/tts", parameters=parameters,
+                maximum_body_bytes=8 * 1024 * 1024,
+            )
+        return self._request_json("/api/v1/services/tts", parameters=parameters)
+
+    def refresh_tts_catalog(
+        self,
+        *,
+        workspace_id: str | None = None,
+        service_id: str | None = None,
+    ) -> dict[str, Any]:
+        parameters = {
+            key: value
+            for key, value in {
+                "workspace_id": workspace_id,
+                "service_id": service_id,
+            }.items()
+            if value is not None
+        }
+        parameters["view"] = "summary"
         return self._request_json(
-            "/api/v1/services/tts",
+            "/api/v1/services/tts/refresh",
+            method="POST",
             parameters=parameters or None,
         )
 
@@ -481,8 +677,27 @@ class ApplicationVoiceMethods(ApplicationRequests):
             parameters=parameters,
         )
 
-    def list_providers(self) -> dict[str, Any]:
-        return self._request_json("/api/v1/providers")
+    def list_providers(self, *, workspace_id: str | None = None) -> dict[str, Any]:
+        if workspace_id is None:
+            return self._request_json("/api/v1/providers")
+        return self._request_json(
+            "/api/v1/providers", parameters={"workspace_id": workspace_id}
+        )
 
-    def list_voices(self) -> dict[str, Any]:
-        return self._request_json("/api/v1/voices")
+    def list_voices(
+        self,
+        *,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        parameters = {
+            key: value
+            for key, value in {
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+            }.items()
+            if value is not None
+        }
+        if not parameters:
+            return self._request_json("/api/v1/voices")
+        return self._request_json("/api/v1/voices", parameters=parameters)

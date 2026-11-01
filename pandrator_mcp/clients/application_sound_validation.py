@@ -27,6 +27,16 @@ def idempotency_key(value: str) -> str:
     return value
 
 
+def workspace_parameters(value: object) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, str):
+        raise ValueError("workspace_id must be a normalized nonblank string of at most 80 characters.")
+    if not value.strip() or value != value.strip() or len(value) > 80:
+        raise ValueError("workspace_id must be a normalized nonblank string of at most 80 characters.")
+    return {"workspace_id": value}
+
+
 def bounded_page(limit: int, *, maximum: int = 100) -> int:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= maximum:
         raise ValueError(f"limit must be an integer from 1 to {maximum}.")
@@ -39,4 +49,5 @@ __all__ = [
     "identifier",
     "idempotency_key",
     "revision",
+    "workspace_parameters",
 ]

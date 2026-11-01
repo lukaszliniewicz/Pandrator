@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from pandrator.logic.audio_cpp_sfx import sound_catalogue
 from pandrator.runtime import DataPaths
 
+from .access.contracts import ProjectAction
+from .access.sound_library_policy import require_sound_library_workspace
 from .artifacts import ArtifactService
 from .database import Database
 from .jobs import JobQueue
@@ -82,7 +84,11 @@ class SoundService:
     def catalogue(self) -> dict[str, Any]:
         return sound_catalogue(self._runtime_settings())
 
-    def prepare_generation(self, payload: dict[str, Any]) -> PreparedSoundGeneration:
+    def prepare_generation(
+        self, payload: dict[str, Any], *, workspace_id: str | None = None
+    ) -> PreparedSoundGeneration:
+        with self.database.snapshot_session() as session:
+            require_sound_library_workspace(session, ProjectAction.RUN, workspace_id=workspace_id)
         return prepare_sound_generation(payload, self._runtime_settings())
 
     def generate_in_session(
@@ -91,14 +97,21 @@ class SoundService:
         payload: dict[str, Any],
         *,
         prepared: PreparedSoundGeneration | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
-        prepared_generation = prepared or self.prepare_generation(payload)
+        if prepared is None:
+            workspace = require_sound_library_workspace(
+                session, ProjectAction.RUN, workspace_id=workspace_id
+            )
+            workspace_id = workspace.id
+            prepared = prepare_sound_generation(payload, self._runtime_settings())
         return admit_generation_in_session(
             session,
             self.jobs,
             self.paths,
             payload,
-            prepared_generation,
+            prepared,
+            workspace_id=workspace_id,
         )
 
     def list_sounds(
@@ -108,6 +121,8 @@ class SoundService:
         cursor: str | None = None,
         limit: int = 40,
         archived: bool = False,
+        *,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         with self.database.snapshot_session() as session:
             return query_sounds(
@@ -117,6 +132,7 @@ class SoundService:
                 cursor=cursor,
                 limit=limit,
                 archived=archived,
+                workspace_id=workspace_id,
             )
 
     def get_sound(
@@ -124,41 +140,93 @@ class SoundService:
         item_id: str,
         cursor: str | None = None,
         limit: int = 20,
+        *,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         with self.database.snapshot_session() as session:
-            return query_sound(session, item_id, cursor=cursor, limit=limit)
+            return query_sound(
+                session,
+                item_id,
+                cursor=cursor,
+                limit=limit,
+                workspace_id=workspace_id,
+            )
 
     def list_candidates(
         self,
         cursor: str | None = None,
         limit: int = 20,
+        *,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         with self.database.snapshot_session() as session:
-            return query_candidates(session, cursor=cursor, limit=limit)
+            return query_candidates(
+                session,
+                cursor=cursor,
+                limit=limit,
+                workspace_id=workspace_id,
+            )
 
-    def get_candidate(self, candidate_id: str) -> dict[str, Any]:
+    def get_candidate(
+        self,
+        candidate_id: str,
+        *,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
         with self.database.snapshot_session() as session:
-            return query_candidate(session, candidate_id)
+            return query_candidate(session, candidate_id, workspace_id=workspace_id)
 
-    def save_in_session(self, session: Session, payload: dict[str, Any]) -> dict[str, Any]:
-        return save_sound_in_session(session, self.paths, payload)
+    def save_in_session(
+        self,
+        session: Session,
+        payload: dict[str, Any],
+        *,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        return save_sound_in_session(
+            session,
+            self.paths,
+            payload,
+            workspace_id=workspace_id,
+        )
 
     def update_in_session(
         self,
         session: Session,
         item_id: str,
         payload: dict[str, Any],
+        *,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
-        return update_sound_in_session(session, item_id, payload)
+        return update_sound_in_session(
+            session,
+            item_id,
+            payload,
+            workspace_id=workspace_id,
+        )
 
-    def discard_in_session(self, session: Session, candidate_id: str) -> dict[str, Any]:
-        return discard_sound_in_session(session, candidate_id)
+    def discard_in_session(
+        self,
+        session: Session,
+        candidate_id: str,
+        *,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        return discard_sound_in_session(
+            session,
+            candidate_id,
+            workspace_id=workspace_id,
+        )
 
     def prepare_import(
         self,
         staged_path: Path,
         display_name: str,
+        *,
+        workspace_id: str | None = None,
     ) -> PreparedSoundImport:
+        with self.database.snapshot_session() as session:
+            require_sound_library_workspace(session, ProjectAction.EDIT, workspace_id=workspace_id)
         return prepare_sound_import(
             self.paths,
             self.artifacts,
@@ -173,8 +241,16 @@ class SoundService:
         self,
         session: Session,
         prepared: PreparedSoundImport,
+        *,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
-        return import_sound_in_session(session, self.paths, self.artifacts, prepared)
+        return import_sound_in_session(
+            session,
+            self.paths,
+            self.artifacts,
+            prepared,
+            workspace_id=workspace_id,
+        )
 
     def import_audio(
         self,
@@ -182,6 +258,7 @@ class SoundService:
         display_name: str,
         *,
         db_session: Session | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         return import_sound_audio(
             self.database,
@@ -190,6 +267,7 @@ class SoundService:
             path,
             display_name,
             db_session=db_session,
+            workspace_id=workspace_id,
         )
 
     def run_generate(

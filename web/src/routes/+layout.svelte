@@ -2,9 +2,9 @@
   import { errorMessage } from '$lib/errors';
   import '../app.css';
   import { page } from '$app/state';
-  import { goto } from '$app/navigation';
+  import { afterNavigate, goto, onNavigate } from '$app/navigation';
   import { onMount } from 'svelte';
-  import type { Snippet } from 'svelte';
+  import type { Component, Snippet } from 'svelte';
   import {
     Activity,
     FileAudio,
@@ -31,11 +31,17 @@
     X
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
+  import { clearProjectLink } from '$lib/project-link-context';
   import ManagerOperationBanner from '$lib/ManagerOperationBanner.svelte';
   import { modalFocus } from '$lib/modal-focus';
 
   let { children }: { children: Snippet } = $props();
   let password = $state('');
+  let loginName = $state('');
+  let WorkspaceSwitcher = $state<Component<{
+    compact?: boolean;
+    onnavigate?: () => void;
+  }> | null>(null);
   let loginError = $state('');
   let theme = $state<'light' | 'dark'>('light');
   let mobileOpen = $state(false);
@@ -57,25 +63,38 @@
     ).trim()
   );
 
-  const navigation = [
-    { href: '/', label: 'Home', icon: Home },
-    { href: '/sessions', label: 'Projects', icon: Folders },
-    { href: '/transcribe', label: 'Quick Transcribe', icon: FileAudio },
-    { href: '/sources', label: 'Source library', icon: LibraryBig },
-    { href: '/voices', label: 'Voices', icon: Mic2 },
-    { href: '/sounds', label: 'Sounds & Music', icon: Bell },
-    { href: '/models', label: 'Audio models', icon: Boxes },
-    { href: '/pronunciations', label: 'Pronunciations', icon: Languages },
-    { href: '/providers', label: 'Providers & services', icon: Plug },
-    { href: '/rvc', label: 'RVC conversion', icon: Repeat2 },
-    { href: '/training', label: 'XTTS training', icon: GraduationCap },
-    { href: '/activity', label: 'Activity & logs', icon: Activity },
-    {
-      href: '/settings',
-      label: 'Application settings',
-      icon: SlidersHorizontal
-    }
-  ];
+  const navigation = $derived(
+    appState.projectLink
+      ? [
+          {
+            href: `/sessions/${appState.projectLink.rootSessionId}`,
+            label: 'Shared project',
+            icon: Folders
+          }
+        ]
+      : [
+          { href: '/', label: 'Home', icon: Home },
+          { href: '/sessions', label: 'Projects', icon: Folders },
+          ...(appState.collaborationEnabled
+            ? [{ href: '/shared', label: 'Shared with me', icon: Folders }]
+            : []),
+          { href: '/transcribe', label: 'Quick Transcribe', icon: FileAudio },
+          { href: '/sources', label: 'Source library', icon: LibraryBig },
+          { href: '/voices', label: 'Voices', icon: Mic2 },
+          { href: '/sounds', label: 'Sounds & Music', icon: Bell },
+          { href: '/models', label: 'Audio models', icon: Boxes },
+          { href: '/pronunciations', label: 'Pronunciations', icon: Languages },
+          { href: '/providers', label: 'Providers & services', icon: Plug },
+          { href: '/rvc', label: 'RVC conversion', icon: Repeat2 },
+          { href: '/training', label: 'XTTS training', icon: GraduationCap },
+          { href: '/activity', label: 'Activity & logs', icon: Activity },
+          {
+            href: '/settings',
+            label: 'Application settings',
+            icon: SlidersHorizontal
+          }
+        ]
+  );
 
   function active(href: string) {
     return href === '/'
@@ -86,7 +105,10 @@
   async function login() {
     loginError = '';
     try {
-      await appState.login(password);
+      await appState.login(
+        password,
+        appState.collaborationEnabled ? loginName : undefined
+      );
       password = '';
     } catch (caught) {
       loginError = errorMessage(caught);
@@ -122,6 +144,42 @@
     }
   });
 
+  $effect(() => {
+    if (
+      appState.collaborationEnabled &&
+      !appState.projectLink &&
+      !WorkspaceSwitcher
+    )
+      void import('$lib/WorkspaceSwitcher.svelte').then((module) => {
+        WorkspaceSwitcher = module.default;
+      });
+  });
+  onNavigate((navigation) => {
+    const destination = navigation.to?.url;
+    if (!appState.collaborationEnabled || !destination) return;
+    const sessionId = /^\/sessions\/([^/]+)/.exec(destination.pathname)?.[1];
+    const id =
+      destination.pathname === '/sessions'
+        ? destination.searchParams.get('workspace')
+        : sessionId
+          ? destination.searchParams.get('workspace') ||
+            appState.workspaceForSession(sessionId)
+          : undefined;
+    if (
+      !id ||
+      id === appState.activeWorkspaceId ||
+      !appState.workspaces.some((item) => item.id === id)
+    )
+      return;
+    appState.workspaceSwitching = true;
+    appState.selectWorkspace(id);
+    mobileOpen = false;
+    return () => {
+      appState.workspaceSwitching = false;
+    };
+  });
+  afterNavigate(() => appState.adoptSessionWorkspace(page.params.id ?? ''));
+
   onMount(() => {
     theme =
       (localStorage.getItem('pandrator-theme') as 'light' | 'dark') ||
@@ -129,14 +187,32 @@
     document.documentElement.dataset.theme = theme;
     appState.sidebarCollapsed =
       localStorage.getItem('pandrator-sidebar') === 'collapsed';
-    appState.initialize();
+    if (!page.url.pathname.startsWith('/share/')) void appState.initialize();
     const tabletQuery = matchMedia(
       '(min-width: 768px) and (max-width: 1023px)'
     );
     const updateTabletRail = () => (tabletRail = tabletQuery.matches);
+    let identityCheck = 0;
+    const refreshVisibleIdentity = () => {
+      if (
+        (!appState.collaborationEnabled && !appState.projectLink) ||
+        page.url.pathname.startsWith('/share/') ||
+        document.visibilityState !== 'visible' ||
+        Date.now() - identityCheck < 1000
+      )
+        return;
+      identityCheck = Date.now();
+      void appState.refreshIdentity().catch(() => undefined);
+    };
+    window.addEventListener('focus', refreshVisibleIdentity);
+    document.addEventListener('visibilitychange', refreshVisibleIdentity);
     updateTabletRail();
     tabletQuery.addEventListener('change', updateTabletRail);
-    return () => tabletQuery.removeEventListener('change', updateTabletRail);
+    return () => {
+      tabletQuery.removeEventListener('change', updateTabletRail);
+      window.removeEventListener('focus', refreshVisibleIdentity);
+      document.removeEventListener('visibilitychange', refreshVisibleIdentity);
+    };
   });
 
   $effect(() => {
@@ -153,9 +229,28 @@
   ></svelte:head
 >
 
-{#if appState.loading}
+{#if page.url.pathname === '/password-reset' || page.url.pathname.startsWith('/share/')}
+  {@render children()}
+{:else if appState.loading}
   <main class="grid min-h-screen place-items-center">
     <div class="section-label animate-pulse">Preparing Pandrator…</div>
+  </main>
+{:else if !appState.authenticated && appState.projectLink}
+  <main class="grid min-h-screen place-items-center p-6">
+    <section class="surface max-w-lg rounded-2xl p-7">
+      <h1 class="text-2xl font-semibold">Shared access has ended</h1>
+      <p class="muted mt-3">
+        Open the complete link again, or ask the owner for a new link if it
+        expired or was revoked.
+      </p>
+      <button
+        class="btn btn-secondary mt-4"
+        onclick={() => {
+          clearProjectLink();
+          location.href = '/';
+        }}>Return to sign in</button
+      >
+    </section>
   </main>
 {:else if !appState.authenticated}
   <main class="grid min-h-screen place-items-center p-6">
@@ -186,8 +281,17 @@
             >{appState.securityWarning}</span
           >
         </div>{/if}
+      {#if appState.collaborationEnabled}<label
+          class="mb-4 block text-sm font-semibold"
+          >Login name<input
+            bind:value={loginName}
+            autocomplete="username"
+            required
+            class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+          /></label
+        >{/if}
       <label class="text-sm font-semibold"
-        >Owner password<input
+        >{appState.collaborationEnabled ? 'Password' : 'Owner password'}<input
           bind:value={password}
           type="password"
           autocomplete="current-password"
@@ -287,6 +391,10 @@
             aria-label="Close menu"><X size={19} /></button
           >{/if}
       </div>
+      {#if appState.collaborationEnabled && !appState.projectLink && WorkspaceSwitcher}<WorkspaceSwitcher
+          compact={!renderSidebarLabels}
+          onnavigate={() => (mobileOpen = false)}
+        />{/if}
       <nav class="sidebar-nav min-h-0 flex-1 space-y-1 overflow-y-auto">
         {#each navigation as item}{@const Icon = item.icon}<a
             href={item.href}
@@ -300,6 +408,15 @@
           >{/each}
       </nav>
       <div class="space-y-1 border-t border-[var(--line)] pt-3">
+        {#if appState.collaborationEnabled && renderSidebarLabels}<p
+            class="sidebar-label muted truncate px-3 pb-2 text-xs"
+          >
+            {appState.principal?.display_name} · {appState.isAdministrator
+              ? 'Administrator'
+              : appState.projectLink
+                ? 'Link visitor'
+                : 'User'}
+          </p>{/if}
         <button
           onclick={toggleTheme}
           aria-label={theme === 'light' ? 'Dark mode' : 'Light mode'}
@@ -312,12 +429,20 @@
             >{/if}</button
         >
         <button
-          onclick={() => appState.logout()}
-          aria-label="Sign out"
-          title="Sign out"
+          onclick={async () => {
+            await appState.logout();
+            await goto('/');
+          }}
+          aria-label={appState.projectLink
+            ? 'Leave shared project'
+            : 'Sign out'}
+          title={appState.projectLink ? 'Leave shared project' : 'Sign out'}
           class="nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold"
           ><LogOut class="shrink-0" size={19} />{#if renderSidebarLabels}<span
-              class="sidebar-label">Sign out</span
+              class="sidebar-label"
+              >{appState.projectLink
+                ? 'Leave shared project'
+                : 'Sign out'}</span
             >{/if}</button
         >
         <button
@@ -344,6 +469,13 @@
       <main
         class="min-w-0 flex-1 px-3 pb-12 pt-20 sm:px-6 md:pt-9 lg:px-8 xl:px-10"
       >
+        {#if appState.collaborationEnabled && appState.activeWorkspace && (page.url.pathname === '/' || page.url.pathname === '/sessions')}<p
+            class="section-label mb-3"
+          >
+            {appState.activeWorkspace.kind === 'personal'
+              ? 'My workspace · private'
+              : `${appState.activeWorkspace.name} · shared`}
+          </p>{/if}
         {#if appState.securityWarning}<div
             role="alert"
             class="mb-5 flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-relaxed"
@@ -351,7 +483,31 @@
             <ShieldAlert class="mt-0.5 shrink-0" size={16} /><span
               >{appState.securityWarning}</span
             >
-          </div>{/if}<ManagerOperationBanner />{@render children()}
+          </div>{/if}
+        {#if appState.projectLink}<div
+            class="mb-4 rounded-xl bg-[var(--accent-soft)] p-3 text-sm"
+            role="status"
+          >
+            <strong>Shared project access · {appState.projectLink.label}</strong
+            >
+            <p>
+              Project edits are saved directly. Installation administration and
+              private workspace libraries are outside this link's access.
+            </p>
+          </div>{/if}
+        {#key appState.identityKey}{#if appState.isAdministrator}<ManagerOperationBanner
+            />{/if}{/key}
+        {#if appState.collaborationEnabled && (!appState.workspacesReady || appState.workspaceSwitching)}
+          <section class="surface rounded-2xl p-6" aria-live="polite">
+            <p>{appState.workspaceError || 'Loading your workspaces…'}</p>
+            {#if appState.workspaceError}<button
+                class="btn btn-secondary mt-3"
+                onclick={() =>
+                  appState.retryWorkspaceLoad().catch(() => undefined)}
+                >Try again</button
+              >{/if}
+          </section>
+        {:else}{#key page.url.pathname === '/settings/workspaces' || page.url.pathname === '/settings/collaboration' || page.url.pathname.startsWith('/shared') ? appState.identityKey : appState.contentKey}{@render children()}{/key}{/if}
       </main>
       <footer
         class="app-footer mx-3 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] py-5 text-xs sm:mx-6 lg:mx-8 xl:mx-10"
@@ -461,6 +617,15 @@
     .app-sidebar.tablet-rail:focus-within {
       width: 14rem;
       box-shadow: var(--shadow);
+    }
+    .app-sidebar.tablet-rail:not(:hover):not(:focus-within) {
+      --workspace-details-opacity: 0;
+      --workspace-select-font-size: 0px;
+      --workspace-select-appearance: none;
+      --workspace-select-icon-display: grid;
+      --workspace-link-label-max: 0px;
+      --workspace-link-gap: 0px;
+      --workspace-link-justify: center;
     }
     .app-sidebar.tablet-rail:not(:hover):not(:focus-within) .sidebar-brand,
     .app-sidebar.tablet-rail:not(:hover):not(:focus-within) .nav-item {

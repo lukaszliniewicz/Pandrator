@@ -13,8 +13,15 @@ from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
     Artifact,
     ArtifactEdge,
+    AudioTake,
+    ExportRecord,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationSegment,
     OutputAssembly,
     SessionStageSelection,
+    Voice,
+    VoiceSample,
 )
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -37,12 +44,24 @@ class SessionOutputStorageTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
-    def artifact(self, name="assemblies/mix.wav", role="assembled_audio", parents=None):
-        path = self.directory / name
+    def artifact(
+        self,
+        name="assemblies/mix.wav",
+        role="assembled_audio",
+        parents=None,
+        kind="audio",
+        record=None,
+    ):
+        target = record or self.record
+        directory = self.paths.sessions / target.storage_key
+        path = directory / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"independently materialized output fixture")
         artifact = self.artifacts.register(
-            path, kind="audio", role=role, session_id=self.record.id,
+            path,
+            kind=kind,
+            role=role,
+            session_id=target.id,
             parent_ids=parents or [],
         )
         return artifact, path
@@ -68,16 +87,21 @@ class SessionOutputStorageTests(unittest.TestCase):
         self.assertFalse(path.exists())
         self.assertEqual(before, final_path.read_bytes())
         with self.database.session() as session:
-            self.assertEqual("deleted", session.get(Artifact, assembly.id).state)
-            self.assertEqual("current", session.get(Artifact, exported.id).state)
+            assembly_artifact = session.get(Artifact, assembly.id)
+            export_artifact = session.get(Artifact, exported.id)
+            assert assembly_artifact is not None and export_artifact is not None
+            self.assertEqual("deleted", assembly_artifact.state)
+            self.assertEqual("current", export_artifact.state)
             self.assertIsNotNone(session.scalar(select(ArtifactEdge).where(
                 ArtifactEdge.parent_artifact_id == assembly.id,
                 ArtifactEdge.child_artifact_id == exported.id,
             )))
             row = session.get(OutputAssembly, assembly_row_id)
+            assert row is not None
             self.assertEqual("stale", row.status)
             self.assertIsNone(row.artifact_id)
             selection = session.get(SessionStageSelection, (self.record.id, "audio"))
+            assert selection is not None
             self.assertIsNone(selection.artifact_id)
             self.assertEqual(4, selection.revision)
 
@@ -97,8 +121,11 @@ class SessionOutputStorageTests(unittest.TestCase):
         self.assertEqual(master_bytes, master_path.read_bytes())
         self.assertEqual(export_bytes, export_path.read_bytes())
         with self.database.session() as session:
-            self.assertEqual("current", session.get(Artifact, master.id).state)
-            self.assertEqual("current", session.get(Artifact, exported.id).state)
+            master_artifact = session.get(Artifact, master.id)
+            export_artifact = session.get(Artifact, exported.id)
+            assert master_artifact is not None and export_artifact is not None
+            self.assertEqual("current", master_artifact.state)
+            self.assertEqual("current", export_artifact.state)
             self.assertIsNotNone(session.scalar(select(ArtifactEdge).where(
                 ArtifactEdge.parent_artifact_id == assembly.id,
                 ArtifactEdge.child_artifact_id == master.id,
@@ -112,13 +139,22 @@ class SessionOutputStorageTests(unittest.TestCase):
                 self.assertFalse(path.exists())
 
     def test_queued_export_blocks_removal(self):
-        artifact, path = self.artifact()
         JobQueue(self.database).enqueue(
             "export.variant", {"session_id": self.record.id}, session_id=self.record.id
         )
-        with self.assertRaisesRegex(ValueError, "assembly or export job"):
-            self.artifacts.remove_output(self.record.id, artifact.id)
-        self.assertTrue(path.exists())
+        for kind, role in (
+            ("audio", "assembled_audio"),
+            ("export", "delivery"),
+            ("audio", "export"),
+            ("audio", "export_video"),
+        ):
+            with self.subTest(kind=kind, role=role):
+                artifact, path = self.artifact(
+                    f"queued-job-guard/{kind}-{role}.wav", role, kind=kind
+                )
+                with self.assertRaisesRegex(ValueError, "assembly or export job"):
+                    self.artifacts.remove_output(self.record.id, artifact.id)
+                self.assertTrue(path.exists())
 
     def test_source_reference_blocks_removal(self):
         artifact, path = self.artifact()
@@ -127,12 +163,110 @@ class SessionOutputStorageTests(unittest.TestCase):
             self.artifacts.remove_output(self.record.id, artifact.id)
         self.assertTrue(path.exists())
 
+    def test_trashed_sources_remain_restorable_for_each_output_classification(self):
+        library = SourceLibraryService(self.database, self.artifacts)
+        for index, (kind, role) in enumerate((
+            ("audio", "assembled_audio"), ("export", "file"),
+            ("audio", "export"), ("video", "export_video"),
+        )):
+            with self.subTest(kind=kind, role=role):
+                artifact, path = self.artifact(f"trash-guard/{index}.bin", role, kind=kind)
+                original = path.read_bytes()
+                asset = library.ensure_for_artifact(artifact.id)
+                trashed = library.set_state(asset.id, asset.revision, "trashed")
+                with self.assertRaisesRegex(ValueError, "session source"):
+                    self.artifacts.remove_output(self.record.id, artifact.id)
+                restored = library.set_state(asset.id, trashed["revision"], "current")
+                self.assertEqual("current", restored["state"])
+                self.assertEqual(original, path.read_bytes())
+
     def test_live_intermediate_child_blocks_removal(self):
-        artifact, path = self.artifact()
-        self.artifact("converted.wav", "rvc_audio", [artifact.id])
-        with self.assertRaisesRegex(ValueError, "intermediate results"):
-            self.artifacts.remove_output(self.record.id, artifact.id)
-        self.assertTrue(path.exists())
+        for kind, role in (
+            ("audio", "assembled_audio"),
+            ("export", "delivery"),
+            ("audio", "export"),
+            ("audio", "export_video"),
+        ):
+            with self.subTest(kind=kind, role=role):
+                artifact, path = self.artifact(
+                    f"intermediate-guard/{kind}-{role}.wav", role, kind=kind
+                )
+                self.artifact(
+                    f"intermediate-guard/{kind}-{role}-converted.wav",
+                    "rvc_audio",
+                    [artifact.id],
+                )
+                with self.assertRaisesRegex(ValueError, "intermediate results"):
+                    self.artifacts.remove_output(self.record.id, artifact.id)
+                self.assertTrue(path.exists())
+
+    def test_each_output_classification_is_blocked_by_a_live_source_asset(self):
+        classifications = (
+            ("export", "file"),
+            ("audio", "export"),
+            ("audio", "export_video"),
+        )
+        for index, (kind, role) in enumerate(classifications):
+            with self.subTest(kind=kind, role=role):
+                artifact, path = self.artifact(f"source-guard/{index}.wav", role, kind=kind)
+                SourceLibraryService(self.database, self.artifacts).ensure_for_artifact(artifact.id)
+                with self.assertRaisesRegex(ValueError, "session source"):
+                    self.artifacts.remove_output(self.record.id, artifact.id)
+                self.assertTrue(path.exists())
+
+    def test_export_take_and_voice_sample_references_block_removal(self):
+        take_artifact, take_path = self.artifact(
+            "referenced/take.wav", "export_audio", kind="export"
+        )
+        with self.database.session() as session:
+            plan = GenerationPlan(session_id=self.record.id)
+            session.add(plan)
+            session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                content_hash="fixture-generation-plan",
+            )
+            session.add(revision)
+            session.flush()
+            segment = GenerationSegment(
+                plan_revision_id=revision.id,
+                ordinal=0,
+                text="fixture take reference",
+            )
+            session.add(segment)
+            session.flush()
+            session.add(
+                AudioTake(
+                    generation_segment_id=segment.id,
+                    artifact_id=take_artifact.id,
+                    status="completed",
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "generation take"):
+            self.artifacts.remove_output(self.record.id, take_artifact.id)
+        self.assertTrue(take_path.exists())
+
+        sample_artifact, sample_path = self.artifact(
+            "referenced/sample.wav", "export_audio", kind="export"
+        )
+        with self.database.session() as session:
+            workspace_id = session.execute(
+                select(Artifact.workspace_id).where(Artifact.id == sample_artifact.id)
+            ).scalar_one()
+            voice = Voice(workspace_id=workspace_id, name="fixture sample voice")
+            session.add(voice)
+            session.flush()
+            session.add(
+                VoiceSample(
+                    workspace_id=workspace_id,
+                    voice_id=voice.id,
+                    artifact_id=sample_artifact.id,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "voice sample"):
+            self.artifacts.remove_output(self.record.id, sample_artifact.id)
+        self.assertTrue(sample_path.exists())
 
     def test_cross_session_selection_blocks_removal(self):
         artifact, path = self.artifact()
@@ -160,11 +294,155 @@ class SessionOutputStorageTests(unittest.TestCase):
         path.parent.mkdir()
         path.write_bytes(b"do not delete")
         with self.database.session() as session:
-            session.get(Artifact, artifact.id).relative_path = path.relative_to(self.paths.root).as_posix()
+            artifact_row = session.get(Artifact, artifact.id)
+            assert artifact_row is not None
+            artifact_row.relative_path = path.relative_to(self.paths.root).as_posix()
         with self.assertRaisesRegex(ValueError, "own session storage"):
             self.artifacts.remove_output(self.record.id, artifact.id)
         self.assertTrue(path.exists())
         self.assertTrue(original.exists())
+
+    def test_current_cross_session_output_reference_blocks_removal(self):
+        artifact, path = self.artifact()
+        other = self.sessions.create("Other reference session")
+        child, _child_path = self.artifact(
+            "current-child.wav",
+            "export_video",
+            kind="export",
+            record=other,
+        )
+        with self.database.session() as session:
+            session.add(
+                ArtifactEdge(
+                    parent_artifact_id=artifact.id,
+                    child_artifact_id=child.id,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "another session"):
+            self.artifacts.remove_output(self.record.id, artifact.id)
+        self.assertTrue(path.exists())
+
+    def test_active_assembly_blocks_export_removal(self):
+        artifact, path = self.artifact("active-assembly/export.wav", "export_video", kind="export")
+        with self.database.session() as session:
+            session.add(
+                OutputAssembly(
+                    session_id=self.record.id,
+                    artifact_id=artifact.id,
+                    status="running",
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "assembly using this output"):
+            self.artifacts.remove_output(self.record.id, artifact.id)
+        self.assertTrue(path.exists())
+
+    def test_current_cross_session_assembly_reference_blocks_export_removal(self):
+        artifact, path = self.artifact(
+            "cross-session-assembly/export.wav", "export_video", kind="export"
+        )
+        other = self.sessions.create("Other assembly reference")
+        with self.database.session() as session:
+            session.add(
+                OutputAssembly(
+                    session_id=other.id,
+                    artifact_id=artifact.id,
+                    status="completed",
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "another session"):
+            self.artifacts.remove_output(self.record.id, artifact.id)
+        self.assertTrue(path.exists())
+
+    def test_historical_intermediate_edge_does_not_block_removal(self):
+        artifact, path = self.artifact()
+        child, child_path = self.artifact("historical-intermediate.wav", "rvc_audio", [artifact.id])
+        with self.database.session() as session:
+            child_row = session.get(Artifact, child.id)
+            assert child_row is not None
+            child_row.state = "stale"
+
+        self.artifacts.remove_output(self.record.id, artifact.id)
+
+        self.assertFalse(path.exists())
+        self.assertTrue(child_path.exists())
+        with self.database.session() as session:
+            child_row = session.get(Artifact, child.id)
+            assert child_row is not None
+            self.assertEqual("stale", child_row.state)
+            self.assertIsNotNone(
+                session.scalar(
+                    select(ArtifactEdge).where(
+                        ArtifactEdge.parent_artifact_id == artifact.id,
+                        ArtifactEdge.child_artifact_id == child.id,
+                    )
+                )
+            )
+
+    def test_export_in_foreign_session_storage_is_not_removable(self):
+        artifact, original = self.artifact("exports/final.wav", "export_video", kind="export")
+        other = self.sessions.create("Other export storage")
+        foreign = self.paths.sessions / other.storage_key / "export.wav"
+        foreign.parent.mkdir()
+        foreign.write_bytes(b"do not delete")
+        with self.database.session() as session:
+            artifact_row = session.get(Artifact, artifact.id)
+            assert artifact_row is not None
+            artifact_row.relative_path = foreign.relative_to(self.paths.root).as_posix()
+        with self.assertRaisesRegex(ValueError, "own session storage"):
+            self.artifacts.remove_output(self.record.id, artifact.id)
+        self.assertTrue(foreign.exists())
+        self.assertTrue(original.exists())
+
+    def test_export_symlink_to_another_artifact_is_not_removable(self):
+        artifact, path = self.artifact("exports/final.wav", "export_video", kind="export")
+        _source, source_path = self.artifact("original.wav", "upload")
+        path.unlink()
+        path.symlink_to(source_path)
+        with self.assertRaisesRegex(ValueError, "same file"):
+            self.artifacts.remove_output(self.record.id, artifact.id)
+        self.assertTrue(source_path.exists())
+        self.assertTrue(path.is_symlink())
+
+    def test_unreferenced_export_deletion_retires_all_own_references(self):
+        artifact, path = self.artifact("exports/final.wav", "export_video", kind="export")
+        with self.database.session() as session:
+            record = ExportRecord(
+                session_id=self.record.id,
+                artifact_id=artifact.id,
+                options_json={},
+                status="completed",
+            )
+            assembly = OutputAssembly(
+                session_id=self.record.id, artifact_id=artifact.id, status="completed"
+            )
+            selection = SessionStageSelection(
+                session_id=self.record.id,
+                stage_key="export",
+                artifact_id=artifact.id,
+                revision=7,
+            )
+            session.add_all([record, assembly, selection])
+            session.flush()
+            record_id, assembly_id = record.id, assembly.id
+
+        self.artifacts.remove_output(self.record.id, artifact.id)
+
+        self.assertFalse(path.exists())
+        with self.database.session() as session:
+            retired = session.get(OutputAssembly, assembly_id)
+            artifact_row = session.get(Artifact, artifact.id)
+            export_row = session.get(ExportRecord, record_id)
+            selection = session.get(SessionStageSelection, (self.record.id, "export"))
+            assert artifact_row is not None
+            assert export_row is not None
+            assert retired is not None
+            assert selection is not None
+            self.assertEqual("deleted", artifact_row.state)
+            self.assertEqual("deleted", export_row.status)
+            self.assertEqual("stale", retired.status)
+            self.assertIsNone(retired.artifact_id)
+            self.assertIsNone(selection.artifact_id)
+            self.assertEqual(8, selection.revision)
 
     def test_symlink_to_another_managed_artifact_is_not_deleted(self):
         artifact, path = self.artifact()
@@ -181,7 +459,9 @@ class SessionOutputStorageTests(unittest.TestCase):
         path.unlink()
         self.artifacts.remove_output(self.record.id, artifact.id)
         with self.database.session() as session:
-            self.assertEqual("deleted", session.get(Artifact, artifact.id).state)
+            artifact_row = session.get(Artifact, artifact.id)
+            assert artifact_row is not None
+            self.assertEqual("deleted", artifact_row.state)
 
     def subtitle_source(self):
         record = self.sessions.create("Subtitle storage", workflow_kind="subtitles")
@@ -226,6 +506,7 @@ class SessionOutputStorageTests(unittest.TestCase):
                     edge = session.scalar(select(ArtifactEdge).where(
                         ArtifactEdge.child_artifact_id == artifact.id
                     ))
+                    assert edge is not None
                     self.assertEqual(source.id, edge.parent_artifact_id)
 
     def test_conversion_failure_cleans_its_scratch_subtitle(self):

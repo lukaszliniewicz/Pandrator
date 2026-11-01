@@ -85,10 +85,10 @@ def load_audio(audio_path: str | os.PathLike[str], sample_rate: int = 16000) -> 
             audio = audio.reshape(-1, channels).mean(axis=1)
         return audio
     except Exception:
-        from pydub import AudioSegment
+        from ..local_audio_decode import load_local_audio_segment
 
         segment = (
-            AudioSegment.from_file(str(path))
+            load_local_audio_segment(str(path))
             .set_frame_rate(sample_rate)
             .set_channels(1)
             .set_sample_width(2)

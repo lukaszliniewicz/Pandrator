@@ -23,11 +23,22 @@ from werkzeug.utils import secure_filename
 
 from pandrator.runtime import DataPaths
 
+from .access.contracts import ProjectAction
+from .access.upload_policy import (
+    require_upload_creation_access,
+    require_upload_lookup_workspace,
+    require_upload_maintenance_access,
+)
 from .artifacts import ArtifactService
 from .database import Database
 from .models import UploadSessionRecord, utcnow
 from .source_library import SourceLibraryService
 from .upload_activity import UploadBusy, require_writable_upload_owner, upload_activity
+from .upload_identity import (
+    upload_creation_ownership,
+    upload_ownership,
+    validate_upload_result,
+)
 
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 MAX_CHUNK_SIZE = 16 * 1024 * 1024
@@ -107,6 +118,8 @@ class ChunkUploadService:
         size_bytes: int,
         mime_type: str | None = None,
         session_id: str | None = None,
+        attach_to_session: bool = True,
+        workspace_id: str | None = None,
         expected_hash: str | None = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         max_size: int = DEFAULT_MAX_UPLOAD_SIZE,
@@ -120,6 +133,8 @@ class ChunkUploadService:
                     size_bytes=size_bytes,
                     mime_type=mime_type,
                     session_id=session_id,
+                    attach_to_session=attach_to_session,
+                    workspace_id=workspace_id,
                     expected_hash=expected_hash,
                     chunk_size=chunk_size,
                     max_size=max_size,
@@ -139,12 +154,16 @@ class ChunkUploadService:
         size_bytes: int,
         mime_type: str | None = None,
         session_id: str | None = None,
+        attach_to_session: bool = True,
+        workspace_id: str | None = None,
         expected_hash: str | None = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         max_size: int = DEFAULT_MAX_UPLOAD_SIZE,
         upload_id: str | None = None,
         created_directories: list[_OwnedUploadDirectory] | None = None,
     ) -> UploadSessionRecord:
+        if type(attach_to_session) is not bool or (not attach_to_session and session_id is None):
+            raise ValueError("Staged uploads require an explicit session and a strict boolean flag.")
         safe_name = secure_filename(filename) or f"upload-{uuid.uuid4()}"
         size_bytes = int(size_bytes)
         chunk_size = max(1024 * 1024, min(int(chunk_size), MAX_CHUNK_SIZE))
@@ -158,6 +177,11 @@ class ChunkUploadService:
         ):
             raise ValueError("Expected SHA-256 is invalid.")
         upload_id = str(upload_id or uuid.uuid4())
+        ownership = require_upload_creation_access(
+            db_session, session_id=session_id, workspace_id=workspace_id
+        )
+        if not attach_to_session and ownership.project_id is None:
+            raise ValueError("Staged uploads require an existing project.")
         self._writable_owner(db_session, session_id)
         relative = (self.paths.temporary / "uploads" / upload_id).relative_to(self.paths.root).as_posix()
         directory = managed_upload_directory(self.paths, upload_id, relative)
@@ -170,6 +194,9 @@ class ChunkUploadService:
             record = UploadSessionRecord(
                 id=upload_id,
                 session_id=session_id,
+                attach_to_session=attach_to_session,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
                 filename=safe_name,
                 mime_type=mime_type,
                 size_bytes=size_bytes,
@@ -191,12 +218,69 @@ class ChunkUploadService:
     def _writable_owner(session: Session, session_id: str | None) -> None:
         require_writable_upload_owner(session, session_id)
 
-    def _current(self, session: Session, upload_id: str, *, replay: bool = False) -> UploadSessionRecord:
-        record = session.get(UploadSessionRecord, upload_id)
-        if record is None:
-            raise KeyError(upload_id)
+    @staticmethod
+    def _selected_workspace(session: Session, workspace_id: str | None) -> str:
+        return upload_creation_ownership(session, workspace_id=workspace_id).workspace_id
+
+    @classmethod
+    def _scoped_record(
+        cls,
+        session: Session,
+        upload_id: str,
+        *,
+        workspace_id: str | None,
+        validate_result: bool = False,
+        action: ProjectAction = ProjectAction.READ,
+    ) -> UploadSessionRecord:
+        selected_workspace_id = require_upload_lookup_workspace(
+            session, upload_id, action, workspace_id=workspace_id
+        )
+        if selected_workspace_id is None:
+            selected_workspace_id = cls._selected_workspace(session, workspace_id)
+        with session.no_autoflush:
+            record = session.scalar(
+                select(UploadSessionRecord)
+                .where(
+                    UploadSessionRecord.id == upload_id,
+                    UploadSessionRecord.workspace_id == selected_workspace_id,
+                )
+                .limit(1)
+            )
+            if record is None:
+                raise KeyError(upload_id)
+            upload_ownership(session, record, workspace_id=selected_workspace_id)
+            if validate_result:
+                validate_upload_result(
+                    session, record, workspace_id=selected_workspace_id
+                )
+        return record
+
+    @classmethod
+    def _maintenance_record(
+        cls, session: Session, upload_id: str
+    ) -> UploadSessionRecord | None:
+        with session.no_autoflush:
+            record = session.get(UploadSessionRecord, upload_id)
+            if record is not None:
+                upload_ownership(session, record, allow_archived=True)
+        return record
+
+    def _current(
+        self,
+        session: Session,
+        upload_id: str,
+        *,
+        workspace_id: str | None = None,
+        replay: bool = False,
+    ) -> UploadSessionRecord:
+        record = self._scoped_record(
+            session, upload_id, workspace_id=workspace_id, action=ProjectAction.EDIT
+        )
         self._writable_owner(session, record.session_id)
         if replay and record.state == "completed":
+            validate_upload_result(
+                session, record, workspace_id=record.workspace_id
+            )
             return record
         expires_at = record.expires_at
         if expires_at.tzinfo is None:
@@ -205,16 +289,29 @@ class ChunkUploadService:
             raise ValueError("Upload is not open.")
         return record
 
-    def _record(self, upload_id: str) -> UploadSessionRecord:
+    def _record(
+        self,
+        upload_id: str,
+        *,
+        workspace_id: str | None = None,
+        validate_result: bool = False,
+        action: ProjectAction = ProjectAction.READ,
+    ) -> UploadSessionRecord:
         with self.database.session() as session:
-            record = session.get(UploadSessionRecord, upload_id)
-            if record is None:
-                raise KeyError(upload_id)
+            record = self._scoped_record(
+                session,
+                upload_id,
+                workspace_id=workspace_id,
+                validate_result=validate_result,
+                action=action,
+            )
             session.expunge(record)
             return record
 
-    def status(self, upload_id: str) -> dict:
-        record = self._record(upload_id)
+    def status(self, upload_id: str, *, workspace_id: str | None = None) -> dict:
+        record = self._record(
+            upload_id, workspace_id=workspace_id, validate_result=True
+        )
         return self.status_payload(record)
 
     @staticmethod
@@ -235,13 +332,29 @@ class ChunkUploadService:
 
     @staticmethod
     def _same_owner(initial: UploadSessionRecord, current: UploadSessionRecord) -> None:
-        if (current.session_id != initial.session_id
-                or current.temporary_relative_path != initial.temporary_relative_path):
+        if (
+            current.workspace_id != initial.workspace_id
+            or current.project_id != initial.project_id
+            or current.attach_to_session != initial.attach_to_session
+            or current.session_id != initial.session_id
+            or current.temporary_relative_path != initial.temporary_relative_path
+        ):
             raise ValueError("Upload ownership or temporary path changed.")
 
-    def _locked_record(self, initial: UploadSessionRecord, *, replay: bool = False) -> UploadSessionRecord:
+    def _locked_record(
+        self,
+        initial: UploadSessionRecord,
+        *,
+        workspace_id: str | None = None,
+        replay: bool = False,
+    ) -> UploadSessionRecord:
         with self.database.session() as session:
-            current = self._current(session, initial.id, replay=replay)
+            current = self._current(
+                session,
+                initial.id,
+                workspace_id=workspace_id,
+                replay=replay,
+            )
             self._same_owner(initial, current)
             session.expunge(current)
             return current
@@ -253,10 +366,13 @@ class ChunkUploadService:
         stream: IO[bytes],
         *,
         supplied_hash: str | None = None,
+        workspace_id: str | None = None,
     ) -> dict:
-        initial = self._record(upload_id)
+        initial = self._record(
+            upload_id, workspace_id=workspace_id, action=ProjectAction.EDIT
+        )
         with upload_activity(self.paths, session_id=initial.session_id, upload_id=upload_id):
-            record = self._locked_record(initial)
+            record = self._locked_record(initial, workspace_id=workspace_id)
             index = int(index)
             if index < 0 or index >= record.chunk_count:
                 raise ValueError("Chunk index is outside the upload.")
@@ -284,7 +400,9 @@ class ChunkUploadService:
                 if supplied_hash and supplied_hash.lower() != actual_hash:
                     raise ValueError("Chunk SHA-256 mismatch.")
                 with self.database.immediate_session() as session:
-                    current = self._current(session, upload_id)
+                    current = self._current(
+                        session, upload_id, workspace_id=workspace_id
+                    )
                     self._same_owner(record, current)
                     managed_upload_directory(self.paths, current.id, current.temporary_relative_path)
                     _regular_upload_file(destination)
@@ -297,10 +415,16 @@ class ChunkUploadService:
             finally:
                 temporary.unlink(missing_ok=True)
 
-    def complete(self, upload_id: str) -> dict:
-        initial = self._record(upload_id)
+    def complete(
+        self, upload_id: str, *, workspace_id: str | None = None
+    ) -> dict:
+        initial = self._record(
+            upload_id, workspace_id=workspace_id, action=ProjectAction.EDIT
+        )
         with upload_activity(self.paths, session_id=initial.session_id, upload_id=upload_id):
-            record = self._locked_record(initial, replay=True)
+            record = self._locked_record(
+                initial, workspace_id=workspace_id, replay=True
+            )
             if record.state == "completed":
                 if record.result_json:
                     return dict(record.result_json)
@@ -334,13 +458,18 @@ class ChunkUploadService:
                     mime_type=mimetypes.guess_type(destination.name)[0],
                 )
                 with self.database.immediate_session() as session:
-                    current = self._current(session, upload_id)
+                    current = self._current(
+                        session, upload_id, workspace_id=workspace_id
+                    )
                     self._same_owner(record, current)
                     managed_upload_directory(self.paths, current.id, current.temporary_relative_path)
                     os.replace(assembled, destination)
                     artifact = self.artifacts.register_in_session(
                         session, destination, kind="source", role="upload",
-                        session_id=current.session_id, calculate_hash=False,
+                        workspace_id=current.workspace_id,
+                        project_id=current.project_id,
+                        session_id=current.session_id,
+                        calculate_hash=False,
                         metadata={"original_filename": current.filename, "upload_id": current.id},
                         _prepared=prepared,
                     )
@@ -348,10 +477,11 @@ class ChunkUploadService:
                     asset = self.sources.ensure_for_artifact_in_session(
                         session, artifact.id, display_name=current.filename,
                         kind=Path(current.filename).suffix.lower().lstrip(".") or "file",
+                        workspace_id=current.workspace_id,
                     )
                     attachment = (
                         self.sources.attach(current.session_id, asset.id, db_session=session)
-                        if current.session_id else None
+                        if current.session_id and current.attach_to_session else None
                     )
                     result = {
                         "upload_id": upload_id, "artifact_id": artifact.id,
@@ -368,27 +498,32 @@ class ChunkUploadService:
                 raise
             # Registration has committed. Cleanup failures must preserve its artifact.
             with self.database.session() as session:
-                current = session.get(UploadSessionRecord, upload_id)
-                if current is None or current.state != "completed":
+                try:
+                    current = self._maintenance_record(session, upload_id)
+                except (KeyError, ValueError):
+                    return result
+                if current is None:
                     return result
                 self._same_owner(record, current)
-                try:
-                    self._writable_owner(session, current.session_id)
-                except (KeyError, ValueError):
+                if current.state != "completed":
                     return result
                 directory = managed_upload_directory(self.paths, current.id, current.temporary_relative_path)
             shutil.rmtree(directory, ignore_errors=True)
             return result
 
-    def cancel(self, upload_id: str) -> None:
-        initial = self._record(upload_id)
+    def cancel(self, upload_id: str, *, workspace_id: str | None = None) -> None:
+        initial = self._record(
+            upload_id, workspace_id=workspace_id, action=ProjectAction.EDIT
+        )
         with upload_activity(self.paths, session_id=initial.session_id, upload_id=upload_id):
-            record = self._locked_record(initial)
+            record = self._locked_record(initial, workspace_id=workspace_id)
             directory = managed_upload_directory(self.paths, record.id, record.temporary_relative_path)
             if directory.exists():
                 shutil.rmtree(directory)
             with self.database.immediate_session() as session:
-                current = self._current(session, upload_id)
+                current = self._current(
+                    session, upload_id, workspace_id=workspace_id
+                )
                 self._same_owner(record, current)
                 current.state = "canceled"
                 current.updated_at = utcnow()
@@ -396,15 +531,20 @@ class ChunkUploadService:
     def cleanup_expired(self) -> int:
         removed = 0
         with self.database.session() as session:
+            require_upload_maintenance_access(session)
             identifiers = list(session.scalars(select(UploadSessionRecord.id).where(
                 UploadSessionRecord.expires_at <= utcnow(), UploadSessionRecord.state == "open",
             )).all())
         for identifier in identifiers:
             try:
-                initial = self._record(identifier)
+                with self.database.session() as session:
+                    initial = self._maintenance_record(session, identifier)
+                    if initial is None:
+                        continue
+                    session.expunge(initial)
                 with upload_activity(self.paths, session_id=initial.session_id, upload_id=identifier):
                     with self.database.session() as session:
-                        current = session.get(UploadSessionRecord, identifier)
+                        current = self._maintenance_record(session, identifier)
                         if current is None or current.state != "open":
                             continue
                         self._same_owner(initial, current)
@@ -418,7 +558,7 @@ class ChunkUploadService:
                     if directory.exists():
                         shutil.rmtree(directory)
                     with self.database.immediate_session() as session:
-                        current = session.get(UploadSessionRecord, identifier)
+                        current = self._maintenance_record(session, identifier)
                         if current is None or current.state != "open":
                             continue
                         self._same_owner(initial, current)

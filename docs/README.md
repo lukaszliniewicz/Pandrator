@@ -13,6 +13,8 @@ complete.
 | Transcribe, correct, or translate subtitles | [Your first subtitles](getting-started/first-subtitles.md) |
 | Transcribe a file or microphone recording | [Quick transcription](reference/quick-transcription.md) |
 | Create a synchronized voiceover | [Your first voiceover](getting-started/first-voiceover.md) |
+| Work alone or with a team | [Solo, accounts and shared workspaces](guides/collaboration.md) |
+| Share one project or request external translation corrections | [Project links and translation review](guides/project-links.md) |
 | Choose a provider, model, or voice | [Providers and voices](guides/providers-and-voices.md) |
 | Correct or translate text | [Correction and translation](guides/correction-and-translation.md) |
 | Prepare names and wording for speech | [Pronunciation and speech text](guides/pronunciation-and-speech.md) |
@@ -22,6 +24,7 @@ complete.
 
 - [Updates, data, repair, and removal](operations/updates-data-and-repair.md)
 - [Remote and headless installations](operations/remote-and-headless.md)
+- [Public hosting and optional fail2ban, CrowdSec and Cloudflare integration](operations/public-hosting-protection.md)
 - [Connecting an assistant](operations/agent-connections.md)
 - [Troubleshooting](operations/troubleshooting.md)
 - [Privacy and security](security/privacy-and-security.md)
@@ -49,6 +52,8 @@ covers assistant connections, access permissions, and workflow operations.
 - [Qwen forced alignment](guides/qwen-forced-alignment.md)
 - [Contextual performance planning](speech-performance.md)
 
+For comparison, tools panes and draft handling, see [Reviewing and previewing work](guides/review-and-preview.md).
+
 ## Releases and documentation
 
 [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases) has the
@@ -59,8 +64,3 @@ Earlier changes are described in the [0.12.0](release-notes-0.12.0.md),
 [0.11.0](release-notes-0.11.0.md),
 [0.10.1](release-notes-0.10.1.md), and
 [0.10.0](release-notes-0.10.0.md) notes.
-
-Public documentation describes features and workflows that readers can use.
-Development plans, research logs, implementation reviews, and local acceptance
-records are kept in private maintainer storage. The workflow instructions
-packaged with the MCP server explain the same features to connected assistants.

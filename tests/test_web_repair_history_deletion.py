@@ -4,6 +4,7 @@ import unittest
 
 from sqlalchemy import select
 
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     AudioTake,
@@ -12,6 +13,7 @@ from pandrator.web.models import (
     Job,
     UsageEvent,
 )
+from pandrator.web.usage_identity import bind_usage_ownership
 from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
 from tests import test_web_voiceover_repair as repair_fixtures
 
@@ -134,15 +136,15 @@ class RepairHistoryDeletionTests(unittest.TestCase):
                 (task.id, 0.1),
                 (manual.id, 10.0),
             ]:
-                session.add(
-                    UsageEvent(
-                        session_id=final.session_id,
-                        generation_run_id=run_id,
-                        provider_key="test",
-                        model_id="test",
-                        cost_usd=cost,
-                    )
+                event = UsageEvent(
+                    session_id=final.session_id,
+                    generation_run_id=run_id,
+                    provider_key="test",
+                    model_id="test",
+                    cost_usd=cost,
                 )
+                bind_usage_ownership(session, event)
+                session.add(event)
         rows = {
             item["id"]: item for item in self.service.list_runs(self.fixture.record.id)
         }
@@ -162,9 +164,14 @@ class RepairHistoryDeletionTests(unittest.TestCase):
     def test_repair_phase_ends_when_parent_job_terminates(self):
         with self.database.session() as session:
             root = session.get(GenerationRun, self.fixture.run_id)
+            job_ownership = job_creation_ownership(
+                session, session_id=root.session_id
+            )
             job = Job(
                 kind="generation.run",
                 session_id=root.session_id,
+                workspace_id=job_ownership.workspace_id,
+                project_id=job_ownership.project_id,
                 status="running",
                 progress=0.9,
             )

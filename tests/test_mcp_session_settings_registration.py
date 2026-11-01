@@ -35,6 +35,10 @@ MARKER = "private-settings-domain-fixture"
 BASE = {"session_id": SESSION, "section": "tts"}
 WRITE_BASE = {**BASE, "expected_revision": 0, "idempotency_key": KEY}
 REPRESENTATIVE = {"mode": "manual"}
+TEXT_SENTENCE_PACKING = {
+    "audiobook_sentence_packing": "sentences",
+    "audiobook_sentence_packing_threshold": 351,
+}
 NESTED = {
     "enabled": True,
     "choice": None,
@@ -97,6 +101,16 @@ CASES = [
     *[
         Case(
             method + "-representative", tool, method, model, {**WRITE_BASE, "value": REPRESENTATIVE}
+        )
+        for tool, method, model in WRITES
+    ],
+    *[
+        Case(
+            method + "-text-sentence-packing",
+            tool,
+            method,
+            model,
+            {**WRITE_BASE, "section": "text", "value": TEXT_SENTENCE_PACKING},
         )
         for tool, method, model in WRITES
     ],
@@ -164,7 +178,7 @@ CASES = [
         {"session_id": SESSION, "section": "subtitles"},
     ),
 ]
-assert len(CASES) == 18
+assert len(CASES) == 20
 
 
 def observe_context() -> dict[str, Any]:

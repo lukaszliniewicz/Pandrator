@@ -37,6 +37,7 @@ class ApplicationRequests(ABC):
         body: bytes,
         content_type: str,
         extra_headers: dict[str, str] | None = None,
+        parameters: dict[str, str] | None = None,
         _allow_local_retry: bool = True,
     ) -> dict[str, Any]:
         raise NotImplementedError

@@ -73,6 +73,14 @@ class MarkerComponentDriver:
             )
 
         active = active_component_path(context.layout, definition.id)
+        if definition.id == "pandrator":
+            # Release planning imports the component catalogue while packages
+            # initialize, so defer this dependency until inspection runs.
+            from ..releases.bundles import active_release_bundle
+
+            release = active_release_bundle(context.layout)
+            if release is not None:
+                active = release.application_root
         active_metadata = active_component_metadata(context.layout, definition.id)
         pointer_revision = active_metadata.get("revision") if active_metadata is not None else None
         pointer_version = (
@@ -601,6 +609,7 @@ class AudioCppComponentDriver(MarkerComponentDriver):
                 "effective_compute": effective.value,
                 "models": selected_models,
                 "kokoro_japanese": resolved.options.get("kokoro_japanese") == "enabled",
+                "drama3_memory": resolved.options.get("drama3_memory", "native"),
                 "model_changes": {
                     "add": added_models,
                     "remove": removed_models,

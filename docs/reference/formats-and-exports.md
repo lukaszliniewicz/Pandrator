@@ -124,6 +124,13 @@ choices can include source, translation, or bilingual tracks and can be soft
 or burned where supported. Soft subtitles remain selectable and editable in a
 compatible player; burned subtitles become pixels in the rendered video.
 
+**Automatic** includes the available subtitle documents. **Source / corrected**,
+**Translation**, and **Source and translation** are exact choices: the requested
+documents must exist. Pandrator reports an unavailable document before submitting
+an export; it does not substitute another language. A previously saved choice may
+need updating when its document is removed. Audio exports and video with **No
+subtitles** do not require subtitle documents.
+
 Test a short representative render before a long final export, especially when
 mixing audio, burning subtitles, or changing codecs.
 

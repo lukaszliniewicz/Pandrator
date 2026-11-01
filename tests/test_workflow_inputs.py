@@ -13,6 +13,7 @@ from sqlalchemy import select
 from pandrator.web.api import create_app
 from pandrator.web.artifact_selection import choose_artifact
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     GenerationPlan,
@@ -570,7 +571,11 @@ class WorkflowInputTests(unittest.TestCase):
 
         hash_path.write_text(_SUBTITLE, encoding="utf-8")
         with self.database.session() as session:
-            session.add(Job(kind="test-active-work", session_id=session_id, status="running"))
+            job = Job(kind="test-active-work", session_id=session_id, status="running")
+            ownership = job_creation_ownership(session, session_id=session_id)
+            job.workspace_id = ownership.workspace_id
+            job.project_id = ownership.project_id
+            session.add(job)
         baseline = self._snapshot(session_id)
         with self.assertRaises(RevisionConflict):
             select_workflow_input(

@@ -7,9 +7,11 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import event, select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     AppSetting,
     Artifact,
@@ -31,6 +33,7 @@ from pandrator.web.project_folders import (
     set_session_project_folders,
     update_project_folder,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.settings_policy import RevisionConflict
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -49,13 +52,15 @@ def folder_app(tmp_path: Path):
     extension["services"].database.dispose()
 
 
-def _session(services, name: str, *, target_language: str | None = None):
+def _session(services, name: str, *, target_language: str | None = None,
+             project_id: str | None = None):
     return services.sessions.create(
         name,
         workflow_kind="subtitles",
         source_language="en",
         target_language=target_language,
         included_stages=["transcribe", "export"],
+        project_id=project_id,
     )
 
 
@@ -66,10 +71,14 @@ def _folder(services, name: str, parent_id: str | None = None) -> dict:
 
 def _project_aliases(services):
     source = _session(services, "Source")
-    branch = _session(services, "German output", target_language="de")
+    branch = _session(services, "German output", target_language="de",
+                      project_id=source.project_id)
     standalone = _session(services, "Standalone")
     with services.database.session() as session:
+        ownership = resolve_artifact_ownership(session, session_id=source.id)
         artifact = Artifact(
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             session_id=source.id,
             kind="srt",
             role="correction",
@@ -80,6 +89,7 @@ def _project_aliases(services):
         session.add(artifact)
         session.flush()
         project = TranslationProject(
+            project_root_id=source.project_id,
             name="Languages",
             source_session_id=source.id,
             checkpoint_artifact_id=artifact.id,
@@ -142,7 +152,7 @@ def test_upgrade_from_0057_keeps_sessions_artifacts_and_settings(tmp_path: Path)
         )
     database.dispose()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0058_project_folders")
     database = Database(database_path)
     try:
         with database.session() as session:
@@ -155,6 +165,17 @@ def test_upgrade_from_0057_keeps_sessions_artifacts_and_settings(tmp_path: Path)
                 "voice": "saved"
             }
             assert session.get(AppSetting, "legacy.setting").value_json == {"kept": True}
+        with database.engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar_one() == "0058_project_folders"
+    finally:
+        database.dispose()
+
+    command.upgrade(config, "head")
+    database = Database(database_path)
+    try:
+        with database.session() as session:
             assert create_project_folder(session, "Migrated")["folder"]["revision"] == 1
         with database.engine.connect() as connection:
             assert connection.exec_driver_sql(
@@ -230,8 +251,8 @@ def test_membership_order_alias_deduplication_and_noop_revision(folder_app):
             project_ids=[source.id, branch.id, standalone.id, branch.id],
         )
         assert result["memberships"] == [
-            {"folder_id": folder["id"], "project_id": source.id, "position": 0},
-            {"folder_id": folder["id"], "project_id": standalone.id, "position": 1},
+            {"folder_id": folder["id"], "project_id": source.id, "source_session_id": source.id, "project_root_id": source.project_id, "position": 0},
+            {"folder_id": folder["id"], "project_id": standalone.id, "source_session_id": standalone.id, "project_root_id": standalone.project_id, "position": 1},
         ]
         assert next(item for item in result["items"] if item["id"] == folder["id"])[
             "revision"
@@ -383,7 +404,7 @@ def test_stale_and_unexpected_membership_fences_reject_without_writes(folder_app
             expected_revisions={folder_b["id"]: 1},
         )
         assert retried["memberships"] == [
-            {"folder_id": folder_b["id"], "project_id": target.id, "position": 0}
+            {"folder_id": folder_b["id"], "project_id": target.id, "source_session_id": target.id, "project_root_id": target.project_id, "position": 0}
         ]
         revisions = {item["id"]: item["revision"] for item in retried["items"]}
         assert revisions[folder_a["id"]] == 3
@@ -431,12 +452,14 @@ def test_project_folder_list_uses_one_sqlite_snapshot(folder_app):
         )
 
     assert did_write
-    assert first == {"items": [], "memberships": []}
+    with services.database.snapshot_session() as session:
+        workspace_id = initial_personal_workspace(session).id
+    assert first == {"workspace_id": workspace_id, "items": [], "memberships": []}
     second = client.get("/api/v1/project-folders").get_json()
     assert len(second["items"]) == 1
     folder_id = second["items"][0]["id"]
     assert second["memberships"] == [
-        {"folder_id": folder_id, "project_id": target.id, "position": 0}
+        {"folder_id": folder_id, "project_id": target.id, "source_session_id": target.id, "project_root_id": target.project_id, "position": 0}
     ]
 
 
@@ -451,7 +474,9 @@ def test_folder_delete_promotes_children_and_preserves_session_data(folder_app):
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text("retained", encoding="utf-8")
     with services.database.immediate_session() as session:
-        session.add(Job(kind="test.job", session_id=record.id, status="completed"))
+        ownership = job_creation_ownership(session, session_id=record.id)
+        session.add(Job(kind="test.job", session_id=record.id, status="completed",
+                        workspace_id=ownership.workspace_id, project_id=ownership.project_id))
         replace_folder_projects(
             session,
             deleted["id"],
@@ -552,7 +577,12 @@ def test_http_scope_csrf_idempotency_and_openapi_parity(folder_app):
     _services, client, headers = folder_app
     read = client.get("/api/v1/project-folders")
     assert read.status_code == 200
-    assert read.get_json() == {"items": [], "memberships": []}
+    with _services.database.snapshot_session() as session:
+        workspace_id = initial_personal_workspace(session).id
+    assert read.get_json() == {
+        "workspace_id": workspace_id,
+        "items": [], "memberships": [],
+    }
 
     missing_csrf = client.post(
         "/api/v1/project-folders",

@@ -117,9 +117,9 @@ def get_work(
         from .e2e import _safe_tts_service
 
         try:
-            catalogue = runtime.require_application().tts_catalog(refresh=True)
+            catalogue = runtime.require_application().tts_catalog(refresh=False)
             result["tts_catalogue_refresh"] = {
-                "status": "refreshed",
+                "status": "inspected",
                 "services": [_safe_tts_service(item) for item in catalogue.get("services", []) if item.get("id") == "audio_cpp"],
             }
         except PandratorMcpError:

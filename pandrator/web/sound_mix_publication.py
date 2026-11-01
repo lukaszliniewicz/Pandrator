@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from sqlalchemy.orm import Session
+
 from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService, PreparedArtifactRegistration
 from .database import Database
-from .media_process import MediaProcessCancelled
+from .media_process import MediaProcessCancelled, probe_audio_stream
 from .models import Artifact, new_id
+from .output_storage import estimated_pcm_bytes, reserve_output_space
 from .settings_policy import stable_hash
 from .sound_mix_admission import assert_current_pins
 from .sound_mix_claims import (
@@ -66,6 +70,9 @@ def render_prepared(
     progress: Callable[[float, str], None],
     cancel_event: threading.Event,
     require_sound_mix_lease: bool = False,
+    before_io: Callable[[], None] | None = None,
+    authorization_guard: Callable[[Session], None] | None = None,
+    authorize_input: Callable[[Session, str], None] | None = None,
 ) -> tuple[Artifact, dict[str, Any]]:
     """Render from a frozen snapshot, then publish once under a short writer."""
 
@@ -76,8 +83,9 @@ def render_prepared(
                 prepared,
                 cancel_event,
                 require_sound_mix=require_sound_mix_lease,
+                authorization_guard=authorization_guard,
             )
-            assert_current_pins(session, prepared)
+            assert_current_pins(session, prepared, authorize_input=authorize_input)
             artifact = session.get(Artifact, prepared.base_artifact_id)
             if (
                 artifact is None
@@ -100,6 +108,9 @@ def render_prepared(
         prepared,
         cancel_event,
         require_sound_mix=require_sound_mix_lease,
+        before_io=before_io,
+        authorization_guard=authorization_guard,
+        authorize_input=authorize_input,
     )
     if cached is not None:
         return cached
@@ -107,7 +118,25 @@ def render_prepared(
     session_root = paths.sessions / prepared.storage_key / "sounds"
     staging_root = session_root / "staging"
     output_dir = session_root / "mixes"
+    if before_io is not None:
+        before_io()
+    source_frames = {}
+    for cue in prepared.cues:
+        frames = cue.get("expected_source_frames")
+        if frames is None:
+            if before_io is not None:
+                before_io()
+            frames = round(probe_audio_stream(cue["source_path"], cancel_event=cancel_event
+                                             ).duration_ms * prepared.rate / 1000)
+        source_frames[cue["cue_id"]] = int(frames)
+    # The normalized sources and rendered mix coexist until publication.
+    duration_bound = (prepared.base_frames + sum(source_frames.values())) * 1000 / prepared.rate
+    reserve_output_space(database, staging_root, 3 * estimated_pcm_bytes(
+        duration_bound, sample_rate=prepared.rate, channels=prepared.channels, sample_width=2,
+    ), label="sound mix")
     staging_root.mkdir(parents=True, exist_ok=True)
+    if before_io is not None:
+        before_io()
     output_dir.mkdir(parents=True, exist_ok=True)
     final_path = artifacts.next_available_path(
         output_dir / f"{prepared.request_fingerprint[:16]}-{new_id()}.wav"
@@ -117,8 +146,11 @@ def render_prepared(
     moved_to_final = False
     committed = False
     registered_artifact: Artifact | None = None
+    rendered_identity: tuple[int, int] | None = None
 
     try:
+        if before_io is not None:
+            before_io()
         with tempfile.TemporaryDirectory(prefix="sound-mix-", dir=staging_root) as temp_name:
             temp_dir = Path(temp_name)
             normalized_base = temp_dir / "base.wav"
@@ -129,6 +161,7 @@ def render_prepared(
                 rate=prepared.rate,
                 channels=prepared.channels,
                 cancel_event=cancel_event,
+                before_io=before_io,
             )
             if normalized_base_frames != prepared.base_frames:
                 raise ValueError(
@@ -146,6 +179,7 @@ def render_prepared(
                     rate=prepared.rate,
                     channels=prepared.channels,
                     cancel_event=cancel_event,
+                    before_io=before_io,
                 )
                 normalized_clips[cue["cue_id"]] = normalized_path
                 progress(
@@ -170,6 +204,12 @@ def render_prepared(
                 }
             )
             rendered_path = temp_dir / "rendered.wav"
+            if before_io is not None:
+                before_io()
+            reserve_output_space(database, temp_dir, estimated_pcm_bytes(
+                frame_plan["total_frames"] * 1000 / prepared.rate, sample_rate=prepared.rate,
+                channels=prepared.channels, sample_width=2,
+            ), label="sound mix output")
             render_result = render_sound_mix(
                 normalized_base,
                 normalized_clips,
@@ -177,16 +217,27 @@ def render_prepared(
                 rendered_path,
                 cancel_event=cancel_event,
                 progress=lambda fraction, detail: progress(0.22 + 0.68 * fraction, detail),
+                before_io=before_io,
             )
             if render_result.get("mix_signature") != frame_plan.get("mix_signature"):
-                raise RuntimeError("The sound-mix renderer returned a different frame-plan signature.")
+                raise RuntimeError(
+                    "The sound-mix renderer returned a different frame-plan signature."
+                )
+            rendered_info = rendered_path.lstat()
+            if not stat.S_ISREG(rendered_info.st_mode):
+                raise ValueError("Rendered sound mix must be a regular file.")
+            rendered_identity = (rendered_info.st_dev, rendered_info.st_ino)
             mixed_metadata = remap_audio_metadata(prepared.base_metadata, frame_plan)
             audio_timeline = mixed_metadata.get("audio_timeline")
             if not isinstance(audio_timeline, dict):
                 audio_timeline = {}
                 mixed_metadata["audio_timeline"] = audio_timeline
             audio_timeline.update(
-                {"version": 1, "sample_rate_hz": prepared.rate, "total_frames": frame_plan["total_frames"]}
+                {
+                    "version": 1,
+                    "sample_rate_hz": prepared.rate,
+                    "total_frames": frame_plan["total_frames"],
+                }
             )
             base_timeline = prepared.base_metadata.get("audio_timeline")
             if not isinstance(base_timeline, dict):
@@ -221,6 +272,8 @@ def render_prepared(
                 "sound_plan_id": prepared.sound_plan_id,
                 "sound_plan_revision": prepared.sound_plan_revision,
             }
+            if before_io is not None:
+                before_io()
             staged_registration = artifacts.prepare_registration(
                 rendered_path,
                 settings=registration_settings,
@@ -233,7 +286,7 @@ def render_prepared(
                 content_hash=staged_registration.content_hash,
                 settings_hash=staged_registration.settings_hash,
             )
-            verify_prepared_files(prepared)
+            verify_prepared_files(prepared, before_io=before_io)
             if cancel_event.is_set():
                 raise MediaProcessCancelled("Sound-mix rendering was canceled.")
             progress(0.93, "Publishing sound mix")
@@ -243,13 +296,20 @@ def render_prepared(
                     prepared,
                     cancel_event,
                     require_sound_mix=require_sound_mix_lease,
+                    authorization_guard=authorization_guard,
                 )
-                assert_current_pins(session, prepared)
+                assert_current_pins(session, prepared, authorize_input=authorize_input)
                 _stale_exact_duplicates(session, prepared)
                 if os.path.lexists(final_path):
                     raise FileExistsError("Allocated sound-mix output path is already present.")
                 os.replace(rendered_path, final_path)
                 moved_to_final = True
+                promoted = final_path.lstat()
+                if (
+                    not stat.S_ISREG(promoted.st_mode)
+                    or (promoted.st_dev, promoted.st_ino) != rendered_identity
+                ):
+                    raise ValueError("Promoted sound mix does not match its rendered inode.")
                 registered_artifact = artifacts.register_in_session(
                     session,
                     final_path,
@@ -266,8 +326,9 @@ def render_prepared(
                     prepared,
                     cancel_event,
                     require_sound_mix=require_sound_mix_lease,
+                    authorization_guard=authorization_guard,
                 )
-                assert_current_pins(session, prepared)
+                assert_current_pins(session, prepared, authorize_input=authorize_input)
                 session.expunge(registered_artifact)
             committed = True
     except BaseException:
@@ -277,6 +338,7 @@ def render_prepared(
                 final_path,
                 final_relative_path,
                 output_content_hash,
+                owned_identity=rendered_identity,
             )
         raise
 

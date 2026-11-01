@@ -6,7 +6,6 @@ import shutil
 from typing import Any
 
 from ..artifacts import ArtifactDownloader, ArtifactSpec, SafeExtractor
-from ..context import WorkspaceLayout
 from ..errors import ManagerError
 from ..legacy_data import (
     legacy_data_inventory,
@@ -14,6 +13,7 @@ from ..legacy_data import (
     rollback_legacy_data,
 )
 from ..models import ManagedProcessSpec, PreflightCheck, TaskSpec
+from ..network import load_network_configuration
 from ..preflight import HostPreflight
 from ..releases.authority import ReleaseAuthority
 from ..releases.bundles import release_cache_path, validate_release_bundle
@@ -25,11 +25,11 @@ from ..releases.models import ReleaseArtifact
 from ..releases.slots import ReleaseSlotManager
 from ..runtime_specs import (
     PANDRATOR_API_SERVICE,
-    PANDRATOR_CORE_SERVICES,
     PANDRATOR_MCP_SERVICE,
     PANDRATOR_SERVICE_START_ORDER,
     PANDRATOR_SERVICE_STOP_ORDER,
     PANDRATOR_WORKER_SERVICE,
+    PANDRATOR_WORKER_SERVICES,
     pandrator_runtime_specs,
 )
 from .contracts import OperationTaskContext, UnsupportedTask
@@ -39,8 +39,22 @@ class ReleaseTasks:
     """Stateless signed-release task methods used by the filesystem handler."""
 
     @staticmethod
-    def _release_runtime_specs(layout: WorkspaceLayout) -> tuple[ManagedProcessSpec, ...]:
-        return pandrator_runtime_specs(layout)
+    def _release_runtime_specs(
+        execution: OperationTaskContext,
+    ) -> tuple[ManagedProcessSpec, ...]:
+        exposure = load_network_configuration(
+            execution.context.layout,
+            environment=execution.context.environment,
+        ).application
+        return pandrator_runtime_specs(
+            execution.context.layout,
+            exposure=exposure,
+            preferences={
+                key: value
+                for key, value in execution.context.environment.items()
+                if key == "PANDRATOR_WORKER_COUNT"
+            },
+        )
 
     @staticmethod
     def _authority(execution: OperationTaskContext) -> ReleaseAuthority:
@@ -310,7 +324,23 @@ class ReleaseTasks:
             previous = services.get(service_id)
             if not isinstance(previous, dict):
                 continue
-            if previous.get("was_running") or previous.get("desired_running"):
+            if service_id == PANDRATOR_MCP_SERVICE:
+                if not previous.get("was_running"):
+                    continue
+                primary = services.get(PANDRATOR_WORKER_SERVICE)
+                if not isinstance(primary, dict) or not primary.get("was_running"):
+                    execution.context.event_sink.emit(
+                        "application.mcp_start_failed",
+                        {"error": "Pandrator MCP was not restored because its primary worker was stopped.",
+                         "action": "release-rollback"},
+                        component_id="pandrator",
+                        operation_id=execution.operation.id,
+                        service_id=PANDRATOR_MCP_SERVICE,
+                    )
+                    continue
+            if previous.get("was_running") or (
+                service_id not in PANDRATOR_WORKER_SERVICES and previous.get("desired_running")
+            ):
                 execution.supervisor.start(service_id)
 
     def _execute_activate_application_release(
@@ -364,9 +394,9 @@ class ReleaseTasks:
             version=release.manifest.payload.version,
         )
         new_specs = {
-            spec.service_id: spec for spec in self._release_runtime_specs(execution.context.layout)
+            spec.service_id: spec for spec in self._release_runtime_specs(execution)
         }
-        if not PANDRATOR_CORE_SERVICES.issubset(new_specs):
+        if not {PANDRATOR_API_SERVICE, PANDRATOR_WORKER_SERVICE}.issubset(new_specs):
             raise RuntimeError("The activated application did not produce its required services.")
         for service_id in PANDRATOR_SERVICE_STOP_ORDER:
             if service_id not in new_specs and execution.supervisor.spec(service_id) is not None:
@@ -381,16 +411,15 @@ class ReleaseTasks:
         ).get("services")
         previous_services = stopped if isinstance(stopped, dict) else {}
         requested_running = bool(task.inputs.get("start_after_activation"))
-        keep_worker = requested_running or any(
-            bool(
-                isinstance(value, dict)
-                and (value.get("was_running") or value.get("desired_running"))
+        keep_workers = {
+            key: requested_running or bool(
+                isinstance(previous_services.get(key), dict)
+                and previous_services[key].get("was_running")
             )
-            for key, value in previous_services.items()
-            if key == PANDRATOR_WORKER_SERVICE
-        )
+            for key in PANDRATOR_WORKER_SERVICES if key in new_specs
+        }
         keep_api = (
-            keep_worker
+            any(keep_workers.values())
             or requested_running
             or any(
                 bool(
@@ -401,14 +430,29 @@ class ReleaseTasks:
                 if key == PANDRATOR_API_SERVICE
             )
         )
-        keep_mcp = PANDRATOR_MCP_SERVICE in new_specs and keep_api
+        prior_mcp = previous_services.get(PANDRATOR_MCP_SERVICE)
+        prior_mcp_running = bool(isinstance(prior_mcp, dict) and prior_mcp.get("was_running"))
+        keep_primary = keep_workers.get(PANDRATOR_WORKER_SERVICE, False)
+        keep_mcp = PANDRATOR_MCP_SERVICE in new_specs and (
+            requested_running or (prior_mcp_running and keep_primary)
+        )
 
         # Starting the new API both applies its idempotent database migrations
         # and proves the fixed service/protocol/version health contract.
         api = execution.supervisor.start(PANDRATOR_API_SERVICE)
-        if keep_worker:
-            execution.supervisor.start(PANDRATOR_WORKER_SERVICE)
+        for service_id, keep_running in keep_workers.items():
+            if keep_running:
+                execution.supervisor.start(service_id)
         mcp_error = None
+        if prior_mcp_running and not keep_primary and not requested_running:
+            mcp_error = "Pandrator MCP was not restored because its primary worker was stopped."
+            execution.context.event_sink.emit(
+                "application.mcp_start_failed",
+                {"error": mcp_error, "action": "release-activate"},
+                component_id="pandrator",
+                operation_id=execution.operation.id,
+                service_id=PANDRATOR_MCP_SERVICE,
+            )
         if keep_mcp:
             try:
                 execution.supervisor.start(PANDRATOR_MCP_SERVICE)
@@ -453,7 +497,7 @@ class ReleaseTasks:
             "kept_running": {
                 PANDRATOR_API_SERVICE: keep_api,
                 PANDRATOR_MCP_SERVICE: keep_mcp and mcp_error is None,
-                PANDRATOR_WORKER_SERVICE: keep_worker,
+                **keep_workers,
             },
             "mcp_error": mcp_error,
             "ownership": ownership,

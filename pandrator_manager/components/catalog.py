@@ -278,6 +278,20 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
         ),
         install_options=(
             ComponentInstallOption(
+                key="drama3_memory",
+                label="Drama 3 memory use",
+                description=(
+                    "Disk-backed experts use a small cache instead of keeping all expert "
+                    "weights resident. Generation is slower; the remaining model still "
+                    "needs enough memory. This does not guarantee an 8 GiB GPU will fit."
+                ),
+                default="native",
+                choices=(
+                    choice("native", "Native defaults"),
+                    choice("disk", "Disk-backed experts (lower memory)"),
+                ),
+            ),
+            ComponentInstallOption(
                 key="kokoro_japanese",
                 label="Kokoro Japanese support",
                 description=(

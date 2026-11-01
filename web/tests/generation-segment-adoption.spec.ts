@@ -87,6 +87,38 @@ test('same-ID edits preserve takes and mark them stale', () => {
   expect(next.items[0].takes.map((item) => item.id)).toEqual(['take-old-1']);
 });
 
+for (const mode of ['single', 'batch'] as const) {
+  test(`${mode} adoption clears an inherited voice immediately and keeps a returned saved choice`, () => {
+    const initial = page();
+    const saved = {
+      binding: { voice_id: 'deleted-library-voice' },
+      display_name: 'Saved recording',
+      adapter: 'audio_cpp',
+      model: 'saved-model'
+    };
+    initial.items[0].retained_voice = saved;
+    const cleared = row('seg-a', 0, {
+      revision: 2,
+      voice_id: null,
+      voice: null
+    });
+    const next =
+      mode === 'single'
+        ? adoptUpdatedSegment(initial, 'seg-a', cleared)
+        : adoptUpdatedSegments(initial, [cleared]);
+    expect(next.items[0].retained_voice).toBeUndefined();
+    expect(initial.items[0].retained_voice).toEqual(saved);
+    expect(next.items[0].takes.map((item) => item.id)).toEqual(['take-old-1']);
+
+    const selected = row('seg-a', 0, { revision: 3, retained_voice: saved });
+    const restored =
+      mode === 'single'
+        ? adoptUpdatedSegment(next, 'seg-a', selected)
+        : adoptUpdatedSegments(next, [selected]);
+    expect(restored.items[0].retained_voice).toEqual(saved);
+  });
+}
+
 test('batch adoption remaps previous_segment_id and adopts one pin', () => {
   const next = adoptUpdatedSegments(page(), [
     {

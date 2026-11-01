@@ -1,0 +1,14 @@
+{
+  "schema": "0082_private_transcription_owners",
+  "provenance": "Synthetic database created before any R2 source or model edits using locally accepted R1 source. SQL dump preserves that historical schema and its synthetic seed rows; no user content or credentials.",
+  "sqlite_sha256": "b8619ce6ec75a2759b5c62cba1b7b328dad61eed3c578ea295ea367499eae6ac",
+  "sql_sha256": "001cbf3eb83f83b27c5aea13554f1b65fb637419dfe269b5fa82e551338a5490",
+  "gzip_sha256": "6e92747f0f27dc3e3631d384a7545f57dcc644d0a145dc6db65e9449a71b9440",
+  "nonempty_tables": {
+    "alembic_version": 1,
+    "users": 1,
+    "workspaces": 1,
+    "workspace_memberships": 1,
+    "user_credentials": 1
+  }
+}

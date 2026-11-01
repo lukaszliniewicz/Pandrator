@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from typing import Any
 
 import google.auth
@@ -35,6 +36,9 @@ def google_voice_scope(
     service_id: str,
     service: dict[str, Any],
     credential: str,
+    *,
+    allow_host_adc: bool = True,
+    before_io: Callable[[], None] | None = None,
 ) -> dict[str, str]:
     """Return the stable provider identity that fences one design request."""
 
@@ -49,37 +53,54 @@ def google_voice_scope(
         project = ""
         identity = hashlib.sha256(credential_value.encode("utf-8")).hexdigest()
     else:
+        if not allow_host_adc and not credential_value:
+            raise ValueError("Google Vertex AI credentials are not configured.")
         override_project = str(service.get("vertex_project") or "").strip()
         credential_project = _json_project_id(credential_value)
-        adc_project = str(service.get("_google_project") or "").strip()
+        adc_project = str(service.get("_google_project") or "").strip() if allow_host_adc else ""
         detected_project = ""
         adc_credentials_available = bool(adc_project)
         needs_adc = not credential_value or not (
             override_project or credential_project or adc_project
         )
         if needs_adc and not adc_project:
+            if not allow_host_adc:
+                raise ValueError("Google Vertex AI credentials or project are not configured.")
+            # Guard discovery as well as each auth transport request. This
+            # identity-only helper deliberately never refreshes credentials.
+            request_options: dict[str, Any] = {}
+            callback_error: Exception | None = None
+            if before_io is not None:
+                from google.auth.transport.requests import Request
+
+                transport = Request()
+
+                def guarded_request(*args: Any, **kwargs: Any) -> Any:
+                    nonlocal callback_error
+                    try:
+                        before_io()
+                    except Exception as error:
+                        callback_error = error
+                        raise
+                    return transport(*args, **kwargs)
+
+                before_io()
+                request_options["request"] = guarded_request
             try:
                 credentials, detected = google.auth.default(
-                    scopes=[_GOOGLE_CLOUD_SCOPE]
+                    scopes=[_GOOGLE_CLOUD_SCOPE], **request_options
                 )
             except Exception:
+                if callback_error is not None:
+                    raise callback_error from None
                 if not credential_value:
-                    raise ValueError(
-                        "Google Vertex AI credentials are not configured."
-                    ) from None
+                    raise ValueError("Google Vertex AI credentials are not configured.") from None
                 credentials, detected = None, None
             if credentials is None and not credential_value:
-                raise ValueError(
-                    "Google Vertex AI credentials are not configured."
-                )
+                raise ValueError("Google Vertex AI credentials are not configured.")
             adc_credentials_available = credentials is not None
             detected_project = str(detected or "").strip()
-        project = (
-            override_project
-            or credential_project
-            or adc_project
-            or detected_project
-        )
+        project = override_project or credential_project or adc_project or detected_project
         if not project:
             raise ValueError("A Google Vertex AI project is required for voice design.")
         if not credential_value and not adc_credentials_available:
@@ -92,8 +113,6 @@ def google_voice_scope(
         separators=(",", ":"),
     )
     return {
-        "fingerprint": hashlib.sha256(
-            fingerprint_payload.encode("utf-8")
-        ).hexdigest(),
+        "fingerprint": hashlib.sha256(fingerprint_payload.encode("utf-8")).hexdigest(),
         "project": project,
     }

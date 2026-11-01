@@ -438,10 +438,13 @@ def generate_sound(
     cancel_event: threading.Event,
     progress: ProgressCallback | None = None,
     run_func: RunFunction = subprocess.run,
+    before_io: Callable[[], None] | None = None,
 ) -> dict[str, int | float]:
     """Generate one validated audio.cpp WAV into caller-owned private staging."""
 
     canonical_request = validate_request(request)
+    if before_io is not None:
+        before_io()
     model_id = canonical_request["model_id"]
     target = Path(output_path)
     if os.path.lexists(target):
@@ -455,6 +458,8 @@ def generate_sound(
     require_backend(settings, canonical_request["backend"])
     if model_id == MODEL_ID:
         runtime_identity(settings)
+        if before_io is not None:
+            before_io()
         model_path = assets.ensure_model(
             model_id,
             dict(settings),
@@ -463,6 +468,8 @@ def generate_sound(
         )
     else:
         runtime_identity(settings, model_id=model_id)
+        if before_io is not None:
+            before_io()
         model_path = generation_assets.ensure_model(
             model_id,
             dict(settings),
@@ -474,6 +481,8 @@ def generate_sound(
 
     adapter_options: dict[str, Path] = {}
     if canonical_request.get("parameters", {}).get("instrumental") is True:
+        if before_io is not None:
+            before_io()
         adapter_options["instrumental_adapter_path"] = yue2_adapter.ensure_adapter(
             dict(settings), cancel_event=cancel_event, progress=progress
         )
@@ -482,6 +491,8 @@ def generate_sound(
     )
     if progress is not None:
         progress("generate", 0, 1)
+    if before_io is not None:
+        before_io()
     processing._run_child(
         command,
         dict(settings),
@@ -490,9 +501,9 @@ def generate_sound(
         purpose="audio.cpp generation",
     )
     processing.check_cancelled(cancel_event)
-    wav_properties = _validate_output_wav(
-        target, canonical_request["duration_seconds"], model_id
-    )
+    if before_io is not None:
+        before_io()
+    wav_properties = _validate_output_wav(target, canonical_request["duration_seconds"], model_id)
     if progress is not None:
         progress("generate", 1, 1)
     return wav_properties

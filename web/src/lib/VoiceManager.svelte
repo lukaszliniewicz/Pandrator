@@ -43,6 +43,7 @@
   import VoiceDesignDialog from './VoiceDesignDialog.svelte';
   import ReferenceAudioImport from './ReferenceAudioImport.svelte';
   import { modalFocus } from './modal-focus';
+  import type { SpeechCatalogueScope } from './speech-catalogue-api';
 
   type Voice = VoiceRecord;
   type Sample = {
@@ -66,6 +67,9 @@
     focused = false,
     profileManaged = false,
     referencesOnly = false,
+    workspaceId,
+    sessionId,
+    canEdit = false,
     onvoicepublished
   }: {
     onback: () => void;
@@ -77,9 +81,15 @@
     focused?: boolean;
     profileManaged?: boolean;
     referencesOnly?: boolean;
+    workspaceId?: string;
+    sessionId?: string;
+    canEdit?: boolean;
     onvoicepublished?: (providerVoiceId: string) => void;
   } = $props();
   let activeView = $state<'references' | 'prebuilt'>('references');
+  const scope: SpeechCatalogueScope = $derived({ workspaceId, sessionId });
+  let alive = true;
+  let voiceRequest = 0;
   const explicitService = $derived(
     initialService || page.url.searchParams.get('service') || ''
   );
@@ -179,6 +189,8 @@
   const canTranscribe = $derived(Boolean(capabilities?.stt?.crispasr));
   const canRecord = $derived(
     Boolean(
+      canEdit &&
+      workspaceId &&
       capabilities?.ffmpeg?.available &&
       capabilities?.recording?.browser_media_recorder !== false
     )
@@ -255,14 +267,13 @@
   const sampleLanguageProblem = $derived(
     sttLanguageProblem(capabilities, engine, sampleLanguage)
   );
-  const sttModelInfo = $derived(capabilities?.stt?.models?.[engine] ?? {});
 
   const sttModelLabel = (
     modelId: 'whisper' | 'parakeet' | 'moss',
     label: string
   ) => {
     const info = capabilities?.stt?.models?.[modelId] ?? {};
-    return `${label}${info.installed ? ' · ready' : ' · downloads on first use'}`;
+    return `${label}${info.installed ? ' · ready' : ' · model setup may be needed'}`;
   };
 
   const sttEngineName = () =>
@@ -282,7 +293,9 @@
   }
 
   async function loadVoices() {
-    const result = await voiceApi.list<Voice>();
+    const request = ++voiceRequest;
+    const result = await voiceApi.list<Voice>(scope);
+    if (!alive || request !== voiceRequest) return;
     voices = result.items;
     if (selected)
       selected = voices.find((voice) => voice.id === selected?.id) ?? null;
@@ -308,7 +321,7 @@
     editCategory =
       (voice.metadata_json?.voice_category as VoiceCategory) ?? 'unspecified';
     try {
-      const result = await voiceApi.samples<Sample>(voice.id);
+      const result = await voiceApi.samples<Sample>(voice.id, workspaceId);
       if (request !== sampleRequest || selected?.id !== voice.id) return;
       const previous = new Map(samples.map((sample) => [sample.id, sample]));
       // Read drafts when the response arrives: typing during a refresh belongs
@@ -342,7 +355,7 @@
   }
 
   async function createVoice() {
-    if (creatingVoice) return;
+    if (creatingVoice || !canEdit || !workspaceId) return;
     if (!newName.trim()) {
       nameRequired = true;
       newNameInput?.focus();
@@ -352,10 +365,14 @@
     error = '';
     creatingVoice = true;
     try {
-      const voice = await voiceApi.create<Voice>({
-        name: newName.trim(),
-        language
-      });
+      const voice = await voiceApi.create<Voice>(
+        {
+          name: newName.trim(),
+          language
+        },
+        workspaceId
+      );
+      if (!alive) return;
       newName = '';
       await loadVoices();
       await choose(voice);
@@ -367,6 +384,7 @@
   }
 
   function openVoiceDesigner(voiceId = '') {
+    if (!canEdit || !workspaceId) return;
     designInitialVoiceId = voiceId;
     voiceDesignOpen = true;
     error = '';
@@ -397,7 +415,14 @@
   }
 
   async function saveVoice() {
-    if (!selected || selected.bundled || savingVoice || !editName.trim())
+    if (
+      !selected ||
+      selected.bundled ||
+      savingVoice ||
+      !editName.trim() ||
+      !canEdit ||
+      !workspaceId
+    )
       return;
     const voice = selected;
     const selection = voiceSelection;
@@ -410,12 +435,17 @@
     savingVoice = true;
     error = '';
     try {
-      const updated = await voiceApi.update<Voice>(voice.id, voice.revision, {
-        name: draft.name.trim(),
-        language: draft.language.trim() || null,
-        description: draft.description.trim() || null,
-        voice_category: draft.category
-      });
+      const updated = await voiceApi.update<Voice>(
+        voice.id,
+        voice.revision,
+        {
+          name: draft.name.trim(),
+          language: draft.language.trim() || null,
+          description: draft.description.trim() || null,
+          voice_category: draft.category
+        },
+        workspaceId
+      );
       await loadVoices();
       if (selection !== voiceSelection || selected?.id !== voice.id) return;
       const newerEdits =
@@ -440,16 +470,28 @@
   }
 
   async function changeVoiceLanguage(input: HTMLSelectElement) {
-    if (!selected || selected.bundled || savingVoice) return;
+    if (
+      !selected ||
+      selected.bundled ||
+      savingVoice ||
+      !canEdit ||
+      !workspaceId
+    )
+      return;
     const voice = selected;
     const selection = voiceSelection;
     const value = input.value;
     savingVoice = true;
     error = '';
     try {
-      const updated = await voiceApi.update<Voice>(voice.id, voice.revision, {
-        language: value
-      });
+      const updated = await voiceApi.update<Voice>(
+        voice.id,
+        voice.revision,
+        {
+          language: value
+        },
+        workspaceId
+      );
       voices = voices.map((item) => (item.id === updated.id ? updated : item));
       if (selection !== voiceSelection || selected?.id !== voice.id) return;
       selected = updated;
@@ -467,7 +509,7 @@
   }
 
   function requestDeleteVoice() {
-    if (!selected || selected.bundled || deletingVoice) return;
+    if (!selected || selected.bundled || deletingVoice || !canEdit) return;
     deleteProviderSelection = Object.fromEntries(
       providerRegistrations.map(({ serviceId }) => [serviceId, false])
     );
@@ -477,26 +519,41 @@
   async function removeProviderCopy(
     serviceId: string,
     announce = true
-  ): Promise<void> {
-    if (!selected || removingProviders[serviceId]) return;
+  ): Promise<boolean> {
+    if (!selected || !canEdit || !workspaceId || removingProviders[serviceId])
+      return false;
+    const voiceId = selected.id;
+    const workspace = workspaceId;
+    const selection = voiceSelection;
+    const current = () =>
+      alive &&
+      workspaceId === workspace &&
+      selection === voiceSelection &&
+      selected?.id === voiceId;
     const service = ttsServices.find((item) => item.id === serviceId);
+    const linked = isLinkedRegistration(
+      selected.metadata_json?.providers?.[serviceId],
+      service
+    );
     removingProviders = { ...removingProviders, [serviceId]: true };
     try {
       const job = await voiceApi.unpublish(
-        selected.id,
+        voiceId,
         serviceId,
-        selected.revision
+        selected.revision,
+        workspace
       );
       await waitJob(job.id);
+      if (!current()) return false;
       await loadVoices();
+      if (!current()) return false;
       if (selected) await choose(selected);
+      if (!current()) return false;
       if (announce)
-        notice = isLinkedRegistration(
-          selected?.metadata_json?.providers?.[serviceId],
-          service
-        )
+        notice = linked
           ? `${service?.name ?? serviceId} reference link removed.`
           : `${service?.name ?? serviceId} provider copy removed.`;
+      return true;
     } finally {
       const next = { ...removingProviders };
       delete next[serviceId];
@@ -505,6 +562,10 @@
   }
 
   async function removeProvider(serviceId: string) {
+    if (!selected || !canEdit || !workspaceId) return;
+    const voiceId = selected.id;
+    const workspace = workspaceId;
+    const selection = voiceSelection;
     const service = ttsServices.find((item) => item.id === serviceId);
     const registration = selected?.metadata_json?.providers?.[serviceId];
     const linked = isLinkedRegistration(registration, service);
@@ -520,21 +581,45 @@
     try {
       await removeProviderCopy(serviceId);
     } catch (caught) {
-      report(caught, 'Could not remove the provider copy: ');
+      if (
+        alive &&
+        workspaceId === workspace &&
+        selection === voiceSelection &&
+        selected?.id === voiceId
+      )
+        report(caught, 'Could not remove the provider copy: ');
     }
   }
 
   async function deleteVoice() {
-    if (!selected || selected.bundled || deletingVoice) return;
+    if (
+      !selected ||
+      selected.bundled ||
+      deletingVoice ||
+      !canEdit ||
+      !workspaceId
+    )
+      return;
     deletingVoice = true;
+    const voiceId = selected.id;
+    const workspace = workspaceId;
+    const selection = voiceSelection;
+    const current = () =>
+      alive &&
+      workspaceId === workspace &&
+      selection === voiceSelection &&
+      selected?.id === voiceId;
     error = '';
     try {
       for (const serviceId of Object.keys(deleteProviderSelection).filter(
         (id) => deleteProviderSelection[id]
-      ))
-        await removeProviderCopy(serviceId, false);
+      )) {
+        if (!current() || !(await removeProviderCopy(serviceId, false))) return;
+      }
+      if (!current()) return;
       if (!selected) throw new Error('The local voice is no longer available.');
-      await voiceApi.delete(selected.id, selected.revision);
+      await voiceApi.delete(voiceId, selected.revision, workspace);
+      if (!current()) return;
       stopPlayback();
       selected = null;
       samples = [];
@@ -542,10 +627,11 @@
       notice = 'Voice and its managed local samples were deleted.';
       await loadVoices();
     } catch (caught) {
-      report(
-        caught,
-        'The local voice was retained because cleanup did not finish: '
-      );
+      if (current())
+        report(
+          caught,
+          'The local voice was retained because cleanup did not finish: '
+        );
     } finally {
       deletingVoice = false;
     }
@@ -668,7 +754,14 @@
   }
 
   async function saveRecording() {
-    if (!selected || selected.bundled || !recordingBlob || savingRecording)
+    if (
+      !selected ||
+      selected.bundled ||
+      !recordingBlob ||
+      savingRecording ||
+      !canEdit ||
+      !workspaceId
+    )
       return;
     // A previous attempt may have timed out while its job kept running. Its
     // ID is retained, so resume by re-checking that exact job instead of
@@ -707,7 +800,8 @@
         const job = await voiceApi.uploadSample(
           voiceId,
           expectedRevision,
-          body
+          body,
+          workspaceId
         );
         jobId = job.id;
         recordingJobId = job.id;
@@ -816,7 +910,18 @@
   }
 
   async function uploadReference(event: Event) {
-    if (!selected || selected.bundled || uploadingSample) return;
+    if (
+      !selected ||
+      selected.bundled ||
+      uploadingSample ||
+      !canEdit ||
+      !workspaceId
+    )
+      return;
+    const workspace = workspaceId;
+    const voiceId = selected.id;
+    const current = () =>
+      alive && workspaceId === workspace && selected?.id === voiceId;
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
@@ -827,19 +932,22 @@
     uploadingSample = true;
     try {
       const job = await voiceApi.uploadSample(
-        selected.id,
+        voiceId,
         selected.revision,
-        body
+        body,
+        workspace
       );
       await waitJob(job.id);
+      if (!current()) return;
       await loadVoices();
+      if (!current()) return;
       if (selected) await choose(selected);
       if (!(await maybePublishRequestedVoice()))
         notice = providerNeedsReviewedTranscript
           ? `The sample is ready. Review its transcript before using it with ${providerTarget?.name ?? 'this provider'}.`
           : 'Voice sample saved.';
     } catch (caught) {
-      report(caught);
+      if (current()) report(caught);
     } finally {
       uploadingSample = false;
       input.value = '';
@@ -847,7 +955,18 @@
   }
 
   async function replaceReference(sample: Sample, event: Event) {
-    if (!selected || selected.bundled || replacingSamples[sample.id]) return;
+    if (
+      !selected ||
+      selected.bundled ||
+      replacingSamples[sample.id] ||
+      !canEdit ||
+      !workspaceId
+    )
+      return;
+    const workspace = workspaceId;
+    const voiceId = selected.id;
+    const current = () =>
+      alive && workspaceId === workspace && selected?.id === voiceId;
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
@@ -857,19 +976,22 @@
     error = '';
     try {
       const job = await voiceApi.replaceSample(
-        selected.id,
+        voiceId,
         sample.id,
         selected.revision,
-        body
+        body,
+        workspace
       );
       await waitJob(job.id);
+      if (!current()) return;
       await loadVoices();
+      if (!current()) return;
       if (selected) await choose(selected);
       if (!(await maybePublishRequestedVoice()))
         notice =
           'Reference audio replaced. Review or transcribe its new transcript.';
     } catch (caught) {
-      report(caught);
+      if (current()) report(caught);
     } finally {
       const next = { ...replacingSamples };
       delete next[sample.id];
@@ -879,12 +1001,24 @@
   }
 
   async function deleteSample(sample: Sample) {
-    if (!selected || selected.bundled || deletingSamples[sample.id]) return;
+    if (
+      !selected ||
+      selected.bundled ||
+      deletingSamples[sample.id] ||
+      !canEdit ||
+      !workspaceId
+    )
+      return;
     if (!window.confirm('Delete this local reference sample?')) return;
     deletingSamples = { ...deletingSamples, [sample.id]: true };
     error = '';
     try {
-      await voiceApi.deleteSample(selected.id, sample.id, selected.revision);
+      await voiceApi.deleteSample(
+        selected.id,
+        sample.id,
+        selected.revision,
+        workspaceId
+      );
       if (playingKey === sample.id) stopPlayback();
       notice = 'Reference sample deleted.';
       await loadVoices();
@@ -903,7 +1037,21 @@
       const job = await jobApi.get(id);
       if (job.status === 'succeeded') return job;
       if (['failed', 'canceled', 'interrupted'].includes(job.status))
-        throw new Error(job.error_message || `Job ${job.status}`);
+        throw new Error(
+          [
+            job.error_message || `Job ${job.status}`,
+            job.external_effect?.state === 'completed' &&
+            job.external_effect.binding_state === 'not_applied'
+              ? 'The provider completed the operation, but the local voice was not changed. Its receipt is saved in Activity & logs. Check the provider before trying again.'
+              : ['dispatching', 'uncertain'].includes(
+                    job.external_effect?.state ?? ''
+                  )
+                ? 'The provider outcome is uncertain. Check the provider before trying again; this job will not repeat the request.'
+                : ''
+          ]
+            .filter(Boolean)
+            .join(' ')
+        );
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error(
@@ -912,16 +1060,20 @@
   }
 
   async function transcribe(sample: Sample) {
-    if (!selected || transcribing[sample.id]) return;
+    if (!selected || !canEdit || !workspaceId || transcribing[sample.id])
+      return;
     if (sampleLanguageProblem) {
       error = sampleLanguageProblem;
       return;
     }
     error = '';
     const voiceId = selected.id;
+    const workspace = workspaceId;
     const selection = voiceSelection;
     const draft = transcripts[sample.id];
     const currentSample = () =>
+      alive &&
+      workspaceId === workspace &&
       selection === voiceSelection &&
       selected?.id === voiceId &&
       samples.some(
@@ -929,21 +1081,26 @@
           item.id === sample.id && item.artifact_id === sample.artifact_id
       );
     transcribing = { ...transcribing, [sample.id]: true };
-    notice = `Transcribing sample with ${sttEngineName()}${sttModelInfo.download_on_demand ? ' (the model will download first)' : ''}…`;
+    notice = `Transcribing sample with ${sttEngineName()}…`;
     try {
-      const job = await voiceApi.transcribeSample(voiceId, sample.id, {
-        stt_engine: engine,
-        stt_backend: engine,
-        stt_compute_backend: computeBackend,
-        stt_model_quantization: modelQuantization,
-        stt_language: sampleLanguage,
-        moss_max_chunk_seconds: 120,
-        moss_vad_enabled: engine === 'moss' ? vadEnabled : false,
-        moss_ctc_alignment_enabled: true,
-        moss_ctc_padding_seconds: 0.5,
-        crispasr_vad_enabled: vadEnabled,
-        crispasr_vad_threshold: vadThreshold
-      });
+      const job = await voiceApi.transcribeSample(
+        voiceId,
+        sample.id,
+        {
+          stt_engine: engine,
+          stt_backend: engine,
+          stt_compute_backend: computeBackend,
+          stt_model_quantization: modelQuantization,
+          stt_language: sampleLanguage,
+          moss_max_chunk_seconds: 120,
+          moss_vad_enabled: engine === 'moss' ? vadEnabled : false,
+          moss_ctc_alignment_enabled: true,
+          moss_ctc_padding_seconds: 0.5,
+          crispasr_vad_enabled: vadEnabled,
+          crispasr_vad_threshold: vadThreshold
+        },
+        workspace
+      );
       const completed = await waitJob(job.id);
       if (!currentSample()) return;
       if (transcripts[sample.id] === draft) {
@@ -966,7 +1123,7 @@
   }
 
   async function transcribeMissing() {
-    if (!selected || transcribingMissing) return;
+    if (!selected || !canEdit || !workspaceId || transcribingMissing) return;
     const voiceId = selected.id;
     const selection = voiceSelection;
     transcribingMissing = true;
@@ -983,37 +1140,64 @@
   }
 
   async function publishVoice() {
-    if (!selected || !providerTarget || !samples.length || publishing) return;
+    if (
+      !selected ||
+      !canEdit ||
+      !workspaceId ||
+      !providerTarget ||
+      !samples.length ||
+      publishing
+    )
+      return;
+    const voice = selected;
+    const provider = providerTarget;
+    const linked = providerUsesLinkedReferences;
+    const workspace = workspaceId;
+    const selection = voiceSelection;
+    const current = () =>
+      alive &&
+      workspaceId === workspace &&
+      selection === voiceSelection &&
+      selected?.id === voice.id;
     publishing = true;
     error = '';
-    notice = providerUsesLinkedReferences
-      ? `Linking ${selected.name} to ${providerTarget.name}…`
-      : `Uploading ${selected.name} to ${providerTarget.name}…`;
+    notice = linked
+      ? `Linking ${voice.name} to ${provider.name}…`
+      : `Uploading ${voice.name} to ${provider.name}…`;
     try {
       const job = await voiceApi.publish(
-        selected.id,
-        providerTarget.id,
-        selected.revision
+        voice.id,
+        provider.id,
+        voice.revision,
+        workspace
       );
       const completed = await waitJob(job.id);
+      if (!current()) return;
       const providerVoiceId = String(
         completed.result_json?.provider_voice_id ?? ''
       );
       if (!providerVoiceId)
-        throw new Error(`${providerTarget.name} did not return a voice ID.`);
+        throw new Error(`${provider.name} did not return a voice ID.`);
       await loadVoices();
+      if (!current()) return;
       if (selected) await choose(selected);
-      notice = providerUsesLinkedReferences
-        ? `${selected?.name ?? 'Voice'} is linked to its newest local sample for ${providerTarget.name}.`
-        : `${selected?.name ?? 'Voice'} is ready in ${providerTarget.name} as “${providerVoiceId}”.`;
+      if (!current()) return;
+      if (completed.external_effect?.binding_state === 'stale') {
+        notice = `${voice.name} was uploaded to ${provider.name}, but its reference changed during the upload. Refresh the voice before using this provider copy.`;
+        return;
+      }
+      notice = linked
+        ? `${voice.name} is linked to its newest local sample for ${provider.name}.`
+        : `${voice.name} is ready in ${provider.name} as “${providerVoiceId}”.`;
       onvoicepublished?.(providerVoiceId);
     } catch (caught) {
-      report(
-        caught,
-        providerUsesLinkedReferences
-          ? `Could not link the voice to ${providerTarget.name}: `
-          : `Could not upload the voice to ${providerTarget.name}: `
-      );
+      if (current())
+        report(
+          caught,
+          linked
+            ? `Could not link the voice to ${provider.name}: `
+            : `Could not upload the voice to ${provider.name}: `
+        );
     } finally {
       publishing = false;
     }
@@ -1033,7 +1217,13 @@
   }
 
   async function saveTranscript(sample: Sample) {
-    if (!selected || !transcripts[sample.id]?.trim()) return;
+    if (
+      !selected ||
+      !canEdit ||
+      !workspaceId ||
+      !transcripts[sample.id]?.trim()
+    )
+      return;
     const voiceId = selected.id;
     const selection = voiceSelection;
     const draft = transcripts[sample.id];
@@ -1045,7 +1235,8 @@
           transcript: draft.trim(),
           language: sampleLanguage,
           expected_voice_revision: selected.revision
-        }
+        },
+        workspaceId
       );
       if (selection !== voiceSelection || selected?.id !== voiceId) return;
       // Advance the saved baseline without overwriting a newer local edit.
@@ -1106,9 +1297,10 @@
     try {
       const [capabilityPayload, servicesPayload] = await Promise.all([
         diagnosticsApi.capabilities(),
-        speechServiceApi.catalogue(Boolean(explicitService)),
+        speechServiceApi.catalogue(false, scope),
         loadVoices()
       ]);
+      if (!alive) return;
       capabilities = capabilityPayload;
       ttsServices = servicesPayload.services ?? [];
 
@@ -1121,6 +1313,8 @@
   });
 
   onDestroy(() => {
+    alive = false;
+    ++voiceRequest;
     ++sampleRequest;
     ++voiceSelection;
     if (recorder && recorder.state !== 'inactive') recorder.stop();
@@ -1266,7 +1460,7 @@
               class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"
             /><button
               type="submit"
-              disabled={creatingVoice}
+              disabled={creatingVoice || !canEdit || !workspaceId}
               aria-label="Add voice"
               title="Add voice"
               class="btn btn-icon btn-primary"><Plus size={17} /></button
@@ -1335,10 +1529,10 @@
               {#if !selected.bundled}{#if !profileManaged}<button
                     onclick={() => (editingVoice = !editingVoice)}
                     class="stt-control font-semibold"
-                    ><Pencil size={15} /> Edit voice</button
+                    disabled={!canEdit}><Pencil size={15} /> Edit voice</button
                   >{/if}<button
                   onclick={requestDeleteVoice}
-                  disabled={deletingVoice}
+                  disabled={deletingVoice || !canEdit}
                   class="stt-control font-semibold text-red-600 disabled:opacity-40"
                   ><Trash2 size={15} />
                   {deletingVoice ? 'Deleting…' : 'Delete voice'}</button
@@ -1382,7 +1576,7 @@
                   >Cancel</button
                 ><button
                   onclick={saveVoice}
-                  disabled={savingVoice || !editName.trim()}
+                  disabled={savingVoice || !editName.trim() || !canEdit}
                   class="btn btn-primary disabled:opacity-40"
                   ><Save size={15} />
                   {savingVoice ? 'Saving…' : 'Save voice'}</button
@@ -1409,12 +1603,13 @@
                 <button
                   type="button"
                   onclick={() => openVoiceDesigner(selected?.id)}
+                  disabled={!canEdit || !workspaceId}
                   class="btn btn-secondary"
                   ><WandSparkles size={16} /> Design sample</button
                 ><button
                   type="button"
                   onclick={() => sampleUploadInput?.click()}
-                  disabled={uploadingSample}
+                  disabled={!canEdit || !workspaceId || uploadingSample}
                   class="btn btn-primary disabled:opacity-40"
                   ><CloudUpload size={16} />
                   {uploadingSample ? 'Uploading…' : 'Upload sample'}</button
@@ -1422,7 +1617,7 @@
                 <button
                   type="button"
                   onclick={() => (referenceImportOpen = true)}
-                  disabled={uploadingSample}
+                  disabled={!canEdit || !workspaceId || uploadingSample}
                   class="btn btn-secondary">Trim & import…</button
                 >
               </div>
@@ -1430,7 +1625,7 @@
                 bind:this={sampleUploadInput}
                 type="file"
                 accept="audio/*"
-                disabled={uploadingSample}
+                disabled={!canEdit || !workspaceId || uploadingSample}
                 onchange={uploadReference}
                 class="sr-only"
               />{/if}
@@ -1446,6 +1641,7 @@
                   onchange={(event) =>
                     void changeVoiceLanguage(event.currentTarget)}
                   disabled={selected.bundled ||
+                    !canEdit ||
                     savingVoice ||
                     transcribingCount > 0 ||
                     recording ||
@@ -1463,7 +1659,9 @@
             </label>
             <button
               onclick={transcribeMissing}
-              disabled={!canTranscribe ||
+              disabled={!canEdit ||
+                !workspaceId ||
+                !canTranscribe ||
                 transcribingMissing ||
                 transcribingCount > 0 ||
                 Boolean(sampleLanguageProblem) ||
@@ -1621,9 +1819,9 @@
               </div>
               <button
                 onclick={publishVoice}
-                disabled={!samples.some(
-                  (sample) => sample.available !== false
-                ) ||
+                disabled={!canEdit ||
+                  !workspaceId ||
+                  !samples.some((sample) => sample.available !== false) ||
                   publishing ||
                   providerNeedsReviewedTranscript ||
                   (providerTarget.available === false &&
@@ -1685,7 +1883,9 @@
                       <button
                         type="button"
                         onclick={() => removeProvider(item.serviceId)}
-                        disabled={Boolean(removingProviders[item.serviceId])}
+                        disabled={!canEdit ||
+                          !workspaceId ||
+                          Boolean(removingProviders[item.serviceId])}
                         class="flex items-center gap-2 rounded-xl border border-red-400/50 px-3 py-2 text-xs font-semibold text-red-600 disabled:opacity-40"
                       >
                         {#if removingProviders[item.serviceId]}<LoaderCircle
@@ -1783,7 +1983,10 @@
                 >
                 <button
                   onclick={saveRecording}
-                  disabled={selected.bundled || savingRecording}
+                  disabled={!canEdit ||
+                    !workspaceId ||
+                    selected.bundled ||
+                    savingRecording}
                   class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 font-semibold text-white disabled:opacity-50"
                   ><Save size={16} />
                   {savingRecording
@@ -1863,7 +2066,9 @@
                   >
                   <button
                     onclick={() => transcribe(sample)}
-                    disabled={!canTranscribe ||
+                    disabled={!canEdit ||
+                      !workspaceId ||
+                      !canTranscribe ||
                       sample.available === false ||
                       Boolean(transcribing[sample.id]) ||
                       transcribingMissing}
@@ -1889,9 +2094,9 @@
                   {#if !selected.bundled}<span
                       class="ml-auto flex items-center gap-2"
                       ><label
-                        class:pointer-events-none={Boolean(
-                          replacingSamples[sample.id]
-                        )}
+                        class:pointer-events-none={!canEdit ||
+                          !workspaceId ||
+                          Boolean(replacingSamples[sample.id])}
                         class="cursor-pointer rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"
                         >{replacingSamples[sample.id]
                           ? 'Replacing…'
@@ -1899,11 +2104,15 @@
                           type="file"
                           accept="audio/*"
                           onchange={(event) => replaceReference(sample, event)}
+                          disabled={!canEdit ||
+                            !workspaceId ||
+                            Boolean(replacingSamples[sample.id])}
                           class="sr-only"
                         /></label
                       ><button
                         onclick={() => deleteSample(sample)}
-                        disabled={Boolean(deletingSamples[sample.id])}
+                        disabled={Boolean(deletingSamples[sample.id]) ||
+                          !canEdit}
                         aria-label="Delete voice sample"
                         class="flex items-center gap-1.5 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold text-red-600 disabled:opacity-40"
                         ><Trash2 size={15} />
@@ -1931,7 +2140,9 @@
                   <div class="mt-2 flex justify-end">
                     <button
                       onclick={() => saveTranscript(sample)}
-                      disabled={selected.bundled ||
+                      disabled={!canEdit ||
+                        !workspaceId ||
+                        selected.bundled ||
                         !transcripts[sample.id]?.trim()}
                       class="flex items-center gap-2 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
                       ><Save size={14} /> Save reviewed transcript</button
@@ -1956,7 +2167,7 @@
                     ><button
                       type="button"
                       onclick={() => sampleUploadInput?.click()}
-                      disabled={uploadingSample}
+                      disabled={!canEdit || !workspaceId || uploadingSample}
                       class="btn btn-primary disabled:opacity-40"
                       ><CloudUpload size={16} />
                       {uploadingSample ? 'Uploading…' : 'Upload sample'}</button
@@ -1980,20 +2191,28 @@
     </div>
   {:else}
     <div>
-      <PrebuiltVoiceLibrary initialService={requestedService} />
+      {#if workspaceId}{#key workspaceId}<PrebuiltVoiceLibrary
+            initialService={requestedService}
+            {workspaceId}
+            {canEdit}
+          />{/key}{/if}
     </div>
   {/if}
 </div>
-{#if voiceDesignOpen}<VoiceDesignDialog
-    services={ttsServices}
-    {voices}
-    initialVoiceId={designInitialVoiceId}
-    onclose={() => (voiceDesignOpen = false)}
-    onsaved={designedVoiceSaved}
-  />{/if}
-{#if referenceImportOpen && selected && !selected.bundled}
-  {#key selected.id}
+{#if voiceDesignOpen && canEdit && workspaceId}{#key workspaceId}<VoiceDesignDialog
+      services={ttsServices}
+      {voices}
+      {workspaceId}
+      {canEdit}
+      initialVoiceId={designInitialVoiceId}
+      onclose={() => (voiceDesignOpen = false)}
+      onsaved={designedVoiceSaved}
+    />{/key}{/if}
+{#if referenceImportOpen && selected && !selected.bundled && canEdit && workspaceId}
+  {#key `${workspaceId}:${selected.id}`}
     <ReferenceAudioImport
+      {workspaceId}
+      {canEdit}
       voiceId={selected.id}
       revision={selected.revision}
       language={sampleLanguage}
@@ -2080,7 +2299,7 @@
         <button
           type="button"
           onclick={deleteVoice}
-          disabled={deletingVoice}
+          disabled={deletingVoice || !canEdit}
           class="flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
           >{#if deletingVoice}<LoaderCircle
               size={16}

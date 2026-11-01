@@ -36,6 +36,14 @@ _TTS_FORBIDDEN_LEGACY_OPTIONS = {
     "dots_tts": {"use_xvector", "vocoder_merge_steps"},
     "higgs_audio_tts": {"repetition_penalty"},
     "voxtral_tts": {"instruction", "instruct", "instructions", "reference_text"},
+    "fish_drama3": {
+        "encode_reference_only", "references", "multi_reference_cond",
+        "previous_takes", "previous_takes_file",
+    },
+    "plapre": {
+        "word_duration_frames", "pronunciations", "edit_start_frame", "edit_end_frame",
+        "context_text", "context_audio_file", "same_speaker",
+    },
 }
 # These runtimes reject even a neutral global speed as a style condition.
 # Keep this scoped to verified contracts; other families can consume speed.
@@ -44,6 +52,8 @@ _UNSUPPORTED_SPEED_FAMILIES = {
     "voxcpm2": "VoxCPM2",
     "pocket_tts": "PocketTTS",
     "voxtral_tts": "Voxtral",
+    "fish_drama3": "Drama 3",
+    "plapre": "Plapre 3",
 }
 _MANAGED_REFERENCE_PATH_OPTIONS = {
     "voice_samples",
@@ -251,8 +261,11 @@ def _audio_cpp_language(
     if not canonical or canonical == "auto":
         return ""
     iso = str(native_language).split("-", 1)[0]
-    if family in {"fish_audio_s2", "fish_audio", "voxcpm2", "breeze_tts", "cosyvoice3"}:
-        # These v0.7.2 sessions infer language from text; a hint is not consumed.
+    if family in {
+        "fish_audio_s2", "fish_audio", "fish_drama3", "plapre",
+        "voxcpm2", "breeze_tts", "cosyvoice3",
+    }:
+        # These sessions infer language from text; a hint is not consumed.
         return ""
     if family == "moss_voicegen":
         names = {"en": "English", "zh": "Chinese"}

@@ -24,6 +24,7 @@ from ..schemas.voice_lifecycle import (
     PublishVoiceInput,
     ReviewVoiceTranscriptInput,
     TranscribeVoiceSampleInput,
+    UnpublishVoiceInput,
     UpdateCatalogVoiceMetadataInput,
     UpdateVoiceCollectionInput,
     VoiceCatalogCapabilitiesInput,
@@ -40,6 +41,30 @@ _TRAIT_EVIDENCE_SOURCES = frozenset(
     {"user", "provider", "design_request", "audition_review"}
 )
 _TRAIT_EVIDENCE_STATUSES = frozenset({"requested", "described", "reviewed"})
+
+
+def _service_identity(value: Any) -> str:
+    normalized = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    return {
+        "qwen": "kobold_qwen",
+        "qwen3": "kobold_qwen",
+        "qwen3_tts": "kobold_qwen",
+        "kobold_qwen3": "kobold_qwen",
+        "audio.cpp": "audio_cpp",
+        "audiocpp": "audio_cpp",
+    }.get(normalized, normalized)
+
+
+def safe_scope_projection(value: Any) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    result: dict[str, Any] = {}
+    workspace_id = payload.get("workspace_id")
+    if type(workspace_id) is str and workspace_id.strip():
+        result["workspace_id"] = workspace_id
+    can_edit = payload.get("can_edit")
+    if type(can_edit) is bool:
+        result["can_edit"] = can_edit
+    return result
 
 
 def _safe_reference(value: Any) -> dict[str, Any] | None:
@@ -442,18 +467,24 @@ def voice_catalog(runtime: McpRuntime, arguments: VoiceCatalogInput) -> dict[str
             for item in collections
             if isinstance(item, dict)
         ]
-    return result
+    return result | safe_scope_projection(payload)
 
 
 def voice_catalog_capabilities(
     runtime: McpRuntime,
     arguments: VoiceCatalogCapabilitiesInput,
 ) -> dict[str, Any]:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
+    if arguments.session_id is not None:
+        scope_arguments["session_id"] = arguments.session_id
     payload = runtime.require_application().voice_catalog_capabilities(
         service_id=arguments.service_id,
         model=arguments.model,
+        **scope_arguments,
     )
-    requested_service = arguments.service_id.casefold() if arguments.service_id else None
+    requested_service = _service_identity(arguments.service_id) if arguments.service_id else None
     requested_model = arguments.model.casefold() if arguments.model else None
     result = {
         key: payload.get(key)
@@ -469,7 +500,7 @@ def voice_catalog_capabilities(
     for item in payload.get("models") or []:
         if not isinstance(item, dict):
             continue
-        if requested_service and str(item.get("service_id") or "").casefold() != requested_service:
+        if requested_service and _service_identity(item.get("service_id")) != requested_service:
             continue
         if requested_model and str(item.get("model") or "").casefold() != requested_model:
             continue
@@ -492,11 +523,14 @@ def voice_catalog_capabilities(
         )
     result["models"] = models
     result.setdefault("schema_version", "1")
-    return result
+    return result | safe_scope_projection(payload)
 
 
 def create_voice(runtime: McpRuntime, arguments: VoiceCreateInput) -> ToolOutcome:
     application = runtime.require_application()
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
     result = application.create_voice(
         name=arguments.name,
         language=arguments.language,
@@ -504,13 +538,23 @@ def create_voice(runtime: McpRuntime, arguments: VoiceCreateInput) -> ToolOutcom
         voice_category=arguments.voice_category,
         profile=arguments.profile,
         idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
+    )
+    scope = safe_scope_projection(result)
+    next_workspace_id = scope.get("workspace_id")
+    if next_workspace_id is None:
+        next_workspace_id = arguments.workspace_id
+    next_action_arguments = (
+        {"workspace_id": next_workspace_id}
+        if next_workspace_id is not None
+        else {}
     )
     return ToolOutcome(
-        result=safe_voice_projection(result),
+        result=safe_voice_projection(result) | scope,
         next_actions=[
             NextAction(
                 tool="pandrator_get_voice_catalog",
-                arguments={},
+                arguments=next_action_arguments,
                 reason="Inspect the created managed voice in the normalized catalog.",
             )
         ],
@@ -521,6 +565,9 @@ def design_google_voice(
     runtime: McpRuntime,
     arguments: DesignGoogleVoiceInput,
 ) -> ToolOutcome:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
     result = runtime.require_application().design_google_voice(
         service_id=arguments.service_id,
         model=arguments.model,
@@ -529,30 +576,51 @@ def design_google_voice(
         language=arguments.language,
         voice_category=arguments.voice_category,
         idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
     )
     voice_id = result.get("voice_id")
     if not isinstance(voice_id, str) and isinstance(result.get("result"), dict):
         voice_id = result["result"].get("voice_id")
+    scope = safe_scope_projection(result)
+    next_workspace_id = scope.get("workspace_id")
+    if next_workspace_id is None:
+        next_workspace_id = arguments.workspace_id
+    catalog_arguments: dict[str, str] = {
+        "query": voice_id if isinstance(voice_id, str) else "",
+        "kind": "managed",
+    }
+    if next_workspace_id is not None:
+        catalog_arguments["workspace_id"] = next_workspace_id
     actions = [
         NextAction(
             tool="pandrator_get_voice_catalog",
-            arguments={"query": voice_id if isinstance(voice_id, str) else "", "kind": "managed"},
+            arguments=catalog_arguments,
             reason="Inspect the saved Google voice after creation completes.",
         )
     ]
-    return _job_outcome(runtime, result, next_actions=actions)
+    outcome = _job_outcome(runtime, result, next_actions=actions)
+    outcome.result = outcome.result | scope
+    return outcome
 
 
 def get_voice_samples(runtime: McpRuntime, arguments: GetVoiceSamplesInput) -> dict[str, Any]:
-    return safe_samples_projection(
-        runtime.require_application().get_voice_samples(arguments.voice_id)
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
+    payload = runtime.require_application().get_voice_samples(
+        arguments.voice_id,
+        **scope_arguments,
     )
+    return safe_samples_projection(payload) | safe_scope_projection(payload)
 
 
 def promote_voice_design(
     runtime: McpRuntime,
     arguments: PromoteVoiceDesignInput,
 ) -> ToolOutcome:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
     result = runtime.require_application().promote_voice_design(
         arguments.voice_id,
         artifact_id=arguments.artifact_id,
@@ -560,7 +628,15 @@ def promote_voice_design(
         language=arguments.language,
         expected_voice_revision=arguments.expected_voice_revision,
         idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
     )
+    scope = safe_scope_projection(result)
+    next_workspace_id = scope.get("workspace_id")
+    if next_workspace_id is None:
+        next_workspace_id = arguments.workspace_id
+    sample_arguments: dict[str, str] = {"voice_id": arguments.voice_id}
+    if next_workspace_id is not None:
+        sample_arguments["workspace_id"] = next_workspace_id
     if result.get("status") == "ready":
         return ToolOutcome(
             result={
@@ -574,26 +650,29 @@ def promote_voice_design(
                     "reused_reference",
                 )
                 if key in result
-            },
+            }
+            | scope,
             next_actions=[
                 NextAction(
                     tool="pandrator_get_voice_samples",
-                    arguments={"voice_id": arguments.voice_id},
+                    arguments=sample_arguments,
                     reason="Inspect the reused immutable normalized voice reference.",
                 )
             ],
         )
-    return _job_outcome(
+    outcome = _job_outcome(
         runtime,
         result,
         next_actions=[
             NextAction(
                 tool="pandrator_get_voice_samples",
-                arguments={"voice_id": arguments.voice_id},
+                arguments=sample_arguments,
                 reason="Inspect the normalized sample after the durable promotion completes.",
             ),
         ],
     )
+    outcome.result.update(scope)
+    return outcome
 
 
 def import_voice_reference(
@@ -605,6 +684,10 @@ def import_voice_reference(
         crop["start_seconds"] = arguments.start_seconds
     if "end_seconds" in arguments.model_fields_set and arguments.end_seconds is not None:
         crop["end_seconds"] = arguments.end_seconds
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
+    forwarded_arguments: dict[str, Any] = crop | scope_arguments
     result = runtime.require_application().import_voice_reference(
         arguments.voice_id,
         artifact_id=arguments.artifact_id,
@@ -613,32 +696,52 @@ def import_voice_reference(
         transcript_reviewed=arguments.transcript_reviewed,
         expected_voice_revision=arguments.expected_voice_revision,
         idempotency_key=arguments.idempotency_key,
-        **crop,
+        **forwarded_arguments,
     )
-    return _job_outcome(
+    scope = safe_scope_projection(result)
+    next_workspace_id = scope.get("workspace_id")
+    if next_workspace_id is None:
+        next_workspace_id = arguments.workspace_id
+    sample_arguments: dict[str, str] = {"voice_id": arguments.voice_id}
+    if next_workspace_id is not None:
+        sample_arguments["workspace_id"] = next_workspace_id
+    outcome = _job_outcome(
         runtime,
         result,
         next_actions=[
             NextAction(
                 tool="pandrator_get_voice_samples",
-                arguments={"voice_id": arguments.voice_id},
+                arguments=sample_arguments,
                 reason="Inspect the imported managed sample after normalization completes.",
             ),
         ],
     )
+    outcome.result.update(scope)
+    return outcome
 
 
 def transcribe_voice_sample(
     runtime: McpRuntime,
     arguments: TranscribeVoiceSampleInput,
 ) -> ToolOutcome:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
     result = runtime.require_application().transcribe_voice_sample(
         arguments.voice_id,
         arguments.sample_id,
         settings=arguments.settings,
         idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
     )
-    return _job_outcome(
+    scope = safe_scope_projection(result)
+    next_workspace_id = scope.get("workspace_id")
+    if next_workspace_id is None:
+        next_workspace_id = arguments.workspace_id
+    sample_arguments: dict[str, str] = {"voice_id": arguments.voice_id}
+    if next_workspace_id is not None:
+        sample_arguments["workspace_id"] = next_workspace_id
+    outcome = _job_outcome(
         runtime,
         result,
         next_actions=[
@@ -649,17 +752,22 @@ def transcribe_voice_sample(
             ),
             NextAction(
                 tool="pandrator_get_voice_samples",
-                arguments={"voice_id": arguments.voice_id},
+                arguments=sample_arguments,
                 reason="Review the sample transcript after transcription completes.",
             ),
         ],
     )
+    outcome.result.update(scope)
+    return outcome
 
 
 def review_voice_transcript(
     runtime: McpRuntime,
     arguments: ReviewVoiceTranscriptInput,
 ) -> ToolOutcome:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
     result = runtime.require_application().review_voice_transcript(
         arguments.voice_id,
         arguments.sample_id,
@@ -667,13 +775,21 @@ def review_voice_transcript(
         language=arguments.language,
         expected_voice_revision=arguments.expected_voice_revision,
         idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
     )
+    scope = safe_scope_projection(result)
+    next_workspace_id = scope.get("workspace_id")
+    if next_workspace_id is None:
+        next_workspace_id = arguments.workspace_id
+    sample_arguments: dict[str, str] = {"voice_id": arguments.voice_id}
+    if next_workspace_id is not None:
+        sample_arguments["workspace_id"] = next_workspace_id
     return ToolOutcome(
-        result=safe_samples_projection(result),
+        result=safe_samples_projection(result) | scope,
         next_actions=[
             NextAction(
                 tool="pandrator_get_voice_samples",
-                arguments={"voice_id": arguments.voice_id},
+                arguments=sample_arguments,
                 reason="Confirm the reviewed transcript and current voice revision.",
             )
         ],
@@ -681,26 +797,82 @@ def review_voice_transcript(
 
 
 def publish_voice(runtime: McpRuntime, arguments: PublishVoiceInput) -> ToolOutcome:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
     result = runtime.require_application().publish_voice(
         arguments.voice_id,
         arguments.service_id,
         expected_revision=arguments.expected_revision,
         idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
     )
-    return _job_outcome(
+    scope = safe_scope_projection(result)
+    next_workspace_id = scope.get("workspace_id")
+    if next_workspace_id is None:
+        next_workspace_id = arguments.workspace_id
+    next_action_arguments = (
+        {"workspace_id": next_workspace_id}
+        if next_workspace_id is not None
+        else {}
+    )
+    outcome = _job_outcome(
         runtime,
         result,
         next_actions=[
             NextAction(
                 tool="pandrator_get_voice_catalog",
-                arguments={},
+                arguments=next_action_arguments,
                 reason="Inspect provider compatibility after publication completes.",
             )
         ],
     )
+    outcome.result = outcome.result | scope
+    return outcome
+
+
+def unpublish_voice(runtime: McpRuntime, arguments: UnpublishVoiceInput) -> ToolOutcome:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
+    result = runtime.require_application().unpublish_voice(
+        arguments.voice_id,
+        arguments.service_id,
+        expected_revision=arguments.expected_revision,
+        idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
+    )
+    scope = safe_scope_projection(result)
+    next_workspace_id = scope.get("workspace_id")
+    if next_workspace_id is None:
+        next_workspace_id = arguments.workspace_id
+    next_action_arguments = (
+        {"workspace_id": next_workspace_id}
+        if next_workspace_id is not None
+        else {}
+    )
+    outcome = _job_outcome(
+        runtime,
+        result,
+        next_actions=[
+            NextAction(
+                tool="pandrator_get_voice_catalog",
+                arguments=next_action_arguments,
+                reason="Inspect provider compatibility after removal completes.",
+            )
+        ],
+    )
+    outcome.result = outcome.result | scope
+    return outcome
 
 
 def audition_voice(runtime: McpRuntime, arguments: AuditionVoiceInput) -> ToolOutcome:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
+    voice_arguments: dict[str, str] = {}
+    if arguments.voice_id is not None:
+        voice_arguments["voice_id"] = arguments.voice_id
     result = runtime.require_application().audition_voice(
         service_id=arguments.service_id,
         text=arguments.text,
@@ -710,15 +882,24 @@ def audition_voice(runtime: McpRuntime, arguments: AuditionVoiceInput) -> ToolOu
         generation_prompt=arguments.generation_prompt,
         seed=arguments.seed,
         idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
+        **voice_arguments,
     )
-    return _job_outcome(runtime, result)
+    outcome = _job_outcome(runtime, result)
+    outcome.result = outcome.result | safe_scope_projection(result)
+    return outcome
 
 
 def list_voice_collections(
     runtime: McpRuntime,
     arguments: ListVoiceCollectionsInput,
 ) -> dict[str, Any]:
-    payload = runtime.require_application().list_voice_collections()
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
+    if arguments.session_id is not None:
+        scope_arguments["session_id"] = arguments.session_id
+    payload = runtime.require_application().list_voice_collections(**scope_arguments)
     return {
         "schema_version": str(payload.get("schema_version") or "1"),
         "items": [
@@ -726,19 +907,23 @@ def list_voice_collections(
             for item in (payload.get("items") or [])
             if isinstance(item, dict)
         ],
-    }
+    } | safe_scope_projection(payload)
 
 
 def create_voice_collection(
     runtime: McpRuntime,
     arguments: CreateVoiceCollectionInput,
 ) -> dict[str, Any]:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
     result = runtime.require_application().create_voice_collection(
         name=arguments.name,
         description=arguments.description,
         idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
     )
-    return safe_collection_projection(result)
+    return safe_collection_projection(result) | safe_scope_projection(result)
 
 
 def update_voice_collection(
@@ -748,37 +933,45 @@ def update_voice_collection(
     values = arguments.model_dump(mode="json", exclude_unset=True)
     values.pop("collection_id", None)
     values.pop("idempotency_key", None)
+    values.pop("workspace_id", None)
     values["add_members"] = [
         item.model_dump(mode="json", exclude_none=True) for item in arguments.add_members
     ]
     values["remove_members"] = [
         item.model_dump(mode="json", exclude_none=True) for item in arguments.remove_members
     ]
-    return safe_collection_projection(
-        runtime.require_application().update_voice_collection(
-            arguments.collection_id,
-            expected_revision=arguments.expected_revision,
-            name=arguments.name,
-            description=arguments.description,
-            include_description="description" in arguments.model_fields_set,
-            add_members=values["add_members"],
-            remove_members=values["remove_members"],
-            idempotency_key=arguments.idempotency_key,
-        )
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
+    result = runtime.require_application().update_voice_collection(
+        arguments.collection_id,
+        expected_revision=arguments.expected_revision,
+        name=arguments.name,
+        description=arguments.description,
+        include_description="description" in arguments.model_fields_set,
+        add_members=values["add_members"],
+        remove_members=values["remove_members"],
+        idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
     )
+    return safe_collection_projection(result) | safe_scope_projection(result)
 
 
 def update_catalog_voice_metadata(
     runtime: McpRuntime,
     arguments: UpdateCatalogVoiceMetadataInput,
 ) -> dict[str, Any]:
+    scope_arguments: dict[str, str] = {}
+    if arguments.workspace_id is not None:
+        scope_arguments["workspace_id"] = arguments.workspace_id
     result = runtime.require_application().update_catalog_voice_metadata(
         reference=arguments.reference.model_dump(mode="json", exclude_none=True),
         expected_revision=arguments.expected_revision,
         changes=arguments.changes.model_dump(mode="json", exclude_unset=True),
         idempotency_key=arguments.idempotency_key,
+        **scope_arguments,
     )
-    return safe_voice_projection(result)
+    return safe_voice_projection(result) | safe_scope_projection(result)
 
 
 def register_voice_lifecycle_tools(
@@ -853,6 +1046,13 @@ def register_voice_lifecycle_tools(
             "Publish one managed voice to a provider",
             publish_voice,
             PublishVoiceInput,
+            write_action,
+        ),
+        (
+            "pandrator_unpublish_voice",
+            "Remove one managed provider voice copy",
+            unpublish_voice,
+            UnpublishVoiceInput,
             write_action,
         ),
         (
@@ -933,6 +1133,7 @@ __all__ = [
     "safe_collection_projection",
     "safe_samples_projection",
     "safe_sample_projection",
+    "safe_scope_projection",
     "safe_voice_projection",
     "transcribe_voice_sample",
     "update_catalog_voice_metadata",

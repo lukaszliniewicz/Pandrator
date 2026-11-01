@@ -30,6 +30,7 @@ from .models import (
 )
 from .multilingual_setup import SECTION, canonical_language, read_setup
 from .outcome_plans import derive_legacy_outcome
+from .projects.identity import session_project, sync_project_name
 from .session_forks import SessionForkService
 from .settings_policy import RevisionConflict, stable_hash
 from .workspace_settings import WorkspaceSettingsService
@@ -273,6 +274,7 @@ def rename_project_in_session(
         project.revision += 1
         project.updated_at = utcnow()
         session.flush()
+        sync_project_name(session, project.source_session_id)
     return get_project(session, project_id)
 
 
@@ -416,7 +418,9 @@ def create_project_in_session(
     if len(title) > 255:
         raise ValueError("A project name cannot exceed 255 characters.")
     edit_id, edit_hash = _source_edit(db, source_session_id)
+    ownership = session_project(db, source_session_id)
     project = TranslationProject(
+        project_root_id=ownership.id,
         name=title,
         source_session_id=source_session_id,
         checkpoint_artifact_id=checkpoint.id,
@@ -427,6 +431,7 @@ def create_project_in_session(
     )
     db.add(project)
     db.flush()
+    sync_project_name(db, source_session_id)
     if setup is not None:
         if session_forks is None or created_directories is None:
             raise ValueError("Planned branch creation requires a fork service and cleanup list.")
@@ -463,6 +468,9 @@ def create_branches_in_session(
     source = db.get(SessionRecord, project.source_session_id)
     if source is None or source.trashed_at is not None:
         raise TranslationProjectConflict("The source session is unavailable.")
+    ownership = session_project(db, source.id)
+    if project.project_root_id != ownership.id:
+        raise TranslationProjectConflict("The translation project's ownership is inconsistent.")
     setup = read_setup(db, source.id)
     pinned_checkpoint, live_language = _checkpoint(
         db,
@@ -539,6 +547,7 @@ def create_branches_in_session(
             target_language=language,
             expected_revision=source.revision,
             allow_source_checkpoint=True,
+            project_id=ownership.id,
         )
         created_directories.append(fork.directory)
         record = fork.record

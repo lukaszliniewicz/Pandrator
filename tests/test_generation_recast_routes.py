@@ -108,7 +108,10 @@ def test_active_failed_job_is_rechecked_in_writer(recast_case):
     change(case)
     prepared = prepare(case, selector_keys=["character:fred"])
     with case["services"]["database"].immediate_session() as session:
-        job = m.Job(session_id=case["session_id"], kind="generation.run", status="running")
+        session_record = session.get_one(m.SessionRecord, case["session_id"])
+        project = session.get_one(m.Project, session_record.project_id)
+        job = m.Job(session_id=session_record.id, project_id=project.id, workspace_id=project.workspace_id,
+                    kind="generation.run", status="running")
         session.add(job)
         session.flush()
         session.add(m.GenerationRun(session_id=case["session_id"], plan_revision_id=case["revision_id"],

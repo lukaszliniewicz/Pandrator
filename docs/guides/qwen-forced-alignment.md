@@ -16,11 +16,30 @@ The caption selector is `caption_alignment_ctc_model`; the MOSS selector is `mos
 
 ## Installation and storage
 
-Install the local audio.cpp runtime through Pandrator Manager. Pandrator discovers `audiocpp_cli` from the active managed slot. An unmanaged installation can set `AUDIO_CPP_CLI` to the executable. CPU and the installed GPU backends can be used through the existing STT compute selector; automatic is passed to audio.cpp as its best available backend.
+As an Administrator, install audio.cpp through Pandrator Manager. Pandrator finds
+its `audiocpp_cli` executable automatically. For an unmanaged installation, set
+`AUDIO_CPP_CLI` to the executable's full path. Choose CPU, an installed GPU backend
+or Automatic in the transcription compute settings.
 
-Older Manager builds may have unpacked the POSIX CLI without executable permission. The installer fix is included in source; until a Manager executable containing it is released, correct the permission on the known managed `audiocpp_cli`. Updating the application alone does not replace a frozen Manager executable. The local runtime used for this review has been repaired.
+If Linux reports **Permission denied** when starting the aligner, update Manager
+and repair the audio.cpp component. Updating Pandrator alone does not update the
+Manager executable. For a manually installed CLI, check its executable permission:
 
-The first Qwen request downloads a **1,129,966,496-byte** Q8_0 GGUF. It is stored separately from voice-generation packages under `Pandrator/cache/aligners/qwen3` in managed installations, or `~/.cache/pandrator/aligners/qwen3` otherwise. Subsequent runs reuse the cache, including offline runs. The download is pinned to an immutable repository revision and exact SHA-256; it is streamed into a temporary file, checked, then atomically activated. Cross-process locking avoids duplicate concurrent downloads. Cancellation removes incomplete temporary downloads.
+```bash
+chmod u+x /path/to/audiocpp_cli
+```
+
+Replace the example path with your own executable; managed installations should
+use Manager's repair action.
+
+The Q8_0 model download is about **1.13 GB**. An Administrator must authorize
+acquiring a missing model; other users can reuse a model that is already
+installed. It is cached separately from voice-generation packages under
+`Pandrator/cache/aligners/qwen3` in managed installations, or
+`~/.cache/pandrator/aligners/qwen3` otherwise. Later runs reuse the cache, including
+offline runs. Downloads are checked against a pinned SHA-256 before activation;
+concurrent requests share the download lock, and cancellation removes incomplete
+files.
 
 Operator-only advanced runtime overrides are `qwen_aligner_model_path`, `qwen_aligner_executable`, `qwen_aligner_cache_dir` and `qwen_aligner_backend`. A custom model must be a compatible Qwen forced-aligner GGUF, not an ASR or TTS model. Custom local files are operator-supplied, not verified against the bundled model digest.
 
@@ -35,6 +54,20 @@ Each request must have its own exact matching mono 16-bit 16 kHz WAV and transcr
 Japanese/Chinese alignment uses source-preserving alignment-only units. This avoids audio.cpp 0.8.1 treating a long kana run as a single word. Native timestamp units can differ from space-delimited words. They are mapped back to exact original grapheme spans and punctuation, without changing display text or manufacturing interpolated acoustic timestamps. They must not be used directly as TTS speech-block boundaries.
 
 The adapter validates finite, monotonic sample timestamps within the clip, full lexical text conservation, and caption-boundary ownership. Missing, extra, changed or cross-cue units are rejected. A model's placeholder confidence field is not presented as acoustic certainty: the existing VAD/temporal quality assessment remains the confidence basis. A failed cue or MOSS turn retains its original caption/native-turn timing and a diagnostic.
+
+## Source-relative timing diagnostics
+
+Caption-alignment diagnostics include `source_timing_offsets`: signed start/end
+deltas from the original caption boundaries, their median and nearest-rank p95
+absolute deltas, plus at most 20 largest outliers identified by cue ID. The
+outlier threshold is a strict boundary shift greater than 2,000 ms. Rejected cues
+are counted separately; the summary uses final accepted cues, including ASR
+fallback fills. It contains no transcript text.
+
+A boundary shift is distinct from the alignment acceptance window, which covers
+the whole original cue interval plus configured padding. A large shift can be
+accepted structurally and still deserve listening review. These diagnostics do
+not change timestamps, reject another cue or represent acoustic confidence.
 
 ## Timing limitations
 

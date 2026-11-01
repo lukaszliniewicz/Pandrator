@@ -5,6 +5,12 @@ subtitles, and voiceover. A session is the durable unit of work. It records the
 workflow kind, source and target languages, outcome choices, stage selections,
 and revisioned settings.
 
+Solo is the default. Collaboration adds named accounts and shared workspaces;
+workspace Members can create, edit, run and export their team's ordinary content.
+Personal work stays private. Instance Administrator and workspace Manager are
+different roles. Read the `collaboration` guide for per-person enrollment,
+workspace approval, complete scopes and the private-to-shared copy workflow.
+
 Sources become artifacts. Each processing stage creates a new artifact rather
 than silently replacing the old one. The selected artifact for a stage is the
 input to downstream stages. This makes review, rollback, reruns, and provenance

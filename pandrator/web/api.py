@@ -61,6 +61,7 @@ def create_app(
             SESSION_COOKIE_SAMESITE="Lax",
             SESSION_COOKIE_SECURE=secure_cookies,
             TRUSTED_HOSTS=trusted_hosts or ["localhost", "127.0.0.1", "[::1]"],
+            PANDRATOR_PROXY_HOPS=proxy_hops,
         )
         if proxy_hops:
             app.wsgi_app = ProxyFix(
@@ -72,6 +73,11 @@ def create_app(
             )
 
         app.extensions["pandrator"] = services.extension_mapping()
+        from .security_events import SecurityEventSink
+
+        app.extensions["pandrator_security_events"] = SecurityEventSink(
+            os.environ.get("PANDRATOR_SECURITY_LOG")
+        )
         guards = ApiGuards(
             app,
             services,

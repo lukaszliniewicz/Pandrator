@@ -30,6 +30,7 @@ def normalize_mix_audio(
     rate: int,
     channels: int,
     cancel_event: threading.Event,
+    before_io: Callable[[], None] | None = None,
 ) -> int:
     """Normalize one sound source through the existing streaming assembler."""
 
@@ -53,6 +54,7 @@ def normalize_mix_audio(
         assembly_plan,
         destination,
         cancel_event=cancel_event,
+        before_io=before_io,
     )
     frames = _wav_info(
         destination,
@@ -62,6 +64,7 @@ def normalize_mix_audio(
         expected_frames=result.total_frames,
         require_nonempty=True,
         cancel_event=cancel_event,
+        before_io=before_io,
     )
     return frames
 
@@ -74,6 +77,7 @@ def render_sound_mix(
     *,
     cancel_event: threading.Event,
     progress: Callable[[float, str], None] | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Render a PCM16 WAV using fixed-size blocks and active clip readers."""
 
@@ -98,6 +102,7 @@ def render_sound_mix(
         expected_frames=mix["base_frames"],
         require_nonempty=True,
         cancel_event=cancel_event,
+        before_io=before_io,
     )
     clip_paths = {cue_id: Path(path) for cue_id, path in clip_paths.items()}
     for clip in mix["clips"]:
@@ -109,10 +114,13 @@ def render_sound_mix(
             expected_frames=clip["source_frames"],
             require_nonempty=True,
             cancel_event=cancel_event,
+            before_io=before_io,
         )
 
     if os.path.lexists(output_path):
         raise FileExistsError(f"Sound-mix output already exists: {output_path.name}")
+    if before_io is not None:
+        before_io()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     bytes_per_frame = mix["channels"] * PCM_SAMPLE_WIDTH_BYTES
@@ -124,7 +132,11 @@ def render_sound_mix(
     succeeded = False
 
     try:
+        if before_io is not None:
+            before_io()
         with wave.open(str(base_path), "rb") as base_reader:
+            if before_io is not None:
+                before_io()
             with output_path.open("xb") as output_stream:
                 created = os.fstat(output_stream.fileno())
                 output_identity = (created.st_dev, created.st_ino)
@@ -197,6 +209,8 @@ def render_sound_mix(
                                 continue
                             reader = active_readers.get(cue_id)
                             if reader is None:
+                                if before_io is not None:
+                                    before_io()
                                 reader = wave.open(str(clip_paths[cue_id]), "rb")
                                 active_readers[cue_id] = reader
                             count = overlap_end - overlap_start
@@ -250,6 +264,7 @@ def render_sound_mix(
             expected_frames=mix["total_frames"],
             require_nonempty=True,
             cancel_event=cancel_event,
+            before_io=before_io,
         )
         succeeded = True
     except BaseException:
@@ -300,9 +315,12 @@ def _wav_info(
     expected_frames: int,
     require_nonempty: bool,
     cancel_event: threading.Event | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> int:
     if not _is_regular_non_symlink(path):
         raise ValueError(f"{label} must be a regular, non-symlink WAV file.")
+    if before_io is not None:
+        before_io()
     try:
         with wave.open(str(path), "rb") as reader:
             if reader.getcomptype() != "NONE" or reader.getsampwidth() != PCM_SAMPLE_WIDTH_BYTES:

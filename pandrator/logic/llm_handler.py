@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from threading import Lock
-from typing import Any
+from typing import Any, Callable
 
 from .retry_utils import (
     retry_after_seconds,
@@ -1671,6 +1671,9 @@ def chat_completion_with_metadata(
     retry_callback: Any | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any | None = None,
+    *,
+    before_request: Callable[[], None] | None = None,
+    response_callback: Callable[[ChatCompletionResult], None] | None = None,
 ) -> ChatCompletionResult:
     """Runs a LiteLLM chat completion and preserves usage/cost metadata."""
     completion, _ = _get_litellm_clients()
@@ -1745,6 +1748,8 @@ def chat_completion_with_metadata(
                 cost_source=",".join(accumulated_cost_sources),
             )
         error: BaseException | None = None
+        if before_request is not None:
+            before_request()
         try:
             response = completion(**request_payload)
             result = _extract_chat_completion_result(
@@ -1752,39 +1757,45 @@ def chat_completion_with_metadata(
                 requested_model=resolved_model,
                 model_record=model_record if isinstance(model_record, dict) else None,
             )
-            provider_response_count += 1
-            for key, value in (result.usage or {}).items():
-                if isinstance(value, (int, float)):
-                    accumulated_usage[key] = accumulated_usage.get(key, 0) + value
-            if result.cost is not None:
-                accumulated_cost += float(result.cost)
-                if result.cost_source and result.cost_source not in accumulated_cost_sources:
-                    accumulated_cost_sources.append(result.cost_source)
-            if result.content or result.tool_calls:
-                result.usage = {
-                    **accumulated_usage,
-                    "provider_response_count": provider_response_count,
-                }
-                result.cost = accumulated_cost if accumulated_cost_sources else result.cost
-                result.cost_source = ",".join(accumulated_cost_sources) or result.cost_source
-                return result
-            completion_details = result.usage.get("completion_tokens_details")
-            reasoning_tokens = (
-                _usage_int(completion_details.get("reasoning_tokens"))
-                if isinstance(completion_details, dict)
-                else 0
-            )
-            diagnostic = (
-                f"finish_reason={result.finish_reason or 'unknown'}, "
-                f"completion_tokens={_usage_int(result.usage.get('completion_tokens'))}, "
-                f"reasoning_tokens={reasoning_tokens}"
-            )
-            error = RuntimeError(
-                "LiteLLM returned neither visible content nor a tool call "
-                f"({diagnostic})."
-            )
         except Exception as caught:
             error = caught
+        else:
+            if response_callback is not None:
+                response_callback(result)
+            try:
+                provider_response_count += 1
+                for key, value in (result.usage or {}).items():
+                    if isinstance(value, (int, float)):
+                        accumulated_usage[key] = accumulated_usage.get(key, 0) + value
+                if result.cost is not None:
+                    accumulated_cost += float(result.cost)
+                    if result.cost_source and result.cost_source not in accumulated_cost_sources:
+                        accumulated_cost_sources.append(result.cost_source)
+                if result.content or result.tool_calls:
+                    result.usage = {
+                        **accumulated_usage,
+                        "provider_response_count": provider_response_count,
+                    }
+                    result.cost = accumulated_cost if accumulated_cost_sources else result.cost
+                    result.cost_source = ",".join(accumulated_cost_sources) or result.cost_source
+                    return result
+                completion_details = result.usage.get("completion_tokens_details")
+                reasoning_tokens = (
+                    _usage_int(completion_details.get("reasoning_tokens"))
+                    if isinstance(completion_details, dict)
+                    else 0
+                )
+                diagnostic = (
+                    f"finish_reason={result.finish_reason or 'unknown'}, "
+                    f"completion_tokens={_usage_int(result.usage.get('completion_tokens'))}, "
+                    f"reasoning_tokens={reasoning_tokens}"
+                )
+                error = RuntimeError(
+                    "LiteLLM returned neither visible content nor a tool call "
+                    f"({diagnostic})."
+                )
+            except Exception as caught:
+                error = caught
 
         assert error is not None
         status = status_code_from_error(error)

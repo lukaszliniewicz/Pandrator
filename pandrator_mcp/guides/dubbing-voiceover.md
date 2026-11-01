@@ -83,8 +83,11 @@ already-running TTS job.
 Before generation, inspect speech blocks separately from display captions.
 Use `pandrator_update_generation_segments` for atomic speech wording and
 exclusion edits, with each current block ID and revision. Set `removed=true`
-for material that should remain in subtitles but should not be spoken; restore
-it with `removed=false`. Use `optimized_text` for spoken wording while keeping
+to remove material from speech and projected display captions; restore it with
+`removed=false`. To retain display-only labels while excluding their speech,
+choose `subtitle_text_source="selected_artifact"` for export: the selected
+caption revision then stays independent of speech-plan exclusions. Keep spoken
+responses such as “Amen” in separate included blocks. Use `optimized_text` for spoken wording while keeping
 display text. Keep utterance boundaries intact, then review the new speech-plan
 content signature and preview representative provider requests.
 
@@ -95,8 +98,10 @@ IDs and reuse decisions before executing; never replace accepted host work
 with an unintended provider pass.
 
 Do not infer a provider, model, or voice ID from a user's example. Call
-`pandrator_get_tts_catalog` (with refresh when current service readiness
-matters), match the requested qualities against advertised compatible choices,
+`pandrator_get_tts_catalog` with the project's `session_id`. If observations are
+stale, refresh explicitly with `pandrator_refresh_tts_catalog` at the matching
+workspace/service scope and with `app.write`. Match the requested qualities
+against advertised compatible choices,
 and inspect `pandrator_get_session_settings` for section `tts`. Apply the exact
 catalog IDs with `pandrator_configure_tts` and the reported settings revision.
 If no match exists or several materially different matches remain, ask the
@@ -109,9 +114,33 @@ assuming “latest.” For each deliverable, call
 selection, and optional generation-run ID. Execute that immutable plan and
 poll it to terminal before planning another dependent output.
 
+Omitting `subtitle_selection` uses saved output settings; `auto` explicitly
+includes the available documents. `source`, `translation` and `dual` are binding
+choices (`dual` needs both). Missing requested documents stop planning or export
+instead of substituting another language. Prepare the missing document or choose
+an available one. Audio-only exports and video with `subtitle_mode="none"` do not
+require captions.
+
 Typical separate variants include translated voiceover with mixed or
 dubbing-only audio and burned translated subtitles, plus original audio with
 corrected source subtitles. Keep them as separate export plans so each output
 contract and artifact lineage is reviewable. Finish with
 `pandrator_download_artifact`; it resumes and verifies the immutable artifact
 inside the operator-approved output root.
+
+Output settings identify the effective soundtrack and caption sources. Choose
+`mixed` for source audio plus voiceover, `preserve` for source audio, or
+`dubbing_only` for generated speech. Source gain, voice loudness and ducking apply
+to a mixed soundtrack. Additional project sounds are a separate inclusion choice.
+An export reuses recorded takes and prepares an assembly when required.
+
+New exports freeze their selected subtitle artifact identities and display
+revision when submitted. Later correction, translation or selection changes do
+not replace queued tracks. `subtitle_text_source="generation_run"` requests the
+selected audio version's historical wording; its display master must match a
+selected track. On a mismatch, select the matching subtitle revision or choose
+current display text. Inspect preservation/layout diagnostics before delivery.
+`selected_artifact` uses the chosen caption revision without speech-plan display
+projection; queued track identities and normal formatting checks still apply.
+Rendered voiceover video exports omit inherited chapters and record measured
+video, audio and container durations separately from requested timing settings.

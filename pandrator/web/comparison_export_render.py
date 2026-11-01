@@ -9,12 +9,20 @@ import threading
 from dataclasses import dataclass, replace
 from datetime import UTC
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 
 from pandrator.runtime import DataPaths
 
+from .access.comparison_export_policy import (
+    COMPARISON_AUDIO_FIELDS,
+    ComparisonAudioHeader,
+    ComparisonExportAccess,
+    require_comparison_export_access,
+)
+from .accounts.execution_actor import current_execution_actor
 from .artifacts import ArtifactService, sha256_file
 from .audio_assembly import (
     AudioAssemblyPart,
@@ -40,6 +48,10 @@ class ComparisonExportContext:
     artifacts: ArtifactService
 
 
+class _BeforeIoOptions(TypedDict, total=False):
+    before_io: Callable[[], None]
+
+
 def _cancel(cancel_event: threading.Event) -> None:
     if cancel_event.is_set():
         raise MediaProcessCancelled("Comparison export was canceled.")
@@ -58,7 +70,11 @@ def _require_worker_claim(session, payload: dict[str, Any], cancel_event: thread
         return
     job_id = str(payload.get("_job_id") or "")
     generation = payload.get("_lease_generation")
-    job = session.get(Job, job_id) if job_id else None
+    job = session.execute(select(
+        Job.id, Job.kind, Job.session_id, Job.status, Job.lease_owner,
+        Job.lease_generation, Job.lease_expires_at,
+    ).where(Job.id == job_id, Job.kind == COMPARISON_EXPORT_JOB_KIND,
+            Job.session_id == payload.get("session_id"))).one_or_none() if job_id else None
     expires_at = job.lease_expires_at if job is not None else None
     # SQLite drops DateTime's timezone on read; stored lease times are UTC.
     if expires_at is not None and expires_at.tzinfo is None:
@@ -76,8 +92,9 @@ def _require_worker_claim(session, payload: dict[str, Any], cancel_event: thread
         or job.lease_generation != generation
         or expires_at is None
         or expires_at <= utcnow()
-        or job.payload_json != _durable_payload(payload)
     ):
+        raise InterruptedError("Comparison export was canceled or its worker lease is no longer current.")
+    if session.scalar(select(Job.payload_json).where(Job.id == job_id)) != _durable_payload(payload):
         raise InterruptedError("Comparison export was canceled or its worker lease is no longer current.")
 
 
@@ -85,25 +102,38 @@ def _source_paths(
     context: ComparisonExportContext,
     payload: dict[str, Any],
     cancel_event: threading.Event,
-) -> list[tuple[dict[str, Any], Artifact, Path]]:
+    *, access: ComparisonExportAccess | None = None, before_io=None,
+) -> list[tuple[dict[str, Any], Artifact | ComparisonAudioHeader, Path]]:
     _cancel(cancel_event)
     with context.database.session() as session:
-        revalidate_comparison_export_in_session(session, payload)
+        if access is not None:
+            require_comparison_export_access(session, str(payload.get("session_id") or ""),
+                                             payload=payload, expected=access)
         _require_worker_claim(session, payload, cancel_event)
+        revalidate_comparison_export_in_session(session, payload)
         descriptors = list(payload["clips"])
-        artifact_rows = {
-            artifact.id: artifact
-            for artifact in session.scalars(
-                select(Artifact).where(
-                    Artifact.id.in_([str(item["artifact_id"]) for item in descriptors])
-                )
-            )
-        }
-        session_record = session.get(SessionRecord, str(payload["session_id"]))
-        if session_record is None:
-            raise KeyError(payload["session_id"])
-        storage_key = session_record.storage_key
-    resolved: list[tuple[dict[str, Any], Artifact, Path]] = []
+        artifact_rows: dict[str, Artifact | ComparisonAudioHeader]
+        if access is not None:
+            artifact_rows = {row.id: row for row in access.sources}
+            storage_key = access.storage_key
+        else:
+            from .projects.models import Project
+
+            project = select(SessionRecord.project_id).where(SessionRecord.id == payload["session_id"]).scalar_subquery()
+            workspace = select(Project.workspace_id).where(Project.id == project).scalar_subquery()
+            artifact_rows = {
+                artifact.id: artifact
+                for artifact in session.scalars(select(Artifact)
+                    .options(load_only(*COMPARISON_AUDIO_FIELDS, raiseload=True))
+                    .where(Artifact.id.in_([str(item["artifact_id"]) for item in descriptors]),
+                           Artifact.session_id == payload["session_id"], Artifact.project_id == project,
+                           Artifact.workspace_id == workspace, Artifact.kind == "audio", Artifact.state == "current"))
+            }
+            session_record = session.get(SessionRecord, str(payload["session_id"]))
+            if session_record is None:
+                raise KeyError(payload["session_id"])
+            storage_key = session_record.storage_key
+    resolved: list[tuple[dict[str, Any], Artifact | ComparisonAudioHeader, Path]] = []
     for descriptor in descriptors:
         _cancel(cancel_event)
         artifact_id = str(descriptor.get("artifact_id") or "")
@@ -118,17 +148,23 @@ def _source_paths(
             or artifact.content_hash != descriptor.get("artifact_content_hash")
         ):
             raise ValueError("A comparison source artifact is no longer available.")
+        if before_io is not None:
+            before_io()
         raw_path = context.paths.root / relative_path
         path = context.paths.managed_path(relative_path)
         if raw_path.is_symlink() or not path.is_file():
             raise ValueError("A comparison source audio file is missing or unsafe.")
+        if before_io is not None:
+            before_io()
         if sha256_file(path) != artifact.content_hash:
             raise ValueError("A comparison source audio file changed after it was selected.")
-        duration_ms = _audio_duration_ms(path)
+        duration_ms = _audio_duration_ms(path, **({"before_io": before_io} if before_io is not None else {}))
         if duration_ms != descriptor.get("duration_ms"):
             raise ValueError("A comparison source audio duration changed after it was selected.")
         resolved.append((descriptor, artifact, path))
     output_dir = context.paths.sessions / storage_key / "comparison-exports"
+    if before_io is not None:
+        before_io()
     output_dir.mkdir(parents=True, exist_ok=True)
     return resolved
 
@@ -195,8 +231,20 @@ def _publish_pair(
     audio_metadata: dict[str, Any],
     manifest_metadata: dict[str, Any],
     cancel_event: threading.Event,
+    access: ComparisonExportAccess | None = None,
 ) -> tuple[Artifact, Artifact]:
+    def prove(unit=None):
+        _cancel(cancel_event)
+        if access is not None:
+            if unit is None:
+                with context.database.snapshot_session() as current:
+                    require_comparison_export_access(current, str(payload["session_id"]), payload=payload, expected=access)
+            else:
+                require_comparison_export_access(unit, str(payload["session_id"]), payload=payload, expected=access)
+
+    prove()
     audio_prepared = context.artifacts.prepare_registration(audio_path, settings=settings)
+    prove()
     manifest_prepared = context.artifacts.prepare_registration(manifest_path, settings=settings)
     if (
         not audio_prepared.content_hash
@@ -205,9 +253,11 @@ def _publish_pair(
     ):
         raise ValueError("Comparison export output hashes could not be calculated.")
     stem = f"comparison-{os.urandom(12).hex()}"
+    prove()
     final_audio = context.artifacts.next_available_path(
         output_dir / f"{stem}.{payload['output_format']}"
     )
+    prove()
     final_manifest = context.artifacts.next_available_path(
         output_dir / f"{stem}.manifest.json"
     )
@@ -218,6 +268,7 @@ def _publish_pair(
     registered_manifest: Artifact | None = None
     try:
         with context.database.immediate_session() as session:
+            prove(session)
             _require_worker_claim(session, payload, cancel_event)
             revalidate_comparison_export_in_session(session, payload)
             if final_audio.exists() or final_manifest.exists():
@@ -260,17 +311,27 @@ def _publish_pair(
                 **dict(registered_audio.metadata_json or {}),
                 "manifest_artifact_id": registered_manifest.id,
             }
+            prove(session)
             _require_worker_claim(session, payload, cancel_event)
             revalidate_comparison_export_in_session(session, payload)
+            prove(session)
             session.expunge(registered_audio)
             session.expunge(registered_manifest)
         committed = True
     finally:
         if not committed:
-            if moved_audio:
-                final_audio.unlink(missing_ok=True)
-            if moved_manifest:
-                final_manifest.unlink(missing_ok=True)
+            for moved, path in ((moved_audio, final_audio), (moved_manifest, final_manifest)):
+                if not moved:
+                    continue
+                try:
+                    relative = context.paths.relative_managed_path(path)
+                    with context.database.session() as unit:
+                        registered = unit.scalar(select(Artifact.id).where(Artifact.relative_path == relative).limit(1))
+                    if registered is None:
+                        path.unlink(missing_ok=True)
+                except Exception:
+                    # Uncertain registration cannot establish safe ownership for deletion.
+                    continue
     assert registered_audio is not None and registered_manifest is not None
     return registered_audio, registered_manifest
 
@@ -283,32 +344,64 @@ def render_comparison_export(
 ) -> dict[str, Any]:
     """Worker callback: render selected takes only and publish audio plus manifest."""
 
+    if current_execution_actor.get() is None and current_job_lease.get() is None:
+        access = None
+    else:
+        with context.database.snapshot_session() as unit:
+            access = require_comparison_export_access(unit, str(payload.get("session_id") or ""), payload=payload)
+
+    def prove():
+        _cancel(cancel_event)
+        if access is not None:
+            with context.database.snapshot_session() as unit:
+                require_comparison_export_access(unit, access.session_id, payload=payload, expected=access)
+
+    before_io_options: _BeforeIoOptions = {"before_io": prove} if access is not None else {}
+    if access is not None:
+        original_progress = progress
+
+        def guarded_progress(value, message=None):
+            prove()
+            original_progress(value, message)
+            prove()
+
+        progress = guarded_progress
+
     if payload.get("version") != 1:
         raise ValueError("The comparison export payload version is unsupported.")
     if payload.get("output_format") not in ("wav", "mp3"):
         raise ValueError("Comparison exports support WAV or MP3 output.")
     _cancel(cancel_event)
-    resolved = _source_paths(context, payload, cancel_event)
+    resolved = _source_paths(context, payload, cancel_event,
+                             **({"access": access, "before_io": prove} if access is not None else {}))
     descriptors = [item[0] for item in resolved]
     source_paths = [item[2] for item in resolved]
     session_id = str(payload["session_id"])
     with context.database.session() as session:
+        if access is not None:
+            require_comparison_export_access(session, session_id, payload=payload, expected=access)
         revalidate_comparison_export_in_session(session, payload)
-        session_record = session.get(SessionRecord, session_id)
-        if session_record is None:
-            raise KeyError(session_id)
-        output_dir = context.paths.sessions / session_record.storage_key / "comparison-exports"
+        if access is not None:
+            output_dir = context.paths.sessions / access.storage_key / "comparison-exports"
+        else:
+            session_record = session.get(SessionRecord, session_id)
+            if session_record is None:
+                raise KeyError(session_id)
+            output_dir = context.paths.sessions / session_record.storage_key / "comparison-exports"
     staging_root = output_dir / ".staging"
+    prove()
     staging_root.mkdir(parents=True, exist_ok=True)
     output_format = str(payload["output_format"])
     gap_ms = int(payload["gap_ms"])
+    prove()
     with tempfile.TemporaryDirectory(prefix="comparison-export-", dir=staging_root) as temporary:
         scratch = Path(temporary)
         scratch_audio = scratch / f"comparison.{output_format}"
         scratch_manifest = scratch / "comparison.manifest.json"
         _cancel(cancel_event)
         sample_rate_hz, channels = preferred_pcm_format(
-            source_paths[0], cancel_event=cancel_event
+            source_paths[0], cancel_event=cancel_event,
+            **before_io_options,
         )
         parts = [
             AudioAssemblyPart(
@@ -334,6 +427,7 @@ def render_comparison_export(
             work_dir=scratch,
             cancel_event=cancel_event,
             progress=lambda fraction, detail: progress(0.08 + 0.70 * fraction, detail),
+            **before_io_options,
         )
         _cancel(cancel_event)
         if (
@@ -350,9 +444,11 @@ def render_comparison_export(
         progress(0.82, "Rechecking selected audio sources")
         for descriptor, source_path in zip(descriptors, source_paths, strict=True):
             _cancel(cancel_event)
+            prove()
             if sha256_file(source_path) != descriptor["artifact_content_hash"]:
                 raise ValueError("A comparison source audio file changed while rendering.")
 
+        prove()
         audio_prepared = context.artifacts.prepare_registration(scratch_audio)
         if not audio_prepared.content_hash:
             raise ValueError("Comparison export output hash could not be calculated.")
@@ -378,6 +474,7 @@ def render_comparison_export(
             "output_hash": audio_prepared.content_hash,
             "clips": manifest_clips,
         }
+        prove()
         scratch_manifest.write_text(
             json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
@@ -420,6 +517,7 @@ def render_comparison_export(
             audio_metadata=audio_metadata,
             manifest_metadata=manifest_metadata,
             cancel_event=cancel_event,
+            **({"access": access} if access is not None else {}),
         )
     progress(1.0, "Comparison export ready")
     return {

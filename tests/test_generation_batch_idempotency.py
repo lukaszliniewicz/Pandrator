@@ -244,9 +244,13 @@ def test_receipt_completion_failure_rolls_back_batch_and_receipt(
 def test_same_key_is_scoped_to_authenticated_principal(generation_case):
     case = generation_case
     other_client = case["app"].test_client()
+    account = case["services"]["auth"].initial_account()
     other_headers = _bootstrap(
         other_client,
-        case["bootstrap"].issue(subject="separate-principal"),
+        case["bootstrap"].issue(
+            subject="separate-principal", user_id=account.user_id,
+            auth_revision=account.auth_revision,
+        ),
     )
     first_id, second_id = case["segment_ids"]
     key = "generation-batch-principal-01"
@@ -312,12 +316,15 @@ def test_browser_no_key_works_and_manager_bootstrap_requires_key(generation_case
     assert browser.status_code == 200, browser.get_json()
 
     manager_client = case["app"].test_client()
+    account = case["services"]["auth"].initial_account()
     manager_headers = _bootstrap(
         manager_client,
         case["bootstrap"].issue(
             subject="manager-principal",
             kind="manager_bootstrap",
             scopes={"app.read", "app.write"},
+            user_id=account.user_id,
+            auth_revision=account.auth_revision,
         ),
     )
     missing_key = _batch(

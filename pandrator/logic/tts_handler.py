@@ -83,6 +83,7 @@ from .kobold_qwen_http import (
 from .kobold_qwen_http import (
     KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS as KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS,
 )
+from .model_acquisition import ModelAcquisitionDenied
 from .retry_utils import (
     retry_after_seconds,
     retry_delay_seconds,
@@ -104,6 +105,14 @@ from .tts_endpoint_transport import (
     endpoint_lock_guard,
     endpoint_lock_key,
     endpoint_lock_urls,
+)
+from .tts_io_policy import (
+    TtsIoDenied,
+    check_tts_io,
+    current_tts_io_policy,
+    redact_tts_diagnostic,
+    tts_environment_credentials_allowed,
+    tts_host_adc_allowed,
 )
 from .tts_openai_http_policy import (
     OPENAI_CANDIDATE_FALLBACK_STATUS_CODES as OPENAI_CANDIDATE_FALLBACK_STATUS_CODES,
@@ -589,7 +598,7 @@ def _tts_error_detail(error: Exception) -> str:
             )
     if not detail:
         detail = str(error)
-    return " ".join(detail.split())[:1000]
+    return " ".join(redact_tts_diagnostic(detail).split())[:1000]
 
 
 def _audio_cpp_permanent_error(detail: str) -> bool:
@@ -1896,7 +1905,7 @@ def should_show_xtts_advanced_settings(tts_settings: dict) -> bool:
 
 def _resolve_openai_audio_api_key(endpoint: Mapping[str, object]) -> str:
     key_env = str(endpoint.get("api_key_env", "") or "").strip()
-    if key_env:
+    if key_env and tts_environment_credentials_allowed():
         env_value = os.getenv(key_env, "").strip()
         if env_value:
             return env_value
@@ -1910,7 +1919,7 @@ def _resolve_openai_audio_api_key(endpoint: Mapping[str, object]) -> str:
 
 def _configured_endpoint_auth_headers(endpoint: dict[str, object]) -> dict[str, str]:
     key_env = str(endpoint.get("api_key_env", "") or "").strip()
-    if key_env:
+    if key_env and tts_environment_credentials_allowed():
         env_value = os.getenv(key_env, "").strip()
         if env_value:
             auth_mode = str(endpoint.get("auth_mode") or "").lower()
@@ -1932,7 +1941,7 @@ def _configured_endpoint_auth_headers(endpoint: dict[str, object]) -> dict[str, 
 
 def _resolve_azure_speech_api_key(endpoint: dict[str, object]) -> str:
     key_env = str(endpoint.get("api_key_env") or "AZURE_SPEECH_KEY").strip()
-    if key_env:
+    if key_env and tts_environment_credentials_allowed():
         environment_key = os.getenv(key_env, "").strip()
         if environment_key:
             return environment_key
@@ -2140,7 +2149,7 @@ def _elevenlabs_auth_headers(api_key: str, *, audio: bool = False) -> dict[str, 
 def _resolve_elevenlabs_api_key(tts_settings: dict | None = None) -> str:
     service = get_service_config(tts_settings or {}, ELEVENLABS_PROVIDER) or {}
     key_env = str(service.get("api_key_env") or "ELEVENLABS_API_KEY").strip()
-    if key_env:
+    if key_env and tts_environment_credentials_allowed():
         value = os.getenv(key_env, "").strip()
         if value:
             return value
@@ -2149,7 +2158,7 @@ def _resolve_elevenlabs_api_key(tts_settings: dict | None = None) -> str:
 
 def _resolve_elevenlabs_endpoint_api_key(endpoint: dict[str, object]) -> str:
     key_env = str(endpoint.get("api_key_env") or "").strip()
-    if key_env:
+    if key_env and tts_environment_credentials_allowed():
         value = os.getenv(key_env, "").strip()
         if value:
             return value
@@ -2324,7 +2333,7 @@ def _resolve_service_api_key(
 ) -> str:
     service = get_service_config(tts_settings or {}, service_id) or {}
     key_env = str(service.get("api_key_env") or default_env).strip()
-    if key_env:
+    if key_env and tts_environment_credentials_allowed():
         api_key = os.getenv(key_env, "").strip()
         if api_key:
             return api_key
@@ -2717,8 +2726,12 @@ def _remote_voice_exists(
     *,
     base_url: str,
     api_key: str = "",
+    before_io: Callable[[], None] | None = None,
 ) -> bool | None:
     """Verify a remote voice after an idempotent or unsupported DELETE."""
+    before_io_options: dict[str, Any] = (
+        {"before_io": before_io} if before_io is not None else {}
+    )
     return _remote_voice_exists_http(
         voice_id,
         base_url=base_url,
@@ -2732,6 +2745,7 @@ def _remote_voice_exists(
         _voice_catalog_can_confirm_absence=lambda payload: _voice_catalog_can_confirm_absence(
             payload
         ),
+        **before_io_options,
     )
 
 
@@ -2742,8 +2756,12 @@ def _delete_speaker_voice_openai_compatible(
     fallback_base_url: str,
     service_name: str,
     api_key: str = "",
+    before_io: Callable[[], None] | None = None,
 ) -> bool:
     """Delete an uploaded voice without confusing an absent route with an absent voice."""
+    before_io_options: dict[str, Any] = (
+        {"before_io": before_io} if before_io is not None else {}
+    )
     return _delete_speaker_voice_http(
         voice_id,
         base_url=base_url,
@@ -2753,9 +2771,13 @@ def _delete_speaker_voice_openai_compatible(
         _normalize_base_url=lambda base, fallback: _normalize_base_url(base, fallback),
         _openai_voice_catalog_urls=lambda base: _openai_voice_catalog_urls(base),
         _openai_auth_headers=lambda key: _openai_auth_headers(key),
-        _remote_voice_exists=lambda voice_id, *, base_url, api_key="": _remote_voice_exists(
-            voice_id, base_url=base_url, api_key=api_key
+        _remote_voice_exists=lambda voice_id, *, base_url, api_key="", before_io=None: _remote_voice_exists(
+            voice_id,
+            base_url=base_url,
+            api_key=api_key,
+            **({"before_io": before_io} if before_io is not None else {}),
         ),
+        **before_io_options,
     )
 
 
@@ -2764,8 +2786,12 @@ def upload_xtts_speaker_voice(
     base_url: str = XTTS_API_BASE_URL,
     *,
     voice_id: str | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> str:
     """Uploads voice to XTTS and returns uploaded voice identifier."""
+    before_io_options: dict[str, Any] = (
+        {"before_io": before_io} if before_io is not None else {}
+    )
     return _upload_speaker_voice_openai_compatible(
         wav_file_path,
         base_url=base_url,
@@ -2774,6 +2800,7 @@ def upload_xtts_speaker_voice(
         api_key=XTTS_OPENAI_PLACEHOLDER_API_KEY,
         upload_purpose=XTTS_UPLOAD_FILE_PURPOSE,
         voice_id=voice_id,
+        **before_io_options,
     )
 
 
@@ -2785,18 +2812,31 @@ def upload_voxcpm_speaker_voice(
     mode: str = "reference",
     voice_id: str | None = None,
     api_key: str = "",
+    before_io: Callable[[], None] | None = None,
+    allow_environment_credentials: bool = True,
 ) -> str:
     """Uploads voice to VoxCPM and returns uploaded voice identifier."""
+    before_io_options: dict[str, Any] = (
+        {"before_io": before_io} if before_io is not None else {}
+    )
+    resolved_api_key = str(api_key or "").strip()
+    if not resolved_api_key:
+        resolved_api_key = (
+            _resolve_voxcpm_api_key()
+            if allow_environment_credentials
+            else XTTS_OPENAI_PLACEHOLDER_API_KEY
+        )
     return _upload_speaker_voice_openai_compatible(
         wav_file_path,
         base_url=base_url,
         fallback_base_url=VOXCPM_API_BASE_URL,
         service_name="VoxCPM",
-        api_key=str(api_key or "").strip() or _resolve_voxcpm_api_key(),
+        api_key=resolved_api_key,
         upload_purpose=VOXCPM_UPLOAD_FILE_PURPOSE,
         prompt_text=prompt_text,
         mode=mode,
         voice_id=voice_id,
+        **before_io_options,
     )
 
 
@@ -2807,17 +2847,30 @@ def upload_fishs2_speaker_voice(
     prompt_text: str | None = None,
     voice_id: str | None = None,
     api_key: str = "",
+    before_io: Callable[[], None] | None = None,
+    allow_environment_credentials: bool = True,
 ) -> str:
     """Uploads voice to FishS2 and returns uploaded voice identifier."""
+    before_io_options: dict[str, Any] = (
+        {"before_io": before_io} if before_io is not None else {}
+    )
+    resolved_api_key = str(api_key or "").strip()
+    if not resolved_api_key:
+        resolved_api_key = (
+            _resolve_fishs2_api_key()
+            if allow_environment_credentials
+            else XTTS_OPENAI_PLACEHOLDER_API_KEY
+        )
     return _upload_speaker_voice_openai_compatible(
         wav_file_path,
         base_url=base_url,
         fallback_base_url=FISHS2_API_BASE_URL,
         service_name="FishS2",
-        api_key=str(api_key or "").strip() or _resolve_fishs2_api_key(),
+        api_key=resolved_api_key,
         upload_purpose=FISHS2_UPLOAD_FILE_PURPOSE,
         prompt_text=prompt_text,
         voice_id=voice_id,
+        **before_io_options,
     )
 
 
@@ -2827,8 +2880,12 @@ def upload_chatterbox_speaker_voice(
     *,
     prompt_text: str | None = None,
     voice_id: str | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> str:
     """Uploads voice to Chatterbox and returns uploaded voice identifier."""
+    before_io_options: dict[str, Any] = (
+        {"before_io": before_io} if before_io is not None else {}
+    )
     return _upload_speaker_voice_openai_compatible(
         wav_file_path,
         base_url=base_url,
@@ -2838,6 +2895,7 @@ def upload_chatterbox_speaker_voice(
         upload_purpose="user_data",
         prompt_text=prompt_text,
         voice_id=voice_id,
+        **before_io_options,
     )
 
 
@@ -2847,16 +2905,29 @@ def upload_kobold_qwen_speaker_voice(
     *,
     voice_id: str | None = None,
     api_key: str = "",
+    before_io: Callable[[], None] | None = None,
+    allow_environment_credentials: bool = True,
 ) -> str:
     """Uploads voice to Qwen3 TTS and returns uploaded voice identifier."""
+    before_io_options: dict[str, Any] = (
+        {"before_io": before_io} if before_io is not None else {}
+    )
+    resolved_api_key = str(api_key or "").strip()
+    if not resolved_api_key:
+        resolved_api_key = (
+            _resolve_kobold_qwen_api_key()
+            if allow_environment_credentials
+            else XTTS_OPENAI_PLACEHOLDER_API_KEY
+        )
     return _upload_speaker_voice_openai_compatible(
         wav_file_path,
         base_url=base_url,
         fallback_base_url=KOBOLD_QWEN_API_BASE_URL,
         service_name="Qwen3 TTS",
-        api_key=str(api_key or "").strip() or _resolve_kobold_qwen_api_key(),
+        api_key=resolved_api_key,
         upload_purpose="user_data",
         voice_id=voice_id,
+        **before_io_options,
     )
 
 
@@ -2869,9 +2940,17 @@ def upload_speaker_voice(
     mode: str | None = None,
     voice_id: str | None = None,
     api_key: str = "",
+    before_io: Callable[[], None] | None = None,
+    allow_environment_credentials: bool = True,
 ) -> str:
     """Uploads a speaker voice file and returns uploaded voice identifier."""
     normalized_service = str(service or "XTTS").strip().lower()
+    before_io_options: dict[str, Any] = (
+        {"before_io": before_io} if before_io is not None else {}
+    )
+    provider_options: dict[str, Any] = dict(before_io_options)
+    if not allow_environment_credentials:
+        provider_options["allow_environment_credentials"] = False
     if normalized_service in {"voxcpm", "voxcpm2"}:
         return upload_voxcpm_speaker_voice(
             wav_file_path,
@@ -2880,6 +2959,7 @@ def upload_speaker_voice(
             mode=mode or "reference",
             voice_id=voice_id,
             api_key=api_key,
+            **provider_options,
         )
 
     if normalized_service in {"fishs2", "fish-s2", "fishs2-cpp", "fishs2cpp"}:
@@ -2889,6 +2969,7 @@ def upload_speaker_voice(
             prompt_text=prompt_text,
             voice_id=voice_id,
             api_key=api_key,
+            **provider_options,
         )
 
     if normalized_service in {"chatterbox", "chatterbox-turbo"}:
@@ -2897,6 +2978,7 @@ def upload_speaker_voice(
             base_url=base_url,
             prompt_text=prompt_text,
             voice_id=voice_id,
+            **before_io_options,
         )
 
     if normalized_service in {
@@ -2912,12 +2994,14 @@ def upload_speaker_voice(
             base_url=base_url,
             voice_id=voice_id,
             api_key=api_key,
+            **provider_options,
         )
 
     return upload_xtts_speaker_voice(
         wav_file_path,
         base_url=base_url,
         voice_id=voice_id,
+        **before_io_options,
     )
 
 
@@ -2927,6 +3011,8 @@ def delete_speaker_voice(
     *,
     service: str = "XTTS",
     api_key: str = "",
+    before_io: Callable[[], None] | None = None,
+    allow_environment_credentials: bool = True,
 ) -> bool:
     """Delete an uploaded voice from a first-party OpenAI-compatible wrapper."""
 
@@ -2934,11 +3020,23 @@ def delete_speaker_voice(
     if normalized_service in {"voxcpm", "voxcpm2"}:
         fallback_base_url = VOXCPM_API_BASE_URL
         service_name = "VoxCPM"
-        resolved_key = str(api_key or "").strip() or _resolve_voxcpm_api_key()
+        resolved_key = str(api_key or "").strip()
+        if not resolved_key:
+            resolved_key = (
+                _resolve_voxcpm_api_key()
+                if allow_environment_credentials
+                else XTTS_OPENAI_PLACEHOLDER_API_KEY
+            )
     elif normalized_service in {"fishs2", "fish-s2", "fishs2-cpp", "fishs2cpp"}:
         fallback_base_url = FISHS2_API_BASE_URL
         service_name = "FishS2"
-        resolved_key = str(api_key or "").strip() or _resolve_fishs2_api_key()
+        resolved_key = str(api_key or "").strip()
+        if not resolved_key:
+            resolved_key = (
+                _resolve_fishs2_api_key()
+                if allow_environment_credentials
+                else XTTS_OPENAI_PLACEHOLDER_API_KEY
+            )
     elif normalized_service in {"chatterbox", "chatterbox-turbo"}:
         fallback_base_url = CHATTERBOX_API_BASE_URL
         service_name = "Chatterbox"
@@ -2953,18 +3051,28 @@ def delete_speaker_voice(
     }:
         fallback_base_url = KOBOLD_QWEN_API_BASE_URL
         service_name = "Qwen3 TTS"
-        resolved_key = str(api_key or "").strip() or _resolve_kobold_qwen_api_key()
+        resolved_key = str(api_key or "").strip()
+        if not resolved_key:
+            resolved_key = (
+                _resolve_kobold_qwen_api_key()
+                if allow_environment_credentials
+                else XTTS_OPENAI_PLACEHOLDER_API_KEY
+            )
     else:
         fallback_base_url = XTTS_API_BASE_URL
         service_name = "XTTS"
         resolved_key = str(api_key or "").strip() or XTTS_OPENAI_PLACEHOLDER_API_KEY
 
+    before_io_options: dict[str, Any] = (
+        {"before_io": before_io} if before_io is not None else {}
+    )
     return _delete_speaker_voice_openai_compatible(
         voice_id,
         base_url=base_url,
         fallback_base_url=fallback_base_url,
         service_name=service_name,
         api_key=resolved_key,
+        **before_io_options,
     )
 
 
@@ -3105,20 +3213,44 @@ def _build_xtts_openai_payload(text: str, tts_settings: dict) -> dict:
 def _request_xtts_audio(
     text: str, tts_settings: dict, xtts_base_url: str
 ) -> requests.Response:
+    from .model_acquisition import (
+        model_inference_uses_prepared_endpoint,
+        require_model_acquisition,
+        require_prepared_model_inference,
+    )
+
     normalized_base_url = _normalize_base_url(xtts_base_url, XTTS_API_BASE_URL)
     payload = _build_xtts_openai_payload(text, tts_settings)
-    return _native_speech_http.post_speech_candidates(
-        _openai_audio_speech_urls(normalized_base_url),
-        request_options=lambda: {
+    prepared_only = model_inference_uses_prepared_endpoint()
+    speech_urls = _openai_audio_speech_urls(normalized_base_url)
+    if prepared_only:
+        speech_urls = [f"{url}/prepared" for url in speech_urls]
+
+    def request_options() -> _native_speech_http.SpeechCandidatePostOptions:
+        if prepared_only:
+            require_prepared_model_inference()
+        else:
+            require_model_acquisition()
+        options: _native_speech_http.SpeechCandidatePostOptions = {
             "headers": _openai_auth_headers(),
             "json": payload,
             "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
-        },
+        }
+        if prepared_only:
+            options["allow_redirects"] = False
+        return options
+
+    response = _native_speech_http.post_speech_candidates(
+        speech_urls,
+        request_options=request_options,
         should_try_next=lambda status: _should_try_next_openai_candidate(status),
         no_endpoint_message=(
             f"No XTTS speech endpoint could be resolved for '{normalized_base_url}'."
         ),
     )
+    if prepared_only:
+        _native_speech_http.require_prepared_model_response(response)
+    return response
 
 
 def _build_voxcpm_payload(text: str, tts_settings: dict) -> dict:
@@ -3606,7 +3738,8 @@ def _request_openai_compatible_audio(
             payload, endpoint, request_session=request_session
         )
     if (
-        provider in SUPPORTED_AUDIO_PROVIDERS
+        current_tts_io_policy() is None
+        and provider in SUPPORTED_AUDIO_PROVIDERS
         and not uses_nonstandard_gemini_base
         and not _coerce_bool(endpoint.get("direct_http"), False)
     ):
@@ -3640,8 +3773,15 @@ def _request_openai_compatible_audio(
     )
 
 
-def _vertex_access_token(service: dict[str, object]) -> tuple[str, str]:
+def _vertex_access_token(
+    service: dict[str, object], *, before_io: Callable[[], None] | None = None,
+    allow_host_adc: bool = True,
+) -> tuple[str, str]:
     """Create a short-lived Vertex token from the shared service-account JSON or ADC."""
+
+    credential_json = str(service.get("api_key") or "").strip()
+    if not allow_host_adc and not credential_json:
+        raise ValueError("Google Vertex AI credentials are not configured.")
 
     try:
         import google.auth
@@ -3650,8 +3790,17 @@ def _vertex_access_token(service: dict[str, object]) -> tuple[str, str]:
     except ImportError as error:  # pragma: no cover - dependency guard
         raise RuntimeError("Vertex AI TTS requires the google-auth package.") from error
 
+    guarded_request: Callable[..., Any] | None = None
+    if before_io is not None:
+        transport = GoogleAuthRequest()
+
+        def guarded_transport(*args: Any, **kwargs: Any) -> Any:
+            before_io()
+            return transport(*args, **kwargs)
+
+        guarded_request = guarded_transport
+
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
-    credential_json = str(service.get("api_key") or "").strip()
     if credential_json:
         try:
             credential_info = json.loads(credential_json)
@@ -3665,7 +3814,13 @@ def _vertex_access_token(service: dict[str, object]) -> tuple[str, str]:
         )
         project_id = str(credential_info.get("project_id") or "").strip()
     else:
-        credentials, detected_project = google.auth.default(scopes=scopes)
+        if before_io is not None:
+            before_io()
+            credentials, detected_project = google.auth.default(
+                scopes=scopes, request=guarded_request
+            )
+        else:
+            credentials, detected_project = google.auth.default(scopes=scopes)
         project_id = str(detected_project or "").strip()
 
     configured_project = str(service.get("vertex_project") or "").strip()
@@ -3673,7 +3828,9 @@ def _vertex_access_token(service: dict[str, object]) -> tuple[str, str]:
     if not project_id:
         raise ValueError("Vertex AI TTS requires a Google Cloud project ID.")
     if not credentials.valid or not credentials.token:
-        credentials.refresh(GoogleAuthRequest())
+        if before_io is not None:
+            before_io()
+        credentials.refresh(guarded_request if before_io is not None else GoogleAuthRequest())
     token = str(credentials.token or "").strip()
     if not token:
         raise RuntimeError(
@@ -3811,7 +3968,12 @@ def _request_gemini_native_audio(
 
 def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response:
     service = get_service_config(tts_settings, VERTEX_PROVIDER) or {}
-    token, project_id = _vertex_access_token(service)
+    if current_tts_io_policy() is not None:
+        token, project_id = _vertex_access_token(
+            service, before_io=check_tts_io, allow_host_adc=tts_host_adc_allowed(),
+        )
+    else:
+        token, project_id = _vertex_access_token(service)
     location = str(service.get("vertex_location") or VERTEX_AUDIO_DEFAULT_LOCATION).strip()
     model = str(
         tts_settings.get("xtts_model")
@@ -4259,7 +4421,10 @@ def _credential_material_for_retry_scope(
 ) -> tuple[str, str, str]:
     """Return account identity and Vertex project hints without refreshing auth."""
     key_env = str(service.get("api_key_env") or "").strip()
-    credential = os.getenv(key_env, "").strip() if key_env else ""
+    credential = (
+        os.getenv(key_env, "").strip()
+        if key_env and tts_environment_credentials_allowed() else ""
+    )
     if not credential:
         credential = str(service.get("api_key") or "").strip()
 
@@ -4273,7 +4438,7 @@ def _credential_material_for_retry_scope(
             credential_info = parsed
 
     adc_path = ""
-    if vertex and not credential_info:
+    if vertex and not credential_info and tts_host_adc_allowed():
         adc_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
         if adc_path:
             try:
@@ -4300,9 +4465,12 @@ def _credential_material_for_retry_scope(
         project = str(
             service.get("vertex_project")
             or credential_info.get("project_id")
-            or os.getenv("GOOGLE_CLOUD_PROJECT", "")
-            or os.getenv("GCLOUD_PROJECT", "")
-            or os.getenv("CLOUDSDK_CORE_PROJECT", "")
+            or (
+                (os.getenv("GOOGLE_CLOUD_PROJECT", "")
+                 or os.getenv("GCLOUD_PROJECT", "")
+                 or os.getenv("CLOUDSDK_CORE_PROJECT", ""))
+                if tts_host_adc_allowed() else ""
+            )
         ).strip()
         location = str(
             service.get("vertex_location") or VERTEX_AUDIO_DEFAULT_LOCATION
@@ -4677,6 +4845,8 @@ def text_to_audio(
             _TTS_RETRY_GATE.record_success(admission)
             return audio
 
+        except (TtsIoDenied, ModelAcquisitionDenied):
+            raise
         except TtsRetryBudgetExceeded as e:
             last_error = _retry_budget_failure(e, last_error)
             last_retryable = True
@@ -4684,7 +4854,7 @@ def text_to_audio(
         except ValueError as e:
             # Invalid service, model, voice, or configuration will not improve
             # with another identical request.
-            logging.error("TTS configuration error: %s", e)
+            logging.error("TTS configuration error: %s", redact_tts_diagnostic(e))
             last_error = e
             last_retryable = False
             break

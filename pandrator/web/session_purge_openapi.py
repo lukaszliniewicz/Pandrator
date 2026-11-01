@@ -46,10 +46,10 @@ def _response(description: str, schema: str) -> dict:
 
 def session_purge_paths() -> dict:
     session_parameter = {"name": "sessionId", "in": "path", "required": True, "schema": {"type": "string", "format": "uuid"}}
-    errors = {"400": {"description": "Invalid request."}, "401": {"description": "Authentication required."}, "403": {"description": "Insufficient scope."}, "404": {"description": "Session not found."}, "409": {"description": "Revision, impact, active work or storage conflict."}}
+    errors = {"400": {"description": "Invalid request."}, "401": {"description": "Authentication required."}, "403": {"description": "Required scope or Manager/Administrator authority unavailable."}, "404": {"description": "Session not found."}, "409": {"description": "Revision, impact, active work or storage conflict."}}
     return {
         "/api/v1/sessions/{sessionId}/purge-preview": {"get": {
-            "operationId": "getSessionPurgePreview", "summary": "Preview removal of a trashed session",
+            "operationId": "getSessionPurgePreview", "summary": "Manager preview of removal of a trashed session",
             "security": _security("app.read"), "parameters": [session_parameter],
             "responses": {"200": _response("Impact and blockers.", "SessionPurgePreview"), **errors},
         }},
@@ -63,7 +63,7 @@ def session_purge_paths() -> dict:
             "get": {"operationId": "getSessionTrashPolicy", "summary": "Read automatic trash retention policy",
                     "security": _security("app.read"), "responses": {"200": _response("Policy and revision.", "SessionTrashPolicy"), **errors}},
             "patch": {"operationId": "updateSessionTrashPolicy", "summary": "Set retention for future trash events",
-                      "security": _security("app.write"),
+                      "security": _security("app.admin"),
                       "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SessionTrashPolicyUpdate"}}}},
                       "responses": {"200": _response("Updated policy.", "SessionTrashPolicy"), **errors}},
         },

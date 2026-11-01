@@ -14,12 +14,14 @@ from collections.abc import Mapping
 from typing import Any
 
 from .audio_cpp_segmentation import narration_character_policy
+from .narration_packing import validate_sentence_packing_settings
 from .tts_handler import _audio_cpp_model_metadata, _audio_cpp_selected_model_options
 
 DEFAULT_MANUAL_LENGTH = 200
 MAX_MANUAL_LENGTH = 8192
 QWEN_DEFAULT_MAX_TOKENS = 2048
 BREEZE_DEFAULT_MAX_TOKENS = 1500
+DRAMA3_DEFAULT_MAX_TOKENS = 1024
 
 
 def _normalise_mode(value: object) -> str:
@@ -67,6 +69,7 @@ def _manual_length(value: object) -> int:
 def validate_audiobook_chunking_settings(settings: Mapping[str, Any]) -> None:
     """Validate text settings that control audiobook chunk policy."""
 
+    validate_sentence_packing_settings(settings)
     mode_value = settings.get("audiobook_chunking")
     mode = _normalise_mode(mode_value)
     if mode == "manual" and "max_sentence_length" in settings:
@@ -176,7 +179,7 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
         or str(settings.get("provider") or "").strip().casefold() == "audio_cpp"
     )
     if is_audio_cpp and family == "qwen3_tts":
-        return "qwen3_tts", 2000, None, "audio.cpp Qwen application policy"
+        return "qwen3_tts", 350, None, "audio.cpp Qwen application policy"
     if family == "breeze_tts" or service in {"breeze", "breeze_tts"}:
         return "breeze_tts", 600, None, "Breeze application policy"
     if family == "voxcpm2" or service in {"voxcpm", "voxcpm2"}:
@@ -224,7 +227,7 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
         "qwen",
         "qwen3",
     } or "qwen" in model:
-        return "qwen3_tts", 2000, None, "Qwen application policy"
+        return "qwen3_tts", 350, None, "Qwen application policy"
     if service in {"xtts", "xtts_v2", "xtts2", "pandrator_xtts2_api"} or "xtts" in model:
         return "xtts", 200, None, "XTTS application policy"
     return "unknown", 300, None, "unknown provider/family fallback policy"
@@ -246,8 +249,6 @@ def audiobook_chunk_budget(
     )
     profile, policy_limit, input_limit, policy_reason = _provider_profile(tts)
     cjk_qwen = profile == "qwen3_tts" and _language_is_cjk(language)
-    if cjk_qwen:
-        policy_limit = 500
     model = _model_name(tts).casefold()
     cjk_mini = (
         profile == "openai"
@@ -286,19 +287,22 @@ def audiobook_chunk_budget(
             "reason": reason,
         }
 
+    # Qwen's 350-character policy is already a conservative direct target.
     target = (
         policy_limit
-        if profile in {"xtts", "unknown"}
+        if profile in {"xtts", "unknown", "qwen3_tts"}
         else math.floor(policy_limit * 0.9)
     )
     reason = policy_reason
-    if profile in {"qwen3_tts", "breeze_tts"}:
+    if profile in {"qwen3_tts", "breeze_tts", "fish_drama3"}:
         family, model = _audio_cpp_family_and_model(tts)
         if _normalised_service(tts) in {"audio_cpp", "audio.cpp", "audiocpp"} or _selected_adapter(tts) == "audio_cpp":
             configured_tokens, source = _audio_cpp_max_tokens(tts, family, model)
-            default_tokens = (
-                QWEN_DEFAULT_MAX_TOKENS if profile == "qwen3_tts" else BREEZE_DEFAULT_MAX_TOKENS
-            )
+            default_tokens = {
+                "qwen3_tts": QWEN_DEFAULT_MAX_TOKENS,
+                "breeze_tts": BREEZE_DEFAULT_MAX_TOKENS,
+                "fish_drama3": DRAMA3_DEFAULT_MAX_TOKENS,
+            }[profile]
             effective_tokens = configured_tokens or default_tokens
             if effective_tokens < default_tokens:
                 target = math.floor(

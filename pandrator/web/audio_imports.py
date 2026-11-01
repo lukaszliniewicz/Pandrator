@@ -23,6 +23,7 @@ from pandrator.runtime import DataPaths
 from .artifacts import ArtifactService, PreparedArtifactRegistration
 from .media_process import MediaProcessError, probe_audio_stream
 from .models import Artifact
+from .projects.artifact_identity import resolve_artifact_ownership
 
 MAX_IMPORT_BYTES = 50 * 1024 * 1024
 MAX_IMPORT_DURATION_SECONDS = 300.0
@@ -113,14 +114,16 @@ def prepare_audio_import(
         size_bytes, digest = _copy_and_hash(source, prepared_path)
         info = probe_audio_stream(prepared_path)
         duration_seconds = float(info.duration_ms) / 1000.0
-        if not math.isfinite(duration_seconds) or not 0 < duration_seconds <= MAX_IMPORT_DURATION_SECONDS:
+        if (
+            not math.isfinite(duration_seconds)
+            or not 0 < duration_seconds <= MAX_IMPORT_DURATION_SECONDS
+        ):
             raise ValueError("Imported audio must be finite and no longer than 300 seconds.")
         if info.sample_rate_hz <= 0 or info.channels <= 0:
             raise MediaProcessError("The import has invalid audio stream metadata.")
         registration = replace(
             artifacts.prepare_registration(prepared_path, calculate_hash=False),
-            mime_type=mimetypes.guess_type(f"audio{suffix}")[0]
-            or "application/octet-stream",
+            mime_type=mimetypes.guess_type(f"audio{suffix}")[0] or "application/octet-stream",
             size_bytes=size_bytes,
             content_hash=digest,
         )
@@ -184,10 +187,12 @@ def publish_audio_import_in_session(
     artifacts: ArtifactService,
     paths: DataPaths,
     role: Literal["sound.original", "voice.reference"],
+    workspace_id: str | None = None,
 ) -> Artifact:
     """Publish an immutable, global audio artifact under one fixed domain role."""
     if role not in _AUDIO_ROLES:
         raise ValueError("Unsupported managed audio import role.")
+    ownership = resolve_artifact_ownership(session, workspace_id=workspace_id)
     source = prepared.staged_path
     try:
         source_stat = source.lstat()
@@ -234,6 +239,7 @@ def publish_audio_import_in_session(
                 kind="audio",
                 role=role,
                 session_id=None,
+                workspace_id=ownership.workspace_id,
                 calculate_hash=False,
                 metadata={"operation": "import"},
                 _prepared=registration,

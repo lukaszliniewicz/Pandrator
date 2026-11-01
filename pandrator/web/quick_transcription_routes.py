@@ -8,6 +8,7 @@ from pathlib import Path
 
 from flask import Response, jsonify, request
 
+from .access.private_transcription_policy import PrivateWorkAction, require_private_workspace
 from .idempotency import IdempotencyError
 from .quick_transcription import MIME_TYPES, TERMINAL, TranscriptionError
 from .quick_transcription_schemas import (
@@ -23,14 +24,13 @@ def register_quick_transcription_routes(app, context: RouteContext):
     service = context.services.quick_transcriptions
     guards = context.guards
 
-    def subject():
-        principal = guards.principal()
-        assert principal is not None
-        return principal.subject
+    def access_context():
+        return guards.access_context()
 
-    def snapshot(identifier, *, wait: float = 0):
+    def snapshot(identifier, *, wait: float = 0, action=PrivateWorkAction.READ):
         result = service.get(
-            identifier, subject(), format=request.args.get("format"), wait_seconds=wait
+            identifier, access_context(), format=request.args.get("format"), wait_seconds=wait,
+            action=action,
         )
         return jsonify(result), 200 if result["status"] in TERMINAL else 202
 
@@ -49,6 +49,8 @@ def register_quick_transcription_routes(app, context: RouteContext):
             request.max_content_length = MAX_SOURCE_BYTES + 65536
             principal = guards.principal()
             assert principal is not None
+            with context.services.database.snapshot_session() as db_session:
+                require_private_workspace(db_session, access_context())
             key = request.headers.get("Idempotency-Key", "")
             service.idempotency.validate_key(key)
             wait = TranscriptionWait.model_validate(
@@ -101,19 +103,20 @@ def register_quick_transcription_routes(app, context: RouteContext):
                     source.stream.seek(result["next_chunk_index"] * CHUNK_SIZE)
                     index = result["next_chunk_index"]
                     while chunk := source.stream.read(CHUNK_SIZE):
-                        service.upload_chunk(result["id"], subject(), index, chunk)
+                        service.upload_chunk(result["id"], access_context(), index, chunk)
                         index += 1
-                    service.start(result["id"], subject())
+                    service.start(result["id"], access_context())
                 if request.args.get("response") == "raw":
                     result = service.get(
-                        result["id"], subject(), wait_seconds=wait.wait_seconds
+                        result["id"], access_context(), wait_seconds=wait.wait_seconds,
+                        action=PrivateWorkAction.RUN,
                     )
                     if result["status"] == "succeeded":
-                        return raw_result(result["id"], payload.format)
+                        return raw_result(result["id"], payload.format, action=PrivateWorkAction.RUN)
                     return jsonify(result), 202 if result[
                         "status"
                     ] not in TERMINAL else 200
-                return snapshot(result["id"], wait=wait.wait_seconds)
+                return snapshot(result["id"], wait=wait.wait_seconds, action=PrivateWorkAction.RUN)
             request.max_content_length = 65536
             payload = TranscriptionCreate.model_validate(
                 request.get_json(silent=True) or {}
@@ -129,7 +132,7 @@ def register_quick_transcription_routes(app, context: RouteContext):
         try:
             return jsonify(
                 service.upload_chunk(
-                    transcription_id, subject(), index, request.get_data()
+                    transcription_id, access_context(), index, request.get_data()
                 )
             )
         except TranscriptionError as error:
@@ -140,8 +143,8 @@ def register_quick_transcription_routes(app, context: RouteContext):
     def transcription_start(transcription_id):
         try:
             wait = TranscriptionWait.model_validate(request.get_json(silent=True) or {})
-            service.start(transcription_id, subject())
-            return snapshot(transcription_id, wait=wait.wait_seconds)
+            service.start(transcription_id, access_context())
+            return snapshot(transcription_id, wait=wait.wait_seconds, action=PrivateWorkAction.RUN)
         except (TranscriptionError, ValueError) as error:
             return problem(error)
 
@@ -156,8 +159,8 @@ def register_quick_transcription_routes(app, context: RouteContext):
         except (TranscriptionError, ValueError) as error:
             return problem(error)
 
-    def raw_result(identifier, format):
-        content = service.result(identifier, subject(), format)
+    def raw_result(identifier, format, *, action=PrivateWorkAction.READ):
+        content = service.result(identifier, access_context(), format, action=action)
         response = Response(
             content, content_type=f"{MIME_TYPES[format]}; charset=utf-8"
         )
@@ -181,7 +184,7 @@ def register_quick_transcription_routes(app, context: RouteContext):
                     "invalid_page",
                     "Use a nonnegative offset and a limit of 1–32768 characters.",
                 )
-            content = service.result(transcription_id, subject(), format)
+            content = service.result(transcription_id, access_context(), format)
             end = min(len(content), offset + limit)
             return jsonify(
                 {
@@ -199,7 +202,7 @@ def register_quick_transcription_routes(app, context: RouteContext):
     @guards.require_scope("app.run")
     def transcription_cancel(transcription_id):
         try:
-            return jsonify(service.cancel(transcription_id, subject()))
+            return jsonify(service.cancel(transcription_id, access_context()))
         except TranscriptionError as error:
             return problem(error)
 
@@ -207,6 +210,6 @@ def register_quick_transcription_routes(app, context: RouteContext):
     @guards.require_scope("app.run")
     def transcription_delete(transcription_id):
         try:
-            return jsonify(service.cancel(transcription_id, subject(), delete=True))
+            return jsonify(service.cancel(transcription_id, access_context(), delete=True))
         except TranscriptionError as error:
             return problem(error)

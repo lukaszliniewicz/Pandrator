@@ -11,6 +11,7 @@ from .common import ToolInput
 GUIDE_TOPICS = (
     "artifacts-and-revisions",
     "audiobooks",
+    "collaboration",
     "durable-work",
     "generation-controls",
     "manager-and-recovery",

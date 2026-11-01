@@ -13,15 +13,26 @@ import uuid
 from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, TypeVar, cast
+from typing import Any, Callable, TypeVar
 
 from flask import Flask, g, jsonify, request, session
 from pydantic import ValidationError
+from werkzeug.datastructures import ImmutableMultiDict
 from werkzeug.exceptions import HTTPException
 
+from pandrator.logic.model_acquisition import ModelAcquisitionDenied
+
+from .access.artifact_policy import ArtifactNotFound
+from .access.contracts import AccessContext, AccessDenied, ProjectNotFound, WorkspaceNotFound
+from .access.session_policy import SessionNotFound
+from .accounts.actor_authorization import ActorAuthorizationDenied
+from .accounts.administration import AdministratorRequired, require_administrator_actor
+from .accounts.execution_actor import UserActor, actor_from_principal, current_execution_actor
+from .accounts.model_acquisition import model_acquisition_for_actor
 from .application_services import ApplicationServices
-from .auth import ALL_SCOPES, NetworkZone, Principal, PrincipalKind, normalize_scopes
+from .auth import NetworkZone, Principal
 from .credentials import contains_inline_secret
+from .public_links.contracts import ProjectLinkContext, PublicLinkError
 from .update_maintenance import update_maintenance_active
 
 ViewFunction = TypeVar("ViewFunction", bound=Callable[..., Any])
@@ -149,6 +160,49 @@ class ApiGuards:
         g.principal_resolved = True
         header = request.headers.get("Authorization", "")
         zone = self._network_zone()
+        link_id = None
+        if request.headers.get("X-Pandrator-Project-Link") is not None or "project_link_id" in request.args:
+            from .public_link_http import selector
+
+            try:
+                link_id = selector(request)
+            except PublicLinkError:
+                g.principal = None
+                return None
+        if link_id is not None:
+            # A selected guest identity never borrows the normal login cookie.
+            if header:
+                g.principal = None
+                return None
+            from .public_link_http import cookie_name, request_allowed
+
+            links = self.app.extensions.get("pandrator_public_links")
+            raw = request.cookies.get(cookie_name(link_id), "")
+            if links is None or not raw:
+                g.principal = None
+                return None
+            try:
+                shared = links.session_context(link_id, raw)
+            except (PublicLinkError, PermissionError):
+                g.principal = None
+                return None
+            actor = shared.actor
+            g.project_link_context = shared
+            g.principal = Principal(
+                subject=actor.subject, kind="project_link", scopes=actor.scopes,
+                token_id=None, network_zone=zone,
+                target_instance_id=self.services.identity.instance_id,
+                client_id=None, user_id=actor.user_id,
+                auth_revision=actor.auth_revision,
+                browser_session_id=actor.browser_session_id,
+            )
+            current_execution_actor.set(actor)
+            try:
+                if not request_allowed(request, shared, self.services.database):
+                    raise AccessDenied()
+            except PublicLinkError:
+                raise AccessDenied() from None
+            return g.principal
         if header:
             if not header.lower().startswith("bearer "):
                 g.principal = None
@@ -162,47 +216,73 @@ class ApiGuards:
                 target_instance_id=identity.instance_id,
                 canonical_origin=identity.canonical_origin,
             )
+            if g.principal is not None and g.principal.kind == "project_link":
+                g.principal = None
+                return None
+            if g.principal is not None and not self.services.auth.solo_access_allowed(
+                g.principal.user_id, g.principal.auth_revision
+            ):
+                g.principal = None
+            if g.principal is not None:
+                try:
+                    current_execution_actor.set(actor_from_principal(g.principal))
+                except (TypeError, ValueError):
+                    g.principal = None
             return g.principal
-        if not session.get("authenticated"):
+        raw_session = session.get("auth_session")
+        if not session.get("authenticated") or not isinstance(raw_session, str):
             g.principal = None
             return None
-        raw_kind = str(session.get("principal_kind") or "owner_session")
-        kind: PrincipalKind = (
-            cast(PrincipalKind, raw_kind)
-            if raw_kind
-            in {
-                "owner_session",
-                "api_token",
-                "manager_bootstrap",
-                "automation_client",
-                "service",
-            }
-            else "owner_session"
-        )
-        raw_scopes = session.get("principal_scopes")
-        try:
-            scopes = (
-                normalize_scopes(raw_scopes)
-                if raw_scopes is not None
-                else ALL_SCOPES
-            )
-        except ValueError:
+        resolved = self.services.auth.browser_sessions.resolve(raw_session)
+        if resolved is not None and resolved.kind == "project_link":
+            g.principal = None
+            return None
+        if resolved is None or not self.services.auth.solo_access_allowed(
+            resolved.user_id, resolved.auth_revision
+        ):
             g.principal = None
             return None
         g.principal = Principal(
-            subject=str(session.get("principal_subject") or "owner")[:200],
-            kind=kind,
-            scopes=scopes,
+            subject=resolved.subject,
+            kind=resolved.kind,
+            scopes=resolved.scopes,
             token_id=None,
             network_zone=zone,
             target_instance_id=self.services.identity.instance_id,
-            client_id=(
-                str(session.get("principal_client_id"))
-                if session.get("principal_client_id")
-                else None
-            ),
+            client_id=resolved.client_id,
+            user_id=resolved.user_id,
+            auth_revision=resolved.auth_revision,
+            browser_session_id=resolved.session_id,
         )
+        try:
+            current_execution_actor.set(actor_from_principal(g.principal))
+        except (TypeError, ValueError):
+            g.principal = None
         return g.principal
+
+    def project_link_context(self) -> ProjectLinkContext | None:
+        """Return only the explicitly selected, validated guest credential."""
+        self.principal()
+        shared = getattr(g, "project_link_context", None)
+        return shared if isinstance(shared, ProjectLinkContext) else None
+
+    def security_event(self, event: str, status: int) -> None:
+        sink = self.app.extensions.get("pandrator_security_events")
+        if sink is not None:
+            sink.emit(
+                event, client_ip=request.remote_addr, status=status,
+                request_id=getattr(g, "request_id", None),
+                route=request.url_rule.rule if request.url_rule else "/api/v1/auth/login",
+                method=request.method,
+            )
+
+    def access_context(self) -> AccessContext:
+        """Pass the actual HTTP actor into a caller-owned resource-policy unit."""
+        principal = self.principal()
+        actor = actor_from_principal(principal) if principal is not None else None
+        if not isinstance(actor, UserActor):
+            raise AccessDenied()
+        return AccessContext(actor)
 
     def bearer_authenticated(self) -> bool:
         header = request.headers.get("Authorization", "")
@@ -210,6 +290,39 @@ class ApiGuards:
             return False
         principal = self.principal()
         return principal is not None and principal.token_id is not None
+
+    @staticmethod
+    def administrative_request() -> bool:
+        method = request.method.upper()
+        path = request.path
+        if method not in {"GET", "HEAD"} and path.startswith("/api/v1/manager/"):
+            return True
+        if method == "POST" and path in {
+            "/api/v1/rvc/models",
+            "/api/v1/services/tts/xtts/models",
+            "/api/v1/training",
+        }:
+            return True
+        if method == "POST" and path.startswith("/api/v1/training/") and path.endswith("/retry"):
+            return True
+        return method == "DELETE" and path.startswith(
+            "/api/v1/services/tts/xtts/models/"
+        )
+
+    def administrator_error(self, *required_scopes: str):
+        try:
+            require_administrator_actor(
+                self.services.database,
+                required_scopes=frozenset(required_scopes),
+            )
+        except PermissionError:
+            return self.error_response(
+                "administrator_required",
+                "An active Administrator credential with the required scopes is required.",
+                403,
+                {"required_scopes": sorted({"app.admin", *required_scopes})},
+            )
+        return None
 
     def authenticated(self) -> bool:
         return self.principal() is not None
@@ -219,17 +332,17 @@ class ApiGuards:
         method = request.method.upper()
         path = request.path
         endpoint = _endpoint_name()
+        if path.startswith("/api/v1/admin/"):
+            return "app.admin"
         if path.startswith("/api/v1/manager/"):
             if method in {"GET", "HEAD"} or path.endswith("/plans"):
                 return "manager.read"
             if "/runtime/" in path:
                 return "manager.runtime"
             return "manager.mutate"
-        if (
-            path.startswith("/api/v1/auth/tokens")
-            or path.startswith("/api/v1/auth/automation-clients")
-            or path.startswith("/api/v1/audit/")
-        ):
+        if path.startswith(("/api/v1/auth/tokens", "/api/v1/auth/automation-clients")):
+            return "app.credentials.read" if method in {"GET", "HEAD"} else "app.credentials.write"
+        if path.startswith("/api/v1/audit/"):
             return "app.admin"
         if path.startswith("/api/v1/credentials"):
             return (
@@ -248,9 +361,9 @@ class ApiGuards:
             method == "POST"
             and path.endswith("/workflow-plans")
         ):
-            # Planning persists an immutable preview, but does not change
-            # session state or start work.
-            return "app.read"
+            # Capturing execution inputs requires the same resource RUN
+            # authority as the explicit planning route.
+            return "app.run"
         if (
             method == "POST"
             and "/workflow-plans/" in path
@@ -264,6 +377,14 @@ class ApiGuards:
             return "app.cancel"
         if endpoint == "job_video_tail_decision":
             return "app.run"
+        if method == "POST" and endpoint in {
+            "artifact_audio_preview", "artifact_video_preview", "artifact_waveform",
+            "output_mix_preview",
+            "create_comparison_export",
+        }:
+            return "app.run"
+        if method == "POST" and endpoint == "agent_run_accept":
+            return "app.write"
         if path == "/api/v1/sounds/generate" or path.endswith(("/sound-plan/render", "/sound-plan/resolve")):
             return "app.run"
         if path == "/api/v1/jobs":
@@ -313,6 +434,10 @@ class ApiGuards:
                         403,
                         {"required_scopes": missing},
                     )
+                if "app.admin" in required or self.administrative_request():
+                    denied = self.administrator_error(*required)
+                    if denied is not None:
+                        return denied
                 denied = self._private_job_access(principal, kwargs)
                 if denied is not None:
                     return denied
@@ -340,6 +465,10 @@ class ApiGuards:
                     403,
                     {"required_scopes": [scope]},
                 )
+            if scope == "app.admin" or self.administrative_request():
+                denied = self.administrator_error(scope)
+                if denied is not None:
+                    return denied
             denied = self._private_job_access(principal, kwargs)
             if denied is not None:
                 return denied
@@ -354,16 +483,30 @@ class ApiGuards:
             return None
         from sqlalchemy import select
 
-        from .models import QuickTranscription
+        from .access.private_transcription_policy import (
+            PrivateWorkAction,
+            private_job_visibility_clause,
+        )
+        from .models import Job
 
-        with self.services.database.session() as db_session:
-            record = db_session.scalar(
-                select(QuickTranscription).where(
-                    QuickTranscription.job_id == identifier
-                )
+        scope = self.required_scope()
+        action = {
+            "app.run": PrivateWorkAction.RUN,
+            "app.cancel": PrivateWorkAction.CANCEL,
+        }.get(scope, PrivateWorkAction.READ)
+        with self.services.database.snapshot_session() as db_session:
+            allowed = private_job_visibility_clause(db_session, self.access_context(), action)
+            visible = db_session.scalar(
+                select(Job.id).where(Job.id == identifier, allowed)
             )
-            if record is not None and record.owner_subject != principal.subject:
-                return self.error_response("not_found", "Work item not found.", 404)
+            if visible is None:
+                if request.path.startswith("/api/v1/jobs/"):
+                    message = "Job not found."
+                elif request.path.startswith("/api/v1/purge-inspections/"):
+                    message = "Purge inspection not found."
+                else:
+                    message = "Work item not found."
+                return self.error_response("not_found", message, 404)
         return None
 
     def register(self) -> None:
@@ -374,6 +517,9 @@ class ApiGuards:
 
         @app.before_request
         def _request_context():
+            g.execution_actor_token = current_execution_actor.set(None)
+            g.model_acquisition_context = model_acquisition_for_actor(self.services.database)
+            g.model_acquisition_context.__enter__()
             supplied_request_id = str(
                 request.headers.get("X-Request-ID") or ""
             ).strip()
@@ -394,6 +540,22 @@ class ApiGuards:
             g.principal_resolved = False
             g.principal = None
             endpoint = _endpoint_name()
+            if (
+                request.headers.get("X-Pandrator-Project-Link") is not None
+                or "project_link_id" in request.args
+            ) and endpoint != "public_link_redeem":
+                if self.principal() is None:
+                    return self.error_response(
+                        "authentication_required",
+                        "This shared link has expired or was revoked.", 401,
+                    )
+                # Transport identity is consumed before business-query validation.
+                # Keep the resolved context for CSRF even on query-selected writes.
+                if "project_link_id" in request.args:
+                    request.__dict__["args"] = ImmutableMultiDict(
+                        (key, value) for key, value in request.args.items(multi=True)
+                        if key != "project_link_id"
+                    )
             if (
                 update_maintenance_active(paths.root)
                 and request.method in {"POST", "PUT", "PATCH", "DELETE"}
@@ -422,9 +584,18 @@ class ApiGuards:
                     "auth_manager_bootstrap",
                     "auth_automation_authorize",
                     "auth_automation_token",
+                    "account_password_reset_redeem",
+                    "public_link_redeem",
                     "health",
                 }
             ):
+                shared = getattr(g, "project_link_context", None)
+                if shared is not None:
+                    from .public_link_http import csrf_valid
+
+                    if not csrf_valid(shared, request.headers.get("X-CSRF-Token", "")):
+                        return self.error_response("csrf_failed", "The CSRF token is missing or invalid.", 403)
+                    return None
                 if self.bearer_authenticated():
                     return None
                 if session.get("authenticated"):
@@ -437,6 +608,15 @@ class ApiGuards:
                             403,
                         )
             return None
+
+        @app.teardown_request
+        def _restore_execution_actor(_error):
+            acquisition_context = g.pop("model_acquisition_context", None)
+            if acquisition_context is not None:
+                acquisition_context.__exit__(None, None, None)
+            token = g.pop("execution_actor_token", None)
+            if token is not None:
+                current_execution_actor.reset(token)
 
         @app.after_request
         def _security_headers(response):
@@ -453,8 +633,17 @@ class ApiGuards:
                 "connect-src 'self'; style-src 'self' 'unsafe-inline'; "
                 f"script-src {self.script_policy}"
             )
-            if request.path.startswith("/api/"):
+            if _endpoint_name() == "artifact_content":
+                # Project files are untrusted documents, even when an account
+                # with broader authority opens them. A script-src 'self' policy
+                # alone permits scripts uploaded beside an HTML/SVG document.
+                # This applies to document navigation; media/fetch consumers
+                # keep their normal parent-document policy and range support.
+                response.headers["Content-Security-Policy"] += "; sandbox allow-downloads"
+            if request.path.startswith(("/api/", "/share/")):
                 response.headers["Cache-Control"] = "private, no-store"
+            if request.path.startswith(("/share/", "/api/v1/public-links/")):
+                response.headers["X-Robots-Tag"] = "noindex, nofollow"
             principal = self.principal()
             if principal is not None:
                 try:
@@ -506,6 +695,33 @@ class ApiGuards:
                 422,
                 error.errors(include_input=False, include_context=False),
             )
+
+        @app.errorhandler(ModelAcquisitionDenied)
+        def _model_acquisition_denied(error):
+            return self.error_response("model_acquisition_required", str(error), 403)
+
+        @app.errorhandler(AdministratorRequired)
+        def _administrator_required(error):
+            return self.error_response("administrator_required", str(error), 403)
+
+        @app.errorhandler(ActorAuthorizationDenied)
+        def _actor_authorization_denied(_error):
+            return self.error_response(
+                "scope_denied",
+                "The authenticated credential is no longer authorized for this operation.",
+                403,
+            )
+
+        @app.errorhandler(AccessDenied)
+        def _access_denied(error):
+            return self.error_response("scope_denied", str(error), 403)
+
+        @app.errorhandler(WorkspaceNotFound)
+        @app.errorhandler(ProjectNotFound)
+        @app.errorhandler(SessionNotFound)
+        @app.errorhandler(ArtifactNotFound)
+        def _resource_not_found(_error):
+            return self.error_response("not_found", "Resource not found.", 404)
 
         @app.errorhandler(HTTPException)
         def _http_error(error):

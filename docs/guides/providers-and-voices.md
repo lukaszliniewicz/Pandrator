@@ -101,11 +101,11 @@ starting generation.
 
 ## audio.cpp runtime versions
 
-The Manager pins audio.cpp **0.9.2** for Linux CPU/Vulkan/CUDA and Windows
+The Manager pins audio.cpp **0.9.2-drama3-base-small** for Linux CPU/Vulkan/CUDA and Windows
 CPU/Vulkan/CUDA, with SHA-256-verified upstream archives. Linux CPU and Vulkan
 use the portable builds. Windows CUDA uses the 12.4 binary plus its bundled
 cudart runtime archive. Linux CUDA uses the upstream
-`audio-v0.9.2-bin-ubuntu-x64-cuda12.8-colab.tar.gz` binary best-effort: the
+`audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-cuda12.8-colab.tar.gz` binary best-effort: the
 colab tag means it was built for Colab (CUDA 12.8), it ships without a bundled
 runtime. It needs a compatible NVIDIA driver and system CUDA 12 libraries
 (including cuBLAS and cuFFT), NCCL 2, and OpenSSL 3. It has not been tested on
@@ -115,7 +115,9 @@ an unexpected archive layout instead of installing a broken slot.
 Updating the runtime does not replace selected models, voices, or generation
 settings. Model package revisions and digests remain independently pinned.
 
-The 0.9.2 catalogue contains 122 families and 380 packages. New speech packages
+The catalogue contains 125 families and 392 packages, including the retained
+legacy Kitten TTS 2 package. New speech packages include five Drama 3 variants,
+Danish Plapre 3 in BF16/F32, and Kitten TTS 2 BF16, Q8-v2 and Q4. Existing speech packages
 include Voxtral 4B TTS and French PocketTTS, alongside KittenTTS2, KugelAudio and
 English/Japanese LFM2.5-Audio checkpoints. Kitten TTS 2 offers native
 presets and optional cloning with a matching transcript and a 1–30 second
@@ -130,7 +132,30 @@ new enums, text controls and defaults. Load/session controls remain part of the
 managed package configuration. The catalogue also lists new recognition,
 restoration and other audio models; catalogue membership does not imply a
 corresponding Pandrator workflow or acoustic verification. See the
-[0.9.2 release](https://github.com/0xShug0/audio.cpp/releases/tag/v0.9.2).
+[release](https://github.com/0xShug0/audio.cpp/releases/tag/v0.9.2-drama3-base-small).
+
+### Drama 3
+
+Drama 3 accepts general directions, phrase delivery and vocal events through
+Pandrator's speech XML and legacy pSSML. The compiler emits bracketed directions,
+Drama-specific event names such as `[laughs]`, and paired phrase tags. The spoken
+transcript remains unchanged. These controls guide the model; precise timing and
+audible adherence still need a listening check. Linked voice samples can provide
+one reference and its reviewed transcript. Cast speakers render as separate parts.
+Native multi-speaker requests, previous-take conditioning and infill are not integrated.
+
+Even the small IQ3 checkpoint is about 9.74 GiB on disk. In the audio.cpp
+installation settings, **Drama 3 memory use → Disk-backed experts** selects an
+eight-expert cache instead of resident expert banks. This is slower and does not
+guarantee an 8 GiB GPU will fit; the backbone, audio tower and codec still need memory.
+Native defaults remain the default. Drama 3 uses the Fish Audio Community License
+v1.0; commercial and hosted-service use have conditions. See the
+[model licence](https://huggingface.co/fishaudio/drama-3/blob/main/LICENSE).
+
+Plapre 3 offers five Danish presets (`tor`, `ida`, `liv`, `ask`, `kaj`) and linked
+reference cloning. Its CC-BY-4.0 licence requires attribution. The updated Kitten
+packages retain their conditional Stellon Labs licence. Existing projects using
+`kitten_tts2_q8_0` keep that ID and its original pinned weights.
 
 ## Preset voice names and languages
 

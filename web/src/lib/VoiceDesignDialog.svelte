@@ -28,6 +28,8 @@
   let {
     services,
     voices,
+    workspaceId,
+    canEdit = false,
     initialVoiceId = '',
     initialPrompt = '',
     initialAccent = '',
@@ -38,6 +40,8 @@
   }: {
     services: TtsService[];
     voices: VoiceRecord[];
+    workspaceId: string;
+    canEdit?: boolean;
     initialVoiceId?: string;
     initialPrompt?: string;
     initialAccent?: string;
@@ -74,7 +78,6 @@
     catalogueServices.filter(
       (service) =>
         ['gemini', 'vertex_ai'].includes(service.id) &&
-        service.supports_dynamic_catalog &&
         service.models?.some((model) =>
           ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'].includes(model)
         )
@@ -158,6 +161,8 @@
   );
   const canGenerate = $derived(
     Boolean(
+      canEdit &&
+      workspaceId &&
       !catalogueLoading &&
       audioCpp &&
       designModels.includes(designModel) &&
@@ -216,7 +221,8 @@
       designProvider =
         googleDesignServices.find(
           (service) =>
-            service.credential_configured && service.available !== false
+            service.credential_configured !== false &&
+            service.available !== false
         )?.id ?? 'audio_cpp';
     }
     providerInitialized = true;
@@ -271,7 +277,7 @@
     catalogueError = '';
     catalogueServices = services;
     try {
-      const payload = await speechServiceApi.catalogue(true);
+      const payload = await speechServiceApi.catalogue(false, { workspaceId });
       if (alive) catalogueServices = payload.services ?? [];
     } catch (caught) {
       if (alive) catalogueError = errorMessage(caught);
@@ -331,14 +337,18 @@
         usedSeeds.add(candidateSeed);
         if (!fixedSeed) seed = candidateSeed;
         progressDetail = `Generating candidate ${index + 1} of ${count}…`;
-        const queued = await speechServiceApi.preview(audioCpp.id, {
-          text: cleanText,
-          model: requestedModel,
-          voice: '',
-          language: requestedLanguage,
-          generation_prompt: cleanPrompt,
-          seed: candidateSeed
-        });
+        const queued = await speechServiceApi.preview(
+          audioCpp.id,
+          {
+            text: cleanText,
+            model: requestedModel,
+            voice: '',
+            language: requestedLanguage,
+            generation_prompt: cleanPrompt,
+            seed: candidateSeed
+          },
+          workspaceId
+        );
         activeJobId = queued.id;
         if (!alive || closing || stopRequested) {
           await jobApi.cancel(queued.id).catch((caught) => {
@@ -440,7 +450,7 @@
   }
 
   async function saveDesign() {
-    if (!preview || saving) return;
+    if (!preview || saving || !canEdit || !workspaceId) return;
     const requestedName = voiceName.trim();
     if (!targetVoiceId && !requestedName) {
       error = 'Give the new voice a name before saving it.';
@@ -453,43 +463,51 @@
     try {
       let target: VoiceRecord;
       if (targetVoiceId) {
-        const latest = await voiceApi.list<VoiceRecord>();
+        const latest = await voiceApi.list<VoiceRecord>({ workspaceId });
+        if (!alive || closing || !canEdit) return;
         const found = latest.items.find((voice) => voice.id === targetVoiceId);
         if (!found || found.bundled)
           throw new Error('The selected library voice is no longer editable.');
         target = found;
       } else {
-        target = await voiceApi.create<VoiceRecord>({
-          name: requestedName,
-          language: preview.language,
-          description: preview.prompt,
-          voice_category:
-            initialCategory === 'male' ||
-            initialCategory === 'female' ||
-            initialCategory === 'androgynous'
-              ? initialCategory
-              : 'unspecified',
-          profile: {
-            schema_version: 1,
-            pitch:
-              initialPitch === 'low' ||
-              initialPitch === 'mid' ||
-              initialPitch === 'high'
-                ? initialPitch
-                : null,
-            languages: [
-              {
-                language: preview.language,
-                accent: initialAccent || null,
-                evidence: { source: 'design_request', status: 'requested' }
+        target = await voiceApi.create<VoiceRecord>(
+          {
+            name: requestedName,
+            language: preview.language,
+            description: preview.prompt,
+            voice_category:
+              initialCategory === 'male' ||
+              initialCategory === 'female' ||
+              initialCategory === 'androgynous'
+                ? initialCategory
+                : 'unspecified',
+            profile: {
+              schema_version: 1,
+              pitch:
+                initialPitch === 'low' ||
+                initialPitch === 'mid' ||
+                initialPitch === 'high'
+                  ? initialPitch
+                  : null,
+              languages: [
+                {
+                  language: preview.language,
+                  accent: initialAccent || null,
+                  evidence: { source: 'design_request', status: 'requested' }
+                }
+              ],
+              evidence: {
+                pitch: { source: 'design_request', status: 'requested' },
+                voice_category: {
+                  source: 'design_request',
+                  status: 'requested'
+                }
               }
-            ],
-            evidence: {
-              pitch: { source: 'design_request', status: 'requested' },
-              voice_category: { source: 'design_request', status: 'requested' }
             }
-          }
-        });
+          },
+          workspaceId
+        );
+        if (!alive || closing || !canEdit) return;
         createdTarget = target;
       }
 
@@ -501,9 +519,11 @@
           transcript: preview.text,
           language: preview.language,
           expected_voice_revision: target.revision
-        }
+        },
+        workspaceId
       );
       const complete = await waitJob(queued.id);
+      if (!alive || closing || !canEdit) return;
       createdTarget = null;
       let providerVoiceId = '';
       let linkWarning = '';
@@ -518,9 +538,11 @@
           const link = await voiceApi.publish(
             target.id,
             audioCpp.id,
-            voiceRevision
+            voiceRevision,
+            workspaceId
           );
           const linked = await waitJob(link.id);
+          if (!alive || closing || !canEdit) return;
           providerVoiceId = String(linked.result_json?.provider_voice_id ?? '');
         } catch (caught) {
           linkWarning = `The designed sample was saved, but audio.cpp linking did not finish: ${errorMessage(caught)}`;
@@ -538,7 +560,11 @@
         let detail = errorMessage(caught);
         if (createdTarget) {
           try {
-            await voiceApi.delete(createdTarget.id, createdTarget.revision);
+            await voiceApi.delete(
+              createdTarget.id,
+              createdTarget.revision,
+              workspaceId
+            );
           } catch {
             detail +=
               ' The empty library voice could not be removed automatically; you can delete it from the Voice Library.';
@@ -633,10 +659,16 @@
         {#key googleDesignService.id}
           <GoogleVoiceDesignForm
             service={googleDesignService}
+            {workspaceId}
+            {canEdit}
             {initialPrompt}
             {initialCategory}
             onbusychange={(busy) => (googleBusy = busy)}
-            onqueued={(voiceId) => (googleReceipt = { voice_id: voiceId })}
+            onqueued={(voiceId) =>
+              (googleReceipt = {
+                voice_id: voiceId,
+                workspace_id: workspaceId
+              })}
             oncreated={(receipt) => (googleReceipt = receipt)}
             ondone={() => void finishGoogleDesign()}
           />

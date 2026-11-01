@@ -25,7 +25,7 @@ _TIME_RE = re.compile(
     r"(?P<hours>\d{1,3}):(?P<minutes>\d{2}):(?P<seconds>\d{2})[,.](?P<millis>\d{1,3})"
 )
 _SPEAKER_RE = re.compile(
-    r"^\[(?P<speaker>SPEAKER(?:[\s_-]+)[^\]]+)\]\s*:?\s*(?P<text>.*)",
+    r"^\[(?P<speaker>SPEAKER(?:[\s_-]+)[^\]]+)\][ \t\r\n]*:?[ \t\r\n]*(?P<text>.*)",
     re.IGNORECASE | re.DOTALL,
 )
 _CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff]")
@@ -129,13 +129,13 @@ def parse_srt(srt_content: str, *, infer_speakers: bool = True) -> list[Subtitle
     needs for user-supplied subtitle files.
     """
     normalized = str(srt_content or "").replace("\ufeff", "")
-    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n").strip(" \t\r\n")
     if not normalized:
         return []
 
     parsed_segments: list[tuple[int, int, int, str | None, str]] = []
-    for fallback_index, block in enumerate(re.split(r"\n\s*\n+", normalized), start=1):
-        lines = [line.rstrip() for line in block.split("\n") if line.strip()]
+    for fallback_index, block in enumerate(re.split(r"\n[ \t]*\n+", normalized), start=1):
+        lines = [line.rstrip(" \t") for line in block.split("\n") if line.strip(" \t")]
         if not lines:
             continue
 
@@ -160,7 +160,7 @@ def parse_srt(srt_content: str, *, infer_speakers: bool = True) -> list[Subtitle
             continue
 
         speaker, text = split_speaker_label(
-            "\n".join(lines[time_line_index + 1 :]).strip()
+            "\n".join(lines[time_line_index + 1 :]).strip(" \t\r\n")
         )
         if not text:
             continue
@@ -204,7 +204,7 @@ def compose_srt(segments: list[SubtitleSegment]) -> str:
     """Compose clean viewer-facing subtitle text without metadata labels."""
     blocks: list[str] = []
     for output_index, segment in enumerate(segments, start=1):
-        _speaker, plain_text = split_speaker_label(str(segment.text or "").strip())
+        _speaker, plain_text = split_speaker_label(str(segment.text or ""))
         blocks.append(
             "\n".join(
                 [
@@ -224,11 +224,11 @@ def compose_vtt(segments: list[SubtitleSegment]) -> str:
         "\n".join(
             [
                 f"{format_vtt_timestamp(segment.start_ms)} --> {format_vtt_timestamp(segment.end_ms)}",
-                split_speaker_label(str(segment.text or "").strip())[1],
+                split_speaker_label(str(segment.text or ""))[1],
             ]
         )
         for segment in segments
-        if split_speaker_label(str(segment.text or "").strip())[1]
+        if split_speaker_label(str(segment.text or ""))[1]
     ]
     return "WEBVTT\n\n" + "\n\n".join(blocks) + ("\n" if blocks else "")
 
@@ -236,19 +236,19 @@ def compose_vtt(segments: list[SubtitleSegment]) -> str:
 def srt_to_vtt(srt_content: str) -> str:
     """Convert forgiving SRT input to WebVTT."""
 
-    return compose_vtt(parse_srt(srt_content))
+    return compose_vtt(parse_srt(srt_content, infer_speakers=False))
 
 
 def concatenate_subtitle_text(srt_content: str) -> str:
     """Join cue text into a readable plain-text transcript."""
 
-    cues = [clean_text(segment.text) for segment in parse_srt(srt_content)]
+    cues = [clean_text(segment.text) for segment in parse_srt(srt_content, infer_speakers=False)]
     return join_fragments(cue for cue in cues if cue) + ("\n" if cues else "")
 
 
 def renumber_subtitles(srt_content: str) -> str:
     """Renumber subtitles to consecutive indexes."""
-    return compose_srt(parse_srt(srt_content))
+    return compose_srt(parse_srt(srt_content, infer_speakers=False))
 
 
 def split_speaker_label(text: str) -> tuple[str | None, str]:
@@ -259,10 +259,10 @@ def split_speaker_label(text: str) -> tuple[str | None, str]:
     the SRT composers.
     """
 
-    match = _SPEAKER_RE.match(str(text or "").strip())
+    match = _SPEAKER_RE.match(str(text or "").strip(" \t\r\n"))
     if not match:
-        return None, str(text or "").strip()
-    return match.group("speaker").strip(), match.group("text").strip()
+        return None, str(text or "").strip(" \t\r\n")
+    return match.group("speaker").strip(), match.group("text").strip(" \t\r\n")
 
 
 def _speaker_and_text(text: str) -> tuple[str | None, str]:

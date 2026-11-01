@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { managerApi } from './admin-api';
+  import { appState } from './app-state.svelte';
   import type { JobRecord } from './api-models';
 
   let { jobs }: { jobs: JobRecord[] } = $props();
@@ -10,16 +10,17 @@
     health?: { state?: string } | null;
   };
   let worker = $state<WorkerService | null>(null);
-  let refreshing = false;
   const running = $derived(
     jobs.filter((job) => ['running', 'cancel_requested'].includes(job.status))
   );
   const queued = $derived(jobs.filter((job) => job.status === 'queued'));
   const runningKinds = $derived(
     Array.from(new Set(running.map((job) => job.kind))).map((kind) =>
-      ['dubbing.transcribe', 'transcription.quick'].includes(kind)
-        ? 'Transcription'
-        : kind.replaceAll('.', ' ').replaceAll('_', ' ')
+      kind === 'project.copy.current'
+        ? 'Project copy'
+        : ['dubbing.transcribe', 'transcription.quick'].includes(kind)
+          ? 'Transcription'
+          : kind.replaceAll('.', ' ').replaceAll('_', ' ')
     )
   );
   const workerState = $derived(
@@ -34,24 +35,35 @@
             : 'unknown'
   );
 
-  async function refreshWorker() {
-    if (refreshing) return;
-    refreshing = true;
-    try {
-      const result = await managerApi.services<{ items?: WorkerService[] }>();
-      worker =
-        result.items?.find((item) => item.id === 'pandrator.worker') ?? null;
-    } catch {
-      worker = null;
-    } finally {
-      refreshing = false;
+  $effect(() => {
+    const identity = appState.identityKey;
+    worker = null;
+    if (!appState.isAdministrator) return;
+    let active = true;
+    let refreshing = false;
+    const current = () =>
+      active && appState.isAdministrator && appState.identityKey === identity;
+    async function refreshWorker() {
+      if (refreshing || !current()) return;
+      refreshing = true;
+      try {
+        const result = await managerApi.services<{ items?: WorkerService[] }>();
+        if (current())
+          worker =
+            result.items?.find((item) => item.id === 'pandrator.worker') ??
+            null;
+      } catch {
+        if (current()) worker = null;
+      } finally {
+        refreshing = false;
+      }
     }
-  }
-
-  onMount(() => {
     void refreshWorker();
     const timer = setInterval(() => void refreshWorker(), 30_000);
-    return () => clearInterval(timer);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   });
 </script>
 
@@ -60,15 +72,16 @@
   {#if runningKinds.length}<p class="muted text-xs">
       Running: {runningKinds.join(', ')}. Queued jobs may wait for this work.
     </p>{/if}
-  <p class="muted text-xs">
-    {#if workerState === 'healthy'}Worker is running. Job counts do not indicate
-      free capacity.
-    {:else if workerState === 'stopped'}Worker is stopped. Queued jobs need a
-      running worker.
-    {:else if workerState === 'unhealthy'}Worker is not healthy. Check setup and
-      activity logs.
-    {:else}Worker health is unknown. Check setup if queued work does not start.{/if}
-  </p>
+  {#if appState.isAdministrator}<p class="muted text-xs">
+      {#if workerState === 'healthy'}Worker is running. Job counts do not
+        indicate free capacity.
+      {:else if workerState === 'stopped'}Worker is stopped. Queued jobs need a
+        running worker.
+      {:else if workerState === 'unhealthy'}Worker is not healthy. Check setup
+        and activity logs.
+      {:else}Worker health is unknown. Check setup if queued work does not
+        start.{/if}
+    </p>{/if}
   <a
     href="/activity"
     class="inline-block text-xs font-semibold text-[var(--accent)]"

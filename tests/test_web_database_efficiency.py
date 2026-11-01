@@ -17,6 +17,7 @@ from pandrator.web.database import (
     sqlite_url,
     upgrade_database,
 )
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
     Artifact,
@@ -29,6 +30,7 @@ from pandrator.web.models import (
     SourceAsset,
     utcnow,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.sessions import SessionService
 from pandrator.web.subtitle_sources import adopt_subtitle_source_in_session
 from pandrator.web.workflows import WorkflowService, _latest_jobs_by_kind
@@ -79,11 +81,9 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
         large = self.measure_workflow(1000, 4000)
 
         self.assertEqual(small["select_count"], large["select_count"])
-        # Keep the previous 12-query budget plus four bounded reads added by
-        # workflow_transformations in db8fbd28: AppSetting defaults,
-        # SessionSetting, OutcomePlan, and translation-artifact existence.
-        # The equality above still guards against history scaling.
-        self.assertLessEqual(large["select_count"], 16)
+        # Workspace ownership adds five fixed reads to the prior 16-query
+        # workflow budget. Equality above still rejects history-dependent SQL.
+        self.assertLessEqual(large["select_count"], 21)
         self.assertLessEqual(large["orm_objects_loaded"], 50)
         self.assertLess(large["response_json_bytes"], 25_000)
 
@@ -113,6 +113,7 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                     session.flush()
                     asset = SourceAsset(
                         artifact_id=source.id,
+                        workspace_id=source.workspace_id,
                         display_name="attached-source.srt",
                         kind="srt",
                     )
@@ -195,7 +196,11 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                 )
                 started = utcnow()
                 with database.session() as session:
+                    artifact_owner = resolve_artifact_ownership(session, session_id=record.id)
+                    job_owner = job_creation_ownership(session, session_id=record.id)
                     source = Artifact(
+                        workspace_id=artifact_owner.workspace_id,
+                        project_id=artifact_owner.project_id,
                         session_id=record.id,
                         kind="srt",
                         role="upload",
@@ -203,6 +208,8 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                         metadata_json={"original_filename": "source.srt"},
                     )
                     older_job = Job(
+                        workspace_id=job_owner.workspace_id,
+                        project_id=job_owner.project_id,
                         kind="dubbing.generate_audio",
                         session_id=record.id,
                         status="succeeded",
@@ -211,6 +218,8 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                         finished_at=started + timedelta(seconds=7),
                     )
                     newer_job = Job(
+                        workspace_id=job_owner.workspace_id,
+                        project_id=job_owner.project_id,
                         kind="dubbing.generate_audio",
                         session_id=record.id,
                         status="succeeded",
@@ -282,12 +291,18 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                 first = SessionService(database).create("First session")
                 second = SessionService(database).create("Second session")
                 with database.session() as session:
+                    first_owner = job_creation_ownership(session, session_id=first.id)
+                    second_owner = job_creation_ownership(session, session_id=second.id)
                     first_job = Job(
+                        workspace_id=first_owner.workspace_id,
+                        project_id=first_owner.project_id,
                         kind="dubbing.generate_audio",
                         session_id=first.id,
                         status="succeeded",
                     )
                     second_job = Job(
+                        workspace_id=second_owner.workspace_id,
+                        project_id=second_owner.project_id,
                         kind="dubbing.generate_audio",
                         session_id=second.id,
                         status="succeeded",
@@ -310,10 +325,10 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
         large = self.measure_assembly(100)
 
         self.assertEqual(small["select_count"], large["select_count"])
-        # Audio-version revalidation and sound-cue lookup add fixed reads.
-        # Equality across 3 and 100 segments still rejects per-segment queries.
-        self.assertLessEqual(large["select_count"], 12)
-        self.assertLessEqual(large["selects_per_segment"], 0.12)
+        # Ownership validation adds five fixed session/project/workspace reads.
+        # Measured counts remain equal across 3 and 100 segments.
+        self.assertLessEqual(large["select_count"], 17)
+        self.assertLessEqual(large["selects_per_segment"], 0.17)
 
         small_run = self.measure_assembly(3, run_scoped=True)
         large_run = self.measure_assembly(100, run_scoped=True)
@@ -322,8 +337,8 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
             large_run["select_count"],
         )
         # Run-bound take selection loads segments, takes and artifacts in batches.
-        self.assertLessEqual(large_run["select_count"], 15)
-        self.assertLessEqual(large_run["selects_per_segment"], 0.15)
+        self.assertLessEqual(large_run["select_count"], 20)
+        self.assertLessEqual(large_run["selects_per_segment"], 0.20)
 
     def test_representative_query_plans_use_covering_indexes_without_temp_sorts(self):
         with tempfile.TemporaryDirectory() as directory:

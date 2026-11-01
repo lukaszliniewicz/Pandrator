@@ -12,6 +12,7 @@ from flask.testing import FlaskClient
 from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
@@ -58,7 +59,12 @@ def upload_case(tmp_path: Path) -> Iterator[UploadCase]:
     artifacts = app.extensions["pandrator"]["artifacts"]
     try:
         with database.session() as session:
-            voice = Voice(name="Revision contract narrator", language="en", revision=7)
+            voice = Voice(
+                name="Revision contract narrator",
+                language="en",
+                workspace_id=initial_personal_workspace(session).id,
+                revision=7,
+            )
             session.add(voice)
             session.flush()
             voice_id, revision = voice.id, voice.revision
@@ -69,6 +75,7 @@ def upload_case(tmp_path: Path) -> Iterator[UploadCase]:
         with database.session() as session:
             sample = VoiceSample(
                 voice_id=voice_id,
+                workspace_id=session.get(Voice, voice_id).workspace_id,
                 artifact_id=artifact.id,
                 transcript="Existing reference",
                 transcript_reviewed=True,

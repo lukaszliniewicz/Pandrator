@@ -28,11 +28,13 @@ APPLICATION_SCOPES = frozenset(
         "app.write",
         "app.run",
         "app.cancel",
+        "app.workspaces.enroll",
         "app.credentials.read",
         "app.credentials.write",
         "manager.read",
         "manager.runtime",
         "manager.mutate",
+        "app.admin",
     }
 )
 MANAGER_RECOVERY_SCOPES = frozenset(

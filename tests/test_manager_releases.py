@@ -11,6 +11,7 @@ import threading
 import unittest
 import zipfile
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +30,8 @@ from pandrator_manager.application import create_application
 from pandrator_manager.auth import ensure_client_secret
 from pandrator_manager.errors import ConflictError, ManagerError
 from pandrator_manager.models import (
+    ComponentState,
+    ComputeVariant,
     ConnectionDescriptor,
     HealthResult,
     HealthState,
@@ -37,11 +40,19 @@ from pandrator_manager.models import (
     ProcessIdentity,
     TaskState,
 )
+from pandrator_manager.network import (
+    AccessMode,
+    EndpointExposure,
+    NetworkConfiguration,
+    load_network_configuration,
+    save_network_configuration,
+)
 from pandrator_manager.operations import (
     FilesystemTaskHandler,
     OperationEngine,
     OperationTaskContext,
 )
+from pandrator_manager.operations.release_tasks import ReleaseTasks
 from pandrator_manager.releases import (
     ReleaseActivationError,
     ReleaseSlotManager,
@@ -115,6 +126,7 @@ def _release_bundle(
     *,
     version: str = "1.0.0",
     product: str = "pandrator",
+    application_root: str = "app",
 ) -> tuple[str, int]:
     python_name = "runtime/python.exe" if os.name == "nt" else "runtime/bin/python"
     executable = zipfile.ZipInfo(python_name)
@@ -127,12 +139,15 @@ def _release_bundle(
                     "schema_version": 1,
                     "product": product,
                     "version": version,
-                    "application_root": "app",
+                    "application_root": application_root,
                     "python": python_name,
                 }
             ),
         )
-        archive.writestr("app/pandrator/__init__.py", "")
+        prefix = "" if application_root == "." else f"{application_root}/"
+        archive.writestr(f"{prefix}pandrator/__init__.py", "")
+        archive.writestr(f"{prefix}pyproject.toml", "")
+        archive.writestr(f"{prefix}pandrator/web/cli.py", "# --public-url\n")
         archive.writestr(executable, b"private runtime")
     payload = path.read_bytes()
     return hashlib.sha256(payload).hexdigest(), len(payload)
@@ -207,10 +222,12 @@ class _ReleaseSupervisor(ProcessSupervisor):
             )
         )
 
-    def replace_spec(self, spec):
+    def replace_spec(self, spec, *, before_replace=None):
         if spec.service_id in self.running:
             raise RuntimeError("cannot replace a running service")
         previous = self.specs.get(spec.service_id)
+        if before_replace is not None:
+            before_replace(previous.model_copy(deep=True) if previous is not None else None)
         self.specs[spec.service_id] = spec
         return previous
 
@@ -630,6 +647,16 @@ class ReleaseSlotTests(unittest.TestCase):
 
 class DurableApplicationReleaseTests(unittest.TestCase):
     def setUp(self):
+        detected = {
+            variant: (variant == ComputeVariant.CPU, "Deterministic release fixture.")
+            for variant in ComputeVariant
+        }
+        for target in (
+            "pandrator_manager.preflight.detect_compute",
+            "pandrator_manager.application.detect_compute",
+            "pandrator_manager.components.host.detect_compute",
+        ):
+            self.enterContext(mock.patch(target, return_value=detected))
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.private = Ed25519PrivateKey.generate()
@@ -674,10 +701,13 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         version="1.0.0",
         sequence=1,
         rotation=None,
+        application_root="app",
     ):
         signing_key = private or self.private
         fixture = self.layout.cache / f"release-fixture-{version}.zip"
-        digest, size = _release_bundle(fixture, version=version)
+        digest, size = _release_bundle(
+            fixture, version=version, application_root=application_root
+        )
         artifact = {
             "filename": f"pandrator-{version}-host.zip",
             "url": "https://releases.example.invalid/pandrator.zip",
@@ -716,6 +746,8 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         fail_new_health: bool,
         idempotency_key: str,
         task_handler: FilesystemTaskHandler | None = None,
+        start_after_activation: bool = True,
+        initially_running: set[str] | None = None,
     ):
         old_specs = pandrator_runtime_specs(self.layout)
         supervisor = _ReleaseSupervisor(
@@ -723,10 +755,13 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             self.database,
             fail_new_health=fail_new_health,
         )
+        if initially_running is not None:
+            supervisor.running = set(initially_running)
+            supervisor.desired = set(initially_running)
         plan = self.application.release_plan(
             manifest,
             offline=True,
-            start_after_activation=True,
+            start_after_activation=start_after_activation,
         )
         operation, created = self.application.submit_operation(
             plan_id=plan.id,
@@ -751,6 +786,82 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             self.application.store.get_operation(operation.id),
             supervisor,
         )
+
+    @mock.patch.dict(os.environ, {"PANDRATOR_WORKER_COUNT": "2"})
+    def test_release_quiesces_both_workers_before_migration_and_restores_actual_set(self):
+        original_start = _ReleaseSupervisor.start
+        observed = []
+
+        def start(supervisor, service_id):
+            if service_id == "pandrator.api":
+                observed.append(set(supervisor.running))
+                self.assertFalse({"pandrator.worker", "pandrator.worker.2"} & supervisor.running)
+            return original_start(supervisor, service_id)
+
+        with mock.patch.object(_ReleaseSupervisor, "start", autospec=True, side_effect=start):
+            _plan, operation, supervisor = self._execute_manifest(
+                self._prepare_manifest(), fail_new_health=False, idempotency_key="actual-worker-set",
+                start_after_activation=False,
+                initially_running={"pandrator.api", "pandrator.worker.2"},
+            )
+        self.assertEqual(operation.state, OperationState.SUCCEEDED)
+        self.assertTrue(observed)
+        self.assertEqual(supervisor.running, {"pandrator.api", "pandrator.worker.2"})
+
+    @mock.patch.dict(os.environ, {"PANDRATOR_WORKER_COUNT": "2"})
+    def test_failed_release_restores_secondary_without_starting_stopped_primary(self):
+        _plan, operation, supervisor = self._execute_manifest(
+            self._prepare_manifest(), fail_new_health=True, idempotency_key="rollback-worker-set",
+            start_after_activation=False,
+            initially_running={"pandrator.api", "pandrator.worker.2"},
+        )
+        self.assertEqual(operation.state, OperationState.FAILED)
+        self.assertEqual(supervisor.running, {"pandrator.api", "pandrator.worker.2"})
+        self.assertEqual(self._database_value(self.database), "old")
+
+    @mock.patch.dict(os.environ, {"PANDRATOR_WORKER_COUNT": "2"})
+    def test_legacy_single_worker_factory_remains_compatible(self):
+        def single_worker(*args, **kwargs):
+            return tuple(spec for spec in pandrator_runtime_specs(*args, **kwargs)
+                         if spec.service_id != "pandrator.worker.2")
+
+        with mock.patch("pandrator_manager.operations.handlers.pandrator_runtime_specs",
+                        side_effect=single_worker):
+            _plan, operation, supervisor = self._execute(fail_new_health=False)
+        self.assertEqual(operation.state, OperationState.SUCCEEDED)
+        self.assertEqual(supervisor.running, {"pandrator.api", "pandrator.worker"})
+
+    def test_release_uses_worker_count_from_execution_context(self):
+        self.application.context = replace(
+            self.application.context, environment={"PANDRATOR_WORKER_COUNT": "1"}
+        )
+        with mock.patch.dict(os.environ, {"PANDRATOR_WORKER_COUNT": "2"}):
+            _plan, operation, supervisor = self._execute(fail_new_health=False)
+        self.assertEqual(operation.state, OperationState.SUCCEEDED)
+        self.assertEqual(supervisor.running, {"pandrator.api", "pandrator.worker"})
+
+    @mock.patch.dict(os.environ, {"PANDRATOR_WORKER_COUNT": "2"})
+    def test_release_reports_mcp_dependency_without_starting_stopped_primary(self):
+        original_factory = pandrator_runtime_specs
+
+        def with_mcp(*args, **kwargs):
+            return original_factory(*args, **{**kwargs, "mcp_supported": True})
+
+        with (
+            mock.patch(f"{__name__}.pandrator_runtime_specs", side_effect=with_mcp),
+            mock.patch("pandrator_manager.operations.handlers.pandrator_runtime_specs",
+                       side_effect=with_mcp),
+        ):
+            _plan, operation, supervisor = self._execute_manifest(
+                self._prepare_manifest(), fail_new_health=False, idempotency_key="mcp-dependency",
+                start_after_activation=False,
+                initially_running={"pandrator.api", "pandrator.worker.2", "pandrator.mcp"},
+            )
+        self.assertEqual(operation.state, OperationState.SUCCEEDED)
+        self.assertEqual(supervisor.running, {"pandrator.api", "pandrator.worker.2"})
+        activation = next(record for record in self.application.store.operation_tasks(operation.id)
+                          if record.task.kind == "activate_application_release")
+        self.assertIn("primary worker was stopped", activation.result["mcp_error"])
 
     @staticmethod
     def _database_value(path: Path) -> str:
@@ -783,7 +894,13 @@ class DurableApplicationReleaseTests(unittest.TestCase):
                     )
 
                 self.assertEqual(operation.state, OperationState.SUCCEEDED)
-                runtime_specs.assert_called_once_with(self.layout)
+                runtime_specs.assert_called_once_with(
+                    self.layout,
+                    exposure=load_network_configuration(
+                        self.layout, environment=self.application.context.environment
+                    ).application,
+                    preferences={},
+                )
                 self.assertEqual(
                     prior_calls[first_call:],
                     ["release:download", "release:stage", "release:stop-application"],
@@ -792,6 +909,198 @@ class DurableApplicationReleaseTests(unittest.TestCase):
                 assert accepted is not None
                 self.assertEqual(accepted["version"], version)
                 self.assertEqual(accepted["sequence"], sequence)
+
+    def test_signed_bundle_inspection_allows_backend_application_start(self):
+        for sequence, application_root in enumerate(("app", "."), start=1):
+            with self.subTest(application_root=application_root):
+                version = f"1.{sequence}.0"
+                manifest = self._prepare_manifest(
+                    version=version,
+                    sequence=sequence,
+                    application_root=application_root,
+                )
+                _plan, operation, supervisor = self._execute_manifest(
+                    manifest,
+                    fail_new_health=False,
+                    idempotency_key=f"inspection-{sequence}",
+                )
+                self.assertEqual(operation.state, OperationState.SUCCEEDED)
+                definition = self.application.registry.definition("pandrator")
+                inspection = self.application.registry.driver("pandrator").inspect(
+                    self.application.context, definition, None
+                )
+                self.assertEqual(inspection.state, ComponentState.PRESENT)
+                self.assertIsNone(inspection.installed_version)
+                self.assertEqual(inspection.installed_revision, version)
+                for service_id in tuple(supervisor.running):
+                    supervisor.stop(service_id)
+                secret = "s" * 43
+                client = create_api(
+                    self.application, supervisor, client_secret=secret
+                ).test_client()
+                response = client.post(
+                    "/v1/application/start",
+                    headers={
+                        "Authorization": f"Bearer {secret}",
+                        "Idempotency-Key": f"start-{sequence}",
+                    },
+                    json={},
+                )
+                self.assertEqual(response.status_code, 200, response.get_json())
+                self.assertTrue(response.get_json()["installed"])
+                self.assertEqual(response.get_json()["component_state"], "present")
+                self.assertIn("pandrator.worker", supervisor.running)
+
+    def test_release_activation_preserves_configured_application_exposure(self):
+        profiles = (
+            (EndpointExposure(port=8097), {}),
+            (EndpointExposure(port=18197), {}),
+            (
+                EndpointExposure(
+                    mode=AccessMode.HTTPS_PROXY,
+                    bind_host="0.0.0.0",
+                    port=18197,
+                    public_url="https://pandrator.example",
+                    trusted_hosts=("alias.example",),
+                    proxy_hops=1,
+                ),
+                {},
+            ),
+            (EndpointExposure(port=8097), {"PANDRATOR_PORT": "18197"}),
+        )
+        executions = []
+        for sequence, (exposure, environment) in enumerate(profiles, start=1):
+            with self.subTest(exposure=exposure, environment=environment):
+                save_network_configuration(
+                    self.layout, NetworkConfiguration(application=exposure)
+                )
+                saved = self.layout.network_configuration.read_bytes()
+                self.application.context = replace(
+                    self.application.context, environment=environment
+                )
+                manifest = self._prepare_manifest(
+                    version=f"1.{sequence}.0", sequence=sequence
+                )
+                plan, operation, supervisor = self._execute_manifest(
+                    manifest,
+                    fail_new_health=False,
+                    idempotency_key=f"exposure-{sequence}",
+                )
+                self.assertEqual(operation.state, OperationState.SUCCEEDED)
+                expected_exposure = load_network_configuration(
+                    self.layout, environment=environment
+                ).application
+                expected = pandrator_runtime_specs(
+                    self.layout, exposure=expected_exposure
+                )
+                api = next(spec for spec in expected if spec.service_id == "pandrator.api")
+                self.assertEqual(supervisor.specs[api.service_id], api)
+                execution = OperationTaskContext(
+                    context=self.application.context,
+                    store=self.application.store,
+                    registry=self.application.registry,
+                    supervisor=supervisor,
+                    operation=operation,
+                    plan=plan,
+                    prior_results={},
+                    cancellation=self.application.context.cancellation,
+                )
+                executions.append((execution, expected_exposure))
+                self.assertEqual(self.layout.network_configuration.read_bytes(), saved)
+        for execution, exposure in executions:
+            # Rebuild after the final activation so only network policy differs.
+            save_network_configuration(
+                self.layout, NetworkConfiguration(application=exposure)
+            )
+            saved = self.layout.network_configuration.read_bytes()
+            expected = pandrator_runtime_specs(self.layout, exposure=exposure)
+            self.assertEqual(ReleaseTasks._release_runtime_specs(execution), expected)
+            self.assertEqual(
+                FilesystemTaskHandler._application_runtime_specs(execution, {}), expected
+            )
+            self.assertEqual(self.layout.network_configuration.read_bytes(), saved)
+
+    def test_invalid_nested_bundle_metadata_does_not_use_foreign_markers(self):
+        manifest = self._prepare_manifest()
+        _plan, operation, _supervisor = self._execute_manifest(
+            manifest, fail_new_health=False, idempotency_key="invalid-nested"
+        )
+        self.assertEqual(operation.state, OperationState.SUCCEEDED)
+        slot = Path(json.loads(self.pointer.read_text(encoding="utf-8"))["path"])
+        metadata_path = slot / "pandrator-release.json"
+        valid_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        foreign = self.layout.root / "foreign"
+        for marker in ("pyproject.toml", "pandrator/web/cli.py"):
+            path = foreign / marker
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture", encoding="utf-8")
+        candidates = (
+            "{malformed",
+            json.dumps({**valid_metadata, "application_root": "../../../foreign"}),
+        )
+        definition = self.application.registry.definition("pandrator")
+        for metadata in candidates:
+            with self.subTest(metadata=metadata):
+                metadata_path.write_text(metadata, encoding="utf-8")
+                inspection = self.application.registry.driver("pandrator").inspect(
+                    self.application.context, definition, None
+                )
+                self.assertEqual(inspection.state, ComponentState.ABSENT)
+                self.assertEqual(inspection.evidence, ())
+
+    def test_nested_bundle_symlink_does_not_use_foreign_markers(self):
+        manifest = self._prepare_manifest()
+        _plan, operation, _supervisor = self._execute_manifest(
+            manifest, fail_new_health=False, idempotency_key="linked-nested"
+        )
+        self.assertEqual(operation.state, OperationState.SUCCEEDED)
+        slot = Path(json.loads(self.pointer.read_text(encoding="utf-8"))["path"])
+        foreign = self.layout.root / "foreign"
+        for marker in ("pyproject.toml", "pandrator/web/cli.py"):
+            path = foreign / marker
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture", encoding="utf-8")
+        try:
+            (slot / "linked-app").symlink_to(foreign, target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            if os.name != "nt":
+                raise
+            self.skipTest(f"Windows symbolic-link creation is unavailable: {error}")
+        metadata_path = slot / "pandrator-release.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["application_root"] = "linked-app"
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        definition = self.application.registry.definition("pandrator")
+        inspection = self.application.registry.driver("pandrator").inspect(
+            self.application.context, definition, None
+        )
+        self.assertEqual(inspection.state, ComponentState.ABSENT)
+        self.assertEqual(inspection.evidence, ())
+
+    def test_source_slot_and_legacy_application_markers_remain_present(self):
+        definition = self.application.registry.definition("pandrator")
+        driver = self.application.registry.driver("pandrator")
+        for marker in definition.source_markers:
+            path = self.old_slot / marker
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture", encoding="utf-8")
+        pointer = json.loads(self.pointer.read_text(encoding="utf-8"))
+        pointer.update(version="source-version", revision="source-revision")
+        self.pointer.write_text(json.dumps(pointer), encoding="utf-8")
+        inspection = driver.inspect(self.application.context, definition, None)
+        self.assertEqual(inspection.state, ComponentState.PRESENT)
+        self.assertEqual(inspection.installed_version, "source-version")
+        self.assertEqual(inspection.installed_revision, "source-revision")
+
+        self.pointer.unlink()
+        for marker in definition.markers:
+            path = self.layout.root / marker
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture", encoding="utf-8")
+        inspection = driver.inspect(self.application.context, definition, None)
+        self.assertEqual(inspection.state, ComponentState.PRESENT)
+        self.assertIsNone(inspection.installed_version)
+        self.assertIsNone(inspection.installed_revision)
 
     def test_success_atomically_accepts_release_slot_and_ownership(self):
         plan, operation, supervisor = self._execute(fail_new_health=False)
@@ -1908,8 +2217,8 @@ class DurableApplicationReleaseTests(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(body)
 
-            def log_message(self, *_args):
-                pass
+            def log_message(self, format, *args):
+                del format, args
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), HealthHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

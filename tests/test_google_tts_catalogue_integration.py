@@ -16,8 +16,9 @@ from google.auth.exceptions import DefaultCredentialsError
 
 from pandrator.logic import google_tts_catalogue_http, tts_handler
 from pandrator.web import tts_catalogue_service, tts_providers
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.database import Database
-from pandrator.web.models import AppSetting
+from pandrator.web.models import WorkspaceSetting
 from pandrator.web.tts_catalogue_service import TtsCatalogueService
 from pandrator.web.tts_provider_contracts import TtsHealth
 from pandrator.web.tts_providers import GoogleTtsAdapter, TtsProviderRegistry
@@ -139,8 +140,10 @@ def _save_gemini_settings(database: Database, *, key_env: str) -> dict[str, Any]
     service["api_key_env"] = key_env
     settings = {"provider_configs": [service]}
     with database.session() as session:
+        workspace_id = initial_personal_workspace(session).id
         session.add(
-            AppSetting(
+            WorkspaceSetting(
+                workspace_id=workspace_id,
                 key="services.tts",
                 value_json=deepcopy(settings),
                 revision=1,
@@ -349,7 +352,8 @@ def test_snapshot_caches_successful_google_discovery_without_writing_settings(
 
     monkeypatch.setattr(google_tts_catalogue_http.requests, "get", get)
     with database.session() as session:
-        persisted = session.get(AppSetting, "services.tts")
+        workspace_id = initial_personal_workspace(session).id
+        persisted = session.get(WorkspaceSetting, (workspace_id, "services.tts"))
         assert persisted is not None
         original_revision = persisted.revision
         original_value = deepcopy(persisted.value_json)
@@ -379,7 +383,8 @@ def test_snapshot_caches_successful_google_discovery_without_writing_settings(
     assert VOICE_ID in cached_service["voice_catalogues"][MODELS[1]]
     assert len(calls) == 1
     with database.session() as session:
-        persisted = session.get(AppSetting, "services.tts")
+        workspace_id = initial_personal_workspace(session).id
+        persisted = session.get(WorkspaceSetting, (workspace_id, "services.tts"))
         assert persisted is not None
         assert persisted.revision == original_revision
         assert persisted.value_json == original_value == original_settings

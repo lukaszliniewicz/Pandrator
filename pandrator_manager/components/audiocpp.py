@@ -17,7 +17,7 @@ from ..context import ManagerContext
 from ..models import ComputeVariant
 from .host import compute_choices, normalized_architecture, resolve_auto_compute
 
-AUDIO_CPP_VERSION = "0.9.2"
+AUDIO_CPP_VERSION = "0.9.2-drama3-base-small"
 AUDIO_CPP_RELEASE_BASE = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/v{AUDIO_CPP_VERSION}"
 )
@@ -215,21 +215,22 @@ SUPPORTED_MODEL_IDS = MANUAL_MODEL_IDS + tuple(
 )
 
 # Public alias matching the naming used by the other native driver.
-# Digests: upstream v0.9.2 release assets, published 2026-10-15. Portable CPU
+# Digests: upstream v0.9.2-drama3-base-small release assets, published
+# 2026-10-19 from commit 507495611b22dc4590e0e5609e05e8096384e33f. Portable CPU
 # and Vulkan builds avoid the release runner's CPU instruction set. Windows CUDA
 # stays on the 12.4 binary/runtime pair for driver compatibility.
 ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     ("linux", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.9.2-bin-ubuntu-x64-cpu-portable.tar.gz",
-            "72bfb07f46bb8f4cc0217a604619dbb78cfc388dfa4e639feb412ca7e2410980",
+            "audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-cpu-portable.tar.gz",
+            "d5e6110daae50800429680a277b70557d333d552c4a130a8f1d0e56181fa8697",
             ComputeVariant.CPU,
         ),
     ),
     ("linux", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.9.2-bin-ubuntu-x64-vulkan-portable.tar.gz",
-            "37294a0d9d52383475a47df95dc725c83faee0dbfae00088f1509ed4d7f3619d",
+            "audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-vulkan-portable.tar.gz",
+            "dfd0ad832829210eb13a03779bdd90f3e6e68f68edf762bf25b3915067beeb73",
             ComputeVariant.VULKAN,
         ),
     ),
@@ -240,36 +241,36 @@ ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     # archive layout differs from the expected archive-root files.
     ("linux", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.9.2-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
-            "d1ffb5b314bd9905425e9122831fcda015b2e82fb339b1c0812794ba4ebbf3b8",
+            "audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
+            "fc59545092eab869013c74d11273c17c96a050befe257523b9019d1a5073962c",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.9.2-bin-windows-x64-cpu-portable.zip",
-            "4bea04239d753d2d0a294580ad4af2a0fa81b0de244a1b9146650c7f9fa4e84d",
+            "audio-v0.9.2-drama3-base-small-bin-windows-x64-cpu-portable.zip",
+            "9654c8f66f87bda768196d934059be896399b43703b06e5f2b857430775bec3b",
             ComputeVariant.CPU,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.9.2-bin-windows-x64-vulkan-portable.zip",
-            "4d11a82c560f7a1dc0934e6fef847d6e0b779cf79854aa7d90d8b28e4ad04d93",
+            "audio-v0.9.2-drama3-base-small-bin-windows-x64-vulkan-portable.zip",
+            "9c943d406af3543cc5005d158ed583210cd7a13371bffcd4b7f262f7a6a5ad16",
             ComputeVariant.VULKAN,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.9.2-bin-windows-x64-cuda12.4.zip",
-            "099bd43b74a5175fd9e03ac95c9fabe8b97718826d547890a03950483e81b168",
+            "audio-v0.9.2-drama3-base-small-bin-windows-x64-cuda12.4.zip",
+            "48852da40790c40f3285bca6c53ff7829b3963080f0e95b6742f868fc1d7c757",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
         AudioCppAsset(
-            "audio-v0.9.2-cudart-windows-x64-cuda12.4.zip",
-            "50e278d213daa38e782a10b501b764c5c0738381898dacee7243101b890eeb0d",
+            "audio-v0.9.2-drama3-base-small-cudart-windows-x64-cuda12.4.zip",
+            "4b1186a525c9ac70a4fbd031b47e0dfca2ebaa36cfcb760d5be1a76eb2b12da5",
             ComputeVariant.CUDA,
             kind="cuda_runtime",
         ),
@@ -334,9 +335,13 @@ def source_markers_for(system: str) -> tuple[str, ...]:
 def server_config(
     backend: ComputeVariant | str,
     model_ids: tuple[str, ...] | list[str],
+    *,
+    drama3_memory: str = "native",
 ) -> dict:
     """Build the locked-down local audio.cpp server configuration."""
 
+    if not isinstance(drama3_memory, str) or drama3_memory not in {"native", "disk"}:
+        raise ValueError("audio.cpp drama3_memory must be 'native' or 'disk'.")
     selected = tuple(model_ids)
     if not selected:
         raise ValueError("audio.cpp requires at least one model package.")
@@ -361,8 +366,17 @@ def server_config(
         }
         if package.load_options:
             entry["load_options"] = dict(package.load_options)
-        if package.session_options:
-            entry["session_options"] = dict(package.session_options)
+        session_options: dict[str, object] = dict(package.session_options or {})
+        if package.family == "fish_drama3" and drama3_memory == "disk":
+            session_options.update(
+                {
+                    "fish_drama3.disk_experts": True,
+                    "fish_drama3.expert_cache_size": 8,
+                    "fish_drama3.cpu_expert_layers": 0,
+                }
+            )
+        if session_options:
+            entry["session_options"] = session_options
         if package.family == "soprano_tts":
             entry["session_options"] = {
                 **dict(package.session_options or {}),

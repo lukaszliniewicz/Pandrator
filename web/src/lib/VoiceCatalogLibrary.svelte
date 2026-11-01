@@ -17,6 +17,8 @@
   } from '@lucide/svelte';
   import { voiceApi } from './admin-api';
   import { sessionApi } from './domain-api';
+  import type { SpeechCatalogueScope } from './speech-catalogue-api';
+  import { serviceMatches } from './tts-provider-policy';
   import { errorMessage } from './errors';
   import { invalidates, invalidationBus } from './invalidation';
   import type { TtsService, VoiceRecord } from './api-models';
@@ -49,6 +51,8 @@
     initialVoice = '',
     initialView,
     embedded = false,
+    workspaceId,
+    sessionId,
     onselect,
     onvoicepublished
   }: {
@@ -57,6 +61,8 @@
     initialVoice?: string;
     initialView?: 'references' | 'prebuilt';
     embedded?: boolean;
+    workspaceId?: string;
+    sessionId?: string;
     onselect?: (voice: CatalogVoice) => void;
     onvoicepublished?: (providerVoiceId: string) => void;
   } = $props();
@@ -84,6 +90,9 @@
   let filtersOpen = $state(false);
   let page = $state<VoiceCatalogPage | null>(null);
   let collections = $state<VoiceCollection[]>([]);
+  const scope: SpeechCatalogueScope = $derived({ workspaceId, sessionId });
+  const writeWorkspaceId = $derived(page?.workspace_id);
+  const canEdit = $derived(Boolean(page?.can_edit && writeWorkspaceId));
   let services = $state<TtsService[]>([]);
   let voices = $state<VoiceRecord[]>([]);
   let loading = $state(false);
@@ -175,7 +184,9 @@
     reviewed_only: reviewedOnly,
     sort
   });
-  const selectedService = $derived(services.find((s) => s.id === service));
+  const selectedService = $derived(
+    service ? services.find((s) => serviceMatches(s, service)) : undefined
+  );
   const filterCount = $derived(
     [
       language,
@@ -198,6 +209,7 @@
   const languages = $derived(Object.keys(page?.facets.language ?? {}).sort());
   const origins = $derived(Object.keys(page?.facets.origin ?? {}).sort());
   function openDesigner(voice: CatalogVoice | null = null) {
+    if (!canEdit) return;
     redesignVoice = voice;
     designerOpen = true;
   }
@@ -208,7 +220,7 @@
     loading = true;
     error = '';
     try {
-      const result = await voiceLibraryApi.query(request);
+      const result = await voiceLibraryApi.query(request, scope);
       if (!alive || ticket !== sequence) return;
       page =
         cursor && page
@@ -230,12 +242,15 @@
     await Promise.all([refreshAuxiliary(), load()]);
     if (detail?.kind === 'managed' && !editing) {
       const id = detail.id;
-      const result = await voiceLibraryApi.query({
-        query: id,
-        kind: 'managed',
-        limit: 1
-      });
-      if (detail?.id === id)
+      const result = await voiceLibraryApi.query(
+        {
+          query: id,
+          kind: 'managed',
+          limit: 1
+        },
+        scope
+      );
+      if (alive && detail?.id === id)
         detail = result.items.find((v) => v.id === id) ?? null;
     }
   }
@@ -247,15 +262,15 @@
       error = errorMessage(caught);
     }
   }
-  async function refreshAuxiliary(probe = false) {
+  async function refreshAuxiliary() {
     const ticket = ++auxiliarySequence;
     const [groupPayload, servicePayload, library] = await Promise.all([
-      voiceLibraryApi.collections(),
-      sessionApi.ttsCatalogueCompact(probe),
-      voiceApi.list<VoiceRecord>()
+      voiceLibraryApi.collections(scope),
+      sessionApi.ttsCatalogueCompact(false, scope),
+      voiceApi.list<VoiceRecord>(scope)
     ]);
-    if (!alive) return;
-    if (ticket === auxiliarySequence) collections = groupPayload.items;
+    if (!alive || ticket !== auxiliarySequence) return;
+    collections = groupPayload.items;
     services = servicePayload.services;
     voices = library.items;
   }
@@ -284,7 +299,7 @@
     void refreshAuxiliary().catch((caught) => (error = errorMessage(caught)));
     if (initialVoice)
       void voiceLibraryApi
-        .query({ query: initialVoice, kind: 'managed', limit: 1 })
+        .query({ query: initialVoice, kind: 'managed', limit: 1 }, scope)
         .then((result) => {
           const match = result.items.find((item) => item.id === initialVoice);
           if (alive && match) openDetail(match);
@@ -351,7 +366,7 @@
     });
   }
   function edit() {
-    if (!detail) return;
+    if (!detail || !canEdit) return;
     editName = detail.name;
     editDescription = detail.description;
     editCategory = detail.voice_category;
@@ -365,16 +380,21 @@
     editing = true;
   }
   async function save() {
-    if (!detail) return false;
+    if (!detail || !canEdit || !writeWorkspaceId) return false;
     saving = true;
     error = '';
     try {
-      const result = await voiceLibraryApi.update(detail, {
-        name: editName.trim(),
-        description: editDescription.trim() || null,
-        voice_category: editCategory,
-        profile
-      });
+      const result = await voiceLibraryApi.update(
+        detail,
+        {
+          name: editName.trim(),
+          description: editDescription.trim() || null,
+          voice_category: editCategory,
+          profile
+        },
+        writeWorkspaceId
+      );
+      if (!alive) return false;
       detail = {
         ...detail,
         name: editName.trim(),
@@ -396,7 +416,7 @@
     }
   }
   async function createCollection() {
-    if (!collectionName.trim()) return;
+    if (!collectionName.trim() || !canEdit || !writeWorkspaceId) return;
     collectionBusy = true;
     auxiliarySequence++;
     error = '';
@@ -405,10 +425,18 @@
         (collection) => collection.id === renameId
       );
       const created = existing
-        ? await voiceLibraryApi.updateCollection(existing, {
-            name: collectionName.trim()
-          })
-        : await voiceLibraryApi.createCollection(collectionName.trim());
+        ? await voiceLibraryApi.updateCollection(
+            existing,
+            {
+              name: collectionName.trim()
+            },
+            writeWorkspaceId
+          )
+        : await voiceLibraryApi.createCollection(
+            collectionName.trim(),
+            writeWorkspaceId
+          );
+      if (!alive) return;
       collections = existing
         ? collections.map((collection) =>
             collection.id === created.id ? created : collection
@@ -425,7 +453,7 @@
     }
   }
   async function membership(collection: VoiceCollection, add: boolean) {
-    if (!detail) return;
+    if (!detail || !canEdit || !writeWorkspaceId) return;
     const target = detail;
     collectionBusy = true;
     auxiliarySequence++;
@@ -434,8 +462,10 @@
       const updated = await voiceLibraryApi.membership(
         collection,
         target.reference,
-        add
+        add,
+        writeWorkspaceId
       );
+      if (!alive) return;
       collections = collections.map((c) => (c.id === updated.id ? updated : c));
       if (detail?.key === target.key)
         detail = {
@@ -457,16 +487,28 @@
   }
   async function bulkMembership(add: boolean) {
     const collection = collections.find((item) => item.id === bulkCollectionId);
-    if (!collection || !bulkVoices.length || collectionBusy) return;
+    if (
+      !collection ||
+      !bulkVoices.length ||
+      collectionBusy ||
+      !canEdit ||
+      !writeWorkspaceId
+    )
+      return;
     collectionBusy = true;
     auxiliarySequence++;
     error = '';
     try {
-      const updated = await voiceLibraryApi.updateCollection(collection, {
-        [add ? 'add_members' : 'remove_members']: bulkVoices.map(
-          (voice) => voice.reference
-        )
-      });
+      const updated = await voiceLibraryApi.updateCollection(
+        collection,
+        {
+          [add ? 'add_members' : 'remove_members']: bulkVoices.map(
+            (voice) => voice.reference
+          )
+        },
+        writeWorkspaceId
+      );
+      if (!alive) return;
       collections = collections.map((item) =>
         item.id === updated.id ? updated : item
       );
@@ -487,10 +529,10 @@
         ? [...bulkVoices, voice]
         : bulkVoices;
   }
-  async function checkAvailability() {
+  async function reloadChoices() {
     loading = true;
     try {
-      await refreshAuxiliary(true);
+      await refreshAuxiliary();
       await load();
     } catch (caught) {
       error = errorMessage(caught);
@@ -505,7 +547,7 @@
     }
     const registration = voice.compatibility.find(
       (c) =>
-        (!service || c.service_id === service) &&
+        (!service || c.service_id === (selectedService?.id ?? service)) &&
         (!model || c.model === model) &&
         (c.prepared ?? c.ready)
     );
@@ -583,10 +625,14 @@
           </p>
         </div>{/if}
       <div class="flex flex-wrap gap-2">
-        <button class="btn btn-primary" onclick={() => openDesigner()}
+        <button
+          class="btn btn-primary"
+          disabled={!canEdit}
+          onclick={() => openDesigner()}
           ><WandSparkles size={16} />Design voice</button
         ><button
           class="btn btn-secondary"
+          disabled={!canEdit}
           onclick={() => {
             samplesOpen = true;
             detail = null;
@@ -624,12 +670,12 @@
           </p>
         </div>
         <div class="flex flex-wrap gap-2">
-          {#if detail.origin === 'designed' && !editing}<button
+          {#if detail.origin === 'designed' && !editing && canEdit}<button
               class="btn btn-secondary"
               onclick={() => openDesigner(detail)}
               ><WandSparkles size={15} />Redesign</button
             >{/if}
-          {#if !detail.bundled && !editing}<button
+          {#if !detail.bundled && !editing && canEdit}<button
               class="btn btn-secondary"
               onclick={edit}><SlidersHorizontal size={15} />Edit profile</button
             >{/if}{#if onselect || onvoicepublished}<button
@@ -749,7 +795,7 @@
                   checked={detail.collections.some(
                     (c) => c.id === collection.id
                   )}
-                  disabled={collectionBusy}
+                  disabled={collectionBusy || !canEdit}
                   onchange={(event) =>
                     void membership(collection, event.currentTarget.checked)}
                 />{collection.name}</label
@@ -841,6 +887,9 @@
     </article>
     {#if samplesOpen && detail.kind === 'managed'}<div class="mt-5">
         <VoiceManager
+          workspaceId={writeWorkspaceId ?? workspaceId}
+          {sessionId}
+          {canEdit}
           onback={() => void closeSamples()}
           initialVoice={detail.id}
           initialService={service}
@@ -887,6 +936,9 @@
       to add another recording.
     </p>
     <VoiceManager
+      workspaceId={writeWorkspaceId ?? workspaceId}
+      {sessionId}
+      {canEdit}
       onback={() => void closeSamples()}
       embedded
       referencesOnly
@@ -905,8 +957,9 @@
       </div>
     </div>
     {#if initialService || initialModel}<p class="muted mb-4 text-xs">
-        Casting context: {services.find((item) => item.id === initialService)
-          ?.name ?? initialService}{initialModel ? ` · ${initialModel}` : ''}.
+        Casting context: {services.find((item) =>
+          serviceMatches(item, initialService)
+        )?.name ?? initialService}{initialModel ? ` · ${initialModel}` : ''}.
         Clear filters restores this context.
       </p>{/if}
     <div class="catalog-toolbar mb-4">
@@ -945,6 +998,7 @@
         class="btn btn-icon"
         aria-label="Create collection"
         title="Create collection"
+        disabled={!canEdit}
         onclick={() => {
           renameId = '';
           collectionName = '';
@@ -952,7 +1006,7 @@
         }}><FolderPlus size={18} /></button
       >
     </div>
-    {#if collectionId}<div class="mb-4 flex flex-wrap gap-2">
+    {#if collectionId && canEdit}<div class="mb-4 flex flex-wrap gap-2">
         <button
           class="btn btn-sm"
           onclick={() => {
@@ -988,12 +1042,18 @@
           >
           <button
             class="btn btn-primary"
-            disabled={collectionBusy || !bulkCollectionId || !bulkVoices.length}
+            disabled={collectionBusy ||
+              !canEdit ||
+              !bulkCollectionId ||
+              !bulkVoices.length}
             onclick={() => void bulkMembership(true)}>Add selected</button
           >
           <button
             class="btn"
-            disabled={collectionBusy || !bulkCollectionId || !bulkVoices.length}
+            disabled={collectionBusy ||
+              !canEdit ||
+              !bulkCollectionId ||
+              !bulkVoices.length}
             onclick={() => void bulkMembership(false)}>Remove selected</button
           >
         </div>
@@ -1018,7 +1078,7 @@
           /></label
         ><button
           class="btn btn-primary"
-          disabled={collectionBusy || !collectionName.trim()}
+          disabled={collectionBusy || !canEdit || !collectionName.trim()}
           >{renameId ? 'Save collection name' : 'Create collection'}</button
         ><button
           class="btn btn-secondary"
@@ -1144,13 +1204,16 @@
               <button
                 class="btn btn-sm"
                 disabled={loading}
-                onclick={checkAvailability}>Check availability</button
+                onclick={reloadChoices}>Reload choices</button
               >
               <label class="filter-label"
                 >Service<select
                   class="input mt-1 w-full"
-                  bind:value={service}
-                  onchange={() => (model = '')}
+                  value={selectedService?.id ?? service}
+                  onchange={(event) => {
+                    service = event.currentTarget.value;
+                    model = '';
+                  }}
                   ><option value="">Any service</option
                   >{#each services as item}<option value={item.id}
                       >{item.name}</option
@@ -1292,6 +1355,7 @@
                         (item) => item.key === voice.key
                       )}
                       disabled={collectionBusy ||
+                        !canEdit ||
                         (bulkVoices.length >= 200 &&
                           !bulkVoices.some((item) => item.key === voice.key))}
                       onchange={() => toggleBulk(voice)}
@@ -1374,89 +1438,100 @@
   {#if compare.length && !samplesOpen}<button
       class="btn btn-primary fixed bottom-5 right-5 z-[75] shadow-xl"
       onclick={() => (comparisonOpen = true)}
-      >Compare {compare.length} voices</button
+      >Compare {compare.length}
+      {compare.length === 1 ? 'voice' : 'voices'}</button
     >{/if}
 </div>
 
-{#if compare.length}<VoiceComparison
-    open={comparisonOpen}
-    voices={compare}
-    {services}
-    initialService={service}
-    initialModel={model}
-    onclose={() => (comparisonOpen = false)}
-    onremove={(key) => {
-      compare = compare.filter((voice) => voice.key !== key);
-      if (!compare.length) comparisonOpen = false;
-    }}
-    oninspect={(voice) => {
-      comparisonOpen = false;
-      openDetail(voice);
-      samplesOpen = voice.kind === 'managed';
-    }}
-  />{/if}
+{#if compare.length}{#key `${writeWorkspaceId ?? ''}:${sessionId ?? ''}`}<VoiceComparison
+      open={comparisonOpen}
+      voices={compare}
+      {services}
+      workspaceId={writeWorkspaceId}
+      {sessionId}
+      {canEdit}
+      initialService={service}
+      initialModel={model}
+      onclose={() => (comparisonOpen = false)}
+      onremove={(key) => {
+        compare = compare.filter((voice) => voice.key !== key);
+        if (!compare.length) comparisonOpen = false;
+      }}
+      oninspect={(voice) => {
+        comparisonOpen = false;
+        openDetail(voice);
+        samplesOpen = voice.kind === 'managed';
+      }}
+    />{/key}{/if}
 
-{#if designerOpen}<VoiceDesignDialog
-    {services}
-    {voices}
-    initialVoiceId={redesignVoice?.id ?? ''}
-    initialAccent={redesignVoice?.profile.languages[0]?.accent ?? accent}
-    initialPitch={redesignVoice?.profile.pitch ?? pitch}
-    initialCategory={redesignVoice?.voice_category ?? category}
-    initialPrompt={redesignVoice?.description ||
-      [
-        query,
-        accent && `${accent} accent`,
-        category,
-        pitch && `${pitch} pitch`,
-        useCase && voiceFacetLabel(useCase)
-      ]
-        .filter(Boolean)
-        .join(', ')}
-    onclose={() => {
-      designerOpen = false;
-      redesignVoice = null;
-    }}
-    onsaved={async (voiceId, _providerVoiceId, warning) => {
-      const targetCollectionId = collectionId;
-      const warnings = warning ? [warning] : [];
-      designerOpen = false;
-      redesignVoice = null;
-      try {
-        await refreshAuxiliary();
-        const result = await voiceLibraryApi.query({
-          query: voiceId,
-          kind: 'managed',
-          limit: 1
-        });
-        const saved = result.items.find((v) => v.id === voiceId);
-        const group = collections.find((c) => c.id === targetCollectionId);
-        if (saved && group) {
-          try {
-            const updated = await voiceLibraryApi.membership(
-              group,
-              saved.reference,
-              true
-            );
-            saved.collections = [
-              ...saved.collections.filter((c) => c.id !== updated.id),
-              { id: updated.id, name: updated.name }
-            ];
-          } catch (caught) {
-            warnings.push(
-              `The voice was saved, but could not be added to ${group.name}: ${errorMessage(caught)}`
-            );
+{#if designerOpen && canEdit && writeWorkspaceId}{#key writeWorkspaceId}<VoiceDesignDialog
+      workspaceId={writeWorkspaceId}
+      {canEdit}
+      {services}
+      {voices}
+      initialVoiceId={redesignVoice?.id ?? ''}
+      initialAccent={redesignVoice?.profile.languages[0]?.accent ?? accent}
+      initialPitch={redesignVoice?.profile.pitch ?? pitch}
+      initialCategory={redesignVoice?.voice_category ?? category}
+      initialPrompt={redesignVoice?.description ||
+        [
+          query,
+          accent && `${accent} accent`,
+          category,
+          pitch && `${pitch} pitch`,
+          useCase && voiceFacetLabel(useCase)
+        ]
+          .filter(Boolean)
+          .join(', ')}
+      onclose={() => {
+        designerOpen = false;
+        redesignVoice = null;
+      }}
+      onsaved={async (voiceId, _providerVoiceId, warning) => {
+        const targetCollectionId = collectionId;
+        const warnings = warning ? [warning] : [];
+        designerOpen = false;
+        redesignVoice = null;
+        try {
+          await refreshAuxiliary();
+          const result = await voiceLibraryApi.query(
+            {
+              query: voiceId,
+              kind: 'managed',
+              limit: 1
+            },
+            scope
+          );
+          if (!alive) return;
+          const saved = result.items.find((v) => v.id === voiceId);
+          const group = collections.find((c) => c.id === targetCollectionId);
+          if (saved && group && canEdit && writeWorkspaceId) {
+            try {
+              const updated = await voiceLibraryApi.membership(
+                group,
+                saved.reference,
+                true,
+                writeWorkspaceId
+              );
+              saved.collections = [
+                ...saved.collections.filter((c) => c.id !== updated.id),
+                { id: updated.id, name: updated.name }
+              ];
+            } catch (caught) {
+              warnings.push(
+                `The voice was saved, but could not be added to ${group.name}: ${errorMessage(caught)}`
+              );
+            }
           }
+          await refreshAuxiliary();
+          await load();
+          if (saved) openDetail(saved);
+          notice = warnings.join(' ');
+        } catch (caught) {
+          error = `The voice was saved, but the library could not refresh: ${errorMessage(caught)}`;
         }
-        await refreshAuxiliary();
-        await load();
-        if (saved) openDetail(saved);
-        notice = warnings.join(' ');
-      } catch (caught) {
-        error = `The voice was saved, but the library could not refresh: ${errorMessage(caught)}`;
-      }
-    }}
-  />{/if}
+      }}
+    />{/key}{/if}
 {#if pendingClose}<div
     class="fixed inset-0 z-[90] grid place-items-center bg-black/40 p-4"
   >

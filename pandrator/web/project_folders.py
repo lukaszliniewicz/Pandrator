@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from .accounts.identity import active_workspace
 from .models import (
     ProjectFolder,
     ProjectFolderMembership,
@@ -18,6 +19,7 @@ from .models import (
     TranslationProjectBranch,
     utcnow,
 )
+from .projects.identity import initial_personal_workspace, session_project
 from .settings_policy import RevisionConflict
 
 
@@ -32,6 +34,7 @@ def _timestamp(value: datetime) -> str:
 def _folder_payload(folder: ProjectFolder) -> dict[str, Any]:
     return {
         "id": folder.id,
+        "workspace_id": folder.workspace_id,
         "name": folder.name,
         "parent_id": folder.parent_id,
         "revision": folder.revision,
@@ -40,9 +43,18 @@ def _folder_payload(folder: ProjectFolder) -> dict[str, Any]:
     }
 
 
-def project_folder_snapshot(session: Session) -> dict[str, Any]:
-    """Return every folder and membership in deterministic order."""
-    folders = list(session.scalars(select(ProjectFolder)).all())
+def project_folder_snapshot(
+    session: Session, *, workspace_id: str | None = None
+) -> dict[str, Any]:
+    """Return one workspace's folders; trusted legacy calls use the initial home."""
+    selected_workspace = (
+        workspace_id if workspace_id is not None else initial_personal_workspace(session).id
+    )
+    folders = list(
+        session.scalars(
+            select(ProjectFolder).where(ProjectFolder.workspace_id == selected_workspace)
+        ).all()
+    )
     folders.sort(
         key=lambda folder: (
             folder.parent_id or "",
@@ -50,7 +62,13 @@ def project_folder_snapshot(session: Session) -> dict[str, Any]:
             folder.id,
         )
     )
-    memberships = list(session.scalars(select(ProjectFolderMembership)).all())
+    memberships = list(
+        session.scalars(
+            select(ProjectFolderMembership)
+            .join(ProjectFolder, ProjectFolder.id == ProjectFolderMembership.folder_id)
+            .where(ProjectFolder.workspace_id == selected_workspace)
+        ).all()
+    )
     memberships.sort(
         key=lambda member: (
             member.folder_id,
@@ -59,11 +77,15 @@ def project_folder_snapshot(session: Session) -> dict[str, Any]:
         )
     )
     return {
+        "workspace_id": selected_workspace,
         "items": [_folder_payload(folder) for folder in folders],
         "memberships": [
             {
                 "folder_id": member.folder_id,
+                # Deprecated wire alias: retain source-session IDs for old clients.
                 "project_id": member.project_session_id,
+                "source_session_id": member.project_session_id,
+                "project_root_id": member.project_id,
                 "position": member.position,
             }
             for member in memberships
@@ -86,12 +108,15 @@ def _assert_unique_sibling_name(
     parent_id: str | None,
     *,
     excluding_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> None:
     statement = select(ProjectFolder).where(
         ProjectFolder.parent_id.is_(None)
         if parent_id is None
         else ProjectFolder.parent_id == parent_id
     )
+    if workspace_id is not None:
+        statement = statement.where(ProjectFolder.workspace_id == workspace_id)
     for sibling in session.scalars(statement):
         if (
             sibling.id != excluding_id
@@ -105,6 +130,7 @@ def _validate_parent(
     parent_id: str | None,
     *,
     folder_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> None:
     if parent_id is None:
         return
@@ -114,6 +140,8 @@ def _validate_parent(
     seen: set[str] = set()
     current: ProjectFolder | None = parent
     while current is not None:
+        if workspace_id is not None and current.workspace_id != workspace_id:
+            raise ValueError("Project folders must stay in the same workspace.")
         if current.id == folder_id:
             raise ValueError("A folder cannot be moved beneath itself or a descendant.")
         if current.id in seen:
@@ -127,16 +155,25 @@ def _validate_parent(
 
 
 def create_project_folder(
-    session: Session, name: str, parent_id: str | None = None
+    session: Session, name: str, parent_id: str | None = None,
+    *, workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a folder inside the caller-owned write transaction."""
     normalized = _normalized_name(name)
-    _validate_parent(session, parent_id)
-    _assert_unique_sibling_name(session, normalized, parent_id)
-    folder = ProjectFolder(name=normalized, parent_id=parent_id)
+    parent = session.get(ProjectFolder, parent_id) if parent_id is not None else None
+    if parent_id is not None and parent is None:
+        raise KeyError(parent_id)
+    if workspace_id is None:
+        workspace_id = parent.workspace_id if parent else initial_personal_workspace(session).id
+    active_workspace(session, workspace_id, "Project folder")
+    if workspace_id is None:
+        raise ValueError("The project folder has no ownership workspace.")
+    _validate_parent(session, parent_id, workspace_id=workspace_id)
+    _assert_unique_sibling_name(session, normalized, parent_id, workspace_id=workspace_id)
+    folder = ProjectFolder(name=normalized, parent_id=parent_id, workspace_id=workspace_id)
     session.add(folder)
     session.flush()
-    return {**project_folder_snapshot(session), "folder": _folder_payload(folder)}
+    return {**project_folder_snapshot(session, workspace_id=folder.workspace_id), "folder": _folder_payload(folder)}
 
 
 def update_project_folder(
@@ -162,9 +199,13 @@ def update_project_folder(
     if change_name and name is None:
         raise ValueError("Folder name cannot be null.")
     next_parent = parent_id if change_parent else folder.parent_id
-    _validate_parent(session, next_parent, folder_id=folder.id)
+    if folder.workspace_id is None:
+        raise ValueError("The project folder has no ownership workspace.")
+    _validate_parent(
+        session, next_parent, folder_id=folder.id, workspace_id=folder.workspace_id
+    )
     _assert_unique_sibling_name(
-        session, next_name, next_parent, excluding_id=folder.id
+        session, next_name, next_parent, excluding_id=folder.id, workspace_id=folder.workspace_id
     )
     changed = next_name != folder.name or next_parent != folder.parent_id
     if changed:
@@ -173,7 +214,7 @@ def update_project_folder(
         folder.revision += 1
         folder.updated_at = utcnow()
         session.flush()
-    return {**project_folder_snapshot(session), "folder": _folder_payload(folder)}
+    return {**project_folder_snapshot(session, workspace_id=folder.workspace_id), "folder": _folder_payload(folder)}
 
 
 def delete_project_folder(
@@ -188,6 +229,9 @@ def delete_project_folder(
         raise KeyError(folder_id)
     if folder.revision != expected_revision:
         raise RevisionConflict("The project folder changed in another client.")
+    if folder.workspace_id is None:
+        raise ValueError("The project folder has no ownership workspace.")
+    _validate_parent(session, folder.parent_id, workspace_id=folder.workspace_id)
     children = session.scalars(
         select(ProjectFolder).where(ProjectFolder.parent_id == folder.id)
     ).all()
@@ -195,13 +239,15 @@ def delete_project_folder(
         ProjectFolder.parent_id.is_(None)
         if folder.parent_id is None
         else ProjectFolder.parent_id == folder.parent_id
-    )
+    ).where(ProjectFolder.workspace_id == folder.workspace_id)
     names = {
         sibling.name.casefold(): sibling.name
         for sibling in session.scalars(sibling_statement)
         if sibling.id != folder.id
     }
     for child in children:
+        if child.workspace_id != folder.workspace_id:
+            raise ValueError("Project folders must stay in the same workspace.")
         normalized = child.name.casefold()
         if normalized in names:
             raise FolderPromotionConflict(
@@ -221,7 +267,7 @@ def delete_project_folder(
     session.flush()
     session.delete(folder)
     session.flush()
-    return {**project_folder_snapshot(session), "deleted_folder_id": folder_id}
+    return {**project_folder_snapshot(session, workspace_id=folder.workspace_id), "deleted_folder_id": folder_id}
 
 
 def _canonical_project_ids(
@@ -291,6 +337,13 @@ def replace_folder_projects(
     if folder.revision != expected_revision:
         raise RevisionConflict("The project folder changed in another client.")
     canonical_ids = _canonical_project_ids(session, project_ids)
+    ownership = {
+        session_id: session_project(session, session_id) for session_id in canonical_ids
+    }
+    if folder.workspace_id is None or any(
+        project.workspace_id != folder.workspace_id for project in ownership.values()
+    ):
+        raise ValueError("A folder and its projects must belong to the same workspace.")
     current = session.scalars(
         select(ProjectFolderMembership.project_session_id)
         .where(ProjectFolderMembership.folder_id == folder.id)
@@ -309,6 +362,7 @@ def replace_folder_projects(
             ProjectFolderMembership(
                 folder_id=folder.id,
                 project_session_id=project_id,
+                project_id=ownership[project_id].id,
                 position=position,
             )
             for position, project_id in enumerate(canonical_ids)
@@ -316,7 +370,7 @@ def replace_folder_projects(
         folder.revision += 1
         folder.updated_at = utcnow()
         session.flush()
-    return project_folder_snapshot(session)
+    return project_folder_snapshot(session, workspace_id=folder.workspace_id)
 
 
 def set_session_project_folders(
@@ -330,6 +384,7 @@ def set_session_project_folders(
     if len(folder_ids) != len(set(folder_ids)):
         raise ValueError("folder_ids cannot contain duplicates.")
     project_id = _canonical_project_ids(session, [session_id])[0]
+    ownership = session_project(session, project_id)
     current_rows = session.scalars(
         select(ProjectFolderMembership)
         .where(ProjectFolderMembership.project_session_id == project_id)
@@ -356,6 +411,8 @@ def set_session_project_folders(
         folder = folders.get(folder_id)
         if folder is None:
             raise KeyError(folder_id)
+        if folder.workspace_id != ownership.workspace_id:
+            raise ValueError("A folder and its projects must belong to the same workspace.")
         if folder_id not in expected_revisions:
             raise RevisionConflict(f"A revision fence is required for folder {folder_id}.")
         if folder.revision != expected_revisions[folder_id]:
@@ -380,6 +437,7 @@ def set_session_project_folders(
                     ProjectFolderMembership(
                         folder_id=folder_id,
                         project_session_id=project_id,
+                        project_id=ownership.id,
                         position=max((row.position for row in rows), default=-1) + 1,
                     )
                 )
@@ -399,4 +457,9 @@ def set_session_project_folders(
             folder.revision += 1
             folder.updated_at = utcnow()
         session.flush()
-    return {**project_folder_snapshot(session), "project_id": project_id}
+    return {
+        **project_folder_snapshot(session, workspace_id=ownership.workspace_id),
+        "project_id": project_id,
+        "source_session_id": project_id,
+        "project_root_id": ownership.id,
+    }

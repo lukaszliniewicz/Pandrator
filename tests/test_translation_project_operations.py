@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
 from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -17,10 +17,13 @@ from alembic.config import Config
 from sqlalchemy import func, inspect, select
 
 from pandrator.web import models as m
+from pandrator.web.accounts.execution_actor import actor_from_principal, execution_actor_scope
 from pandrator.web.api import create_app
-from pandrator.web.auth import ALL_SCOPES, BootstrapTokenStore, Principal
+from pandrator.web.application_services import ApplicationServices
+from pandrator.web.auth import BootstrapTokenStore, Principal
 from pandrator.web.database import Database, sqlite_url
 from pandrator.web.http_lifecycle import ApiGuards
+from pandrator.web.jobs import Worker
 from pandrator.web.project_operation_routes import (
     PROJECT_OPERATION_SCHEMAS,
     project_operation_paths,
@@ -48,7 +51,7 @@ def case(tmp_path):
         bootstrap_tokens=bootstrap,
         public_origin="https://pandrator.example",
     )
-    services = SimpleNamespace(**app.extensions["pandrator"])
+    services = cast(ApplicationServices, app.extensions["pandrator"]["services"])
     if not any(rule.rule.endswith("/operations/preview") for rule in app.url_map.iter_rules()):
         guards = ApiGuards(app, services, testing=True, script_policy="'self'")
         register_project_operation_routes(app, RouteContext(services, guards, Path("/tmp")))
@@ -57,8 +60,20 @@ def case(tmp_path):
     target = services.identity.snapshot(observed_origin="https://pandrator.example/").model_dump(
         mode="json"
     )
+    with client.session_transaction() as browser_state:
+        resolved = services.auth.browser_sessions.resolve(browser_state["auth_session"])
+    assert resolved is not None
     principal = Principal(
-        "owner", "owner_session", ALL_SCOPES, None, "loopback", target["instance_id"]
+        resolved.subject,
+        resolved.kind,
+        resolved.scopes,
+        None,
+        "loopback",
+        target["instance_id"],
+        user_id=resolved.user_id,
+        auth_revision=resolved.auth_revision,
+        browser_session_id=resolved.session_id,
+        client_id=resolved.client_id,
     )
     source = services.sessions.create(
         "EN",
@@ -88,21 +103,22 @@ def case(tmp_path):
             created_directories=[],
         )["project"]
     operation_service = TranslationProjectOperationService(services)
-    yield SimpleNamespace(
-        app=app,
-        client=client,
-        headers={"X-CSRF-Token": csrf},
-        services=services,
-        database=services.database,
-        target=target,
-        principal=principal,
-        project=project,
-        branches=project["branches"],
-        source=source,
-        checkpoint=checkpoint,
-        operations=operation_service,
-        root=tmp_path,
-    )
+    with execution_actor_scope(actor_from_principal(principal)):
+        yield SimpleNamespace(
+            app=app,
+            client=client,
+            headers={"X-CSRF-Token": csrf},
+            services=services,
+            database=services.database,
+            target=target,
+            principal=principal,
+            project=project,
+            branches=project["branches"],
+            source=source,
+            checkpoint=checkpoint,
+            operations=operation_service,
+            root=tmp_path,
+        )
     services.database.dispose()
 
 
@@ -307,8 +323,28 @@ def test_operation_guards_enqueue_nothing(case, change):
     elif change == "digest":
         digest = "0" * 64
     elif change == "foreign":
+        issued = case.services.auth.browser_sessions.issue(
+            case.principal.user_id,
+            case.principal.auth_revision,
+            subject="another-owner",
+            principal_kind="owner_session",
+            scopes=case.principal.scopes,
+            idle_seconds=3600,
+            absolute_seconds=7200,
+        )
+        resolved = case.services.auth.browser_sessions.resolve(issued.raw_token)
+        assert resolved is not None
         principal = Principal(
-            "another-owner", "owner_session", ALL_SCOPES, None, "loopback", target["instance_id"]
+            resolved.subject,
+            resolved.kind,
+            resolved.scopes,
+            None,
+            "loopback",
+            target["instance_id"],
+            user_id=resolved.user_id,
+            auth_revision=resolved.auth_revision,
+            browser_session_id=resolved.session_id,
+            client_id=resolved.client_id,
         )
     with pytest.raises((ProjectOperationError, RevisionConflict)):
         case.operations.execute(
@@ -579,23 +615,24 @@ def test_subtitle_export_needs_translation_but_no_audio_and_uses_plural_receipts
     assert operation["eligible_count"] == 3
     assert all(child["preview"]["execution_mode"] == "direct" for child in operation["children"])
     started = execute(case, operation)
+    worker = Worker(case.services.jobs, "bulk-subtitle-export-test", case.services.workflow_handlers.handlers())
+    for _child in started["children"]:
+        assert worker.run_once()
     for child in started["children"]:
         with case.database.session() as db:
             job = db.get(m.Job, child["job_id"])
+            assert job.status == "succeeded", job.error_message
             settings = job.payload_json["settings"]
             assert settings["export_mode"] == "subtitles"
             assert settings["subtitle_mode"] == "translation"
             assert settings["subtitle_format"] == "srt"
             assert settings["subtitle_selection"] == "translation"
             assert not list(db.scalars(select(m.GenerationRun)))
-        produced = case.services.workflow_handlers.export(
-            job.payload_json, lambda *_: None, threading.Event()
-        )
+            produced = job.result_json
         with case.database.session() as db:
             exported = db.get(m.Artifact, produced["artifact_ids"][0])
             assert exported.role == "export_subtitle_translation"
             assert exported.metadata_json["language"] == child["target_language"]
-        finish_job(case, child["job_id"], produced)
     result = case.operations.get(
         operation["id"], principal=case.principal, target_identity=case.target
     )
@@ -806,21 +843,107 @@ def test_public_preview_redacts_nested_provider_secrets(case):
 
 def test_migration_up_down_on_disposable_database_copy(case, tmp_path):
     copied_path = tmp_path / "migration-copy.sqlite3"
-    with sqlite3.connect(case.database.path) as source, sqlite3.connect(copied_path) as destination:
-        source.backup(destination)
     config = Config()
     config.set_main_option(
         "script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations")
     )
     config.set_main_option("sqlalchemy.url", sqlite_url(copied_path))
+    command.upgrade(config, "0052_translation_project_operations")
+
+    tables_to_copy = (
+        "users",
+        "workspaces",
+        "workspace_memberships",
+        "projects",
+        "sessions",
+        "artifacts",
+        "translation_projects",
+        "translation_project_branches",
+    )
+    required_shared_columns = {
+        "users": ("id",),
+        "workspaces": ("id",),
+        "workspace_memberships": ("workspace_id", "user_id"),
+        "projects": ("id", "workspace_id", "source_session_id"),
+        "sessions": ("id", "project_id"),
+        "artifacts": ("id", "workspace_id", "project_id", "session_id"),
+        "translation_projects": (
+            "id",
+            "project_root_id",
+            "source_session_id",
+            "checkpoint_artifact_id",
+        ),
+        "translation_project_branches": (
+            "id",
+            "project_id",
+            "session_id",
+            "source_checkpoint_artifact_id",
+        ),
+    }
+    source_uri = f"{case.database.path.resolve().as_uri()}?mode=ro"
+    with sqlite3.connect(source_uri, uri=True) as source:
+        source.execute("PRAGMA query_only=ON")
+        source.execute("BEGIN")
+        with sqlite3.connect(copied_path) as destination:
+            destination.execute("PRAGMA foreign_keys=OFF")
+            assert destination.execute("PRAGMA foreign_keys").fetchone() == (0,)
+            assert destination.execute("SELECT version_num FROM alembic_version").fetchone() == (
+                "0052_translation_project_operations",
+            )
+            destination.execute("BEGIN")
+            try:
+                for table in tables_to_copy:
+                    quoted_table = '"' + table.replace('"', '""') + '"'
+                    source_columns = [
+                        row[1] for row in source.execute(f"PRAGMA table_info({quoted_table})")
+                    ]
+                    target_columns = [
+                        row[1] for row in destination.execute(f"PRAGMA table_info({quoted_table})")
+                    ]
+                    if not source_columns or not target_columns:
+                        raise RuntimeError(f"Required project-graph table {table!r} is missing.")
+                    source_column_names = set(source_columns)
+                    shared_columns = [
+                        column for column in target_columns if column in source_column_names
+                    ]
+                    missing_columns = set(required_shared_columns[table]) - set(shared_columns)
+                    if missing_columns:
+                        raise RuntimeError(
+                            f"Project-graph table {table!r} lacks shared required "
+                            f"columns: {sorted(missing_columns)!r}."
+                        )
+                    quoted_columns = ", ".join(
+                        '"' + column.replace('"', '""') + '"' for column in shared_columns
+                    )
+                    rows = source.execute(f"SELECT {quoted_columns} FROM {quoted_table}").fetchall()
+                    if rows:
+                        placeholders = ", ".join("?" for _ in shared_columns)
+                        destination.executemany(
+                            f"INSERT INTO {quoted_table} ({quoted_columns}) "
+                            f"VALUES ({placeholders})",
+                            rows,
+                        )
+                destination.commit()
+            except BaseException:
+                destination.rollback()
+                destination.execute("PRAGMA foreign_keys=ON")
+                raise
+            destination.execute("PRAGMA foreign_keys=ON")
+            assert destination.execute("PRAGMA foreign_keys").fetchone() == (1,)
+            assert destination.execute("PRAGMA foreign_key_check").fetchall() == []
+
     command.downgrade(config, "0051_translation_projects")
     copied = Database(copied_path)
-    assert not inspect(copied.engine).has_table("translation_project_operations")
-    copied.dispose()
+    try:
+        assert not inspect(copied.engine).has_table("translation_project_operations")
+    finally:
+        copied.dispose()
     command.upgrade(config, "0052_translation_project_operations")
     copied = Database(copied_path)
-    assert inspect(copied.engine).has_table("translation_project_operations")
-    with copied.session() as db:
-        assert db.scalar(select(func.count()).select_from(m.TranslationProjectBranch)) == 3
-    copied.dispose()
+    try:
+        assert inspect(copied.engine).has_table("translation_project_operations")
+        with copied.session() as db:
+            assert db.scalar(select(func.count()).select_from(m.TranslationProjectBranch)) == 3
+    finally:
+        copied.dispose()
     assert "secret-never-returned" not in json.dumps(project_operation_paths())

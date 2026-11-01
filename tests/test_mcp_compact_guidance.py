@@ -1,11 +1,13 @@
 import unittest
 from types import SimpleNamespace
+from typing import cast
 
 try:
     from mcp import Client
 except ImportError:
     Client = None
 
+from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.guide_registry import GuideRegistry
 from pandrator_mcp.schemas import ExplainSystemInput
 from pandrator_mcp.server import build_server
@@ -27,7 +29,7 @@ class _CountingApplication:
 
 
 def _runtime(application=None):
-    return SimpleNamespace(guides=GuideRegistry(), application=application)
+    return cast(McpRuntime, SimpleNamespace(guides=GuideRegistry(), application=application))
 
 
 class CompactGuidanceTests(unittest.TestCase):
@@ -83,7 +85,7 @@ class CompactGuidanceTests(unittest.TestCase):
         registry = GuideRegistry()
         expected = registry.get("overview")
         result = explain_system(
-            SimpleNamespace(guides=registry, application=None),
+            cast(McpRuntime, SimpleNamespace(guides=registry, application=None)),
             ExplainSystemInput(detail="full"),
         )
 
@@ -121,6 +123,7 @@ class CompactGuidanceTests(unittest.TestCase):
 class CompactGuidanceServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_flat_tool_schema_and_forwarding_use_compact_defaults(self):
         application = _CountingApplication()
+        assert Client is not None
         async with Client(
             build_server(_runtime(application)), mode="auto", raise_exceptions=True
         ) as client:
@@ -161,3 +164,14 @@ class CompactGuidanceServerTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_collaboration_guide_is_packaged_and_aliases_resolve_without_live_calls():
+    application = _CountingApplication()
+    runtime = _runtime(application)
+    for topic in ('collaboration', 'shared workspace', 'teams'):
+        result = explain_system(runtime, ExplainSystemInput(topic=topic, detail='full'))
+        assert result['topic'] == 'collaboration'
+        assert 'pandrator_create_workspace' in result['related_tools']
+        assert result['content']
+    assert application.health_calls == application.identity_calls == 0

@@ -26,7 +26,7 @@ def session_purge_job_paths() -> dict:
             "responses": {status: success_response,
                           "400": {"description": "Invalid request or missing idempotency key."},
                           "401": {"description": "Authentication required."},
-                          "403": {"description": "Insufficient scope."},
+                          "403": {"description": "Required scope or workspace Manager authority unavailable."},
                           "404": {"description": "Target or inspection not found."},
                           "409": {"description": "Revision, idempotency, or purge state conflict."}},
         }

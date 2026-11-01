@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
+from .access.contracts import ProjectAction
+from .access.sound_library_policy import require_sound_library_workspace
 from .artifacts import ArtifactService
 from .audio_imports import (
     PreparedAudioImport,
@@ -40,15 +42,22 @@ def import_in_session(
     paths: DataPaths,
     artifacts: ArtifactService,
     prepared: PreparedSoundImport,
+    *,
+    workspace_id: str | None = None,
 ) -> dict:
+    workspace = require_sound_library_workspace(
+        session, ProjectAction.EDIT, workspace_id=workspace_id
+    )
     artifact = publish_audio_import_in_session(
         session,
         prepared,
         artifacts=artifacts,
         paths=paths,
         role="sound.original",
+        workspace_id=workspace.id,
     )
     variant = SoundVariant(
+        workspace_id=workspace.id,
         artifact_id=artifact.id,
         state="ready",
         provenance_json={
@@ -78,13 +87,35 @@ def import_audio(
     display_name: str,
     *,
     db_session: Session | None = None,
+    workspace_id: str | None = None,
 ) -> dict:
+    if db_session is not None:
+        workspace_id = require_sound_library_workspace(
+            db_session, ProjectAction.EDIT, workspace_id=workspace_id
+        ).id
+    else:
+        with database.snapshot_session() as session:
+            workspace_id = require_sound_library_workspace(
+                session, ProjectAction.EDIT, workspace_id=workspace_id
+            ).id
     prepared = prepare_import(paths, artifacts, path, display_name)
     try:
         if db_session is not None:
-            return import_in_session(db_session, paths, artifacts, prepared)
+            return import_in_session(
+                db_session,
+                paths,
+                artifacts,
+                prepared,
+                workspace_id=workspace_id,
+            )
         with database.immediate_session() as session:
-            return import_in_session(session, paths, artifacts, prepared)
+            return import_in_session(
+                session,
+                paths,
+                artifacts,
+                prepared,
+                workspace_id=workspace_id,
+            )
     finally:
         cleanup_prepared_import(prepared)
 

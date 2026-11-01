@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectLinkUrl } from './project-link-context';
   import { errorMessage } from './errors';
   import {
     BookOpenCheck,
@@ -8,34 +9,50 @@
     FileQuestion,
     Globe2,
     LoaderCircle,
-    TriangleAlert,
-    X
+    TriangleAlert
   } from '@lucide/svelte';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import {
     artifactFilename,
     artifactRoleLabel,
     formatBytes,
     type PreviewableArtifact
   } from './artifact-display';
-  import { apiResponse } from './api';
   import { artifactApi } from './domain-api';
   import type { ArtifactRecord, UsageSummary } from './api-models';
   import AudioPlayer from './AudioPlayer.svelte';
   import BookExportNotice from './BookExportNotice.svelte';
   import TextDiff from './TextDiff.svelte';
-  import { modalFocus } from './modal-focus';
-  import WorkspaceMaximizeButton from './WorkspaceMaximizeButton.svelte';
+  import PagedTextPreview from './PagedTextPreview.svelte';
+  let textPage = $state(0);
+  let comparisonPage = $state(0);
+  import ReviewWorkspace from './ReviewWorkspace.svelte';
+  import { loadTextPreview } from './text-preview';
 
   let {
     artifact,
+    displayName,
     onclose
-  }: { artifact: PreviewableArtifact; onclose: () => void } = $props();
+  }: {
+    artifact: PreviewableArtifact;
+    displayName?: string;
+    onclose: () => void;
+  } = $props();
   let text = $state('');
   let error = $state('');
   let loading = $state(false);
-  let maximized = $state(false);
+  let toolsOpen = $state(false);
+  let truncated = $state(false);
+  let comparisonTruncated = $state(false);
+  let comparisonError = $state('');
+  const lifecycle = new AbortController();
+  let comparisonRequest: AbortController | undefined;
+  onDestroy(() => {
+    lifecycle.abort();
+    comparisonRequest?.abort();
+  });
   let comparisonText = $state('');
+  const diffAvailable = $derived(text.length + comparisonText.length <= 40_000);
   let comparisonName = $state('');
   let comparisonId = $state('');
   let comparisonChoice = $state('');
@@ -57,14 +74,14 @@
     sources?: { url: string; title?: string }[];
   };
   let subtitleTracks = $state<SubtitleTrack[]>([]);
-  const url = $derived(
+  const url = $derived(projectLinkUrl(
     `/api/v1/artifacts/${artifact.id}/content${
       artifact.content_hash
         ? `?v=${encodeURIComponent(artifact.content_hash)}`
         : ''
     }`
-  );
-  const filename = $derived(artifactFilename(artifact));
+  ));
+  const filename = $derived(displayName?.trim() || artifactFilename(artifact));
   const extension = $derived(filename.split('.').at(-1)?.toLowerCase() ?? '');
   const mime = $derived(String(artifact.mime_type ?? '').toLowerCase());
   const isAudio = $derived(
@@ -165,21 +182,26 @@
     );
     if (!candidate) return;
     comparisonLoading = true;
-    error = '';
+    comparisonError = '';
+    comparisonRequest?.abort();
+    const controller = new AbortController();
+    comparisonRequest = controller;
     try {
-      const response = await apiResponse(`/artifacts/${candidate.id}/content`, {
-        headers: { Range: 'bytes=0-2097151' }
-      });
-      comparisonText = await response.text();
-      if (comparisonText.length >= 2_097_000)
-        comparisonText += '\n\n— Preview truncated at 2 MiB —';
+      const preview = await loadTextPreview(
+        `/artifacts/${candidate.id}/content`,
+        { signal: controller.signal }
+      );
+      if (controller.signal.aborted) return;
+      comparisonText = preview.text;
+      comparisonTruncated = preview.truncated;
+      comparisonPage = 0;
       comparisonId = candidate.id;
       comparisonName = artifactFilename(candidate);
       comparisonMode = 'side';
     } catch (caught) {
-      error = errorMessage(caught);
+      if (!controller.signal.aborted) comparisonError = errorMessage(caught);
     } finally {
-      comparisonLoading = false;
+      if (comparisonRequest === controller) comparisonLoading = false;
     }
   }
 
@@ -187,21 +209,20 @@
     loading = isText;
     try {
       const textPromise = isText
-        ? apiResponse(url, {
-            headers: { Range: 'bytes=0-2097151' }
-          }).then((response) => response.text())
-        : Promise.resolve('');
+        ? loadTextPreview(url, { signal: lifecycle.signal })
+        : Promise.resolve({ text: '', truncated: false });
       const contextPromise = artifactApi.context(artifact.id).catch(() => null);
 
       if (isText) {
-        text = await textPromise;
-        if (text.length >= 2_097_000)
-          text += '\n\n— Preview truncated at 2 MiB —';
+        const preview = await textPromise;
+        if (lifecycle.signal.aborted) return;
+        text = preview.text;
+        truncated = preview.truncated;
         loading = false;
       }
 
       const context = await contextPromise;
-      if (context) {
+      if (context && !lifecycle.signal.aborted) {
         usageSummary = context.usage ?? null;
         if (isVideo) {
           subtitleTracks = parsedSubtitleTracks(
@@ -235,88 +256,81 @@
           );
       }
     } catch (caught) {
-      error = errorMessage(caught);
+      if (!lifecycle.signal.aborted) error = errorMessage(caught);
     } finally {
-      loading = false;
+      if (!lifecycle.signal.aborted) loading = false;
     }
   });
 </script>
 
-<div
-  class:maximized
-  class="preview-overlay fixed inset-0 z-[80] grid place-items-center bg-black/55 p-3 backdrop-blur-sm"
-  role="presentation"
-  onclick={(event) => event.target === event.currentTarget && onclose()}
+<ReviewWorkspace
+  closeLabel="Close preview"
+  titleId="artifact-preview-title"
+  {onclose}
+  bind:toolsOpen
+  toolsTitle="Details & compare"
+  toolsSummary={comparisonId ? 'Comparison loaded' : ''}
 >
-  <div
-    use:modalFocus={{ onclose }}
-    class="preview-panel flex max-h-[96vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="artifact-preview-title"
-  >
-    <header
-      class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-6"
+  {#snippet header()}
+    <div class="min-w-0 flex-1">
+      <h2 id="artifact-preview-title" class="truncate text-lg font-semibold">
+        {filename}
+      </h2>
+      <p class="muted mt-1 text-xs">
+        Read-only · {artifact.metadata_json?.preview === true
+          ? 'Export preview'
+          : artifactRoleLabel(artifact.role)}
+      </p>
+    </div>
+    {#if comparisonId}<div class="flex gap-1">
+        <button
+          onclick={() =>
+            (comparisonMode = comparisonMode === 'side' ? 'single' : 'side')}
+          class:active={comparisonMode === 'side'}
+          class="tool">Side by side</button
+        ><button
+          onclick={() =>
+            (comparisonMode = comparisonMode === 'diff' ? 'single' : 'diff')}
+          disabled={!diffAvailable}
+          title={diffAvailable
+            ? 'Show differences'
+            : 'Large comparisons use paged side-by-side viewing'}
+          class:active={comparisonMode === 'diff'}
+          class="tool">Diff</button
+        >
+      </div>{/if}
+    <a href={url} download={filename} class="tool flex items-center gap-2"
+      ><Download size={16} /> Download</a
     >
-      <div class="min-w-0 flex-1">
-        <div class="section-label">
-          {artifact.metadata_json?.preview === true
-            ? 'Export preview'
-            : artifactRoleLabel(artifact.role)}
-        </div>
-        <h2
-          id="artifact-preview-title"
-          class="mt-1 truncate text-xl font-semibold"
-        >
-          {filename}
-        </h2>
-        <div class="muted mt-1 flex flex-wrap gap-2 text-xs">
-          <span
-            >{artifact.mime_type || artifact.kind || 'Unknown file type'}</span
-          >{#if artifact.size_bytes != null}<span
-              >· {formatBytes(artifact.size_bytes)}</span
-            >{/if}{#if artifact.state}<span>· {artifact.state}</span>{/if}
-        </div>
-        <BookExportNotice metadata={artifact.metadata_json} />
+  {/snippet}
+  {#snippet tools()}
+    <dl class="space-y-2 text-xs">
+      <div>
+        <dt class="muted">File type</dt>
+        <dd>{artifact.mime_type || artifact.kind || 'Unknown file type'}</dd>
       </div>
-      {#if usageSummary?.commercial || usageSummary?.total_tokens}<div
-          class="cost-badge"
-        >
-          <span>{usageSummary.estimated ? 'Estimated cost' : 'Cost'}</span
-          ><strong>{formattedCost}</strong>{#if usageSummary.total_tokens}<small
-              >{usageSummary.input_tokens?.toLocaleString() ?? 0} in ·
-              {usageSummary.output_tokens?.toLocaleString() ?? 0} out</small
-            >{/if}
-          >{#if usageSummary.has_unpriced_usage}<small>partial</small>{/if}
+      {#if artifact.size_bytes != null}<div>
+          <dt class="muted">Size</dt>
+          <dd>{formatBytes(artifact.size_bytes)}</dd>
         </div>{/if}
-      {#if comparisonId}<div class="flex gap-1">
-          <button
-            onclick={() =>
-              (comparisonMode = comparisonMode === 'side' ? 'single' : 'side')}
-            class:active={comparisonMode === 'side'}
-            class="tool">Side by side</button
-          ><button
-            onclick={() =>
-              (comparisonMode = comparisonMode === 'diff' ? 'single' : 'diff')}
-            class:active={comparisonMode === 'diff'}
-            class="tool">Diff</button
-          >
+      {#if artifact.state}<div>
+          <dt class="muted">State</dt>
+          <dd>{artifact.state}</dd>
         </div>{/if}
-      <a href={url} download={filename} class="tool flex items-center gap-2"
-        ><Download size={16} /> Download</a
+    </dl>
+    {#if usageSummary?.commercial || usageSummary?.total_tokens}<div
+        class="cost-badge"
       >
-      <WorkspaceMaximizeButton
-        {maximized}
-        ontoggle={() => (maximized = !maximized)}
-      />
-      <button
-        onclick={onclose}
-        class="rounded-xl p-2"
-        aria-label="Close preview"><X size={20} /></button
-      >
-    </header>
+        <span>{usageSummary.estimated ? 'Estimated cost' : 'Cost'}</span><strong
+          >{formattedCost}</strong
+        >{#if usageSummary.total_tokens}<small
+            >{usageSummary.input_tokens?.toLocaleString() ?? 0} in ·
+            {usageSummary.output_tokens?.toLocaleString() ?? 0} out</small
+          >{/if}
+        >{#if usageSummary.has_unpriced_usage}<small>partial</small>{/if}
+      </div>{/if}
     {#if isText && comparisonCandidates.length}<div
-        class="flex flex-wrap items-end gap-3 border-b border-[var(--line)] px-5 py-3 sm:px-6"
+        class="mt-5 flex flex-col gap-3"
         aria-label="Artifact comparison"
       >
         <label class="min-w-0 flex-1 text-xs font-semibold sm:max-w-lg">
@@ -351,165 +365,196 @@
           >Related files stay unloaded until selected.</span
         >
       </div>{/if}
-    <div class="min-h-0 flex-1 overflow-auto bg-[var(--paper)] p-4 sm:p-6">
-      {#if research}
-        <details class="research-ledger mb-4" open>
-          <summary>
-            <span
-              class="grid size-8 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
-              ><Globe2 size={16} /></span
-            >
-            <span class="min-w-0 flex-1"
-              ><strong>Web research evidence</strong><small
-                >{research.evidence_count ?? research.sources?.length ?? 0} verified
-                {(research.evidence_count ?? research.sources?.length ?? 0) ===
-                1
-                  ? 'source'
-                  : 'sources'} · used as bounded guidance, not inserted into the text</small
-              ></span
-            >
-          </summary>
-          <div
-            class="grid gap-4 border-t border-[var(--line)] p-4 md:grid-cols-[minmax(0,1fr)_minmax(15rem,.7fr)]"
+    {#if research}
+      <details class="research-ledger mb-4" open>
+        <summary>
+          <span
+            class="grid size-8 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
+            ><Globe2 size={16} /></span
           >
-            <div>
-              {#if research.summary}<p class="text-sm leading-6">
-                  {research.summary}
-                </p>{/if}
-              {#if research.glossary?.length}
-                <div class="mt-3">
-                  <div
-                    class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]"
-                  >
-                    <BookOpenCheck size={14} /> Terminology ledger
-                  </div>
-                  <div class="mt-2 flex flex-wrap gap-2">
-                    {#each research.glossary as item}<span class="glossary-chip"
-                        >{item.source}<span>→</span>{item.target}</span
-                      >{/each}
-                  </div>
-                </div>
-              {/if}
-              {#if research.warnings?.length}
-                <div
-                  class="mt-3 rounded-xl bg-amber-500/10 p-3 text-xs text-amber-700"
-                >
-                  {#each research.warnings as warning}<p class="flex gap-2">
-                      <TriangleAlert
-                        class="mt-0.5 shrink-0"
-                        size={13}
-                      />{warning}
-                    </p>{/each}
-                </div>
-              {/if}
-            </div>
-            <div>
-              <div
-                class="text-xs font-bold uppercase tracking-wider text-[var(--muted)]"
-              >
-                Sources
-              </div>
-              {#if research.sources?.length}<div class="mt-2 space-y-2">
-                  {#each research.sources as source}<a
-                      href={source.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      class="source-link"
-                      ><span class="min-w-0 flex-1 truncate"
-                        >{source.title || source.url}</span
-                      ><ExternalLink class="shrink-0" size={13} /></a
-                    >{/each}
-                </div>{:else}<p class="muted mt-2 text-xs">
-                  The research agent finished without retaining evidence.
-                </p>{/if}
-            </div>
-          </div>
-        </details>
-      {/if}
-      {#if isAudio}<div class="grid min-h-72 place-items-center">
-          <div class="w-full max-w-3xl"><AudioPlayer src={url} /></div>
-        </div>
-      {:else if isVideo}<!-- svelte-ignore a11y_media_has_caption --><video
-          controls
-          preload="metadata"
-          src={url}
-          onloadedmetadata={showDefaultSubtitleTrack}
-          class="mx-auto max-h-[72vh] max-w-full rounded-xl bg-black"
-          >{#each subtitleTracks as track}<track
-              kind="subtitles"
-              src={`/api/v1/artifacts/${track.artifact_id}/content`}
-              srclang={track.language}
-              label={track.title}
-              default={track.default}
-              onload={(event) => loadSubtitleTrack(event, track.default)}
-            />{/each}</video
+          <span class="min-w-0 flex-1"
+            ><strong>Web research evidence</strong><small
+              >{research.evidence_count ?? research.sources?.length ?? 0} verified
+              {(research.evidence_count ?? research.sources?.length ?? 0) === 1
+                ? 'source'
+                : 'sources'} · used as bounded guidance, not inserted into the text</small
+            ></span
+          >
+        </summary>
+        <div
+          class="grid gap-4 border-t border-[var(--line)] p-4 md:grid-cols-[minmax(0,1fr)_minmax(15rem,.7fr)]"
         >
-      {:else if isImage}<img
-          src={url}
-          alt={filename}
-          class="mx-auto max-h-[74vh] max-w-full rounded-xl object-contain"
-        />
-      {:else if isPdf}<iframe
-          src={url}
-          title={filename}
-          class="h-[74vh] w-full rounded-xl border border-[var(--line)] bg-white"
-        ></iframe>
-      {:else if isText}
-        {#if loading}<div class="grid min-h-72 place-items-center">
-            <LoaderCircle class="animate-spin" size={24} />
-          </div>
-        {:else if error}<p class="text-sm text-red-500">{error}</p>
-        {:else if comparisonMode === 'side' && comparisonId}<div
-            class="comparison-grid"
-          >
-            <section>
-              <h3>Before · {comparisonName}</h3>
-              <pre>{comparisonText}</pre>
-            </section>
-            <section>
-              <h3>After · {filename}</h3>
-              <pre>{text}</pre>
-            </section>
-          </div>
-        {:else if comparisonMode === 'diff' && comparisonId}<div>
-            <div class="muted mb-2 text-xs">
-              Removed text is red and struck through; added text is green.
-            </div>
-            <TextDiff before={comparisonText} after={text} />
-          </div>
-        {:else}<pre
-            class="whitespace-pre-wrap break-words rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-5 font-mono text-sm leading-6">{text}</pre>{/if}
-      {:else}<div class="grid min-h-72 place-items-center text-center">
           <div>
-            <FileQuestion class="muted mx-auto" size={38} />
-            <h3 class="mt-4 font-semibold">
-              Preview not available for this file type
-            </h3>
-            <p class="muted mt-2 text-sm">
-              Download the managed artifact to open it in a compatible
-              application.
-            </p>
+            {#if research.summary}<p class="text-sm leading-6">
+                {research.summary}
+              </p>{/if}
+            {#if research.glossary?.length}
+              <div class="mt-3">
+                <div
+                  class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--muted)]"
+                >
+                  <BookOpenCheck size={14} /> Terminology ledger
+                </div>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  {#each research.glossary as item}<span class="glossary-chip"
+                      >{item.source}<span>→</span>{item.target}</span
+                    >{/each}
+                </div>
+              </div>
+            {/if}
+            {#if research.warnings?.length}
+              <div
+                class="mt-3 rounded-xl bg-amber-500/10 p-3 text-xs text-amber-700"
+              >
+                {#each research.warnings as warning}<p class="flex gap-2">
+                    <TriangleAlert class="mt-0.5 shrink-0" size={13} />{warning}
+                  </p>{/each}
+              </div>
+            {/if}
           </div>
-        </div>{/if}
-    </div>
+          <div>
+            <div
+              class="text-xs font-bold uppercase tracking-wider text-[var(--muted)]"
+            >
+              Sources
+            </div>
+            {#if research.sources?.length}<div class="mt-2 space-y-2">
+                {#each research.sources as source}<a
+                    href={source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    class="source-link"
+                    ><span class="min-w-0 flex-1 truncate"
+                      >{source.title || source.url}</span
+                    ><ExternalLink class="shrink-0" size={13} /></a
+                  >{/each}
+              </div>{:else}<p class="muted mt-2 text-xs">
+                The research agent finished without retaining evidence.
+              </p>{/if}
+          </div>
+        </div>
+      </details>
+    {/if}
+  {/snippet}
+  {#snippet notices()}
+    <BookExportNotice metadata={artifact.metadata_json} />
+    {#if truncated || comparisonTruncated}<p
+        role="status"
+        class="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs"
+      >
+        Preview limited to 2 MiB{comparisonTruncated
+          ? ' (including the compared file)'
+          : ''}. Download the file to read its complete contents.
+      </p>{/if}
+    {#if comparisonId && !diffAvailable}<p
+        role="status"
+        class="muted border-b border-[var(--line)] px-4 py-2 text-xs"
+      >
+        Large comparisons use paged side-by-side viewing. Download the files for
+        a full diff.
+      </p>{/if}
+    {#if comparisonError}<p
+        role="alert"
+        class="border-b border-red-500/30 px-4 py-2 text-sm text-red-600"
+      >
+        {comparisonError}
+      </p>{/if}
+    {#if research?.warnings?.length}<p
+        class="muted border-b border-[var(--line)] px-4 py-2 text-xs"
+      >
+        Research has {research.warnings.length} warning{research.warnings
+          .length === 1
+          ? ''
+          : 's'}.
+        <button class="underline" onclick={() => (toolsOpen = true)}
+          >Read research details</button
+        >
+      </p>{/if}
+  {/snippet}
+  <div
+    class="min-h-0 flex-1 overflow-auto bg-[var(--paper)] p-4 sm:p-6"
+    data-preview-content
+  >
+    {#if isAudio}<div class="grid min-h-72 place-items-center">
+        <div class="w-full max-w-3xl"><AudioPlayer src={url} /></div>
+      </div>
+    {:else if isVideo}<!-- svelte-ignore a11y_media_has_caption --><video
+        controls
+        preload="metadata"
+        src={url}
+        onloadedmetadata={showDefaultSubtitleTrack}
+        class="mx-auto max-h-[72vh] max-w-full rounded-xl bg-black"
+        >{#each subtitleTracks as track}<track
+            kind="subtitles"
+            src={projectLinkUrl(`/api/v1/artifacts/${track.artifact_id}/content`)}
+            srclang={track.language}
+            label={track.title}
+            default={track.default}
+            onload={(event) => loadSubtitleTrack(event, track.default)}
+          />{/each}</video
+      >
+    {:else if isImage}<img
+        src={url}
+        alt={filename}
+        class="mx-auto max-h-[74vh] max-w-full rounded-xl object-contain"
+      />
+    {:else if isPdf}<iframe
+        src={url}
+        title={filename}
+        class="h-[74vh] w-full rounded-xl border border-[var(--line)] bg-white"
+      ></iframe>
+    {:else if isText}
+      {#if loading}<div class="grid min-h-72 place-items-center">
+          <LoaderCircle class="animate-spin" size={24} />
+        </div>
+      {:else if error}<p class="text-sm text-red-500">{error}</p>
+      {:else if comparisonMode === 'side' && comparisonId}<div
+          class="comparison-grid"
+        >
+          <section>
+            <h3>Compared file · {comparisonName}</h3>
+            <PagedTextPreview
+              text={comparisonText}
+              label="Compared file"
+              bind:page={comparisonPage}
+            />
+          </section>
+          <section>
+            <h3>Current file · {filename}</h3>
+            <PagedTextPreview
+              {text}
+              label="Current file"
+              bind:page={textPage}
+            />
+          </section>
+        </div>
+      {:else if comparisonMode === 'diff' && comparisonId}<div>
+          <div class="muted mb-2 text-xs">
+            Removed text is red and struck through; added text is green.
+          </div>
+          <TextDiff before={comparisonText} after={text} />
+        </div>
+      {:else}<PagedTextPreview
+          {text}
+          label="Current file"
+          bind:page={textPage}
+        />{/if}
+    {:else}<div class="grid min-h-72 place-items-center text-center">
+        <div>
+          <FileQuestion class="muted mx-auto" size={38} />
+          <h3 class="mt-4 font-semibold">
+            Preview not available for this file type
+          </h3>
+          <p class="muted mt-2 text-sm">
+            Download the managed artifact to open it in a compatible
+            application.
+          </p>
+        </div>
+      </div>{/if}
   </div>
-</div>
+</ReviewWorkspace>
 
 <style>
-  .preview-panel {
-    border: 1px solid var(--line);
-    background: var(--paper-strong);
-    box-shadow: 0 22px 70px rgba(0, 0, 0, 0.25);
-  }
-  .preview-overlay.maximized {
-    padding: 0;
-  }
-  .preview-overlay.maximized .preview-panel {
-    height: 100svh;
-    max-height: 100svh;
-    max-width: none;
-    border-radius: 0;
-  }
   .tool {
     border: 1px solid var(--line);
     border-radius: 0.7rem;
@@ -524,7 +569,7 @@
   .cost-badge {
     display: flex;
     flex-direction: column;
-    align-items: flex-end;
+    align-items: flex-start;
     border: 1px solid var(--line);
     border-radius: 0.7rem;
     padding: 0.4rem 0.65rem;
@@ -619,16 +664,7 @@
     font-weight: 750;
     color: var(--muted);
   }
-  .comparison-grid pre {
+  .comparison-grid :global(pre) {
     min-height: 18rem;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    border: 1px solid var(--line);
-    border-radius: 0.8rem;
-    background: var(--paper-strong);
-    padding: 1rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.75rem;
-    line-height: 1.55;
   }
 </style>

@@ -9,21 +9,25 @@ from typing import Any, Callable
 
 from sqlalchemy import or_, select
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
 from .database import Database
 from .generation_start_preparation import snapshot_guard
 from .job_execution import current_job_lease
 from .jobs import JobQueue
 from .models import (
-    AppSetting,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationRun,
     Job,
     SessionRecord,
     SessionSetting,
+    WorkspaceSetting,
     utcnow,
 )
+from .project_settings_policy import validate_project_speech_preferences
 from .schemas import GenerationStartRequest
+from .settings_identity import settings_workspace_id
 from .settings_policy import stable_hash
 from .workspace import GenerationService, _settings_source_mode
 from .workspace_settings import WorkspaceSettingsService
@@ -43,9 +47,14 @@ def _aware(value: datetime) -> datetime:
 
 def _settings_revision_guard(session, session_id: str) -> str:
     """Fingerprint settings provenance without reading values or credentials."""
+    workspace_id = settings_workspace_id(session, session_id=session_id)
     global_revisions = session.execute(
-        select(AppSetting.key, AppSetting.revision).where(
-            or_(AppSetting.key.like("defaults.%"), AppSetting.key == "services.tts")
+        select(WorkspaceSetting.key, WorkspaceSetting.revision).where(
+            WorkspaceSetting.workspace_id == workspace_id,
+            or_(
+                WorkspaceSetting.key.like("defaults.%"),
+                WorkspaceSetting.key.in_(("services.tts", "services.stt")),
+            ),
         )
     ).all()
     session_revisions = session.execute(
@@ -55,6 +64,7 @@ def _settings_revision_guard(session, session_id: str) -> str:
     ).all()
     return stable_hash(
         {
+            "workspace_id": workspace_id,
             "global": sorted((str(key), int(revision)) for key, revision in global_revisions),
             "session": sorted((str(section), int(revision)) for section, revision in session_revisions),
         }
@@ -89,6 +99,12 @@ def admit_generation_in_session(
     traceparent: str | None,
 ) -> dict[str, Any]:
     """Capture the active database snapshot and enqueue in the caller's transaction."""
+    require_current_session_access(session, session_id, ProjectAction.RUN)
+    validate_project_speech_preferences(
+        session, session_id,
+        (request_fields.get("run_override") or {}).get("tts"),
+        (request_fields.get("selected_segment_override") or {}).get("tts"),
+    )
     owner = session.get(SessionRecord, session_id)
     if owner is None:
         raise KeyError(session_id)
@@ -201,6 +217,7 @@ def run_generation_admission(
         raise RuntimeError("Generation admission requires its current worker lease.")
 
     def check_job(session) -> Job:
+        require_current_session_access(session, session_id, ProjectAction.RUN)
         job = session.get(Job, admission_id, populate_existing=True)
         if (
             job is None
@@ -271,67 +288,75 @@ def run_generation_admission(
     generation = GenerationService(
         database, jobs, WorkspaceSettingsService(database), artifacts=artifacts
     )
+    def before_preparation_io() -> None:
+        with database.snapshot_session() as session:
+            check_job(session)
+
     prepared = generation.prepare_start(
         session_id,
         **request.model_dump(),
         resolved_settings_source_identity=payload.get("settings_source_identity"),
+        before_io=before_preparation_io,
     )
-    frozen_snapshot = prepared.get("frozen_snapshot")
-    prepared_revision_id = (
-        str(frozen_snapshot.get("speech_plan_revision_id") or "")
-        if isinstance(frozen_snapshot, dict)
-        else ""
-    )
-
-    with database.immediate_session() as session:
-        admission = check_job(session)
-        if result := committed_result(session, admission):
-            return result
-        stale = (
-            prepared_revision_id != revision_id
-            or not _same_snapshot(
-                session, session_id, revision_id, active_revision_id, guard,
-                settings_revision_guard,
-            )
+    try:
+        frozen_snapshot = prepared.get("frozen_snapshot")
+        prepared_revision_id = (
+            str(frozen_snapshot.get("speech_plan_revision_id") or "")
+            if isinstance(frozen_snapshot, dict)
+            else ""
         )
-        if stale:
-            stale_result(admission)
-        else:
-            result = generation.start_in_session(
-                session, session_id, prepared=prepared, include_history=False
+
+        with database.immediate_session() as session:
+            admission = check_job(session)
+            if result := committed_result(session, admission):
+                return result
+            stale = (
+                prepared_revision_id != revision_id
+                or not _same_snapshot(
+                    session, session_id, revision_id, active_revision_id, guard,
+                    settings_revision_guard,
+                )
             )
-            marker = {
-                "generation_run_id": str(result["id"]),
-                "job_id": str(result["job_id"]),
-                "session_id": session_id,
-                "status": "queued",
-                "stage": "generating",
-                "speech_plan_revision_id": revision_id,
-                "settings_source_selector": result.get("settings_source_receipt", {}).get(
-                    "selector"
-                ),
-                "settings_source_run_id": result.get("settings_source_receipt", {}).get(
-                    "settings_source_run_id"
-                ),
-                "settings_source_plan_revision_id": result.get(
-                    "settings_source_receipt", {}
-                ).get("settings_source_plan_revision_id"),
-                "settings_source_settings_hash": result.get(
-                    "settings_source_receipt", {}
-                ).get("settings_source_settings_hash"),
-                "settings_hash": result.get("settings_hash"),
-                "source_generation_run_id": result.get("source_generation_run_id"),
-                "settings_source_receipt": result.get("settings_source_receipt"),
-            }
-            preflight = prepared.get("provider_preflight")
-            if isinstance(preflight, dict):
-                encoded = json.dumps(preflight, ensure_ascii=False, sort_keys=True)
-                if len(encoded.encode("utf-8")) <= 2048:
-                    marker["provider_preflight"] = preflight
-            admission.result_json = marker
-            session.flush()
-    if stale:
-        raise GenerationAdmissionStaleInputs(STALE_INPUTS_MESSAGE)
-    assert marker is not None
-    progress(1.0, "Generation queued")
-    return marker
+            if stale:
+                stale_result(admission)
+            else:
+                result = generation.start_in_session(
+                    session, session_id, prepared=prepared, include_history=False
+                )
+                marker = {
+                    "generation_run_id": str(result["id"]),
+                    "job_id": str(result["job_id"]),
+                    "session_id": session_id,
+                    "status": "queued",
+                    "stage": "generating",
+                    "speech_plan_revision_id": revision_id,
+                    "settings_source_selector": result.get("settings_source_receipt", {}).get(
+                        "selector"
+                    ),
+                    "settings_source_run_id": result.get("settings_source_receipt", {}).get(
+                        "settings_source_run_id"
+                    ),
+                    "settings_source_plan_revision_id": result.get(
+                        "settings_source_receipt", {}
+                    ).get("settings_source_plan_revision_id"),
+                    "settings_source_settings_hash": result.get(
+                        "settings_source_receipt", {}
+                    ).get("settings_source_settings_hash"),
+                    "settings_hash": result.get("settings_hash"),
+                    "source_generation_run_id": result.get("source_generation_run_id"),
+                    "settings_source_receipt": result.get("settings_source_receipt"),
+                }
+                preflight = prepared.get("provider_preflight")
+                if isinstance(preflight, dict):
+                    encoded = json.dumps(preflight, ensure_ascii=False, sort_keys=True)
+                    if len(encoded.encode("utf-8")) <= 2048:
+                        marker["provider_preflight"] = preflight
+                admission.result_json = marker
+                session.flush()
+        if stale:
+            raise GenerationAdmissionStaleInputs(STALE_INPUTS_MESSAGE)
+        assert marker is not None
+        progress(1.0, "Generation queued")
+        return marker
+    finally:
+        generation.cleanup_prepared_start(prepared)

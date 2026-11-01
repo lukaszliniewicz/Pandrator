@@ -25,6 +25,20 @@ APPIMAGETOOL_SHA256 = {
     "aarch64": "f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158",
 }
 
+APPIMAGE_RUNTIME_VERSION = "fedfad51acc2860b2916a1eef32ba4a500ff31ef"
+# The endpoint is mutable; revisioned cache names and content pins fail closed
+# on replacement bytes instead of silently following continuous upgrades.
+APPIMAGE_RUNTIME_URLS = {
+    machine: (
+        f"https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-{machine}"
+    )
+    for machine in ("x86_64", "aarch64")
+}
+APPIMAGE_RUNTIME_SHA256 = {
+    "x86_64": "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46",
+    "aarch64": "9a72a744d221576c9347ec074243acc5c3c7568896b12714e0e82e9f0bf47900",
+}
+
 
 def normalized_machine() -> str:
     machine = (platform.machine() or "").lower()
@@ -83,9 +97,37 @@ def download_appimagetool(cache_dir: Path, machine: str) -> Path:
     return target
 
 
-def resolve_appimagetool(
-    explicit_path: str | None, repo_root: Path, machine: str
-) -> Path:
+def verify_appimage_runtime(path: Path, machine: str) -> None:
+    expected = APPIMAGE_RUNTIME_SHA256[machine]
+    actual = sha256_file(path)
+    if actual != expected:
+        raise RuntimeError(
+            f"AppImage runtime checksum mismatch for {path}: expected {expected}, got {actual}"
+        )
+
+
+def download_appimage_runtime(cache_dir: Path, machine: str) -> Path:
+    url = APPIMAGE_RUNTIME_URLS.get(machine)
+    if not url:
+        raise RuntimeError(f"Unsupported AppImage build architecture: {machine}")
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / f"appimage-runtime-{APPIMAGE_RUNTIME_VERSION}-{machine}"
+    if not target.exists():
+        print(f"Downloading AppImage runtime: {url}")
+        temporary_target = target.with_suffix(f"{target.suffix}.download")
+        try:
+            urllib.request.urlretrieve(url, temporary_target)
+            verify_appimage_runtime(temporary_target, machine)
+            temporary_target.replace(target)
+        finally:
+            temporary_target.unlink(missing_ok=True)
+    else:
+        verify_appimage_runtime(target, machine)
+    return target
+
+
+def resolve_appimagetool(explicit_path: str | None, repo_root: Path, machine: str) -> Path:
     if explicit_path:
         path = Path(explicit_path).expanduser().resolve()
         if not path.exists():
@@ -107,6 +149,7 @@ def run_appimagetool(
     repo_root: Path,
     machine: str,
 ) -> None:
+    runtime = download_appimage_runtime(repo_root / ".appimage-tools", machine)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
         output_path.unlink()
@@ -114,5 +157,15 @@ def run_appimagetool(
     env = os.environ.copy()
     env["ARCH"] = machine
     env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
-    run([str(appimagetool), str(appdir), str(output_path)], cwd=repo_root, env=env)
+    run(
+        [
+            str(appimagetool),
+            "--runtime-file",
+            str(runtime),
+            str(appdir),
+            str(output_path),
+        ],
+        cwd=repo_root,
+        env=env,
+    )
     make_executable(output_path)

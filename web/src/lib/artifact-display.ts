@@ -33,6 +33,8 @@ const ROLE_LABELS: Record<string, string> = {
   rvc_model: 'RVC model',
   export: 'Final export',
   output_assembly: 'Assembled output',
+  export_saved_speech: 'Saved speech output',
+  export_dubbed_audio: 'Voiceover audio',
   voice_sample: 'Voice sample',
   recording_upload: 'Recorded voice sample',
   training_manifest: 'Training manifest',

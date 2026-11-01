@@ -206,8 +206,10 @@ workers.
 
 The remote setup manager controls only its own host and workspace; it is not a
 multi-host controller. The normal Pandrator WebUI keeps host mutations local
-by default. A deliberately administered single-owner deployment may set
-`PANDRATOR_ALLOW_REMOTE_MANAGER_MUTATIONS=1`, while the recovery UI remains
+by default. A trusted deployment operator may explicitly set
+`PANDRATOR_ALLOW_REMOTE_MANAGER_MUTATIONS=1`; application calls still require a
+current instance Administrator and the relevant Manager scopes. A workspace
+Manager role alone does not authorize host changes. The recovery UI remains
 the recommended remote installation and repair surface.
 
 ### MCP recovery enrollment

@@ -16,6 +16,7 @@ import pytest
 import requests
 
 from pandrator.logic import tts_handler
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.database import Database
 from pandrator.web.generation_cast_runtime import (
     _binding_key,
@@ -128,6 +129,7 @@ def _save_voice(
         voice = Voice(
             name=LOCAL_VOICE_NAME,
             language="en",
+            workspace_id=initial_personal_workspace(session).id,
             description="A saved provider voice.",
             metadata_json={"providers": {provider: registration}},
         )

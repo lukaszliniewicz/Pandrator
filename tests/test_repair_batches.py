@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     ApiIdempotency,
     AudioTake,
@@ -148,7 +149,11 @@ def test_changes_after_acceptance_block_undo_without_mutation(workspace, change)
         elif change == 'base':
             session.get(GenerationSegment, w['first_id']).text += ' Changed original.'
         elif change == 'work':
-            session.add(Job(session_id=w['sid'], kind='noop', status='queued', payload_json={}))
+            job = Job(session_id=w['sid'], kind='noop', status='queued', payload_json={})
+            ownership = job_creation_ownership(session, session_id=job.session_id)
+            job.workspace_id = ownership.workspace_id
+            job.project_id = ownership.project_id
+            session.add(job)
         else:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == w['sid']))
             plan.active_revision_id = w['base_id']

@@ -9,6 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from ..media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
 
@@ -37,6 +38,7 @@ def build_segment_preview_command(
         "-y",
         "-ss",
         f"{normalized_start_ms / 1000.0:.3f}",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(audio_file),
         "-t",

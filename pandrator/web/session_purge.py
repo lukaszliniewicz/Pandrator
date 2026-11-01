@@ -14,10 +14,20 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
+from .access.contracts import AccessDenied
+from .access.purge_policy import (
+    require_purge_deletion_access,
+    require_purge_inspection_access,
+    require_purge_policy_administration,
+    require_purge_sweep_access,
+)
+from .accounts.actor_authorization import ActorAuthorizationDenied
+from .accounts.execution_actor import current_execution_actor
 from .database import Database
 from .models import (
     AgentRun,
@@ -46,6 +56,8 @@ from .models import (
     WorkflowRun,
     utcnow,
 )
+from .projects.identity import delete_empty_project
+from .projects.models import Project
 from .sessions import RevisionConflict
 from .settings_policy import stable_hash
 from .upload_activity import UploadBusy, upload_activity
@@ -78,6 +90,7 @@ class SessionPurgeService:
         if days is not None and (isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 3650):
             raise ValueError("days must be null or an integer from 1 to 3650.")
         with self.database.immediate_session() as session:
+            require_purge_policy_administration(session)
             row = session.get(AppSetting, "session.trash_policy")
             current = row.revision if row else 0
             if current != expected_revision:
@@ -690,20 +703,37 @@ class SessionPurgeService:
                 operation.revision += 1
                 operation.updated_at = utcnow()
 
+    @staticmethod
+    def _delete_session_rows(session: Session, session_id: str) -> None:
+        project_id = session.scalar(select(SessionRecord.project_id).where(
+            SessionRecord.id == session_id,
+        ))
+        # A branch's checkpoint can belong to that same session. Remove its
+        # branch link first, so an immediate RESTRICT check does not depend on
+        # SQLite choosing the branch cascade before the artifact cascade.
+        session.execute(delete(TranslationProjectBranch).where(
+            TranslationProjectBranch.session_id == session_id,
+        ))
+        session.execute(delete(SessionRecord).where(SessionRecord.id == session_id))
+        delete_empty_project(session, project_id)
+
     def _preflight_delete(self, session: Session, session_id: str, retained: set[str]) -> None:
-        """Exercise the exact FK cascade under a savepoint before any unlink."""
+        """Rehearse session and project cleanup under a savepoint before unlink."""
         savepoint = session.begin_nested()
         try:
             for artifact in session.scalars(select(Artifact).where(Artifact.session_id == session_id)).all():
                 if self._canonical_managed(artifact.relative_path) in retained:
                     artifact.session_id = None
             session.flush()
-            session.execute(delete(SessionRecord).where(SessionRecord.id == session_id))
+            self._delete_session_rows(session, session_id)
             session.flush()
         finally:
             savepoint.rollback()
 
     def preview(self, session_id: str) -> dict[str, Any]:
+        if current_execution_actor.get() is not None:
+            with self.database.snapshot_session() as session:
+                require_purge_inspection_access(session, session_id)
         with ExitStack() as stack:
             blockers = []
             try:
@@ -716,6 +746,7 @@ class SessionPurgeService:
 
     def _preview(self, session_id: str, activity_blockers: list[str]) -> dict[str, Any]:
         with self.database.snapshot_session() as session:
+            require_purge_inspection_access(session, session_id)
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
@@ -729,6 +760,7 @@ class SessionPurgeService:
                 return {key: value for key, value in result.items() if not key.startswith("_")}
         if result["can_purge"]:
             with self.database.immediate_session() as session:
+                require_purge_inspection_access(session, session_id)
                 current = session.get(SessionRecord, session_id)
                 if current is None:
                     raise KeyError(session_id)
@@ -748,12 +780,19 @@ class SessionPurgeService:
 
     def purge(self, session_id: str, expected_revision: int, impact_token: str,
               *, job_id: str | None = None, lease_generation: int | None = None) -> dict[str, Any]:
+        if current_execution_actor.get() is not None:
+            with self.database.snapshot_session() as session:
+                require_purge_deletion_access(
+                    session, session_id, job_id=job_id, lease_generation=lease_generation
+                )
         try:
             with upload_activity(self.paths, session_id=session_id):
                 return self._purge_locked(session_id, expected_revision, impact_token,
                                           job_id=job_id, lease_generation=lease_generation)
         except UploadBusy as error:
             raise PurgeBlocked(["upload_writer_active"]) from error
+        except (AccessDenied, ActorAuthorizationDenied):
+            raise
         except (OSError, ValueError) as error:
             if isinstance(error, (PurgeBlocked, RevisionConflict)):
                 raise
@@ -762,6 +801,9 @@ class SessionPurgeService:
     def _purge_locked(self, session_id: str, expected_revision: int, impact_token: str,
                       *, job_id: str | None = None, lease_generation: int | None = None) -> dict[str, Any]:
         with self.database.immediate_session() as session:
+            require_purge_deletion_access(
+                session, session_id, job_id=job_id, lease_generation=lease_generation
+            )
             journal = session.get(SessionPurge, session_id)
             if journal is not None:
                 if journal.expected_revision != expected_revision or journal.impact_token != impact_token:
@@ -775,6 +817,17 @@ class SessionPurgeService:
                         or job.status != "running" or lease_generation is None
                         or job.lease_generation != lease_generation):
                     raise PurgeBlocked(["purge_job_cancelled_or_unclaimed"])
+                if current_execution_actor.get() is not None:
+                    owner = session.execute(
+                        select(SessionRecord.project_id, Project.workspace_id)
+                        .outerjoin(Project, Project.id == SessionRecord.project_id)
+                        .where(SessionRecord.id == session_id)
+                    ).one_or_none()
+                    if owner is not None and (
+                        owner.project_id is None or owner.workspace_id is None
+                        or job.project_id != owner.project_id or job.workspace_id != owner.workspace_id
+                    ):
+                        raise PurgeBlocked(["purge_job_cancelled_or_unclaimed"])
             if journal is None:
                 record = session.get(SessionRecord, session_id)
                 if record is None:
@@ -786,7 +839,10 @@ class SessionPurgeService:
                     raise RevisionConflict("Purge impact changed; refresh the preview.")
                 if impact["blockers"]:
                     raise PurgeBlocked(impact["blockers"])
-                self._preflight_delete(session, session_id, impact["_retained"])
+                try:
+                    self._preflight_delete(session, session_id, impact["_retained"])
+                except IntegrityError as error:
+                    raise PurgeBlocked(["delete_constraint:IntegrityError"]) from error
                 journal = SessionPurge(session_id=session_id, state="purging",
                     manifest_json=impact["_files"], expected_revision=expected_revision,
                     impact_token=impact_token)
@@ -851,7 +907,7 @@ class SessionPurgeService:
                         artifact.session_id = None
                 self._scrub_project_operations(session, session_id)
                 session.flush()
-                session.execute(delete(SessionRecord).where(SessionRecord.id == session_id))
+                self._delete_session_rows(session, session_id)
                 journal.state = "complete"
                 journal.error_message = None
                 journal.updated_at = utcnow()
@@ -866,6 +922,9 @@ class SessionPurgeService:
             return {"state": "failed", "error": str(error)}
 
     def sweep(self, *, limit: int = 20, now: datetime | None = None) -> dict[str, int]:
+        if current_execution_actor.get() is not None:
+            with self.database.snapshot_session() as session:
+                require_purge_sweep_access(session)
         now = now or datetime.now(UTC)
         policy = self.policy()
         with self.database.session() as session:

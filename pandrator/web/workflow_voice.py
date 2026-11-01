@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 import subprocess
 import threading
 import uuid
@@ -13,30 +14,54 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
+from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 from pandrator.runtime import DataPaths
 
+from .access.contracts import AccessDenied
+from .access.local_tools_policy import LocalToolOperation, require_local_tool_inputs
+from .access.voice_sample_execution_policy import require_voice_sample_execution_workspace
+from .accounts.execution_actor import HostActor, UserActor, current_execution_actor
+from .accounts.models import Workspace
 from .artifacts import ArtifactService, sha256_file
+from .credential_identity import credential_namespace
 from .credentials import hydrate_stt_settings, hydrate_tts_settings, redact_inline_secrets
 from .database import Database
+from .job_execution import current_job_lease
 from .media_process import run_media_process
-from .models import AppSetting, Artifact, Voice, VoiceSample, utcnow
-from .training_publication import publish_training_bundle, transition_training
+from .models import Artifact, Voice, VoiceSample, utcnow
+from .settings_identity import workspace_setting_in_workspace
+from .training_publication import (
+    publish_training_bundle,
+    require_training_execution_access,
+    transition_training,
+)
 from .voice_library import (
     mark_provider_registrations_stale,
     remove_managed_files,
     retire_sample_artifact,
     sample_file_status,
 )
+from .voice_provider_effects import (
+    VoiceProviderEffect,
+    VoiceProviderEffectError,
+    binding_fingerprint,
+)
+from .voice_provider_settings import check_voice_provider_settings
 from .voice_reference_reuse import REFERENCE_PREPARATION_PROFILE, verified_sample_artifact
 from .voice_reference_trim import (
     inspect_voice_reference_trim,
     reference_trim_requested,
     trim_voice_reference_audio,
+)
+from .voice_sample_transcription import (
+    check_voice_transcription_settings,
+    resolve_voice_transcription_settings,
 )
 
 if TYPE_CHECKING:
@@ -91,79 +116,146 @@ def transcribe_voice(
         transcribe_source_file_with_metadata,
     )
 
+    voice_id = str(payload.get("voice_id") or "").strip() or None
+    sample_id = str(payload.get("sample_id") or "").strip() or None
+    sample_artifact_id = str(payload.get("sample_artifact_id") or "").strip()
+    workspace_id = None
+
+    def recheck(session: Session | None = None) -> Workspace:
+        if session is None:
+            with context.database.snapshot_session() as current:
+                return recheck(current)
+        workspace = require_voice_sample_execution_workspace(
+            session, payload, "voice.transcribe", voice_id=voice_id,
+            sample_ids=[sample_id] if sample_id else (), artifact_ids=[sample_artifact_id],
+            expected_workspace_id=workspace_id,
+        )
+        check_voice_transcription_settings(session, payload, workspace.id)
+        return workspace
+
+    with context.database.snapshot_session() as session:
+        workspace = recheck(session)
+        captured_runtime = resolve_voice_transcription_settings(session, payload, workspace.id)
+        if sample_id:
+            sample = session.get(VoiceSample, sample_id)
+            if sample is None or sample.artifact_id != sample_artifact_id:
+                raise ValueError("The selected voice sample no longer matches its audio.")
+        workspace_id = workspace.id
     sample_artifact, sample_path = context._resolve_input(
-        str(payload.get("sample_artifact_id") or "")
+        sample_artifact_id
     )
-    operation_dir = context.paths.voices / str(
-        payload.get("voice_id") or "transcription"
-    )
-    operation_dir.mkdir(parents=True, exist_ok=True)
-    progress(0.05, "Preparing reference transcription")
-    runtime_settings = hydrate_stt_settings(
-        context.database,
-        context.paths,
-        dict(payload.get("settings") or {}),
-    )
-    transcription_result = transcribe_source_file_with_metadata(
-        operation_dir,
-        sample_path,
-        runtime_settings,
-        ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
-        crispasr_executable=str(payload.get("crispasr_executable") or ""),
-        progress_callback=context._scaled_progress_callback(progress, 0.05, 0.85),
-        cancel_event=cancel_event,
-    )
-    output_path = Path(transcription_result.srt_path)
-    if cancel_event.is_set():
-        return {}
-    progress(0.9, "Registering reference transcription")
-    requested_settings = dict(payload.get("settings") or {})
-    requested_language = str(requested_settings.get("stt_language") or "auto")
-    resolved_language = str(getattr(transcription_result, "resolved_language", "") or "")
-    output_language = (
-        resolved_language if resolved_language.lower() not in {"", "auto", "und", "unknown"}
-        else requested_language
-    )
-    transcription_metadata = {
-        "engine": transcription_result.engine,
-        "compute_backend": transcription_result.compute_backend,
-        "language": output_language,
-        "requested_language": requested_language,
-        "stt_routing": dict(getattr(transcription_result, "routing", {}) or {}),
-        "requested_settings": redact_inline_secrets(requested_settings),
-    }
-    artifact = context.artifacts.register(
-        output_path,
-        kind="srt",
-        role="voice_transcription",
-        parent_ids=[sample_artifact.id],
-        settings=requested_settings,
-        metadata=transcription_metadata,
-    )
-    timing_artifact = context.artifacts.register(
-        Path(transcription_result.word_timestamps_path),
-        kind="json",
-        role="voice_word_timestamps",
-        parent_ids=[sample_artifact.id, artifact.id],
-        settings=requested_settings,
-        metadata=transcription_metadata,
-    )
-    # Read the canonical transcript so voice-reference text stays
-    # independent from subtitle layout and structured speaker metadata.
-    transcript = " ".join(
-        segment.text.replace("\n", " ").strip()
-        for segment in load_transcript(
-            transcription_result.word_timestamps_path
-        ).segments
-    )
-    progress(1.0, "Reference transcription ready for review")
-    return {
-        "artifact_id": artifact.id,
-        "path": artifact.relative_path,
-        "word_timestamps_artifact_id": timing_artifact.id,
-        "sample_id": payload.get("sample_id"),
-        "transcript": transcript,
-    }
+    operation_dir = (
+        context.paths.voices / voice_id / "transcriptions"
+        if voice_id
+        else context.paths.voices
+        / "transcriptions"
+        / workspace_id
+        / sample_artifact.id
+    ) / uuid.uuid4().hex
+    output_committed = False
+    try:
+        operation_dir.mkdir(parents=True, exist_ok=True)
+        progress(0.05, "Preparing reference transcription")
+        recheck()
+        if cancel_event.is_set():
+            return {}
+        runtime_settings = hydrate_stt_settings(
+            context.database,
+            context.paths,
+            captured_runtime,
+            workspace_id=workspace_id,
+        )
+        recheck()
+        transcription_result = transcribe_source_file_with_metadata(
+            operation_dir,
+            sample_path,
+            runtime_settings,
+            ffmpeg_executable=str(payload.get("ffmpeg_executable") or "ffmpeg"),
+            crispasr_executable=str(payload.get("crispasr_executable") or ""),
+            progress_callback=context._scaled_progress_callback(progress, 0.05, 0.85),
+            cancel_event=cancel_event,
+        )
+        if cancel_event.is_set():
+            return {}
+        recheck()
+        output_path = Path(transcription_result.srt_path)
+        progress(0.9, "Registering reference transcription")
+        recheck()
+        requested_settings = dict(payload.get("settings") or {})
+        requested_language = str(requested_settings.get("stt_language") or "auto")
+        resolved_language = str(getattr(transcription_result, "resolved_language", "") or "")
+        output_language = (
+            resolved_language if resolved_language.lower() not in {"", "auto", "und", "unknown"}
+            else requested_language
+        )
+        transcription_metadata = {
+            "engine": transcription_result.engine,
+            "compute_backend": transcription_result.compute_backend,
+            "language": output_language,
+            "requested_language": requested_language,
+            "stt_routing": dict(getattr(transcription_result, "routing", {}) or {}),
+            "requested_settings": redact_inline_secrets(requested_settings),
+        }
+        timestamps_path = Path(transcription_result.word_timestamps_path)
+        prepared_transcription = context.artifacts.prepare_registration(
+            output_path, settings=requested_settings
+        )
+        prepared_timestamps = context.artifacts.prepare_registration(
+            timestamps_path, settings=requested_settings
+        )
+        # Read the canonical transcript so voice-reference text stays
+        # independent from subtitle layout and structured speaker metadata.
+        transcript = " ".join(
+            segment.text.replace("\n", " ").strip()
+            for segment in load_transcript(
+                transcription_result.word_timestamps_path
+            ).segments
+        )
+        with context.database.immediate_session() as session:
+            current_workspace = recheck(session)
+            if sample_id:
+                current_sample = session.get(VoiceSample, sample_id)
+                if current_sample is None or current_sample.artifact_id != sample_artifact.id:
+                    raise ValueError("The selected voice sample changed during transcription.")
+            artifact = context.artifacts.register_in_session(
+                session,
+                output_path,
+                kind="srt",
+                role="voice_transcription",
+                workspace_id=current_workspace.id,
+                parent_ids=[sample_artifact.id],
+                settings=requested_settings,
+                metadata=transcription_metadata,
+                _prepared=prepared_transcription,
+            )
+            timing_artifact = context.artifacts.register_in_session(
+                session,
+                timestamps_path,
+                kind="json",
+                role="voice_word_timestamps",
+                workspace_id=current_workspace.id,
+                parent_ids=[sample_artifact.id, artifact.id],
+                settings=requested_settings,
+                metadata=transcription_metadata,
+                _prepared=prepared_timestamps,
+            )
+            session.flush()
+            artifact_id = artifact.id
+            artifact_path = artifact.relative_path
+            timing_artifact_id = timing_artifact.id
+        output_committed = True
+        progress(1.0, "Reference transcription ready for review")
+        return {
+            "artifact_id": artifact_id,
+            "path": artifact_path,
+            "word_timestamps_artifact_id": timing_artifact_id,
+            "sample_id": payload.get("sample_id"),
+            "transcript": transcript,
+        }
+
+    finally:
+        if not output_committed:
+            shutil.rmtree(operation_dir, ignore_errors=True)
 
 
 def normalize_voice_recording(
@@ -195,8 +287,33 @@ def normalize_voice_recording(
         sample_provenance = redact_inline_secrets(sample_provenance)
     else:
         sample_provenance = None
+    source_artifact_id = str(payload.get("source_artifact_id") or "").strip()
+    workspace_id = None
+
+    def recheck(session: Session | None = None) -> Workspace:
+        if session is None:
+            with context.database.snapshot_session() as current:
+                return recheck(current)
+        return require_voice_sample_execution_workspace(
+            session, payload, "voice.normalize_recording", voice_id=voice_id,
+            sample_ids=[replace_sample_id] if replace_sample_id else (),
+            artifact_ids=[source_artifact_id], expected_workspace_id=workspace_id,
+        )
+
+    with context.database.snapshot_session() as session:
+        workspace = recheck(session)
+        if replace_sample_id:
+            existing = session.get(VoiceSample, replace_sample_id)
+            if existing is None or existing.voice_id != voice_id:
+                raise ValueError("Voice sample not found.")
+        voice = session.get(Voice, voice_id)
+        if voice is None:
+            raise ValueError("Voice not found.")
+        if expected_revision is not None and voice.revision != expected_revision:
+            raise ValueError("The voice changed before the sample could be saved.")
+        workspace_id = workspace.id
     source_artifact, source_path = context._resolve_input(
-        str(payload.get("source_artifact_id") or "")
+        source_artifact_id
     )
     expected_source_role = str(payload.get("source_artifact_role") or "").strip()
     if expected_source_role and source_artifact.role != expected_source_role:
@@ -221,6 +338,7 @@ def normalize_voice_recording(
     if trim_requested:
         if not expected_source_hash:
             raise ValueError("A selected voice-reference crop requires its source hash.")
+        recheck()
         reference_trim = inspect_voice_reference_trim(
             source_path,
             payload.get("start_seconds", 0.0),
@@ -235,7 +353,8 @@ def normalize_voice_recording(
             **(sample_provenance or {}),
             "reference_trim": reference_trim.provenance(),
         }
-    with context.database.session() as session:
+    with context.database.snapshot_session() as session:
+        recheck(session)
         voice = session.get(Voice, voice_id)
         if voice is None:
             raise ValueError("Voice not found.")
@@ -261,6 +380,7 @@ def normalize_voice_recording(
                 / f"voice-trim-{source_artifact.id}-{uuid.uuid4().hex}.wav"
             )
             cleanup_temporary.append(cropped)
+            recheck()
             trim_voice_reference_audio(
                 source_path,
                 cropped,
@@ -283,6 +403,7 @@ def normalize_voice_recording(
             resample_command = [
                 ffmpeg_executable,
                 "-y",
+                *LOCAL_MEDIA_INPUT_OPTIONS,
                 "-i",
                 str(normalize_source_path),
                 "-ac",
@@ -293,6 +414,7 @@ def normalize_voice_recording(
                 "pcm_s16le",
                 str(resampled),
             ]
+            recheck()
             if reference_trim is not None:
                 run_media_process(resample_command, cancel_event=cancel_event)
             else:
@@ -329,6 +451,7 @@ def normalize_voice_recording(
                         "Installing cleaned voice audio",
                     )
 
+            recheck()
             cleanup_report = clean_voice_sample(
                 source=resampled,
                 destination=cleaned,
@@ -349,6 +472,7 @@ def normalize_voice_recording(
         command = [
             ffmpeg_executable,
             "-y",
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             "-i",
             str(normalize_source_path),
             "-ac",
@@ -359,12 +483,14 @@ def normalize_voice_recording(
             "pcm_s16le",
             str(destination),
         ]
+        recheck()
         if reference_trim is not None:
             run_media_process(command, cancel_event=cancel_event)
         else:
             subprocess.run(command, check=True, capture_output=True, text=True)
         if cancel_event.is_set():
             return {}
+        recheck()
         if reference_trim is not None and sha256_file(source_path) != expected_source_hash:
             raise ValueError(
                 "The selected voice-reference source changed before it could be saved."
@@ -400,7 +526,8 @@ def normalize_voice_recording(
             }
         prepared = context.artifacts.prepare_registration(destination)
         removable: list[Path] = []
-        with context.database.session() as session:
+        with context.database.immediate_session() as session:
+            recheck(session)
             if reference_trim is not None:
                 current_source = session.get(Artifact, source_artifact.id)
                 if (
@@ -423,6 +550,7 @@ def normalize_voice_recording(
                 destination,
                 kind="audio",
                 role="voice_sample",
+                workspace_id=workspace_id,
                 parent_ids=[source_artifact.id],
                 metadata=sample_metadata,
                 _prepared=prepared,
@@ -447,6 +575,7 @@ def normalize_voice_recording(
                 sample = VoiceSample(
                     voice_id=voice_id,
                     artifact_id=artifact.id,
+                    workspace_id=workspace_id,
                     transcript=transcript or None,
                     transcript_language=(
                         transcript_language if transcript else None
@@ -483,6 +612,42 @@ def normalize_voice_recording(
     }
 
 
+def _voice_provider_proof(
+    context: VoiceWorkflowContext,
+    payload: dict[str, Any],
+    kind: Literal["voice.publish", "voice.unpublish"],
+    *,
+    workspace_id: str | None = None,
+    voice_id: str | None = None,
+    sample_ids: tuple[str, ...] = (),
+    artifact_ids: tuple[str, ...] = (),
+    baseline: str | None = None,
+    binding_service_id: str | None = None,
+    session: Session | None = None,
+) -> Workspace:
+    if session is None:
+        with context.database.snapshot_session() as current:
+            return _voice_provider_proof(
+                context, payload, kind, workspace_id=workspace_id, voice_id=voice_id,
+                sample_ids=sample_ids, artifact_ids=artifact_ids, baseline=baseline,
+                binding_service_id=binding_service_id, session=current,
+            )
+    workspace = require_voice_sample_execution_workspace(
+        session, payload, kind, voice_id=voice_id, sample_ids=sample_ids,
+        artifact_ids=artifact_ids, expected_workspace_id=workspace_id,
+    )
+    check_voice_provider_settings(session, payload, workspace.id)
+    if baseline is not None:
+        voice = session.get(Voice, voice_id)
+        if voice is None or binding_fingerprint(
+            voice, binding_service_id or str(payload.get("service_id") or "")
+        ) != baseline:
+            raise VoiceProviderEffectError(
+                "provider_binding_changed", "The provider binding changed during this operation."
+            )
+    return workspace
+
+
 def publish_voice(
     context: VoiceWorkflowContext,
     payload: dict[str, Any],
@@ -503,7 +668,20 @@ def publish_voice(
     has_pins = bool(pinned_sample_id or pinned_artifact_id or pinned_hash)
     if has_pins and not (pinned_sample_id and pinned_artifact_id and pinned_hash):
         raise ValueError("Exact voice publication requires all sample pins.")
-    with context.database.session() as session:
+    # Prove the job/root before mutable Voice/source validation; retries must
+    # observe retained remote effects even after those resources disappear.
+    with context.database.snapshot_session() as session:
+        workspace = _voice_provider_proof(context, payload, "voice.publish", session=session)
+        effect = VoiceProviderEffect.current(
+            context.database, "voice.publish", workspace.id, voice_id, service_id
+        )
+        retained = effect.previous_result(session)
+        if retained is not None:
+            return retained
+        _voice_provider_proof(
+            context, payload, "voice.publish", voice_id=voice_id,
+            workspace_id=workspace.id, session=session,
+        )
         voice = session.get(Voice, voice_id)
         if voice is None:
             raise ValueError("Voice not found.")
@@ -530,6 +708,10 @@ def publish_voice(
             raise ValueError(
                 "Add or replace a readable voice sample before uploading this voice."
             )
+        _voice_provider_proof(
+            context, payload, "voice.publish", voice_id=voice_id,
+            sample_ids=(sample.id,), workspace_id=workspace.id, session=session,
+        )
         if has_pins:
             if sample.voice_id != voice_id or sample.artifact_id != pinned_artifact_id:
                 raise ValueError("The selected voice sample changed before provider upload.")
@@ -541,16 +723,48 @@ def publish_voice(
         ).strip()
         voice_name = voice.name
         source_voice_revision = voice.revision
+        baseline = binding_fingerprint(voice, service_id)
+        workspace_id = workspace.id
+        host_allowed = credential_namespace(session, workspace_id).host_credentials_allowed
 
+    def prove(session: Session | None = None) -> Workspace:
+        if session is None:
+            with context.database.snapshot_session() as current:
+                return prove(current)
+        proved = _voice_provider_proof(
+            context, payload, "voice.publish", workspace_id=workspace_id,
+            voice_id=voice_id, sample_ids=(sample.id,), artifact_ids=(sample.artifact_id,),
+            baseline=baseline, session=session,
+        )
+        if credential_namespace(session, workspace_id).host_credentials_allowed != host_allowed:
+            raise ValueError("The host credential policy changed during execution.")
+        current_voice = session.get_one(Voice, voice_id)
+        current_sample = session.get_one(VoiceSample, sample.id)
+        current_artifact = session.get_one(Artifact, sample.artifact_id)
+        if (
+            current_voice.revision != source_voice_revision
+            or current_sample.artifact_id != sample.artifact_id
+            or (has_pins and current_artifact.content_hash != pinned_hash)
+        ):
+            raise ValueError("The selected voice sample changed before provider upload.")
+        return proved
+
+    prove()
     sample_artifact, sample_path = context._resolve_input(sample.artifact_id)
     if sample_path.suffix.lower() != ".wav":
         raise ValueError("Provider voice uploads require a normalized WAV sample.")
     if cancel_event.is_set():
         return {}
     progress(0.1, f"Uploading {voice_name} to {service_name}")
-    with context.database.session() as session:
-        connections = session.get(AppSetting, "services.tts")
-        defaults = session.get(AppSetting, "defaults.tts")
+    prove()
+    with context.database.snapshot_session() as session:
+        prove(session)
+        connections = workspace_setting_in_workspace(
+            session, workspace_id, "services.tts"
+        )
+        defaults = workspace_setting_in_workspace(
+            session, workspace_id, "defaults.tts"
+        )
         connection_value = (
             dict(connections.value_json or {})
             if connections and isinstance(connections.value_json, dict)
@@ -561,6 +775,7 @@ def publish_voice(
             if defaults and isinstance(defaults.value_json, dict)
             else {}
         )
+    prove()
     runtime_settings = hydrate_tts_settings(
         context.database,
         context.paths,
@@ -570,7 +785,9 @@ def publish_voice(
             "service": service_id,
         },
         manager_bridge=context.manager_bridge,
+        workspace_id=workspace_id,
     )
+    prove()
     service_config = (
         tts_handler.get_service_config(
             runtime_settings,
@@ -626,7 +843,32 @@ def publish_voice(
                 else None
             ),
         }
-        with context.database.session() as session:
+        linked_baseline = binding_fingerprint(voice, registration_service_id)
+        # File validation belongs outside the binding writer. The writer below
+        # then compares source revision, artifact identity/hash and full binding.
+        with context.database.snapshot_session() as session:
+            prove(session)
+            if has_pins:
+                current_samples = session.scalars(
+                    select(VoiceSample).where(VoiceSample.voice_id == voice_id)
+                    .order_by(VoiceSample.created_at.desc())
+                )
+                newest_current = next((item for item in current_samples if sample_file_status(
+                    session, context.paths, item
+                )[0] == "ready"), None)
+                if newest_current is None or newest_current.id != pinned_sample_id:
+                    raise ValueError("audio.cpp linked voices require the current local reference.")
+                verified_sample_artifact(
+                    session, context.paths, session.get_one(VoiceSample, pinned_sample_id),
+                    expected_sha256=pinned_hash,
+                )
+        with context.database.immediate_session() as session:
+            prove(session)
+            _voice_provider_proof(
+                context, payload, "voice.publish", workspace_id=workspace_id,
+                voice_id=voice_id, baseline=linked_baseline,
+                binding_service_id=registration_service_id, session=session,
+            )
             voice = session.get(Voice, voice_id)
             if voice is None:
                 raise ValueError("Voice was removed before it could be linked.")
@@ -641,18 +883,9 @@ def publish_voice(
                     "The voice sample changed before it could be linked."
                 )
             if has_pins:
-                current_samples = session.scalars(
-                    select(VoiceSample).where(VoiceSample.voice_id == voice_id)
-                    .order_by(VoiceSample.created_at.desc())
-                )
-                newest_current = next((item for item in current_samples if sample_file_status(
-                    session, context.paths, item
-                )[0] == "ready"), None)
-                if newest_current is None or newest_current.id != pinned_sample_id:
+                current_artifact = session.get(Artifact, current_sample.artifact_id)
+                if current_artifact is None or current_artifact.content_hash != pinned_hash:
                     raise ValueError("audio.cpp linked voices require the current local reference.")
-                verified_sample_artifact(
-                    session, context.paths, current_sample, expected_sha256=pinned_hash
-                )
             metadata = deepcopy(voice.metadata_json or {})
             providers = dict(metadata.get("providers") or {})
             current_registration = providers.get(registration_service_id)
@@ -679,6 +912,9 @@ def publish_voice(
             voice.updated_at = utcnow()
             next_voice_revision = voice.revision
         progress(1.0, f"{voice_name} is ready in {service_name}")
+        _voice_provider_proof(
+            context, payload, "voice.publish", workspace_id=workspace_id, voice_id=voice_id,
+        )
         return {
             "voice_id": voice_id,
             "service_id": service_id,
@@ -707,7 +943,8 @@ def publish_voice(
         else ""
     )
     if has_pins:
-        with context.database.session() as session:
+        with context.database.snapshot_session() as session:
+            prove(session)
             current_voice = session.get(Voice, voice_id)
             current_sample = session.get(VoiceSample, pinned_sample_id)
             if (
@@ -717,73 +954,114 @@ def publish_voice(
             ):
                 raise ValueError("The selected voice sample changed before provider upload.")
             verified_sample_artifact(session, context.paths, current_sample, expected_sha256=pinned_hash)
-    provider_voice_id = context.tts_providers.upload_voice(
-        normalized_service_id,
-        str(sample_path),
-        base_url=base_url,
-        service=service_name,
-        prompt_text=uploaded_reference_text or None,
-        voice_id=requested_provider_voice_id,
-        api_key=str(service_config.get("api_key") or ""),
+    prove()
+    token = effect.reserve(
+        {
+            "service_id": normalized_service_id, "base_url": base_url,
+            "api_key": str(service_config.get("api_key") or ""),
+            "voice_id": requested_provider_voice_id, "sample_id": sample.id,
+            "sample_sha256": sample_artifact.content_hash,
+            "prompt_text": uploaded_reference_text, "service": service_name,
+        },
+        baseline, lambda session: prove(session),
     )
-    # A remote mutation has happened. Persist its ownership record even if
-    # cancellation was requested in the meantime; otherwise the provider
-    # copy becomes an unmanageable orphan.
-    with context.database.session() as session:
-        voice = session.get(Voice, voice_id)
-        if voice is None:
-            raise ValueError("Voice was removed while it was being uploaded.")
-        metadata = deepcopy(voice.metadata_json or {})
-        providers = dict(metadata.get("providers") or {})
-        current_sample = session.get(VoiceSample, sample.id)
-        still_current = bool(
-            voice.revision == source_voice_revision
-            and current_sample is not None
-            and current_sample.artifact_id == sample.artifact_id
+
+    def before_io() -> None:
+        if cancel_event.is_set():
+            raise ValueError("Voice provider upload was cancelled before dispatch.")
+        effect.dispatch(token, lambda session: prove(session))
+
+    try:
+        provider_voice_id = context.tts_providers.upload_voice(
+            normalized_service_id,
+            str(sample_path),
+            base_url=base_url,
+            service=service_name,
+            prompt_text=uploaded_reference_text or None,
+            voice_id=requested_provider_voice_id,
+            api_key=str(service_config.get("api_key") or ""),
+            before_io=before_io,
+            allow_environment_credentials=host_allowed,
         )
-        providers[service_id] = {
-            "voice_id": provider_voice_id,
-            "sample_id": sample.id,
-            "status": "ready" if still_current else "stale",
-            "updated_at": utcnow().isoformat(),
-            "managed_by": "pandrator",
-            "protocol": "pandrator-voices-v1",
-            "resource_kind": "uploaded_reference",
-            "endpoint_fingerprint": _provider_endpoint_fingerprint(base_url),
-            "source_audio_hash": sample_artifact.content_hash,
-            "reference_text_mode": reference_text_mode,
-            "reference_text_hash": (
-                hashlib.sha256(uploaded_reference_text.encode("utf-8")).hexdigest()
-                if uploaded_reference_text
+        effect.completed(token, provider_voice_id)
+    except Exception:
+        effect.failed(token)
+        raise
+    # The completed remote receipt is committed before any local publication.
+    try:
+        with context.database.immediate_session() as session:
+            _voice_provider_proof(
+                context, payload, "voice.publish", workspace_id=workspace_id,
+                voice_id=voice_id, baseline=baseline, session=session,
+            )
+            voice = session.get_one(Voice, voice_id)
+            metadata = deepcopy(voice.metadata_json or {})
+            providers = dict(metadata.get("providers") or {})
+            current_sample = session.get(VoiceSample, sample.id)
+            current_artifact = (
+                session.get(Artifact, current_sample.artifact_id)
+                if current_sample is not None
                 else None
-            ),
-            **(
-                {}
-                if still_current
-                else {
-                    "stale_reason": (
-                        "The local reference changed while it was being uploaded."
-                    )
-                }
-            ),
-        }
-        metadata["providers"] = providers
-        voice.metadata_json = metadata
-        voice.revision += 1
-        voice.updated_at = utcnow()
-        next_voice_revision = voice.revision
-    progress(1.0, f"{voice_name} is ready in {service_name}")
-    return {
-        "voice_id": voice_id,
-        "service_id": service_id,
-        "provider_voice_id": provider_voice_id,
-        "voice_revision": next_voice_revision,
-        "sample_id": sample.id,
-        "artifact_id": sample.artifact_id,
-        "sample_sha256": sample_artifact.content_hash,
-        "reused_registration": False,
-        "cancellation_requested_after_upload": cancel_event.is_set(),
-    }
+            )
+            still_current = bool(
+                voice.revision == source_voice_revision
+                and current_sample is not None
+                and current_sample.voice_id == voice_id
+                and current_sample.workspace_id == workspace_id
+                and current_sample.artifact_id == sample.artifact_id
+                and current_artifact is not None
+                and current_artifact.workspace_id == workspace_id
+            )
+            providers[service_id] = {
+                "voice_id": provider_voice_id,
+                "sample_id": sample.id,
+                "status": "ready" if still_current else "stale",
+                "updated_at": utcnow().isoformat(),
+                "managed_by": "pandrator",
+                "protocol": "pandrator-voices-v1",
+                "resource_kind": "uploaded_reference",
+                "endpoint_fingerprint": _provider_endpoint_fingerprint(base_url),
+                "source_audio_hash": sample_artifact.content_hash,
+                "reference_text_mode": reference_text_mode,
+                "reference_text_hash": (
+                    hashlib.sha256(uploaded_reference_text.encode("utf-8")).hexdigest()
+                    if uploaded_reference_text
+                    else None
+                ),
+                **(
+                    {}
+                    if still_current
+                    else {
+                        "stale_reason": (
+                            "The local reference changed while it was being uploaded."
+                        )
+                    }
+                ),
+            }
+            metadata["providers"] = providers
+            voice.metadata_json = metadata
+            voice.revision += 1
+            voice.updated_at = utcnow()
+            next_voice_revision = voice.revision
+            result = {
+                "voice_id": voice_id, "service_id": service_id,
+                "provider_voice_id": provider_voice_id, "voice_revision": next_voice_revision,
+                "sample_id": sample.id, "artifact_id": sample.artifact_id,
+                "sample_sha256": sample_artifact.content_hash, "reused_registration": False,
+                "cancellation_requested_after_upload": cancel_event.is_set(),
+            }
+            effect.applied(session, token, "ready" if still_current else "stale", result)
+    except Exception as exc:
+        raise VoiceProviderEffectError(
+            "provider_effect_local_not_applied",
+            "The provider upload completed; the local binding was not applied."
+            + (" Its job receipt was retained." if effect.job_id is not None else ""),
+        ) from exc
+    progress(1.0, f"{voice_name} is {'ready' if still_current else 'stale'} in {service_name}")
+    _voice_provider_proof(
+        context, payload, "voice.publish", workspace_id=workspace_id, voice_id=voice_id,
+    )
+    return result
 
 
 def unpublish_voice(
@@ -800,7 +1078,18 @@ def unpublish_voice(
     service_name = str(payload.get("service") or service_id).strip()
     expected_raw = payload.get("expected_voice_revision")
     expected_revision = int(expected_raw) if expected_raw is not None else None
-    with context.database.session() as session:
+    with context.database.snapshot_session() as session:
+        workspace = _voice_provider_proof(context, payload, "voice.unpublish", session=session)
+        effect = VoiceProviderEffect.current(
+            context.database, "voice.unpublish", workspace.id, voice_id, service_id
+        )
+        retained = effect.previous_result(session)
+        if retained is not None:
+            return retained
+        _voice_provider_proof(
+            context, payload, "voice.unpublish", voice_id=voice_id,
+            workspace_id=workspace.id, session=session,
+        )
         voice = session.get(Voice, voice_id)
         if voice is None:
             raise ValueError("Voice not found.")
@@ -817,6 +1106,9 @@ def unpublish_voice(
                 "already_absent": True,
                 "voice_revision": voice.revision,
             }
+        workspace_id = workspace.id
+        host_allowed = credential_namespace(session, workspace_id).host_credentials_allowed
+        baseline = binding_fingerprint(voice, service_id)
         if registration.get("managed_by") != "pandrator":
             raise ValueError(
                 "The provider registration has no Pandrator ownership proof."
@@ -829,8 +1121,12 @@ def unpublish_voice(
         if not provider_voice_id:
             raise ValueError("The provider registration has no remote voice ID.")
 
-        connections = session.get(AppSetting, "services.tts")
-        defaults = session.get(AppSetting, "defaults.tts")
+        connections = workspace_setting_in_workspace(
+            session, workspace_id, "services.tts"
+        )
+        defaults = workspace_setting_in_workspace(
+            session, workspace_id, "defaults.tts"
+        )
         connection_value = (
             dict(connections.value_json or {})
             if connections and isinstance(connections.value_json, dict)
@@ -842,6 +1138,24 @@ def unpublish_voice(
             else {}
         )
 
+    def prove(session: Session | None = None) -> Workspace:
+        if session is None:
+            with context.database.snapshot_session() as current:
+                return prove(current)
+        proved = _voice_provider_proof(
+            context,
+            payload,
+            "voice.unpublish",
+            workspace_id=workspace_id,
+            voice_id=voice_id,
+            baseline=baseline,
+            session=session,
+        )
+        if credential_namespace(session, workspace_id).host_credentials_allowed != host_allowed:
+            raise ValueError("The host credential policy changed during execution.")
+        return proved
+
+    prove()
     runtime_settings = hydrate_tts_settings(
         context.database,
         context.paths,
@@ -851,7 +1165,9 @@ def unpublish_voice(
             "service": service_id,
         },
         manager_bridge=context.manager_bridge,
+        workspace_id=workspace_id,
     )
+    prove()
     service_config = (
         tts_handler.get_service_config(runtime_settings, service_id) or {}
     )
@@ -862,17 +1178,11 @@ def unpublish_voice(
         registration.get("resource_kind") == "linked_reference"
         and service_adapter == "audio_cpp"
     ):
-        with context.database.session() as session:
-            voice = session.get(Voice, voice_id)
-            if voice is None:
-                raise ValueError("Voice not found.")
+        with context.database.immediate_session() as session:
+            prove(session)
+            voice = session.get_one(Voice, voice_id)
             metadata = deepcopy(voice.metadata_json or {})
             providers = dict(metadata.get("providers") or {})
-            current = dict(providers.get(service_id) or {})
-            if current.get("resource_kind") != "linked_reference":
-                raise ValueError(
-                    "The linked voice registration changed while removing it."
-                )
             providers.pop(service_id, None)
             metadata["providers"] = providers
             voice.metadata_json = metadata
@@ -880,6 +1190,9 @@ def unpublish_voice(
             voice.updated_at = utcnow()
             next_revision = voice.revision
         progress(1.0, f"{service_name} link removed")
+        _voice_provider_proof(
+            context, payload, "voice.unpublish", workspace_id=workspace_id, voice_id=voice_id,
+        )
         return {
             "voice_id": voice_id,
             "service_id": service_id,
@@ -907,51 +1220,96 @@ def unpublish_voice(
         )
     if cancel_event.is_set():
         return {}
+    prove()
     progress(0.1, f"Removing {provider_voice_id} from {service_name}")
-    remote_deleted = context.tts_providers.delete_voice(
-        normalized_service_id,
-        provider_voice_id,
-        base_url=base_url,
-        service=str(service_config.get("name") or service_name),
-        api_key=str(service_config.get("api_key") or ""),
+    prove()
+    token = effect.reserve(
+        {
+            "service_id": normalized_service_id, "provider_voice_id": provider_voice_id,
+            "base_url": base_url, "api_key": str(service_config.get("api_key") or ""),
+            "service": str(service_config.get("name") or service_name),
+        }, baseline, lambda session: prove(session),
     )
-    # As with upload, once the remote side effect starts we reconcile local
-    # state even if cancellation arrives during the request.
-    with context.database.session() as session:
-        voice = session.get(Voice, voice_id)
-        if voice is None:
-            return {
-                "voice_id": voice_id,
-                "service_id": service_id,
-                "provider_voice_id": provider_voice_id,
-                "remote_deleted": remote_deleted,
-                "local_voice_missing": True,
-            }
-        metadata = deepcopy(voice.metadata_json or {})
-        providers = dict(metadata.get("providers") or {})
-        current = dict(providers.get(service_id) or {})
-        if (
-            current.get("voice_id") != provider_voice_id
-            or current.get("endpoint_fingerprint") != current_fingerprint
-        ):
-            raise ValueError(
-                "The provider registration changed while removal was running."
+
+    def before_io() -> None:
+        if cancel_event.is_set():
+            raise ValueError("Voice provider removal was cancelled before dispatch.")
+        effect.dispatch(token, lambda session: prove(session))
+
+    try:
+        remote_deleted = context.tts_providers.delete_voice(
+            normalized_service_id,
+            provider_voice_id,
+            base_url=base_url,
+            service=str(service_config.get("name") or service_name),
+            api_key=str(service_config.get("api_key") or ""),
+            before_io=before_io,
+            allow_environment_credentials=host_allowed,
+        )
+        effect.completed(token, provider_voice_id, remote_deleted=remote_deleted)
+    except Exception:
+        effect.failed(token)
+        raise
+    try:
+        with context.database.immediate_session() as session:
+            _voice_provider_proof(
+                context, payload, "voice.unpublish", workspace_id=workspace_id,
+                voice_id=voice_id, baseline=baseline, session=session,
             )
-        providers.pop(service_id, None)
-        metadata["providers"] = providers
-        voice.metadata_json = metadata
-        voice.revision += 1
-        voice.updated_at = utcnow()
-        next_revision = voice.revision
+            voice = session.get_one(Voice, voice_id)
+            metadata = deepcopy(voice.metadata_json or {})
+            providers = dict(metadata.get("providers") or {})
+            providers.pop(service_id, None)
+            metadata["providers"] = providers
+            voice.metadata_json = metadata
+            voice.revision += 1
+            voice.updated_at = utcnow()
+            result = {
+                "voice_id": voice_id, "service_id": service_id,
+                "provider_voice_id": provider_voice_id, "remote_deleted": remote_deleted,
+                "voice_revision": voice.revision,
+                "cancellation_requested_after_delete": cancel_event.is_set(),
+            }
+            effect.applied(session, token, "removed", result)
+    except Exception as exc:
+        raise VoiceProviderEffectError(
+            "provider_effect_local_not_applied",
+            "Provider removal completed; the local binding was not removed."
+            + (" Its job receipt was retained." if effect.job_id is not None else ""),
+        ) from exc
     progress(1.0, f"{service_name} copy removed")
-    return {
-        "voice_id": voice_id,
-        "service_id": service_id,
-        "provider_voice_id": provider_voice_id,
-        "remote_deleted": remote_deleted,
-        "voice_revision": next_revision,
-        "cancellation_requested_after_delete": cancel_event.is_set(),
-    }
+    _voice_provider_proof(
+        context, payload, "voice.unpublish", workspace_id=workspace_id, voice_id=voice_id,
+    )
+    return result
+
+
+def _require_local_tool_worker() -> None:
+    actor = current_execution_actor.get()
+    if (type(actor) is UserActor and current_job_lease.get() is None
+            or actor is not None and type(actor) not in {UserActor, HostActor}):
+        raise AccessDenied()
+
+
+def _local_tool_worker_workspace(
+    session: Session, payload: dict[str, Any], operation: LocalToolOperation, *,
+    artifact_ids: list[str], session_id: str | None = None,
+    expected_workspace_id: str | None = None,
+) -> str:
+    _require_local_tool_worker()
+    if "workspace_id" in payload:
+        requested = payload["workspace_id"]
+        if not isinstance(requested, str) or not requested:
+            raise ValueError("Voice processing has invalid workspace context.")
+    else:
+        requested = expected_workspace_id
+    proved = require_local_tool_inputs(
+        session, operation, artifact_ids=artifact_ids, session_id=session_id,
+        workspace_id=requested,
+    )
+    if expected_workspace_id is not None and proved != expected_workspace_id:
+        raise ValueError("Voice processing inputs have inconsistent workspace ownership.")
+    return proved
 
 
 def upload_rvc_model(
@@ -960,13 +1318,21 @@ def upload_rvc_model(
     progress: Callable[[float, str | None], None],
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
+    _require_local_tool_worker()
+    pth_artifact_id = str(payload.get("pth_artifact_id") or "").strip()
+    index_artifact_id = str(payload.get("index_artifact_id") or "").strip()
+    with context.database.session() as session:
+        workspace = _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_MODEL_WRITE,
+            artifact_ids=[pth_artifact_id, index_artifact_id],
+        )
+        workspace_id = workspace
     from pandrator.logic import rvc_handler
-
     pth_artifact, pth_path = context._resolve_input(
-        str(payload.get("pth_artifact_id") or "")
+        pth_artifact_id
     )
     index_artifact, index_path = context._resolve_input(
-        str(payload.get("index_artifact_id") or "")
+        index_artifact_id
     )
     if pth_path.suffix.lower() != ".pth":
         raise ValueError("The RVC weights artifact must be a .pth file.")
@@ -975,39 +1341,60 @@ def upload_rvc_model(
     if not rvc_handler.is_rvc_available():
         raise RuntimeError("The RVC service is not available.")
     progress(0.15, "Installing RVC model")
+    with context.database.session() as session:
+        _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_MODEL_WRITE,
+            artifact_ids=[pth_artifact.id, index_artifact.id], expected_workspace_id=workspace_id,
+        )
     model_root = context.paths.models / "rvc"
     model_root.mkdir(parents=True, exist_ok=True)
+    with context.database.session() as session:
+        _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_MODEL_WRITE,
+            artifact_ids=[pth_artifact.id, index_artifact.id], expected_workspace_id=workspace_id,
+        )
     model_name = rvc_handler.upload_rvc_model(
         str(pth_path), str(index_path), str(model_root)
     )
     if cancel_event.is_set():
         return {}
     manifest = model_root / model_name / "pandrator-model.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "kind": "rvc",
-                "model_name": model_name,
-                "weights_artifact_id": pth_artifact.id,
-                "index_artifact_id": index_artifact.id,
-            },
-            indent=2,
+    with context.database.immediate_session() as session:
+        current_workspace = _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_MODEL_WRITE,
+            artifact_ids=[pth_artifact.id, index_artifact.id],
+            expected_workspace_id=workspace_id,
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    artifact = context.artifacts.register(
-        manifest,
-        kind="model",
-        role="rvc_model",
-        parent_ids=[pth_artifact.id, index_artifact.id],
-        metadata={"model_name": model_name},
-    )
+        manifest.write_text(
+            json.dumps(
+                {
+                    "kind": "rvc",
+                    "model_name": model_name,
+                    "weights_artifact_id": pth_artifact.id,
+                    "index_artifact_id": index_artifact.id,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        artifact = context.artifacts.register_in_session(
+            session,
+            manifest,
+            kind="model",
+            role="rvc_model",
+            workspace_id=current_workspace,
+            parent_ids=[pth_artifact.id, index_artifact.id],
+            metadata={"model_name": model_name},
+        )
+        session.flush()
+        artifact_id = artifact.id
+        artifact_path = artifact.relative_path
     progress(1.0, "RVC model ready")
     return {
         "model_name": model_name,
-        "artifact_id": artifact.id,
-        "path": artifact.relative_path,
+        "artifact_id": artifact_id,
+        "path": artifact_path,
     }
 
 
@@ -1017,51 +1404,104 @@ def convert_with_rvc(
     progress: Callable[[float, str | None], None],
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
-    from pydub import AudioSegment
-
+    _require_local_tool_worker()
     from pandrator.logic import rvc_handler
+    from pandrator.logic.local_audio_decode import load_local_audio_segment
 
+    source_artifact_id = str(payload.get("source_artifact_id") or "").strip()
+    requested_session_id = str(payload.get("session_id") or "").strip() or None
+    with context.database.session() as session:
+        workspace = _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_CONVERT,
+            artifact_ids=[source_artifact_id],
+            session_id=requested_session_id,
+        )
+        workspace_id = workspace
     source_artifact, source_path = context._resolve_input(
-        str(payload.get("source_artifact_id") or "")
+        source_artifact_id
     )
-    session_id = str(payload.get("session_id") or "") or source_artifact.session_id
+    session_id = requested_session_id or source_artifact.session_id
     settings = dict(payload.get("settings") or {})
     if not str(settings.get("rvc_model") or "").strip():
         raise ValueError("Select an RVC model before conversion.")
+    with context.database.session() as session:
+        _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_CONVERT,
+            artifact_ids=[source_artifact.id],
+            session_id=session_id,
+            expected_workspace_id=workspace_id,
+        )
     if not rvc_handler.is_rvc_available():
         raise RuntimeError("The RVC service is not available.")
     progress(0.1, "Loading source audio")
-    audio = AudioSegment.from_file(source_path)
+    with context.database.session() as session:
+        _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_CONVERT,
+            artifact_ids=[source_artifact.id], session_id=session_id,
+            expected_workspace_id=workspace_id,
+        )
+    audio = load_local_audio_segment(source_path)
     if cancel_event.is_set():
         return {}
     progress(0.3, "Converting voice with RVC")
+    with context.database.session() as session:
+        _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_CONVERT,
+            artifact_ids=[source_artifact.id], session_id=session_id,
+            expected_workspace_id=workspace_id,
+        )
     converted = rvc_handler.process_with_rvc(
         audio, {**settings, "raise_on_error": True}
     )
+    with context.database.session() as session:
+        _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_CONVERT,
+            artifact_ids=[source_artifact.id],
+            session_id=session_id,
+            expected_workspace_id=workspace_id,
+        )
     destination_dir = (
         context._session_dir(session_id)
         if session_id
-        else context.paths.artifacts / "rvc"
+        else context.paths.artifacts / "rvc" / workspace_id
     )
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination = (
         destination_dir
         / f"{source_path.stem}-rvc-{hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:10]}.wav"
     )
+    with context.database.session() as session:
+        _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_CONVERT,
+            artifact_ids=[source_artifact.id], session_id=session_id,
+            expected_workspace_id=workspace_id,
+        )
     converted.export(destination, format="wav")
-    artifact = context.artifacts.register(
-        destination,
-        kind="audio",
-        role="rvc_audio",
-        session_id=session_id,
-        parent_ids=[source_artifact.id],
-        settings=settings,
-        metadata={"rvc_model": settings["rvc_model"]},
-    )
+    with context.database.immediate_session() as session:
+        current_workspace = _local_tool_worker_workspace(
+            session, payload, LocalToolOperation.RVC_CONVERT,
+            artifact_ids=[source_artifact.id],
+            session_id=session_id,
+            expected_workspace_id=workspace_id,
+        )
+        artifact = context.artifacts.register_in_session(
+            session,
+            destination,
+            kind="audio",
+            role="rvc_audio",
+            session_id=session_id,
+            workspace_id=current_workspace,
+            parent_ids=[source_artifact.id],
+            settings=settings,
+            metadata={"rvc_model": settings["rvc_model"]},
+        )
+        session.flush()
+        artifact_id = artifact.id
+        artifact_path = artifact.relative_path
     progress(1.0, "RVC audio ready")
     return {
-        "artifact_id": artifact.id,
-        "path": artifact.relative_path,
+        "artifact_id": artifact_id,
+        "path": artifact_path,
         "model_name": settings["rvc_model"],
     }
 
@@ -1071,6 +1511,8 @@ def train_xtts(
     progress: Callable[[float, str | None], None],
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
+    with context.database.session() as session:
+        require_training_execution_access(session, payload)
     from pandrator.logic import xtts_trainer_handler
 
     publication_result: dict[str, Any] | None = None
@@ -1180,6 +1622,8 @@ def train_xtts(
             _text_artifact, text_path = context._resolve_input(source_text_id)
             source_text_path = str(text_path)
         progress(0.02, "Validating XTTS trainer")
+        with context.database.session() as session:
+            require_training_execution_access(session, payload)
         success, message = xtts_trainer_handler.start_training(
             {
                 **settings,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Any
 
 from flask import jsonify, request
@@ -9,12 +10,18 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    TypeAdapter,
     ValidationError,
     field_validator,
     model_validator,
 )
 from sqlalchemy.exc import IntegrityError
 
+from .access.folder_policy import (
+    require_folder_inputs,
+    require_folder_replay_scope,
+    require_folder_workspace,
+)
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .project_folders import (
     FolderPromotionConflict,
@@ -29,6 +36,7 @@ from .settings_policy import RevisionConflict
 
 FolderId = Annotated[str, Field(min_length=1, max_length=80)]
 Revision = Annotated[int, Field(strict=True, ge=1)]
+_WORKSPACE_QUERY = TypeAdapter(FolderId | None)
 
 
 class ProjectFolderCreateRequest(BaseModel):
@@ -152,9 +160,18 @@ def project_folder_paths() -> dict[str, dict[str, Any]]:
                 "422": {"description": "Invalid project-folder request"},
             },
         }
+        operation["parameters"] = [
+            {
+                "name": "workspace_id",
+                "in": "query",
+                "required": False,
+                "description": "Owning workspace; defaults to the caller's personal workspace.",
+                "schema": {"type": "string", "minLength": 1, "maxLength": 80},
+            }
+        ]
         if write:
             assert model is not None
-            operation["parameters"] = [
+            operation["parameters"] += [
                 {
                     "name": "Idempotency-Key",
                     "in": "header",
@@ -204,7 +221,14 @@ def register_project_folder_routes(app, context) -> None:
         *,
         status: int = 200,
         resource_id: str | None = None,
+        folder_ids: Sequence[str] = (),
+        session_ids: Sequence[str] = (),
+        existing_folder_ids: Sequence[str] = (),
     ):
+        try:
+            requested_workspace = _WORKSPACE_QUERY.validate_python(request.args.get("workspace_id"))
+        except ValidationError as error:
+            return failure(error)
         try:
             key = services.idempotency.validate_key(
                 request.headers.get("Idempotency-Key")
@@ -213,18 +237,31 @@ def register_project_folder_routes(app, context) -> None:
             return guards.error_response("idempotency_key_required", str(error), 400)
         try:
             with services.database.immediate_session() as session:
+                scope = require_folder_workspace(
+                    session, guards.access_context(), requested_workspace, write=True
+                )
+                require_folder_inputs(
+                    session, scope.id, folder_ids=folder_ids, session_ids=session_ids,
+                    existing_folder_ids=existing_folder_ids,
+                    allow_missing=True,
+                )
+                # Retain legacy personal fingerprints; team scopes cannot alias.
+                scoped_payload = (
+                    {**payload, "workspace_id": scope.id} if scope.kind == "team" else payload
+                )
                 reservation = services.idempotency.begin(
                     session,
                     principal=guards.principal(),
                     operation_id=operation_id,
                     idempotency_key=key,
-                    payload=payload,
+                    payload=scoped_payload,
                 )
                 if reservation.response is not None:
                     result, response_status = reservation.response
+                    require_folder_replay_scope(session, result, scope.id)
                     replayed = True
                 else:
-                    result = action(session)
+                    result = action(session, scope.id)
                     response_status = status
                     replayed = False
                     services.idempotency.complete(
@@ -254,8 +291,13 @@ def register_project_folder_routes(app, context) -> None:
     @app.get("/api/v1/project-folders")
     @require_scope("app.read")
     def project_folders_list():
-        with services.database.snapshot_session() as session:
-            return jsonify(project_folder_snapshot(session))
+        try:
+            requested_workspace = _WORKSPACE_QUERY.validate_python(request.args.get("workspace_id"))
+            with services.database.snapshot_session() as session:
+                scope = require_folder_workspace(session, guards.access_context(), requested_workspace)
+                return jsonify(project_folder_snapshot(session, workspace_id=scope.id))
+        except (KeyError, ValidationError) as error:
+            return failure(error)
 
     @app.post("/api/v1/project-folders")
     @require_scope("app.write")
@@ -267,8 +309,11 @@ def register_project_folder_routes(app, context) -> None:
         return mutate(
             "createProjectFolder",
             payload,
-            lambda session: create_project_folder(session, **payload),
+            lambda session, workspace_id: create_project_folder(
+                session, workspace_id=workspace_id, **payload
+            ),
             status=201,
+            folder_ids=(body.parent_id,) if body.parent_id is not None else (),
         )
 
     @app.patch("/api/v1/project-folders/<folder_id>")
@@ -282,7 +327,7 @@ def register_project_folder_routes(app, context) -> None:
         return mutate(
             "updateProjectFolder",
             payload,
-            lambda session: update_project_folder(
+            lambda session, _workspace_id: update_project_folder(
                 session,
                 folder_id,
                 expected_revision=body.expected_revision,
@@ -292,6 +337,8 @@ def register_project_folder_routes(app, context) -> None:
                 change_parent="parent_id" in fields,
             ),
             resource_id=folder_id,
+            existing_folder_ids=(folder_id,),
+            folder_ids=(body.parent_id,) if body.parent_id is not None else (),
         )
 
     @app.delete("/api/v1/project-folders/<folder_id>")
@@ -304,12 +351,13 @@ def register_project_folder_routes(app, context) -> None:
         return mutate(
             "deleteProjectFolder",
             payload,
-            lambda session: delete_project_folder(
+            lambda session, _workspace_id: delete_project_folder(
                 session,
                 folder_id,
                 expected_revision=body.expected_revision,
             ),
             resource_id=folder_id,
+            existing_folder_ids=(folder_id,),
         )
 
     @app.put("/api/v1/project-folders/<folder_id>/projects")
@@ -322,13 +370,15 @@ def register_project_folder_routes(app, context) -> None:
         return mutate(
             "replaceProjectFolderProjects",
             payload,
-            lambda session: replace_folder_projects(
+            lambda session, _workspace_id: replace_folder_projects(
                 session,
                 folder_id,
                 expected_revision=body.expected_revision,
                 project_ids=body.project_ids,
             ),
             resource_id=folder_id,
+            existing_folder_ids=(folder_id,),
+            session_ids=body.project_ids,
         )
 
     @app.put("/api/v1/sessions/<session_id>/project-folders")
@@ -341,10 +391,12 @@ def register_project_folder_routes(app, context) -> None:
         return mutate(
             "replaceSessionProjectFolders",
             payload,
-            lambda session: set_session_project_folders(
+            lambda session, _workspace_id: set_session_project_folders(
                 session,
                 session_id,
                 folder_ids=body.folder_ids,
                 expected_revisions=body.expected_revisions,
             ),
+            session_ids=(session_id,),
+            folder_ids=tuple(set(body.folder_ids) | body.expected_revisions.keys()),
         )

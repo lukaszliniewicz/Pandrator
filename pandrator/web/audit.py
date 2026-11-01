@@ -13,7 +13,17 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
 
+from .access.contracts import AccessContext
+from .accounts.actor_models import AuditActorRecord
+from .accounts.execution_actor import (
+    ExecutionActor,
+    UserActor,
+    actor_from_principal,
+    actor_from_storage,
+    actor_to_storage,
+)
 from .auth import Principal
 from .credentials import SecretRedactor
 from .database import Database, is_sqlite_busy
@@ -67,6 +77,45 @@ class AuditService:
         self.maximum_events = max(1_000, int(maximum_events))
         self.retention_days = max(1, int(retention_days))
 
+    def record_command_in_session(
+        self,
+        session: Session,
+        context: AccessContext,
+        *,
+        action: str,
+        workspace_id: str,
+        metadata: dict[str, str | int | bool | None],
+        resource_kind: str = "workspace",
+    ) -> None:
+        """Commit governance evidence atomically with its authorized mutation."""
+        if type(context) is not AccessContext:
+            raise TypeError("An access context is required.")
+        allowed = {
+            "user_id", "invitation_id", "role", "state", "revision",
+            "expected_revision", "invited_by_user_id", "mode",
+            "source_project_id", "destination_workspace_id", "fingerprint", "job_id",
+        }
+        if set(metadata) - allowed or any(
+            value is not None and type(value) not in (str, int, bool)
+            for value in metadata.values()
+        ):
+            raise ValueError("Command audit metadata must be content-free.")
+        actor = context.actor
+        event = AuditEvent(
+            request_id=f"command:{uuid.uuid4()}",
+            principal_subject=actor.subject,
+            principal_kind=actor.principal_kind,
+            scopes_json=sorted(actor.scopes),
+            action=action[:160], method="COMMAND", path="",
+            resource_kind=resource_kind, resource_id=workspace_id,
+            outcome="succeeded", status_code=200, duration_ms=0,
+            metadata_json=dict(metadata), created_at=utcnow(),
+        )
+        session.add(event)
+        session.flush([event])
+        self._add_actor(session, event.id, actor)
+        session.flush()
+
     def record(
         self,
         *,
@@ -93,6 +142,7 @@ class AuditService:
             else "failed"
         )
         supplied_metadata = metadata if isinstance(metadata, dict) else {}
+        actor = actor_from_principal(principal)
         safe_metadata: dict[str, Any] = {}
         for key in AUDIT_METADATA_KEYS:
             if key not in supplied_metadata:
@@ -125,32 +175,51 @@ class AuditService:
             created_at=utcnow(),
         )
         try:
-            with self.database.session(busy_timeout_ms=AUDIT_WRITE_TIMEOUT_MS) as session:
+            with self.database.immediate_session(busy_timeout_ms=AUDIT_WRITE_TIMEOUT_MS) as session:
                 session.add(event)
                 session.flush()
+                self._add_actor(session, event.id, actor)
                 if event.id % 100 == 0:
                     self._prune_in_session(session)
         except Exception as error:
             if not is_sqlite_busy(error):
                 raise
-            self._spool(event)
+            self._spool(event, actor)
             _LOGGER.warning("Audit writer busy; event saved to pending audit spool")
         else:
             self._drain_pending(
                 limit=AUDIT_RECORD_REPLAY_LIMIT,
                 budget_ms=AUDIT_RECORD_REPLAY_BUDGET_MS,
+                # Replay is opportunistic after the current event has committed.
+                busy_timeout_ms=0,
             )
 
     @property
     def _pending_dir(self) -> Path:
         return self.database.path.parent / "audit-pending"
 
-    def _spool(self, event: AuditEvent) -> None:
+    @staticmethod
+    def _add_actor(
+        session: Session, event_id: int, actor: ExecutionActor | None
+    ) -> None:
+        stored = actor_to_storage(actor)
+        if stored is not None:
+            session.add(AuditActorRecord(audit_event_id=event_id, **stored))
+
+    @staticmethod
+    def _read_actor(record: AuditActorRecord) -> ExecutionActor:
+        actor = actor_from_storage(record.user_id, record.auth_revision, record.context_json)
+        if actor is None:
+            raise ValueError("The saved audit actor is invalid.")
+        return actor
+
+    def _spool(self, event: AuditEvent, actor: ExecutionActor | None = None) -> None:
         pending = self._pending_dir
         pending.mkdir(mode=0o700, parents=True, exist_ok=True)
         pending.chmod(0o700)
         spool_id = str(uuid.uuid4())
         payload = {field: getattr(event, field) for field in _EVENT_FIELDS}
+        payload["actor"] = actor_to_storage(actor)
         payload["metadata_json"] = {**payload["metadata_json"], "spool_id": spool_id}
         payload["created_at"] = event.created_at.isoformat()
         destination = pending / f"{spool_id}.json"
@@ -174,7 +243,11 @@ class AuditService:
             temporary.unlink(missing_ok=True)
 
     def _drain_pending(
-        self, *, limit: int = AUDIT_REPLAY_LIMIT, budget_ms: int | None = None
+        self,
+        *,
+        limit: int = AUDIT_REPLAY_LIMIT,
+        budget_ms: int | None = None,
+        busy_timeout_ms: int = AUDIT_WRITE_TIMEOUT_MS,
     ) -> None:
         deadline = time.monotonic() + budget_ms / 1000 if budget_ms is not None else None
         pending = self._pending_dir
@@ -194,6 +267,16 @@ class AuditService:
                     raise ValueError("Pending audit spool ID mismatch")
                 event_data = {field: payload[field] for field in _EVENT_FIELDS}
                 event_data["created_at"] = datetime.fromisoformat(payload["created_at"])
+                stored_actor = payload.get("actor")
+                actor = None
+                if stored_actor is not None:
+                    if not isinstance(stored_actor, dict) or set(stored_actor) != {
+                        "user_id", "auth_revision", "context_json"
+                    }:
+                        raise ValueError("Invalid pending audit actor")
+                    actor = actor_from_storage(**stored_actor)
+                    if actor is None:
+                        raise ValueError("Invalid pending audit actor")
                 remaining_ms = (
                     max(0, int((deadline - time.monotonic()) * 1000))
                     if deadline is not None
@@ -202,7 +285,7 @@ class AuditService:
                 if remaining_ms == 0:
                     break
                 with self.database.immediate_session(
-                    busy_timeout_ms=min(AUDIT_WRITE_TIMEOUT_MS, remaining_ms)
+                    busy_timeout_ms=min(busy_timeout_ms, remaining_ms)
                 ) as session:
                     existing = session.scalar(
                         select(AuditEvent.id)
@@ -210,7 +293,19 @@ class AuditService:
                         .limit(1)
                     )
                     if existing is None:
-                        session.add(AuditEvent(**event_data))
+                        event = AuditEvent(**event_data)
+                        session.add(event)
+                        session.flush()
+                        self._add_actor(session, event.id, actor)
+                    else:
+                        stored = session.get(AuditActorRecord, existing)
+                        existing_actor = (
+                            self._read_actor(stored)
+                            if stored is not None
+                            else None
+                        )
+                        if actor_to_storage(existing_actor) != actor_to_storage(actor):
+                            raise ValueError("Pending audit actor does not match the saved event")
                 if deadline is not None and time.monotonic() >= deadline:
                     break
                 path.unlink(missing_ok=True)
@@ -259,6 +354,16 @@ class AuditService:
             if principal_subject:
                 statement = statement.where(AuditEvent.principal_subject == principal_subject)
             events = list(session.scalars(statement.limit(bounded_limit)).all())
+            actors: dict[int, ExecutionActor] = {}
+            if events:
+                actors = {
+                    record.audit_event_id: self._read_actor(record)
+                    for record in session.scalars(
+                        select(AuditActorRecord).where(
+                            AuditActorRecord.audit_event_id.in_([event.id for event in events])
+                        )
+                    ).all()
+                }
             return [
                 {
                     "id": event.id,
@@ -266,6 +371,7 @@ class AuditService:
                     "traceparent": event.traceparent,
                     "principal_subject": event.principal_subject,
                     "principal_kind": event.principal_kind,
+                    **self._actor_fields(actors.get(event.id)),
                     "scopes": list(event.scopes_json or []),
                     "action": event.action,
                     "method": event.method,
@@ -287,3 +393,14 @@ class AuditService:
                 }
                 for event in events
             ]
+
+    @staticmethod
+    def _actor_fields(actor: ExecutionActor | None) -> dict[str, Any]:
+        user = actor if isinstance(actor, UserActor) else None
+        return {
+            "user_id": user.user_id if user else None,
+            "auth_revision": user.auth_revision if user else None,
+            "token_id": user.token_id if user else None,
+            "browser_session_id": user.browser_session_id if user else None,
+            "client_id": user.client_id if user else None,
+        }

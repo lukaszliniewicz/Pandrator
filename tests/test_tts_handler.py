@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 import requests
 
 from pandrator.logic import (
@@ -1763,6 +1764,7 @@ class TTSHandlerTests(unittest.TestCase):
             tts_handler.normalize_chatterbox_language_code("vi-VN"), "vi-vn"
         )
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_kobold_qwen_payload_construction(self):
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
@@ -1849,6 +1851,7 @@ class TTSHandlerTests(unittest.TestCase):
                     capabilities,
                 )
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_kobold_qwen_batch_stream_returns_completed_and_failed_items(self):
         response = MagicMock(status_code=200)
         response.__enter__.return_value = response
@@ -1927,6 +1930,7 @@ class TTSHandlerTests(unittest.TestCase):
         )
         self.assertTrue(post.call_args.kwargs["stream"])
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_kobold_qwen_forwards_generation_prompt_only_to_custom_voice(self):
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
@@ -1972,6 +1976,7 @@ class TTSHandlerTests(unittest.TestCase):
                 "http://localhost:8042",
             )
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_kobold_qwen_current_model_overrides_stale_legacy_alias(self):
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200

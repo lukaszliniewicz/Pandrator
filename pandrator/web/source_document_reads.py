@@ -6,14 +6,20 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .accounts.execution_actor import UserActor, current_execution_actor
 from .database import Database
 from .http_serialization import model_payload as _model_dict
+from .model_base import as_utc
 from .models import Artifact, Document, DocumentRevision, Segment, SessionRecord, TimedWord
 
 
 def list_session_documents(database: Database, session_id: str) -> dict[str, Any]:
     with database.session() as db_session:
-        if db_session.get(SessionRecord, session_id) is None:
+        actor = current_execution_actor.get()
+        require_current_session_access(db_session, session_id, ProjectAction.READ)
+        if type(actor) is not UserActor and db_session.get(SessionRecord, session_id) is None:
             raise KeyError(session_id)
         documents = list(
             db_session.scalars(
@@ -59,7 +65,7 @@ def list_session_documents(database: Database, session_id: str) -> dict[str, Any
                         "parent_revision_id": revision.parent_revision_id,
                         "reviewed": revision.reviewed,
                         "content_hash": revision.content_hash,
-                        "created_at": revision.created_at.isoformat(),
+                        "created_at": as_utc(revision.created_at).isoformat(),
                         "segment_count": int(segment_count or 0),
                         "duration_ms": int(duration_ms or 0),
                         "artifact": _model_dict(
@@ -86,7 +92,7 @@ def list_session_documents(database: Database, session_id: str) -> dict[str, Any
                     "stage": document.stage,
                     "language": document.language,
                     "active_revision_id": document.active_revision_id,
-                    "created_at": document.created_at.isoformat(),
+                    "created_at": as_utc(document.created_at).isoformat(),
                     "revisions": revision_items,
                 }
             )
@@ -97,8 +103,19 @@ def list_revision_words(
     database: Database, revision_id: str, *, cursor: int, limit: int
 ) -> dict[str, Any]:
     with database.session() as db_session:
-        if db_session.get(DocumentRevision, revision_id) is None:
-            raise KeyError(revision_id)
+        actor = current_execution_actor.get()
+        if actor is None:
+            if db_session.get(DocumentRevision, revision_id) is None:
+                raise KeyError(revision_id)
+        else:
+            session_id = db_session.scalar(
+                select(Document.session_id)
+                .join(DocumentRevision, DocumentRevision.document_id == Document.id)
+                .where(DocumentRevision.id == revision_id)
+            )
+            if session_id is None:
+                raise KeyError(revision_id)
+            require_current_session_access(db_session, session_id, ProjectAction.READ)
         rows = list(
             db_session.scalars(
                 select(TimedWord)

@@ -1,5 +1,13 @@
 """Public MCP input schemas."""
 
+from .accounts import (
+    ACCOUNT_INPUT_MODELS,
+    CreateUserInput,
+    IssueUserPasswordResetInput,
+    ListUsersInput,
+    UpdateUserInput,
+    UserAccountChanges,
+)
 from .audiobook import (
     AUDIOBOOK_INPUT_MODELS,
     ApplySpeechSelectionInput,
@@ -37,6 +45,7 @@ from .e2e import (
     ListGenerationRunsInput,
     PlanExportVariantInput,
     TtsCatalogInput,
+    TtsCatalogRefreshInput,
 )
 from .generation import (
     AdoptSubtitleSourceInput,
@@ -124,12 +133,20 @@ from .performance import (
     RenewPerformanceBatchInput,
     SubmitPerformanceBatchInput,
 )
+from .project_copy import (
+    PROJECT_COPY_INPUT_MODELS,
+    CopyCurrentProjectInput,
+    GetProjectCopyInput,
+    PreviewProjectCopyInput,
+)
+from .project_sharing import PROJECT_SHARING_INPUT_MODELS
 from .pronunciations import (
     CreatePronunciationInput,
     DeletePronunciationInput,
     ListPronunciationsInput,
     UpdatePronunciationInput,
 )
+from .public_links import PUBLIC_LINK_INPUT_MODELS
 from .recommendations import RecommendNextStepsInput
 from .session_branches import (
     SESSION_BRANCH_INPUT_MODELS,
@@ -226,6 +243,7 @@ from .voice_lifecycle import (
     PublishVoiceInput,
     ReviewVoiceTranscriptInput,
     TranscribeVoiceSampleInput,
+    UnpublishVoiceInput,
     UpdateCatalogVoiceMetadataInput,
     UpdateVoiceCollectionInput,
     VoiceCatalogCapabilitiesInput,
@@ -262,9 +280,15 @@ from .workflow_inputs import (
     GetWorkflowInputsInput,
     SelectWorkflowInputInput,
 )
+from .workspaces import WORKSPACE_INPUT_MODELS
 
 TOOL_INPUT_MODELS = (
     GetGenerationOperationInput, GetGenerationRunCoverageInput,
+    *ACCOUNT_INPUT_MODELS,
+    *WORKSPACE_INPUT_MODELS,
+    *PROJECT_COPY_INPUT_MODELS,
+    *PROJECT_SHARING_INPUT_MODELS,
+    *PUBLIC_LINK_INPUT_MODELS,
     ListPronunciationsInput, CreatePronunciationInput,
     UpdatePronunciationInput, DeletePronunciationInput,
     ComparisonExportInput,
@@ -322,6 +346,7 @@ TOOL_INPUT_MODELS = (
     TranscribeVoiceSampleInput,
     ReviewVoiceTranscriptInput,
     PublishVoiceInput,
+    UnpublishVoiceInput,
     ListVoiceCollectionsInput,
     CreateVoiceCollectionInput,
     UpdateVoiceCollectionInput,
@@ -347,6 +372,7 @@ TOOL_INPUT_MODELS = (
     ListGenerationRunsInput,
     PlanExportVariantInput,
     TtsCatalogInput,
+    TtsCatalogRefreshInput,
     UpdateSessionInput,
     AttachExistingSourceInput,
     UpdateSessionSettingsInput,
@@ -412,6 +438,19 @@ TOOL_INPUT_MODELS = (
 )
 
 __all__ = [
+    "WORKSPACE_INPUT_MODELS",
+    "PROJECT_COPY_INPUT_MODELS",
+    "CopyCurrentProjectInput",
+    "GetProjectCopyInput",
+    "PreviewProjectCopyInput",
+    "PROJECT_SHARING_INPUT_MODELS",
+    "PUBLIC_LINK_INPUT_MODELS",
+    "ACCOUNT_INPUT_MODELS",
+    "CreateUserInput",
+    "IssueUserPasswordResetInput",
+    "ListUsersInput",
+    "UpdateUserInput",
+    "UserAccountChanges",
     "PatchSubtitlePassagesInput",
     "PreviewSubtitlePassagesInput",
     "GetGenerationOperationInput", "GetGenerationRunCoverageInput",
@@ -584,6 +623,7 @@ __all__ = [
     "MediaEditDispatchResultInput",
     "TargetStatusInput",
     "TtsCatalogInput",
+    "TtsCatalogRefreshInput",
     "Base64TranscriptionSource",
     "CancelTranscriptionInput",
     "DeleteTranscriptionInput",
@@ -619,6 +659,7 @@ __all__ = [
     "TranscribeVoiceSampleInput",
     "ReviewVoiceTranscriptInput",
     "PublishVoiceInput",
+    "UnpublishVoiceInput",
     "ListVoiceCollectionsInput",
     "CreateVoiceCollectionInput",
     "UpdateVoiceCollectionInput",

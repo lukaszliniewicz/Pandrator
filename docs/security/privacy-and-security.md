@@ -1,15 +1,14 @@
 # Privacy and security
 
-Pandrator is local-first, not magically private under every configuration.
-Where data goes depends on the service selected for each stage and on how the
-installation is exposed. Review those boundaries before processing sensitive
-documents, media, or voice samples.
+Pandrator stores projects locally. Where their contents are processed depends
+on the service selected for each stage and on how the installation is exposed.
+Check those choices before processing sensitive documents, media or voice samples.
 
 ## Data-flow overview
 
 | Action | Data involved | Where it can go |
 | --- | --- | --- |
-| Local transcription | Source audio/video processing copy | Local CrispASR service and local storage |
+| Local transcription | Source audio/video processing copy | Configured local transcription service and local storage |
 | Local TTS | Speech text, settings, local voice reference | Local TTS service and local storage |
 | Cloud LLM correction/translation | Selected subtitle or document batches, instructions, glossary, request metadata | Configured LLM provider |
 | DeepL translation | Selected text and request metadata | DeepL |
@@ -42,7 +41,8 @@ arguments, or non-secret target configuration.
 ## Network exposure
 
 Local application and recovery interfaces bind to loopback by default. Remote
-access is opt-in and requires owner authentication. Prefer a VPN or stable
+access is opt-in. Ordinary access requires account authentication; optional
+project links provide scoped visitor access. Prefer a VPN or stable
 HTTPS reverse proxy. Configure exact public origins, trusted hosts, and the
 actual proxy-hop count. Restrict any non-loopback listener with host firewall
 or platform network policy.
@@ -50,8 +50,35 @@ or platform network policy.
 Plain HTTP is only for an explicitly accepted private-network topology and an
 exact restricted CIDR. It is not appropriate for public Internet access.
 
-Pandrator is a single-owner system. Do not expose it as a general public
-multi-user service or treat owner credentials as tenant isolation.
+Pandrator defaults to Solo. An Administrator can explicitly enable named
+accounts and shared workspaces for a small team. Each person uses their own
+account and each assistant needs its own approved resources/scopes; sharing an
+Owner password, local Manager credential or managed MCP bearer does not create
+separate user identities. This is a small-team application, not a public
+self-registration or untrusted multi-tenant hosting service.
+
+Workspace membership governs team content; instance Administrator status does
+not grant blanket access to private content. Workspace Members can edit/process/
+export ordinary shared content; Managers additionally govern membership. Only
+instance Administrators can acquire missing models or manage accounts. Personal
+credentials and libraries do not silently become shared through a project copy.
+Read [Solo, accounts and workspaces](../guides/collaboration.md) for setup,
+read-only Can view grants, revocation and recovery.
+
+## Optional project links
+
+Public links are disabled by default. An Administrator can enable them in
+Application settings. A project owner or workspace Manager can then issue a
+time-limited link for project management or translation review. Treat the full
+URL as a credential and send it privately.
+
+A management link allows processing with the project's configured resources,
+which can incur provider charges. A translation-review link exposes only its
+pinned translation and saves proposed corrections; an authorized project editor
+must inspect and accept them before they become the selected translation.
+Visitors use separate browser credentials and do not sign in as the owner.
+See [project links and translation review](../guides/project-links.md) for exact
+permissions, revocation and draft recovery.
 
 ## MCP boundary
 
@@ -71,8 +98,9 @@ Pandrator HTTPS target rather than publishing the loopback MCP service.
 
 Application and app-down Manager recovery use separate audiences and
 credentials. The Manager's permanent local bearer remains on the target host.
-Every mutation uses an idempotency key; consequential Manager work is based on
-an immutable reviewed plan.
+Use a stable idempotency key when the operation supports one. Before retrying
+an uncertain write without a key, inspect whether it already succeeded.
+Consequential Manager work uses an immutable reviewed plan.
 
 The host model sees subtitle content when it claims a passive batch. Whether
 that model runs locally or sends prompts to a provider is controlled by the

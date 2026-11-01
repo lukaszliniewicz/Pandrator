@@ -22,12 +22,13 @@ def comparison_export_paths() -> dict:
                 "description": (
                     "Queue one reusable WAV or MP3 from the ordered selected speech takes. "
                     "Recast sides use their pinned before/after takes. The separately assembled "
-                    "sound mix is excluded."
+                    "sound mix is excluded. Requires current permission to read and run "
+                    "the session."
                 ),
                 "security": [
                     {"cookieAuth": []},
                     {"bearerToken": []},
-                    {"nativeOAuth": ["app.run"]},
+                    {"nativeOAuth": ["app.read", "app.run"]},
                 ],
                 "parameters": [
                     {
@@ -64,7 +65,7 @@ def comparison_export_paths() -> dict:
                     },
                     "400": {"description": "An idempotency key is required or invalid."},
                     "401": {"description": "Authentication required."},
-                    "403": {"description": "The authenticated actor lacks app.run."},
+                    "403": {"description": "Current session processing permission or a required scope is missing."},
                     "404": {"description": "The session, run, segment, or artifact was not found."},
                     "409": {"description": "The idempotency key conflicts or is still in progress."},
                     "422": {"description": "The selection, source audio, or export options are invalid."},

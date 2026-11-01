@@ -27,6 +27,11 @@
   } from '$lib/library-display';
   import type { PreviewableArtifact } from '$lib/artifact-display';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
+  import { untrack } from 'svelte';
+  import { appState } from '$lib/app-state.svelte';
+  const workspaceId = untrack(() =>
+    appState.collaborationEnabled ? appState.activeWorkspaceId : undefined
+  );
   let sources = $state<SourceAsset[]>([]);
   let search = $state('');
   let category = $state('');
@@ -76,7 +81,7 @@
     loading = true;
     error = '';
     try {
-      const result = await sourceApi.list(showTrash, true);
+      const result = await sourceApi.list(showTrash, true, workspaceId);
       if (current === request) {
         sources = result.items;
         references = {};
@@ -117,7 +122,12 @@
     uploading = true;
     error = '';
     try {
-      await uploadManagedFile(file, undefined, (value) => (progress = value));
+      await uploadManagedFile(
+        file,
+        undefined,
+        (value) => (progress = value),
+        workspaceId
+      );
       message = 'Reusable source added.';
       await load();
     } catch (caught) {

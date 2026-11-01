@@ -26,8 +26,15 @@ from .generation_subtitles import (
     derive_display_subtitle_artifact,
 )
 from .models import Artifact, new_id
+from .output_storage import estimated_pcm_bytes, reserve_output_space
 from .sound_workflow_outputs import render_output_sounds
-from .workflow_output_context import OutputWorkflowContext
+from .workflow_output_context import (
+    OutputWorkflowContext,
+    check_output_io,
+    output_io_options,
+    publish_output,
+    require_output_access,
+)
 
 
 def export(
@@ -53,6 +60,7 @@ def export(
         # Compatibility for direct/legacy worker calls. Queued exports always
         # carry the snapshot, including an explicit None.
         with context.database.session() as session:
+            require_output_access(context, session)
             payload = {
                 **payload,
                 "display_subtitle_snapshot": capture_display_subtitle_snapshot(
@@ -67,6 +75,18 @@ def export(
     record = inputs.record
     output_settings_snapshot = inputs.output_settings_snapshot
     output_dir = context._session_dir(session_id) / "exports"
+    caption_inputs = {
+        item.id: item for role, item in inputs.by_role.items()
+        if role in {"correction", "media_edit_subtitles", "transcription", "translation"}
+    }
+    caption_inputs.update({item.id: item for item in inputs.attached_sources
+                           if Path(item.relative_path).suffix.lower() in {".srt", ".vtt"}})
+    if caption_inputs:
+        check_output_io(context)
+        caption_bytes = sum(int(item.size_bytes) if item.size_bytes is not None else
+                            context._resolve_input(item.id)[1].stat().st_size
+                            for item in caption_inputs.values())
+        reserve_output_space(context, output_dir, 4 * caption_bytes + 65536, label="captions")
     output_dir.mkdir(parents=True, exist_ok=True)
     # New exports are grouped by kind so the Output tab stays readable.
     # Legacy files keep their recorded flat paths; only destinations
@@ -80,6 +100,7 @@ def export(
     subtitle_provenance = payload.get("subtitle_settings_provenance")
 
     def track_diagnostics(item: Artifact, source: Path, final: Path, language: str) -> dict[str, Any]:
+        check_output_io(context)
         return subtitle_file_diagnostics(
             source, final, settings,
             subtitle_provenance if isinstance(subtitle_provenance, dict) else None,
@@ -128,10 +149,13 @@ def export(
             audio_dir / f"{export_name}{audio_path.suffix.lower()}"
         )
         progress(0.25, "Copying assembled audiobook")
+        check_output_io(context)
+        reserve_output_space(context, destination.parent, audio_path.stat().st_size + 65536,
+                             label="audiobook export")
         shutil.copy2(audio_path, destination)
         progress(0.9, "Registering audiobook export")
         produced.append(
-            context.artifacts.register(
+            publish_output(context,
                 destination,
                 kind="export",
                 role="export",
@@ -164,6 +188,7 @@ def export(
                 raise RuntimeError(
                     "FFprobe is required to verify the requested source soundtrack."
                 )
+            check_output_io(context)
             try:
                 source_has_audio = media_has_audio_stream(
                     source_media_path,
@@ -242,12 +267,14 @@ def export(
                     # conversion, write, or registration fails.
                     scratch = _finalize_track_scratch(track_name)
                     try:
+                        check_output_io(context)
                         finalize_srt_file(subtitle_path, scratch, {**settings, "subtitle_language": track_details(item)[1]})
                         diagnostics = track_diagnostics(item, subtitle_path, scratch, language)
                         if export_mode == "text":
                             destination = context.artifacts.next_available_path(
                                 subtitle_dir / f"{export_name}_{track_name}.txt"
                             )
+                            check_output_io(context)
                             destination.write_text(
                                 concatenate_subtitle_text(
                                     scratch.read_text(encoding="utf-8-sig")
@@ -260,6 +287,7 @@ def export(
                             destination = context.artifacts.next_available_path(
                                 subtitle_dir / f"{export_name}_{track_name}.vtt"
                             )
+                            check_output_io(context)
                             destination.write_text(
                                 srt_to_vtt(
                                     scratch.read_text(encoding="utf-8-sig")
@@ -268,7 +296,7 @@ def export(
                             )
                             kind = subtitle_format
                             role = f"export_subtitle_{track_name}"
-                        exported = context.artifacts.register(
+                        exported = publish_output(context,
                                 destination,
                                 kind=kind,
                                 role=role,
@@ -292,11 +320,12 @@ def export(
                     destination = context.artifacts.next_available_path(
                         subtitle_dir / f"{export_name}_{track_name}.srt"
                     )
+                    check_output_io(context)
                     finalize_srt_file(subtitle_path, destination, {**settings, "subtitle_language": language})
                     diagnostics = track_diagnostics(item, subtitle_path, destination, language)
                     kind = subtitle_format
                     role = f"export_subtitle_{track_name}"
-                    exported = context.artifacts.register(
+                    exported = publish_output(context,
                             destination,
                             kind=kind,
                             role=role,
@@ -365,9 +394,10 @@ def export(
                 destination = context.artifacts.next_available_path(
                     subtitle_dir / f"{export_name}_{track_name}.srt"
                 )
+                check_output_io(context)
                 finalize_srt_file(subtitle_path, destination, {**settings, "subtitle_language": language})
                 diagnostics = track_diagnostics(item, subtitle_path, destination, language)
-                exported = context.artifacts.register(
+                exported = publish_output(context,
                         destination,
                         kind="srt",
                         role=f"export_subtitle_{track_name}",
@@ -399,9 +429,12 @@ def export(
                 destination = context.artifacts.next_available_path(
                     audio_dir / f"{export_name}{source_audio_path.suffix.lower()}"
                 )
+                check_output_io(context)
+                reserve_output_space(context, destination.parent, source_audio_path.stat().st_size + 65536,
+                                     label="source audio export")
                 shutil.copy2(source_audio_path, destination)
                 produced.append(
-                    context.artifacts.register(
+                    publish_output(context,
                         destination,
                         kind="export",
                         role="export_source_audio",
@@ -441,6 +474,16 @@ def export(
                         ffmpeg_executable=ffmpeg_executable,
                     )
                     progress(0.7, "Mixing standalone audio")
+                    check_output_io(context)
+                    from .soundtrack_export import probe_soundtrack_media
+
+                    reference_probe = probe_soundtrack_media(
+                        source_audio_path, **output_io_options(context)
+                    )
+                    speech_probe = probe_soundtrack_media(item_path, **output_io_options(context))
+                    reserve_output_space(context, destination.parent, 2 * estimated_pcm_bytes(
+                        max(reference_probe["duration"], speech_probe["duration"]) * 1000,
+                    ), label="standalone audio mix")
                     subprocess.run(
                         command, check=True, capture_output=True, text=True
                     )
@@ -452,11 +495,14 @@ def export(
                     destination = context.artifacts.next_available_path(
                         audio_dir / f"{export_name}{item_path.suffix.lower()}"
                     )
+                    check_output_io(context)
+                    reserve_output_space(context, destination.parent, item_path.stat().st_size + 65536,
+                                         label="generated audio export")
                     shutil.copy2(item_path, destination)
                     parents = [dubbing_audio.id]
                     role = f"export_{dubbing_audio.role}"
                 produced.append(
-                    context.artifacts.register(
+                    publish_output(context,
                         destination,
                         kind="export",
                         role=role,
@@ -471,6 +517,7 @@ def export(
                     "No subtitle or audio artifact is available to export."
                 )
     with context.database.session() as session:
+        require_output_access(context, session)
         for produced_artifact in produced:
             managed = session.get(Artifact, produced_artifact.id)
             if managed is None:

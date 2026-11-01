@@ -63,7 +63,8 @@ function fixture(key = 'translate') {
   const env = {
     structuredClone,
     $state: { snapshot: (value) => value },
-    session: { id: 'fixture' },
+    session: { id: 'fixture', workspace_id: 'fixture-workspace' },
+    canManageDefaults: true,
     outcome: { revision: 7, value: { transformations: {} } },
     settingsStage: { key, enabled: true },
     settingsOpening: 1,
@@ -86,6 +87,8 @@ function fixture(key = 'translate') {
     ttsSwitchSource: null,
     translationSourceArtifactId: 'source',
     sourcePassages: { customized: false, valid: true },
+    narrationPackingValid: true,
+    notifySessionFlowChange() {},
     model: 'default',
     backend: 'llm',
     targetLanguage: 'en',
@@ -208,6 +211,7 @@ for (const fail of [false, true]) {
   const save = f.env.saveSettings('defaults');
   await f.started.promise;
   assert.equal(f.defaults[0][1], 3, 'global revision belongs to opening');
+  assert.equal(f.defaults[0][3], 'fixture-workspace');
   assert.equal(f.writes[0][2], 4);
   assert.equal('source_artifact_id' in f.defaults[0][2], false);
   f.pending.reject(new Error('Session settings conflict'));

@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
+from .access.current_session_policy import require_current_session_access
+from .access.sound_execution_policy import (
+    require_sound_input_access,
+    require_sound_processing_session,
+)
 from .artifacts import sha256_file
 from .database import Database
 from .jobs import JobQueue
@@ -31,12 +36,21 @@ def find_verified_mix_cache(
     paths: DataPaths,
     session_id: str,
     request_fingerprint: str,
+    *,
+    before_io: Callable[[], None] | None = None,
+    authorization_guard: Callable[[Session], None] | None = None,
+    authorize_input: Callable[[Session, str], None] | None = None,
 ) -> VerifiedMixCache | None:
     """Read one exact current cache candidate and verify its managed file."""
 
     with database.snapshot_session() as session:
-        artifact = session.scalar(
-            select(Artifact)
+        if authorization_guard is not None:
+            with session.no_autoflush:
+                authorization_guard(session)
+        else:
+            require_sound_processing_session(session, session_id)
+        identifier = session.scalar(
+            select(Artifact.id)
             .where(
                 Artifact.session_id == session_id,
                 Artifact.role == "sound_mix.audio",
@@ -48,6 +62,14 @@ def find_verified_mix_cache(
             .order_by(Artifact.created_at.desc(), Artifact.id.desc())
             .limit(1)
         )
+        if identifier is None:
+            return None
+        if authorize_input is not None:
+            with session.no_autoflush:
+                authorize_input(session, identifier)
+        else:
+            require_sound_input_access(session, session_id, identifier)
+        artifact = session.get(Artifact, identifier)
         if artifact is None or not artifact.content_hash:
             return None
         content = {
@@ -55,16 +77,31 @@ def find_verified_mix_cache(
             "relative_path": artifact.relative_path,
             "content_hash": artifact.content_hash,
         }
+    if before_io is not None:
+        before_io()
     try:
         path = paths.managed_path(content["relative_path"])
-        if not path.is_file() or sha256_file(path) != content["content_hash"]:
+        if not path.is_file():
+            return None
+    except (OSError, ValueError):
+        return None
+    if before_io is not None:
+        before_io()
+    try:
+        if sha256_file(path) != content["content_hash"]:
             return None
     except (OSError, ValueError):
         return None
     return VerifiedMixCache(content["id"], content["content_hash"])
 
 
-def assert_current_pins(session: Session, prepared: PreparedSoundMix) -> None:
+def assert_current_pins(
+    session: Session,
+    prepared: PreparedSoundMix,
+    *,
+    authorization_guard: Callable[[Session], None] | None = None,
+    authorize_input: Callable[[Session, str], None] | None = None,
+) -> None:
     """Rebuild only database pins while a caller holds the SQLite writer."""
 
     current = _load_snapshot(
@@ -72,6 +109,8 @@ def assert_current_pins(session: Session, prepared: PreparedSoundMix) -> None:
         prepared.session_id,
         prepared.base_artifact_id,
         prepared.timeline_artifact_id,
+        authorization_guard=authorization_guard,
+        authorize_input=authorize_input,
     )
     if _snapshot_pins(current) != prepared.pins:
         raise ValueError("Sound-mix inputs changed. Refresh the sound plan and try again.")
@@ -120,8 +159,7 @@ def admit_in_session(
             Job.session_id == prepared.session_id,
             Job.kind == "sound.mix",
             Job.status.in_(_ACTIVE_JOB_STATUSES),
-            Job.payload_json["request_fingerprint"].as_string()
-            == prepared.request_fingerprint,
+            Job.payload_json["request_fingerprint"].as_string() == prepared.request_fingerprint,
         )
         .order_by(Job.created_at.desc(), Job.id.desc())
         .limit(1)
@@ -195,6 +233,7 @@ def get_status(
         )
     )
     with database.snapshot_session() as session:
+        require_current_session_access(session, session_id)
         header = session.execute(
             select(
                 SessionRecord.workflow_kind,
@@ -212,8 +251,7 @@ def get_status(
             Artifact.session_id == session_id,
             Artifact.role == "sound_mix.audio",
             Artifact.state != "deleted",
-            Artifact.metadata_json["sound_mix"]["sound_plan_id"].as_string()
-            == (plan_id or ""),
+            Artifact.metadata_json["sound_mix"]["sound_plan_id"].as_string() == (plan_id or ""),
         )
         if base_artifact_id is not None:
             artifact_statement = artifact_statement.where(
@@ -235,7 +273,11 @@ def get_status(
         latest_job = session.execute(
             job_statement.order_by(Job.created_at.desc(), Job.id.desc()).limit(1)
         ).one_or_none()
-        result = latest_job.result_json if latest_job and isinstance(latest_job.result_json, dict) else {}
+        result = (
+            latest_job.result_json
+            if latest_job and isinstance(latest_job.result_json, dict)
+            else {}
+        )
         job_payload = (
             latest_job.payload_json
             if latest_job and isinstance(latest_job.payload_json, dict)

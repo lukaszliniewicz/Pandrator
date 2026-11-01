@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any
+from typing import Any, cast
 
 from . import tts_service_catalogue as catalogue
 from .language_capabilities import (
@@ -39,6 +39,46 @@ _ADAPTER_PROVIDER_IDS = {
     "azure_speech": "azure",
     "elevenlabs_native": "elevenlabs",
 }
+_SELECTED_ENDPOINT_FIELDS = frozenset({
+    "id", "name", "adapter", "provider", "default_model",
+})
+_SELECTED_MODEL_CATALOG_FIELDS = frozenset({"model_catalog"})
+
+
+def _lookup_selected_endpoint(
+    settings: Mapping[str, Any], selector: str, cache: dict | None,
+) -> dict[str, Any] | None:
+    if cache is None:
+        return cast(
+            dict[str, Any] | None,
+            catalogue.get_service_config(settings, selector, _cache=cache),
+        )
+
+    selected = cast(
+        dict[str, Any] | None,
+        catalogue.get_service_config(
+            settings,
+            selector,
+            _cache=cache,
+            _fields=_SELECTED_ENDPOINT_FIELDS,
+        ),
+    )
+    if selected is None:
+        return None
+
+    provider_id, _native_route = _provider_identity(selected, selector)
+    model_id = _selected_model(settings, selected, provider_id)
+    if model_id:
+        model_projection = catalogue.get_service_config(
+            settings,
+            selector,
+            _cache=cache,
+            _fields=_SELECTED_MODEL_CATALOG_FIELDS,
+            _model_catalog_id=model_id,
+        )
+        if model_projection is not None:
+            selected.update(model_projection)
+    return selected
 
 
 def _selected_endpoint(
@@ -49,15 +89,13 @@ def _selected_endpoint(
         return selected, str(selected.get("id") or selected.get("name") or "")
 
     service = str(settings.get("service") or settings.get("tts_service") or "XTTS")
-    selected = catalogue.get_service_config(settings, service, _cache=cache)
+    selected = _lookup_selected_endpoint(settings, service, cache)
     selected_id = str((selected or {}).get("id") or "")
 
     if selected is None:
         endpoint_name = str(settings.get("openai_audio_endpoint") or "").strip()
         if endpoint_name:
-            selected = catalogue.get_service_config(
-                settings, endpoint_name, _cache=cache
-            )
+            selected = _lookup_selected_endpoint(settings, endpoint_name, cache)
             selected_id = str((selected or {}).get("id") or endpoint_name)
 
     if selected is None:

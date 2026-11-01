@@ -12,6 +12,7 @@ from pandrator.web.generation_cast_runtime import segment_render_parts
 from pandrator.web.generation_controls import get_generation_controls, save_generation_controls
 from pandrator.web.generation_performance_snapshot import performance_runtime_settings
 from pandrator.web.generation_recast import prepare_recast
+from pandrator.web.projects.identity import session_project
 from pandrator.web.speech_plan_workspace import freeze_speech_snapshot
 from tests.test_performance_plans import case as case
 
@@ -60,6 +61,7 @@ def prepare(case, **kwargs):
 def record(case, *, segment_ids=None):
     services = case["services"]
     with services["database"].session() as session:
+        project = session_project(session, case["session_id"])
         snapshot, _ = services["workspace_settings"].resolve_in_session(session, case["session_id"])
         freeze_speech_snapshot(session, case["revision_id"], snapshot, explicit=True)
         snapshot["generation_audio_identities"] = plan_audio_identities(
@@ -76,6 +78,8 @@ def record(case, *, segment_ids=None):
         session.flush()
         for segment_id in segment_ids or case["segment_ids"]:
             artifact = m.Artifact(
+                workspace_id=project.workspace_id,
+                project_id=project.id,
                 session_id=case["session_id"],
                 kind="audio",
                 relative_path=f"{segment_id}.wav",
@@ -356,6 +360,7 @@ def test_managed_reference_fingerprint_changes_but_profile_name_does_not(recast_
     case = recast_case
     with case["services"]["database"].session() as session:
         voice = m.Voice(
+            workspace_id=session_project(session, case["session_id"]).workspace_id,
             name="Fred profile",
             metadata_json={
                 "providers": {
@@ -399,6 +404,7 @@ def test_parent_take_lineage_recovers_executor_snapshot(recast_case):
     case = recast_case
     record(case)
     with case["services"]["database"].session() as session:
+        project = session_project(session, case["session_id"])
         original = session.scalar(
             select(m.AudioTake).where(m.AudioTake.generation_segment_id == case["segment_ids"][0])
         )
@@ -411,6 +417,8 @@ def test_parent_take_lineage_recovers_executor_snapshot(recast_case):
             settings_snapshot_json={},
         )
         artifact = m.Artifact(
+            workspace_id=project.workspace_id,
+            project_id=project.id,
             session_id=case["session_id"],
             kind="audio",
             relative_path="copy.wav",
@@ -460,6 +468,8 @@ def test_terminal_generation_jobs_do_not_block_recast(recast_case):
         run = session.get(m.GenerationRun, executor_id)
         job = m.Job(
             kind="generation.run",
+            workspace_id=session_project(session, case["session_id"]).workspace_id,
+            project_id=session_project(session, case["session_id"]).id,
             session_id=case["session_id"],
             status="succeeded",
             payload_json={"generation_run_id": executor_id},
@@ -487,6 +497,8 @@ def test_failed_run_with_attached_running_generation_job_blocks_and_hashes(recas
         run.status = "failed"
         job = m.Job(
             kind="generation.run",
+            workspace_id=session_project(session, case["session_id"]).workspace_id,
+            project_id=session_project(session, case["session_id"]).id,
             session_id=case["session_id"],
             status="running",
             payload_json={"generation_run_id": executor_id},
@@ -505,6 +517,8 @@ def test_failed_run_with_attached_running_generation_job_blocks_and_hashes(recas
         session.add(
             m.Job(
                 kind="tts.preview",
+                workspace_id=session_project(session, case["session_id"]).workspace_id,
+                project_id=session_project(session, case["session_id"]).id,
                 session_id=case["session_id"],
                 status="running",
                 payload_json={"generation_run_id": executor_id},
@@ -531,8 +545,10 @@ def test_default_preview_and_normalized_start_options_have_identical_hash(recast
 def seed_two_managed_recordings(case, *, legacy_narrator=False):
     with case["services"]["database"].session() as session:
         voice_ids = {}
+        workspace_id = session_project(session, case["session_id"]).workspace_id
         for key, provider_voice in (("narrator", "Kore"), ("fred", "Puck")):
             voice = m.Voice(
+                workspace_id=workspace_id,
                 name=key,
                 metadata_json={
                     "providers": {
@@ -753,6 +769,8 @@ def test_completed_recast_null_provider_overlay_matches_desired_cast(recast_case
         session.add(executor)
         session.flush()
         artifact = m.Artifact(
+            workspace_id=session_project(session, case["session_id"]).workspace_id,
+            project_id=session_project(session, case["session_id"]).id,
             session_id=case["session_id"],
             kind="audio",
             relative_path="completed-scoped-recast.wav",

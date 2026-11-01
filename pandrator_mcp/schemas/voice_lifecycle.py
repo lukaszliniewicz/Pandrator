@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, get_args
 
-from pydantic import Field, StrictFloat, field_validator, model_validator
+from pydantic import Field, StrictFloat, StrictStr, field_validator, model_validator
 
 from .common import ToolInput
 
@@ -52,6 +52,11 @@ VOICE_CATALOG_COMPACT_FIELDS: tuple[VoiceCatalogField, ...] = (
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
 _PROFILE_MAX_BYTES = 64 * 1024
 _SETTINGS_MAX_BYTES = 32 * 1024
+_SCOPE_ROOT_MAX_LENGTH = 80
+
+
+def _trim_scope_root(value: Any) -> Any:
+    return value.strip() if isinstance(value, str) else value
 
 
 def _bounded_json_object(value: Any, *, name: str, maximum: int) -> Any:
@@ -109,6 +114,9 @@ class VoiceCreateInput(ToolInput):
     voice_category: VoiceCategory = "unspecified"
     profile: dict[str, Any] | None = Field(default=None)
     idempotency_key: str = Field(min_length=8, max_length=200, pattern=_SAFE_KEY)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
 
     @field_validator("name", "language", mode="before")
     @classmethod
@@ -119,6 +127,11 @@ class VoiceCreateInput(ToolInput):
     @classmethod
     def validate_profile(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         return _bounded_json_object(value, name="profile", maximum=_PROFILE_MAX_BYTES)
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_workspace_root(_cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
 
 class DesignGoogleVoiceInput(ToolInput):
@@ -134,11 +147,19 @@ class DesignGoogleVoiceInput(ToolInput):
     )
     voice_category: VoiceCategory = "unspecified"
     idempotency_key: str = Field(min_length=8, max_length=200, pattern=_SAFE_KEY)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
 
     @field_validator("name", "prompt", "language", mode="before")
     @classmethod
     def trim_text(_cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_workspace_root(_cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
 
 class VoiceCatalogInput(ToolInput):
@@ -146,6 +167,12 @@ class VoiceCatalogInput(ToolInput):
 
     view: Literal["full", "compact"] = "full"
     fields: VoiceCatalogFields | None = Field(default=None, min_length=1, max_length=20)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+    session_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
 
     # language and limit are retained for compatibility with the legacy tool.
     query: str = Field(default="", max_length=300)
@@ -168,6 +195,11 @@ class VoiceCatalogInput(ToolInput):
     sort: Literal["relevance", "name", "recently_added", "recently_updated"] = "relevance"
     limit: int = Field(default=30, ge=1, le=200)
     cursor: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("workspace_id", "session_id", mode="before")
+    @classmethod
+    def trim_scope_roots(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
     @field_validator("fields", mode="before")
     @classmethod
@@ -192,10 +224,29 @@ class VoiceCatalogInput(ToolInput):
 class VoiceCatalogCapabilitiesInput(ToolInput):
     service_id: str | None = Field(default=None, max_length=160)
     model: str | None = Field(default=None, max_length=200)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+    session_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", "session_id", mode="before")
+    @classmethod
+    def trim_scope_roots(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
 
 class GetVoiceSamplesInput(ToolInput):
     voice_id: str = Field(min_length=1, max_length=160)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_workspace_root(_cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
 
 class _RevisionWriteInput(ToolInput):
@@ -208,6 +259,14 @@ class PromoteVoiceDesignInput(_RevisionWriteInput):
     transcript: str = Field(min_length=1, max_length=4_000)
     language: str | None = Field(default=None, max_length=40)
     expected_voice_revision: int = Field(ge=1)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
 
 class ImportVoiceReferenceInput(_RevisionWriteInput):
@@ -219,6 +278,14 @@ class ImportVoiceReferenceInput(_RevisionWriteInput):
     expected_voice_revision: int = Field(ge=1)
     start_seconds: StrictFloat = Field(default=0.0, ge=0.0, allow_inf_nan=False)
     end_seconds: StrictFloat | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
     @model_validator(mode="after")
     def validate_crop_range(self) -> ImportVoiceReferenceInput:
@@ -231,6 +298,14 @@ class TranscribeVoiceSampleInput(_RevisionWriteInput):
     voice_id: str = Field(min_length=1, max_length=160)
     sample_id: str = Field(min_length=1, max_length=160)
     settings: dict[str, Any] = Field(default_factory=dict)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
     @field_validator("settings")
     @classmethod
@@ -244,12 +319,42 @@ class ReviewVoiceTranscriptInput(_RevisionWriteInput):
     transcript: str = Field(min_length=1, max_length=4_000)
     language: str | None = Field(default=None, max_length=40)
     expected_voice_revision: int = Field(ge=1)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
 
 class PublishVoiceInput(_RevisionWriteInput):
     voice_id: str = Field(min_length=1, max_length=160)
     service_id: str = Field(min_length=1, max_length=160)
     expected_revision: int = Field(ge=1)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
+
+
+class UnpublishVoiceInput(_RevisionWriteInput):
+    voice_id: str = Field(min_length=1, max_length=160)
+    service_id: str = Field(min_length=1, max_length=160)
+    expected_revision: int = Field(ge=1)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
 
 class AuditionVoiceInput(_RevisionWriteInput):
@@ -257,6 +362,7 @@ class AuditionVoiceInput(_RevisionWriteInput):
     service_id: str = Field(min_length=1, max_length=160)
     model: str = Field(min_length=1, max_length=200)
     voice: str = Field(default="", max_length=255)
+    voice_id: StrictStr | None = Field(default=None, min_length=1, max_length=80)
     language: str = Field(default="en", min_length=1, max_length=40)
     generation_prompt: str | None = Field(
         default=None,
@@ -264,13 +370,39 @@ class AuditionVoiceInput(_RevisionWriteInput):
         description="Omit or use null to inherit saved directions; an empty string clears them for this audition.",
     )
     seed: int | None = Field(default=None, ge=0, le=4_294_967_295)
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
+
+    @field_validator("voice_id", mode="before")
+    @classmethod
+    def trim_voice_id(_cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
 
 class ListVoiceCollectionsInput(ToolInput):
-    pass
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+    session_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
+
+    @field_validator("workspace_id", "session_id", mode="before")
+    @classmethod
+    def trim_scope_roots(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
 
 class CreateVoiceCollectionInput(_RevisionWriteInput):
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
     name: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=2_000)
 
@@ -279,8 +411,16 @@ class CreateVoiceCollectionInput(_RevisionWriteInput):
     def trim_name(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
+
 
 class UpdateVoiceCollectionInput(_RevisionWriteInput):
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
     collection_id: str = Field(min_length=1, max_length=160)
     expected_revision: int = Field(ge=1)
     name: str | None = Field(default=None, min_length=1, max_length=255)
@@ -292,6 +432,11 @@ class UpdateVoiceCollectionInput(_RevisionWriteInput):
     @classmethod
     def trim_name(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
     @model_validator(mode="after")
     def reject_overlapping_members(self) -> "UpdateVoiceCollectionInput":
@@ -331,9 +476,17 @@ class CatalogVoiceMetadataChanges(ToolInput):
 
 
 class UpdateCatalogVoiceMetadataInput(_RevisionWriteInput):
+    workspace_id: StrictStr | None = Field(
+        default=None, min_length=1, max_length=_SCOPE_ROOT_MAX_LENGTH
+    )
     reference: VoiceReferenceInput
     expected_revision: int = Field(ge=0)
     changes: CatalogVoiceMetadataChanges
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_scope_root(cls, value: Any) -> Any:
+        return _trim_scope_root(value)
 
     @model_validator(mode="after")
     def require_provider_reference(self) -> "UpdateCatalogVoiceMetadataInput":
@@ -356,6 +509,7 @@ __all__ = [
     "ReviewVoiceTranscriptInput",
     "TranscribeVoiceSampleInput",
     "UpdateCatalogVoiceMetadataInput",
+    "UnpublishVoiceInput",
     "UpdateVoiceCollectionInput",
     "VOICE_CATALOG_COMPACT_FIELDS",
     "VoiceCatalogInput",

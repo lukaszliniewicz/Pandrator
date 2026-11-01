@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectLinkUrl } from './project-link-context';
   import { onMount } from 'svelte';
   import type {
     ProjectOperation,
@@ -9,6 +10,7 @@
   import { translationProjectApi, sessionApi } from './domain-api';
   import { ApiError } from './api';
   import { errorMessage } from './errors';
+  import { browserStorageKey } from './browser-identity';
   import { translationLanguageName } from './translation-project-display';
 
   let {
@@ -46,7 +48,9 @@
       operation.eligible_count > 0 &&
       confirmations.every((item) => accepted.includes(item))
   );
-  const storageKey = $derived(`pandrator:project-operation:${project.id}`);
+  const storageKey = $derived(
+    browserStorageKey('project-operation', project.id)
+  );
   const active = $derived(
     operation && ['running', 'canceling'].includes(operation.status)
   );
@@ -463,7 +467,7 @@
                     </p>{/if}
                   {#each language.artifacts as file (file.artifact_id)}<a
                       class="mt-1 block break-all text-[var(--accent)]"
-                      href={`/api/v1/artifacts/${file.artifact_id}/content`}
+                      href={projectLinkUrl(`/api/v1/artifacts/${file.artifact_id}/content`)}
                       download={file.filename}>{file.filename}</a
                     >{/each}
                 </li>{/each}
@@ -490,7 +494,7 @@
               >
               {#if bundle?.status === 'ready' && bundle.content_url}<a
                   class="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white"
-                  href={bundle.content_url}
+                  href={projectLinkUrl(bundle.content_url)}
                   download>Download ZIP</a
                 >{:else if bundle && ['queued', 'running', 'retrying', 'cancel_requested'].includes(bundle.status)}<span
                   class="muted self-center text-sm"

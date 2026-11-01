@@ -18,6 +18,7 @@ from sqlalchemy.pool import Pool
 
 from pandrator.runtime import DataPaths
 from pandrator.web import cli
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.credentials import database_reference
 from pandrator.web.database import SCHEMA_HEAD, Database
 from pandrator.web.legacy_migration import GENERATION_PROMOTION_VERSION
@@ -35,6 +36,8 @@ from pandrator.web.models import (
     SourceAsset,
     StoredCredential,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.settings_policy import adapt_runtime_settings
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace_settings import WorkspaceSettingsService
@@ -87,11 +90,19 @@ class Graph:
 
 
 def artifact(
-    identifier: str, role: str, *, session_id: str = "voice", metadata: dict[str, Any] | None = None
+    session,
+    identifier: str,
+    role: str,
+    *,
+    session_id: str = "voice",
+    metadata: dict[str, Any] | None = None,
 ) -> Artifact:
+    ownership = resolve_artifact_ownership(session, session_id=session_id)
     return Artifact(
         id=identifier,
         session_id=session_id,
+        workspace_id=ownership.workspace_id,
+        project_id=ownership.project_id,
         kind="srt",
         role=role,
         relative_path=f"uploads/{identifier}.srt",
@@ -116,29 +127,33 @@ def graph(tmp_path: Path) -> Iterator[Graph]:
     database = Database(paths.database)
     try:
         with database.session() as session:
+            voice = SessionRecord(
+                id="voice",
+                storage_key="voice",
+                name="Fixture",
+                workflow_kind="voiceover",
+                target_language="pl",
+                included_stages_json=["translate", "generate_audio"],
+            )
+            foreign = SessionRecord(
+                id="foreign",
+                storage_key="foreign",
+                name="Foreign",
+                workflow_kind="voiceover",
+            )
+            create_session_project(session, voice)
+            create_session_project(session, foreign)
             session.add_all(
                 [
-                    SessionRecord(
-                        id="voice",
-                        storage_key="voice",
-                        name="Fixture",
-                        workflow_kind="voiceover",
-                        target_language="pl",
-                        included_stages_json=["translate", "generate_audio"],
-                    ),
-                    SessionRecord(
-                        id="foreign",
-                        storage_key="foreign",
-                        name="Foreign",
-                        workflow_kind="voiceover",
-                    ),
                     Provider(
+                        workspace_id=initial_personal_workspace(session).id,
                         id="fixture-provider",
                         provider_key="openai",
                         label="Fixture",
                         secret_ref=database_reference("fixture-llm"),
                     ),
                     StoredCredential(
+                        workspace_id=initial_personal_workspace(session).id,
                         key="fixture-llm",
                         label="Synthetic test credential",
                         secret_value="synthetic-fixture-credential",
@@ -155,8 +170,9 @@ def graph(tmp_path: Path) -> Iterator[Graph]:
                         is_default=True,
                         is_active=True,
                     ),
-                    artifact("source", "upload", metadata={"original_filename": "source.srt"}),
+                    artifact(session, "source", "upload", metadata={"original_filename": "source.srt"}),
                     artifact(
+                        session,
                         "translated",
                         "translation",
                         metadata={
@@ -281,7 +297,7 @@ def test_translation_same_bytes_require_source_identity_or_edge(
     owner: Any, graph: Graph, with_edge: bool
 ) -> None:
     with graph.database.session() as session:
-        session.add(artifact("replacement", "upload"))
+        session.add(artifact(session, "replacement", "upload"))
         session.flush()
         session.add(
             SessionSetting(
@@ -302,13 +318,14 @@ def test_translation_same_bytes_require_source_identity_or_edge(
 
 def test_attached_foreign_translation_input_is_safe(owner: Any, graph: Graph) -> None:
     with graph.database.session() as session:
-        session.add(artifact("foreign-input", "upload", session_id="foreign"))
+        session.add(artifact(session, "foreign-input", "upload", session_id="foreign"))
         session.flush()
     with graph.unmodified():
         assert owner._persisted_translation_input("voice", "foreign-input") is None
     with graph.database.session() as session:
         session.add(
             SourceAsset(
+                workspace_id=session.get_one(Artifact, "foreign-input").workspace_id,
                 id="attached", artifact_id="foreign-input", display_name="Fixture", kind="srt"
             )
         )
@@ -326,7 +343,7 @@ def test_audiobook_historical_selection_is_read_without_files(owner: Any, graph:
         assert record is not None
         record.workflow_kind = "audiobook"
         record.included_stages_json = ["prepare_text", "generate_audio"]
-        session.add(artifact("prepared", "prepared_text"))
+        session.add(artifact(session, "prepared", "prepared_text"))
         session.flush()
         row = session.get(Artifact, "prepared")
         assert row is not None

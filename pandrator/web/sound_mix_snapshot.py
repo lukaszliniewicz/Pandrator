@@ -5,7 +5,9 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
@@ -61,7 +63,6 @@ class PreparedSoundMix:
         return bool(self.cues)
 
 
-
 def prepare_sound_mix(
     database: Database,
     paths: DataPaths,
@@ -71,20 +72,32 @@ def prepare_sound_mix(
     *,
     timeline_artifact_id: str | None = None,
     expected_revision: int | None = None,
+    before_io: Callable[[], None] | None = None,
+    authorization_guard: Callable[[Session], None] | None = None,
+    authorize_input: Callable[[Session, str], None] | None = None,
 ) -> PreparedSoundMix:
     """Freeze all database pins, then inspect and hash inputs without writes."""
 
     with database.snapshot_session() as session:
-        snapshot = _load_snapshot(session, session_id, base_artifact_id, timeline_artifact_id)
+        snapshot = _load_snapshot(
+            session,
+            session_id,
+            base_artifact_id,
+            timeline_artifact_id,
+            authorization_guard=authorization_guard,
+            authorize_input=authorize_input,
+        )
     if expected_revision is not None and snapshot["plan"]["revision"] != expected_revision:
         raise RevisionConflict("The sound plan changed. Review the current cues before rendering.")
     session_record = snapshot["session"]
-    base = _require_audio_artifact(
-        snapshot["base"], session_id=session_id, label="base artifact"
+    base = _require_audio_artifact(snapshot["base"], session_id=session_id, label="base artifact")
+    timeline = (
+        _require_audio_artifact(
+            snapshot["timeline"], session_id=session_id, label="timeline artifact"
+        )
+        if timeline_artifact_id
+        else None
     )
-    timeline = _require_audio_artifact(
-        snapshot["timeline"], session_id=session_id, label="timeline artifact"
-    ) if timeline_artifact_id else None
     base_path = paths.managed_path(str(base["relative_path"]))
     timeline_path = paths.managed_path(str(timeline["relative_path"])) if timeline else None
     pins = _snapshot_pins(snapshot)
@@ -130,12 +143,17 @@ def prepare_sound_mix(
                 "request_fingerprint": fingerprint,
             },
         )
+    if before_io is not None:
+        before_io()
     if not base_path.is_file():
         raise ValueError("The base audio artifact is missing from managed storage.")
     if timeline_path is not None and not timeline_path.is_file():
         raise ValueError("The timeline audio artifact is missing from managed storage.")
     rate, channels, base_frames, fixed_timeline = _base_geometry(
-        base, session_record["workflow_kind"], base_path
+        base,
+        session_record["workflow_kind"],
+        base_path,
+        before_io=before_io,
     )
     anchor_source = snapshot["timeline"] if timeline_artifact_id else snapshot["base"]
     anchor_metadata = deepcopy((anchor_source or {}).get("metadata_json") or {})
@@ -147,6 +165,7 @@ def prepare_sound_mix(
         rate=rate,
         channels=channels,
         base_frames=base_frames,
+        before_io=before_io,
     )
     prepared = PreparedSoundMix(
         session_id=session_id,
@@ -176,7 +195,7 @@ def prepare_sound_mix(
         request_fingerprint="",
         payload={},
     )
-    _verify_input_files(prepared, snapshot)
+    _verify_input_files(prepared, snapshot, before_io=before_io)
     fingerprint_inputs = {
         "renderer_version": SOUND_MIX_RENDERER_VERSION,
         "pins": pins,
@@ -188,9 +207,21 @@ def prepare_sound_mix(
             {
                 key: cue[key]
                 for key in (
-                    "cue_id", "variant_id", "artifact_id", "content_hash", "anchor_frame",
-                    "anchor_pin", "mode", "offset_ms", "gain_db", "trim_start_seconds",
-                    "trim_end_seconds", "fade_in_ms", "fade_out_ms", "playback_json", "anchor_json",
+                    "cue_id",
+                    "variant_id",
+                    "artifact_id",
+                    "content_hash",
+                    "anchor_frame",
+                    "anchor_pin",
+                    "mode",
+                    "offset_ms",
+                    "gain_db",
+                    "trim_start_seconds",
+                    "trim_end_seconds",
+                    "fade_in_ms",
+                    "fade_out_ms",
+                    "playback_json",
+                    "anchor_json",
                 )
             }
             for cue in cues
@@ -208,13 +239,16 @@ def prepare_sound_mix(
         "speech_plan_revision_id": snapshot["plan"]["speech_plan_revision_id"],
         "request_fingerprint": request_fingerprint,
     }
-    prepared = replace(
-        prepared, request_fingerprint=request_fingerprint, payload=payload
-    )
+    prepared = replace(prepared, request_fingerprint=request_fingerprint, payload=payload)
     return prepared
 
 
-def _verify_input_files(prepared: PreparedSoundMix, snapshot: dict[str, Any]) -> None:
+def _verify_input_files(
+    prepared: PreparedSoundMix,
+    snapshot: dict[str, Any],
+    *,
+    before_io: Callable[[], None] | None = None,
+) -> None:
     if not prepared.has_cues:
         return
     artifacts = {"base": snapshot["base"]}
@@ -236,11 +270,17 @@ def _verify_input_files(prepared: PreparedSoundMix, snapshot: dict[str, Any]) ->
     }
     for key, artifact in artifacts.items():
         path = paths.get(key)
+        if before_io is not None:
+            before_io()
         if path is None or not path.is_file() or sha256_file(path) != artifact.get("content_hash"):
             raise ValueError(f"Sound-mix input content hash changed: {artifact.get('id')}.")
 
 
-def verify_prepared_files(prepared: PreparedSoundMix) -> None:
+def verify_prepared_files(
+    prepared: PreparedSoundMix,
+    *,
+    before_io: Callable[[], None] | None = None,
+) -> None:
     """Recheck all file pins outside a database writer transaction."""
 
     if not prepared.has_cues:
@@ -268,6 +308,8 @@ def verify_prepared_files(prepared: PreparedSoundMix) -> None:
         if path is not None:
             inputs[f"take:{take_id}"] = (path, take_hashes.get(take_id))
     for label, (path, expected_hash) in inputs.items():
+        if before_io is not None:
+            before_io()
         if not expected_hash or not path.is_file() or sha256_file(path) != expected_hash:
             raise ValueError(f"Sound-mix input content hash changed: {label}.")
 

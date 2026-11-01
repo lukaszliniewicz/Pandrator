@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from functools import wraps
+from typing import Literal
+
 from flask import g, jsonify, request
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .access.source_ingress_policy import require_source_ingress_access
+from .access.source_library_policy import require_source_asset_access
 from .domain_blueprints import DomainBlueprints
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
+from .http_session_access import require_session_action
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .models import SessionRecord, SourceAsset
 from .route_context import RouteContext
@@ -23,13 +31,20 @@ def register_source_library_routes(
 ) -> None:
     services = context.services
     database = services.database
-    sessions = services.sessions
     source_library = services.source_library
     require_auth = context.guards.require_auth
     error_response = context.guards.error_response
     mutation_idempotency_key = idempotency.require_key
     idempotency_failure = idempotency.failure
     abandon_idempotency = idempotency.abandon
+
+    def source_asset_guard(source_asset_id: str, action: ProjectAction):
+        try:
+            with database.snapshot_session() as unit:
+                require_source_asset_access(unit, source_asset_id, action)
+        except KeyError:
+            return error_response("not_found", "Source asset not found.", 404)
+        return None
 
     @app.get("/api/v1/sources")
     @require_auth
@@ -38,11 +53,14 @@ def register_source_library_routes(
             return jsonify(
                 {
                     "items": source_library.list(
+                        workspace_id=request.args.get("workspace_id") or None,
                         include_trashed=request.args.get("include_trashed") == "true",
                         view=request.args.get("view", "full"),
                     )
                 }
             )
+        except KeyError:
+            return error_response("not_found", "Workspace not found.", 404)
         except ValueError as error:
             return error_response("validation_error", str(error), 400)
 
@@ -65,6 +83,9 @@ def register_source_library_routes(
     @app.patch("/api/v1/sources/<source_asset_id>")
     @require_auth
     def source_library_update(source_asset_id: str):
+        denied = source_asset_guard(source_asset_id, ProjectAction.EDIT)
+        if denied is not None:
+            return denied
         payload = SourceUpdateRequest.model_validate(request.get_json(silent=True) or {})
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
@@ -88,6 +109,9 @@ def register_source_library_routes(
     @app.delete("/api/v1/sources/<source_asset_id>")
     @require_auth
     def source_library_trash(source_asset_id: str):
+        denied = source_asset_guard(source_asset_id, ProjectAction.EDIT)
+        if denied is not None:
+            return denied
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected = int(raw_etag)
@@ -112,6 +136,9 @@ def register_source_library_routes(
     @app.post("/api/v1/sources/<source_asset_id>/restore")
     @require_auth
     def source_library_restore(source_asset_id: str):
+        denied = source_asset_guard(source_asset_id, ProjectAction.EDIT)
+        if denied is not None:
+            return denied
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected = int(raw_etag)
@@ -135,13 +162,14 @@ def register_source_library_routes(
     @require_auth
     def session_source_list(session_id: str):
         try:
-            sessions.get(session_id)
+            items = source_library.list(session_id=session_id)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        return jsonify({"items": source_library.list(session_id=session_id)})
+        return jsonify({"items": items})
 
     @app.post("/api/v1/sessions/<session_id>/sources")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def session_source_attach(session_id: str):
         payload = SourceAttachRequest.model_validate(request.get_json(silent=True) or {})
         idempotency_key, idempotency_error = mutation_idempotency_key()
@@ -162,6 +190,10 @@ def register_source_library_routes(
                 )
             try:
                 with database.immediate_session() as db_session:
+                    require_current_session_access(db_session, session_id, ProjectAction.EDIT)
+                    require_source_asset_access(
+                        db_session, payload.source_asset_id, project_session_id=session_id
+                    )
                     reservation = services.idempotency.begin(
                         db_session,
                         principal=idempotency.principal(),
@@ -240,6 +272,8 @@ def register_source_library_routes(
                     )
                     g.audit_resource_kind = "session_source"
                     g.audit_resource_id = str(result["id"])
+            except KeyError:
+                return error_response("not_found", "Session or source asset not found.", 404)
             except (
                 IdempotencyConflict,
                 IdempotencyInProgress,
@@ -265,6 +299,10 @@ def register_source_library_routes(
             )
         try:
             with database.immediate_session() as db_session:
+                require_current_session_access(db_session, session_id, ProjectAction.EDIT)
+                require_source_asset_access(
+                    db_session, payload.source_asset_id, project_session_id=session_id
+                )
                 record = db_session.get(SessionRecord, session_id)
                 if record is None:
                     raise KeyError(session_id)
@@ -292,6 +330,7 @@ def register_source_document_routes(app: DomainBlueprints, context: RouteContext
 
     @app.post("/api/v1/sessions/<session_id>/sources/adopt-subtitles")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def session_source_adopt_subtitles(session_id: str):
         payload = SourceAttachRequest.model_validate(request.get_json(silent=True) or {})
         if payload.role != "primary":
@@ -320,6 +359,7 @@ def register_source_document_routes(app: DomainBlueprints, context: RouteContext
 
     @app.delete("/api/v1/sessions/<session_id>/sources/<attachment_id>")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def session_source_detach(session_id: str, attachment_id: str):
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
@@ -363,42 +403,64 @@ def register_source_document_routes(app: DomainBlueprints, context: RouteContext
 
 
 def register_source_ingestion_routes(app: DomainBlueprints, context: RouteContext) -> None:
-    sessions = context.services.sessions
-    artifacts = context.services.artifacts
+    database = context.services.database
     jobs = context.services.jobs
     require_auth = context.guards.require_auth
     error_response = context.guards.error_response
 
+    def ingress_guard(kind: Literal["source.download_url", "source.reuse"]):
+        def decorate(view):
+            @wraps(view)
+            def guarded(session_id: str):
+                try:
+                    with database.snapshot_session() as unit:
+                        require_source_ingress_access(unit, session_id, kind)
+                except KeyError:
+                    return error_response("not_found", "Session not found.", 404)
+                return view(session_id)
+
+            return guarded
+
+        return decorate
+
     @app.post("/api/v1/sessions/<session_id>/sources/url")
     @require_auth
+    @ingress_guard("source.download_url")
     def source_download_url(session_id: str):
+        payload = SourceUrlRequest.model_validate(request.get_json(silent=True) or {})
         try:
-            sessions.get(session_id)
+            with database.immediate_session() as unit:
+                require_source_ingress_access(unit, session_id, "source.download_url")
+                job = jobs.enqueue_in_session(
+                    unit,
+                    "source.download_url",
+                    {"session_id": session_id, "url": payload.url},
+                    session_id=session_id,
+                    resource_keys=[f"session:{session_id}"],
+                )
+                result = _job_payload(job)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        payload = SourceUrlRequest.model_validate(request.get_json(silent=True) or {})
-        job = jobs.enqueue(
-            "source.download_url",
-            {"session_id": session_id, "url": payload.url},
-            session_id=session_id,
-        )
-        return jsonify(_job_payload(job)), 202
+        return jsonify(result), 202
 
     @app.post("/api/v1/sessions/<session_id>/sources/reuse")
     @require_auth
+    @ingress_guard("source.reuse")
     def source_reuse(session_id: str):
-        try:
-            sessions.get(session_id)
-        except KeyError:
-            return error_response("not_found", "Session not found.", 404)
         payload = SourceReuseRequest.model_validate(request.get_json(silent=True) or {})
         try:
-            artifacts.resolve(payload.artifact_id)
+            with database.immediate_session() as unit:
+                require_source_ingress_access(
+                    unit, session_id, "source.reuse", artifact_id=payload.artifact_id
+                )
+                job = jobs.enqueue_in_session(
+                    unit,
+                    "source.reuse",
+                    {"session_id": session_id, "artifact_id": payload.artifact_id},
+                    session_id=session_id,
+                    resource_keys=[f"session:{session_id}"],
+                )
+                result = _job_payload(job)
         except KeyError:
             return error_response("not_found", "Reusable source artifact not found.", 404)
-        job = jobs.enqueue(
-            "source.reuse",
-            {"session_id": session_id, "artifact_id": payload.artifact_id},
-            session_id=session_id,
-        )
-        return jsonify(_job_payload(job)), 202
+        return jsonify(result), 202

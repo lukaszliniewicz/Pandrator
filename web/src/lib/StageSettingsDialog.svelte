@@ -3,6 +3,8 @@
   import { LoaderCircle, RotateCcw, Save, X } from '@lucide/svelte';
   import ParameterLabel from './ParameterLabel.svelte';
   import EpubNarrationSettings from './EpubNarrationSettings.svelte';
+  import NarrationPackingSettings from './NarrationPackingSettings.svelte';
+  import { notifySessionFlowChange } from './session-flow';
   import TranscriptionStageSettings from './TranscriptionStageSettings.svelte';
   import SourcePassageSettings from './SourcePassageSettings.svelte';
   import GenerationStageSettings from './GenerationStageSettings.svelte';
@@ -16,7 +18,11 @@
     sttLanguageProblem,
     qwenTimedLanguageProblem
   } from './stt-language-policy';
-  import { preferredTtsService } from './tts-provider-policy';
+  import {
+    preferredTtsService,
+    serviceMatches,
+    ttsServiceUsable
+  } from './tts-provider-policy';
   import { defaultVoiceForLanguage } from './voice-catalog';
   import { errorMessage } from './errors';
   import { jobApi, sessionApi } from './domain-api';
@@ -29,7 +35,6 @@
     SettingsPayload,
     SttCatalogue,
     SubtitleReviewCatalogItem,
-    TtsService,
     VoiceRecord,
     XttsModel,
     WorkflowStage
@@ -87,11 +92,18 @@
 
   let capabilities = $state<RuntimeCapabilities>({});
 
-  const speechCatalogues = new TtsCatalogueState();
+  const speechCatalogues = new TtsCatalogueState(() => ({
+    sessionId: session.id
+  }));
 
   const ttsSelection = new TtsSettingsSelection(draft, speechCatalogues);
 
   const activity = new GenerationSettingsActivity();
+  const narrationPackingValid = $derived(
+    Number.isInteger(draft.audiobookSentencePackingThreshold) &&
+      Number(draft.audiobookSentencePackingThreshold) >= 1 &&
+      Number(draft.audiobookSentencePackingThreshold) <= 8192
+  );
 
   $effect(() => {
     // A changed target needs a fresh review before applying the switch.
@@ -124,6 +136,9 @@
   let settingsSaving = $state(false);
 
   let settingsMutation = 0;
+  const canManageDefaults = $derived(
+    appState.canManageWorkspace(session?.workspace_id)
+  );
 
   let settingsBases: Record<string, SettingsPayload> = {};
 
@@ -210,7 +225,9 @@
 
   async function loadSttCatalogue() {
     try {
-      sttCatalogue = await speechRecognitionApi.catalogue();
+      sttCatalogue = await speechRecognitionApi.catalogue({
+        sessionId: session.id
+      });
     } catch {
       sttCatalogue = { services: [], profiles: [], value: {}, revision: 0 };
     }
@@ -274,21 +291,10 @@
     }
     await loadSpeechCatalogues();
     configuredServiceId ||= draft.ttsService;
-    let configured = speechCatalogues.catalogue.services.find((service) =>
-      [service.id, service.name].some(
-        (value) =>
-          String(value ?? '').toLowerCase() ===
-          configuredServiceId.toLowerCase()
-      )
+    const configured = speechCatalogues.catalogue.services.find((service) =>
+      serviceMatches(service, configuredServiceId)
     );
-    if (configured && configured.available == null) {
-      const serviceId = configured.id;
-      await speechCatalogues.refreshService(serviceId);
-      configured = speechCatalogues.catalogue.services.find(
-        (service) => service.id === serviceId
-      );
-    }
-    if (configured?.available === true) return '';
+    if (ttsServiceUsable(configured)) return '';
     return (
       configured?.availability_reason ||
       (configured
@@ -636,6 +642,14 @@
     draft.maxSentenceLength = Number(saved.max_sentence_length ?? 200);
     draft.audiobookChunking =
       saved.audiobook_chunking === 'manual' ? 'manual' : 'model';
+    draft.audiobookSentencePacking =
+      saved.audiobook_sentence_packing === 'sentences' ||
+      saved.audiobook_sentence_packing === 'clauses'
+        ? saved.audiobook_sentence_packing
+        : 'auto';
+    draft.audiobookSentencePackingThreshold = Number(
+      saved.audiobook_sentence_packing_threshold ?? 300
+    );
     draft.nemoNormalization = Boolean(saved.enable_nemo_normalization ?? true);
     draft.normalizeAllCaps = Boolean(saved.normalize_all_caps ?? true);
     draft.removeDiacritics = Boolean(saved.remove_diacritics ?? false);
@@ -652,11 +666,7 @@
         'XTTS'
     );
     const configuredService = speechCatalogues.catalogue.services.find((item) =>
-      [item.id, item.name].some(
-        (value) =>
-          String(value ?? '').toLowerCase() ===
-          configuredServiceId.toLowerCase()
-      )
+      serviceMatches(item, configuredServiceId)
     );
     const activeService =
       (explicitlySelectedServiceId ? configuredService : null) ??
@@ -770,13 +780,6 @@
       }
     }
     settingsLoading = false;
-    if (
-      stage.key === 'generate_audio' &&
-      activeService?.available == null &&
-      activeService
-    ) {
-      void speechCatalogues.refreshService(activeService.id);
-    }
   }
 
   async function persistSection(
@@ -808,12 +811,19 @@
   ) {
     if (stored.global_revision == null)
       throw new Error(
-        'Reload these settings before saving application defaults.'
+        'Reload these settings before saving workspace defaults.'
       );
-    await sessionApi.saveDefaults(section, stored.global_revision, {
-      ...stored.global,
-      ...value
-    });
+    if (!canManageDefaults || !session.workspace_id)
+      throw new Error('Workspace managers can change these defaults.');
+    await sessionApi.saveDefaults(
+      section,
+      stored.global_revision,
+      {
+        ...stored.global,
+        ...value
+      },
+      session.workspace_id
+    );
     completed.push(`${sectionDisplay(section)} defaults`);
     const cleaned = { ...(stored.override ?? {}) };
     for (const key of Object.keys(value)) delete cleaned[key];
@@ -908,28 +918,15 @@
       const services = loaded.catalogue;
       const catalogue = services.services ?? [];
       const configured = catalogue.find((item) =>
-        [item.id, item.name].some(
-          (value) =>
-            String(value ?? '').toLowerCase() ===
-            String(services.default_service ?? '').toLowerCase()
-        )
+        serviceMatches(item, services.default_service)
       );
       const preserved = catalogue.find((item) =>
-        [item.id, item.name].some(
-          (value) =>
-            String(value ?? '').toLowerCase() === previousService.toLowerCase()
-        )
+        serviceMatches(item, previousService)
       );
       const preserveDraft = !selectionIsCurrent();
       const active =
         (preserveDraft
-          ? catalogue.find((item) =>
-              [item.id, item.name].some(
-                (value) =>
-                  String(value ?? '').toLowerCase() ===
-                  draft.ttsService.toLowerCase()
-              )
-            )
+          ? catalogue.find((item) => serviceMatches(item, draft.ttsService))
           : null) ??
         (preserveSelection ? preserved : null) ??
         (configured?.available ? configured : preferredTtsService(catalogue)) ??
@@ -952,7 +949,6 @@
                 draft.targetLanguage
               );
       }
-      if (active && force) await discoverTtsService(active);
       if (!speechCatalogues.finishLoad(loaded)) return;
       if (String(active?.id ?? '').toLowerCase() === 'xtts')
         await loadXttsModels();
@@ -966,7 +962,8 @@
     activity.refreshingTtsServices = true;
     error = '';
     try {
-      await loadSpeechCatalogues(true, true);
+      const selected = ttsSelection.selectedTtsService;
+      if (selected) await speechCatalogues.refreshService(selected.id);
     } finally {
       if (request === speechRefreshRequest)
         activity.refreshingTtsServices = false;
@@ -1018,7 +1015,12 @@
   }
 
   async function uploadXttsModel() {
-    if (activity.uploadingXttsModel) return;
+    if (
+      !appState.isAdministrator ||
+      !speechCatalogues.catalogue.can_manage ||
+      activity.uploadingXttsModel
+    )
+      return;
     error = '';
     const validationError = xttsModelBundleError();
     if (validationError) {
@@ -1043,7 +1045,8 @@
           activity.xttsModelUploadPhase = 'installing';
           activity.xttsModelUploadMessage =
             'Upload transferred; Pandrator is installing the model…';
-        }
+        },
+        speechCatalogues.catalogue.workspace_id
       );
       await loadSpeechCatalogues(true, true);
       await loadXttsModels();
@@ -1070,9 +1073,13 @@
   }
 
   async function loadXttsModels() {
+    if (!appState.isAdministrator || !speechCatalogues.catalogue.can_manage)
+      return;
     activity.xttsModelsLoading = true;
     try {
-      const catalogue = await sessionApi.xttsModels();
+      const catalogue = await sessionApi.xttsModels(
+        speechCatalogues.catalogue.workspace_id
+      );
       activity.xttsModels = catalogue.data ?? [];
       activity.xttsModelsLifecycleSupported = Boolean(
         catalogue.lifecycle_supported
@@ -1098,7 +1105,12 @@
   }
 
   async function removeXttsModel(model: XttsModel) {
-    if (!model.removable || activity.deletingXttsModelId) return;
+    if (
+      !appState.isAdministrator ||
+      !model.removable ||
+      activity.deletingXttsModelId
+    )
+      return;
     const isCurrent = model.id === draft.ttsModel;
     const question = isCurrent
       ? `“${model.id}” is selected for this generation. Remove it and switch this generation to a safe XTTS fallback?`
@@ -1107,7 +1119,10 @@
     activity.deletingXttsModelId = model.id;
     error = '';
     try {
-      await sessionApi.deleteXttsModel(model.id);
+      await sessionApi.deleteXttsModel(
+        model.id,
+        speechCatalogues.catalogue.workspace_id
+      );
       if (isCurrent) draft.ttsModel = '';
       await Promise.all([loadXttsModels(), loadSpeechCatalogues(false, true)]);
       const service = speechCatalogues.catalogue.services.find(
@@ -1140,14 +1155,15 @@
   async function loadLlmModels(force = false) {
     if (llmModelsLoaded && !force) return;
     try {
-      const providerPayload = await sessionApi.providers();
+      const providerPayload = await sessionApi.providers(session?.id);
       const enabled = providerPayload.items.filter(
         (provider) => provider.enabled
       );
       const groups = await Promise.all(
         enabled.map(async (provider) => ({
           provider,
-          models: (await sessionApi.providerModels(provider.id)).items
+          models: (await sessionApi.providerModels(provider.id, session?.id))
+            .items
         }))
       );
       llmModels = groups.flatMap(({ provider, models }) =>
@@ -1180,16 +1196,6 @@
     }
   }
 
-  async function discoverTtsService(
-    service: TtsService | undefined = ttsSelection.selectedTtsService
-  ) {
-    if (service && service.available == null) {
-      await speechCatalogues.refreshService(service.id);
-      return;
-    }
-    await speechCatalogues.discover(service);
-  }
-
   async function chooseTtsService(value: string) {
     ttsSelectionRequest++;
     const previous = ttsSelection.selectedTtsService;
@@ -1208,7 +1214,6 @@
       service?.default_model ?? service?.models?.[0] ?? ''
     );
     const isCurrent = captureTtsSelection();
-    await discoverTtsService(service);
     if (!isCurrent()) return;
     if (switching && previous) {
       const live =
@@ -1803,6 +1808,9 @@
         audiobook_dialogue_flow: draft.audiobookDialogueFlow,
         max_sentence_length: draft.maxSentenceLength,
         audiobook_chunking: draft.audiobookChunking,
+        audiobook_sentence_packing: draft.audiobookSentencePacking,
+        audiobook_sentence_packing_threshold:
+          draft.audiobookSentencePackingThreshold,
         enable_nemo_normalization: draft.nemoNormalization,
         normalize_all_caps: draft.normalizeAllCaps,
         remove_diacritics: draft.removeDiacritics,
@@ -1898,6 +1906,11 @@
     if (!settingsStage || settingsLoading || settingsSaving) return;
     const stage = settingsStage;
     const key = settingsStage.key;
+    if (key === 'prepare_text' && !narrationPackingValid) {
+      error =
+        'Enter a whole-sentence threshold between 1 and 8,192 characters.';
+      return;
+    }
     if (
       key === 'transcribe' &&
       (!hasAttachedCaptions || draft.captionAlignmentMethod !== 'ctc') &&
@@ -1947,7 +1960,7 @@
       error = ttsSelection.elevenVoiceSettingsError;
       return;
     }
-    if (key === 'generate_audio' && !ttsSelection.selectedTtsServiceAvailable) {
+    if (key === 'generate_audio' && !ttsSelection.selectedTtsServiceUsable) {
       error =
         ttsSelection.selectedTtsService?.availability_reason ||
         'Choose an available TTS service before saving generation settings.';
@@ -2039,8 +2052,7 @@
           if (isCurrent()) settingsBases[update.section] = saved;
         }
         if (isCurrent())
-          stageMessage =
-            'Saved as the application defaults for future projects.';
+          stageMessage = 'Saved as workspace defaults for future projects.';
       } else {
         for (const update of submitted) {
           const saved = await persistSection(
@@ -2055,6 +2067,8 @@
       if (transformations)
         await updateOutcomeTransformations(transformations, submittedOutcome);
       if (mode === 'session') {
+        if (key === 'prepare_text' || key === 'generate_audio')
+          notifySessionFlowChange(session.id);
         if (!isCurrent()) return;
         await load();
         if (!isCurrent()) return;
@@ -2627,9 +2641,10 @@
               </div>
               <p class="muted mt-1 text-xs leading-relaxed">
                 Pack complete sentences up to the selected model’s narration
-                budget. Oversized sentences split at natural clause boundaries,
-                favouring balanced parts. Chapter and scene breaks remain
-                separate. Changes apply when preparing new narration.
+                budget. A sentence that will not fit starts a new block. A
+                sentence that exceeds a limit on its own splits at natural
+                boundaries, favouring balanced parts. Chapter and scene breaks
+                remain separate. Changes apply when preparing new narration.
               </p>
             </div>
             <label
@@ -2694,6 +2709,10 @@
                 /> Deterministic normalization</label
               >
             </div>
+            <NarrationPackingSettings
+              bind:policy={draft.audiobookSentencePacking}
+              bind:threshold={draft.audiobookSentencePackingThreshold}
+            />
             <details class="rounded-xl border border-[var(--line)] p-4">
               <summary class="cursor-pointer text-sm font-semibold"
                 >Advanced text cleanup</summary
@@ -2987,15 +3006,18 @@
             ><RotateCcw size={15} /> Revert to defaults</button
           ><button
             onclick={() => saveSettings('defaults')}
-            disabled={settingsLoading ||
+            disabled={!canManageDefaults ||
+              settingsLoading ||
               settingsSaving ||
               Boolean(activity.publishingLibraryVoiceId) ||
+              (settingsStage.key === 'prepare_text' &&
+                !narrationPackingValid) ||
               ((settingsStage.key === 'transcribe' ||
                 settingsStage.key === 'correct') &&
                 sourcePassages.customized &&
                 !sourcePassages.valid) ||
               (settingsStage.key === 'generate_audio' &&
-                (!ttsSelection.selectedTtsServiceAvailable ||
+                (!ttsSelection.selectedTtsServiceUsable ||
                   ttsSelection.selectedVoiceLanguageMismatch ||
                   ttsSelection.invalidTtsConcurrency ||
                   ttsSelection.invalidTtsRetries ||
@@ -3021,6 +3043,8 @@
             disabled={settingsLoading ||
               settingsSaving ||
               Boolean(activity.publishingLibraryVoiceId) ||
+              (settingsStage.key === 'prepare_text' &&
+                !narrationPackingValid) ||
               ((settingsStage.key === 'transcribe' ||
                 settingsStage.key === 'correct') &&
                 sourcePassages.customized &&
@@ -3028,7 +3052,7 @@
               (settingsStage.key === 'translate' &&
                 !draft.translationSourceArtifactId) ||
               (settingsStage.key === 'generate_audio' &&
-                (!ttsSelection.selectedTtsServiceAvailable ||
+                (!ttsSelection.selectedTtsServiceUsable ||
                   ttsSelection.selectedVoiceLanguageMismatch ||
                   ttsSelection.invalidTtsConcurrency ||
                   ttsSelection.invalidTtsRetries ||
@@ -3068,6 +3092,7 @@
     }}
   />{/if}
 {#if voiceLibraryOpen && VoiceLibraryModalComponent}<VoiceLibraryModalComponent
+    sessionId={session.id}
     initialView={voiceLibraryView}
     initialService={voiceLibraryService}
     initialVoice={voiceLibraryInitialVoice}

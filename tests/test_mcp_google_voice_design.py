@@ -45,6 +45,7 @@ def test_google_voice_design_schema_is_strict_bounded_and_normalizes_text():
         "language",
         "voice_category",
         "idempotency_key",
+        "workspace_id",
     }
 
     invalid = (

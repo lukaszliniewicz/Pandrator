@@ -22,6 +22,7 @@ from pandrator_mcp.schemas import (
     ListGenerationRunsInput,
     PlanExportVariantInput,
     TtsCatalogInput,
+    TtsCatalogRefreshInput,
 )
 from pandrator_mcp.targets import LocalSourceRoot, TargetProfile
 from pandrator_mcp.tools.e2e import (
@@ -34,6 +35,7 @@ from pandrator_mcp.tools.e2e import (
     import_local_source,
     list_generation_runs,
     plan_export_variant,
+    refresh_tts_catalog,
     tts_catalog,
 )
 
@@ -103,58 +105,104 @@ class _Application:
         self.calls.append(("attach", {"session_id": session_id, **kwargs}))
         return {"id": "attachment-1", "session_revision": 2}
 
-    def tts_catalog(self, *, refresh, service_id=None):
-        self.calls.append(("tts_catalog", {"refresh": refresh, "service_id": service_id}))
+    def tts_catalog(
+        self,
+        *,
+        refresh=False,
+        service_id=None,
+        workspace_id=None,
+        session_id=None,
+        model=None,
+        view=None,
+    ):
+        arguments = {"refresh": refresh, "service_id": service_id}
+        for key, value in (
+            ("workspace_id", workspace_id),
+            ("session_id", session_id),
+            ("model", model),
+            ("view", view),
+        ):
+            if value is not None:
+                arguments[key] = value
+        self.calls.append(("tts_catalog", arguments))
         return {
             "default_service": "service-a",
             "revision": 7,
-            "services": getattr(self, "services", [
-                {
-                    "id": "service-a",
-                    "name": "Service A",
-                    "available": True,
-                    "models": ["model-a"],
-                    "default_model": "model-a",
-                    "voices": ["native-a"],
-                    "default_voice": "native-a",
-                    "generation_prompt_models": ["model-a"],
-                    "base_url": "https://must-not-leak.example",
-                    "credential_reference": "must-not-leak",
-                }
-            ]),
+            "services": getattr(
+                self,
+                "services",
+                [
+                    {
+                        "id": "service-a",
+                        "name": "Service A",
+                        "available": True,
+                        "models": ["model-a"],
+                        "default_model": "model-a",
+                        "voices": ["native-a"],
+                        "default_voice": "native-a",
+                        "generation_prompt_models": ["model-a"],
+                        "base_url": "https://must-not-leak.example",
+                        "credential_reference": "must-not-leak",
+                    }
+                ],
+            ),
         }
 
-    def list_voices(self):
+    def refresh_tts_catalog(self, *, workspace_id=None, service_id=None):
+        arguments = {
+            key: value
+            for key, value in (
+                ("workspace_id", workspace_id),
+                ("service_id", service_id),
+            )
+            if value is not None
+        }
+        self.calls.append(("refresh_tts_catalog", arguments))
+        if hasattr(self, "refreshed_services"):
+            self.services = self.refreshed_services
         return {
-            "items": [
-                {
-                    "id": "managed-1",
-                    "name": "Narrator",
-                    "language": "en",
-                    "revision": 3,
-                    "metadata_json": {
-                        "providers": {
-                            "service-a": {
-                                "status": "ready",
-                                "voice_id": "provider-voice-9",
-                                "credential": "must-not-leak",
+            "default_service": "service-a",
+            "revision": 8,
+            "services": getattr(self, "services", []),
+        }
+
+    def list_voices(self, *, workspace_id=None, session_id=None):
+        arguments = {
+            key: value
+            for key, value in (("workspace_id", workspace_id), ("session_id", session_id))
+            if value is not None
+        }
+        self.calls.append(("list_voices", arguments))
+        return {
+            "items": getattr(
+                self,
+                "voices",
+                [
+                    {
+                        "id": "managed-1",
+                        "name": "Narrator",
+                        "language": "en",
+                        "revision": 3,
+                        "metadata_json": {
+                            "providers": {
+                                "service-a": {
+                                    "status": "ready",
+                                    "voice_id": "provider-voice-9",
+                                    "credential": "must-not-leak",
+                                }
                             }
-                        }
-                    },
-                }
-            ]
+                        },
+                    }
+                ],
+            )
         }
 
     def get_session_settings(self, session_id, section):
-        self.calls.append(
-            ("get_session_settings", {"session_id": session_id, "section": section})
-        )
+        self.calls.append(("get_session_settings", {"session_id": session_id, "section": section}))
         return {"revision": 4, "override": getattr(self, "settings_override", {"speed": 0.95})}
 
     def update_session_settings(self, session_id, **kwargs):
-        self.calls.append(
-            ("update_session_settings", {"session_id": session_id, **kwargs})
-        )
+        self.calls.append(("update_session_settings", {"session_id": session_id, **kwargs}))
         return {"revision": 5}
 
     def list_generation_runs(self, session_id, **kwargs):
@@ -271,6 +319,23 @@ def _configure_audio_cpp(
 
 
 class McpEndToEndToolTests(unittest.TestCase):
+    def test_export_selector_omission_preserves_defaults_and_explicit_choice(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime, _application = _runtime(Path(temporary))
+            for selection in (None, "auto", "source", "translation", "dual"):
+                with self.subTest(selection=selection):
+                    arguments = {"session_id": "session-1"}
+                    if selection is not None:
+                        arguments["subtitle_selection"] = selection
+                    plan = plan_export_variant(
+                        runtime, PlanExportVariantInput(**arguments)
+                    ).result
+                    output = plan["overrides"]["output"]
+                    if selection is None:
+                        self.assertNotIn("subtitle_selection", output)
+                    else:
+                        self.assertEqual(selection, output["subtitle_selection"])
+
     def test_configure_tts_registered_schema_and_mcp_transport(self):
         from mcp import Client
 
@@ -322,7 +387,9 @@ class McpEndToEndToolTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def test_configure_audio_cpp_refreshes_stale_models_once_and_normalizes_service_aliases(self):
+    def test_configure_audio_cpp_uses_explicitly_refreshed_advertisement_and_normalizes_aliases(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             runtime, application = _runtime(Path(directory))
             stale = _audio_cpp_service(
@@ -336,9 +403,12 @@ class McpEndToEndToolTests(unittest.TestCase):
                 model_voice_modes={"kokoro_82m_q8_0": "prebuilt"},
                 default_voice="af_heart",
             )
-            application.tts_catalog = mock.Mock(
-                side_effect=[_tts_catalog_payload(stale), _tts_catalog_payload(refreshed)]
+            application.services = [stale]
+            application.refreshed_services = [refreshed]
+            refreshed_catalog = refresh_tts_catalog(
+                runtime, TtsCatalogRefreshInput(service_id="audio_cpp")
             )
+            self.assertEqual("kokoro_82m_q8_0", refreshed_catalog["services"][0]["default_model"])
 
             outcome = _configure_audio_cpp(
                 runtime,
@@ -348,41 +418,59 @@ class McpEndToEndToolTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                [mock.call(refresh=False, service_id="audio_cpp"), mock.call(refresh=True, service_id="audio_cpp")],
-                application.tts_catalog.call_args_list,
+                [
+                    ("refresh_tts_catalog", {"service_id": "audio_cpp"}),
+                    (
+                        "tts_catalog",
+                        {
+                            "refresh": False,
+                            "service_id": "audio_cpp",
+                            "session_id": "session-1",
+                            "model": "KOKORO_82M_Q8_0",
+                            "view": "full",
+                        },
+                    ),
+                ],
+                [
+                    call
+                    for call in application.calls
+                    if call[0] in {"refresh_tts_catalog", "tts_catalog"}
+                ],
             )
             updates = [
-                kwargs
-                for name, kwargs in application.calls
-                if name == "update_session_settings"
+                kwargs for name, kwargs in application.calls if name == "update_session_settings"
             ]
             self.assertEqual(1, len(updates))
             self.assertEqual("kokoro_82m_q8_0", updates[0]["value"]["model"])
             self.assertEqual("af_heart", updates[0]["value"]["voice"])
             self.assertEqual("kokoro_82m_q8_0", outcome.result["selection"]["model"])
 
-    def test_configure_audio_cpp_rejects_models_still_missing_after_refresh(self):
+    def test_configure_audio_cpp_rejects_unadvertised_models_without_refreshing(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime, application = _runtime(Path(directory))
             stale = _audio_cpp_service(["qwen3_tts_0_6b_base_q8_0"])
-            refreshed = _audio_cpp_service(["kokoro_82m_q8_0"])
-            application.tts_catalog = mock.Mock(
-                side_effect=[_tts_catalog_payload(stale), _tts_catalog_payload(refreshed)]
-            )
+            application.services = [stale]
 
             with self.assertRaises(PandratorMcpError) as captured:
                 _configure_audio_cpp(runtime, model="not-installed")
 
             self.assertEqual("validation_error", captured.exception.code)
             self.assertEqual(
-                [mock.call(refresh=False, service_id="audio_cpp"), mock.call(refresh=True, service_id="audio_cpp")],
-                application.tts_catalog.call_args_list,
+                {
+                    "refresh": False,
+                    "service_id": "audio_cpp",
+                    "session_id": "session-1",
+                    "model": "not-installed",
+                    "view": "full",
+                },
+                next(values for name, values in application.calls if name == "tts_catalog"),
             )
+            self.assertFalse(any(name == "refresh_tts_catalog" for name, _ in application.calls))
             self.assertFalse(
                 any(name == "update_session_settings" for name, _ in application.calls)
             )
 
-    def test_configure_audio_cpp_known_case_variant_and_default_skip_refresh(self):
+    def test_configure_audio_cpp_normalizes_case_and_never_refreshes_implicitly(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime, application = _runtime(Path(directory))
             service = _audio_cpp_service(
@@ -390,19 +478,34 @@ class McpEndToEndToolTests(unittest.TestCase):
                 model_voice_modes={"kokoro_82m_q8_0": "prebuilt"},
                 default_voice="af_heart",
             )
-            application.tts_catalog = mock.Mock(
-                side_effect=[_tts_catalog_payload(service), _tts_catalog_payload(service)]
-            )
+            application.services = [service]
 
             explicit = _configure_audio_cpp(runtime, model="KOKORO_82M_Q8_0")
             self.assertEqual("kokoro_82m_q8_0", explicit.result["selection"]["model"])
-            self.assertEqual([mock.call(refresh=False, service_id="audio_cpp")], application.tts_catalog.call_args_list)
+            self.assertEqual(
+                {
+                    "refresh": False,
+                    "service_id": "audio_cpp",
+                    "session_id": "session-1",
+                    "model": "KOKORO_82M_Q8_0",
+                    "view": "full",
+                },
+                next(values for name, values in application.calls if name == "tts_catalog"),
+            )
 
             application.calls.clear()
-            application.tts_catalog.reset_mock()
             default = _configure_audio_cpp(runtime)
             self.assertEqual("kokoro_82m_q8_0", default.result["selection"]["model"])
-            self.assertEqual([mock.call(refresh=False, service_id="audio_cpp")], application.tts_catalog.call_args_list)
+            self.assertEqual(
+                {
+                    "refresh": False,
+                    "service_id": "audio_cpp",
+                    "session_id": "session-1",
+                    "view": "full",
+                },
+                next(values for name, values in application.calls if name == "tts_catalog"),
+            )
+            self.assertFalse(any(name == "refresh_tts_catalog" for name, _ in application.calls))
             self.assertEqual(
                 1,
                 len([name for name, _ in application.calls if name == "update_session_settings"]),
@@ -414,15 +517,23 @@ class McpEndToEndToolTests(unittest.TestCase):
                 default_voice="af_heart",
             )
             application.calls.clear()
-            application.tts_catalog = mock.Mock(
-                side_effect=[_tts_catalog_payload(default_only)]
-            )
+            application.services = [default_only]
             explicit_default = _configure_audio_cpp(
                 runtime,
                 model="KOKORO_82M_Q8_0",
             )
             self.assertEqual("KOKORO_82M_Q8_0", explicit_default.result["selection"]["model"])
-            self.assertEqual([mock.call(refresh=False, service_id="audio_cpp")], application.tts_catalog.call_args_list)
+            self.assertEqual(
+                {
+                    "refresh": False,
+                    "service_id": "audio_cpp",
+                    "session_id": "session-1",
+                    "model": "KOKORO_82M_Q8_0",
+                    "view": "full",
+                },
+                next(values for name, values in application.calls if name == "tts_catalog"),
+            )
+            self.assertFalse(any(name == "refresh_tts_catalog" for name, _ in application.calls))
 
     def test_configure_tts_does_not_refresh_missing_models_for_other_families(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -434,9 +545,7 @@ class McpEndToEndToolTests(unittest.TestCase):
                 "models": ["model-a"],
                 "default_model": "model-a",
             }
-            application.tts_catalog = mock.Mock(
-                return_value=_tts_catalog_payload(service)
-            )
+            application.tts_catalog = mock.Mock(return_value=_tts_catalog_payload(service))
 
             with self.assertRaises(PandratorMcpError) as captured:
                 configure_tts(
@@ -451,12 +560,19 @@ class McpEndToEndToolTests(unittest.TestCase):
                 )
 
             self.assertEqual("validation_error", captured.exception.code)
-            self.assertEqual([mock.call(refresh=False, service_id="service_a")], application.tts_catalog.call_args_list)
+            application.tts_catalog.assert_called_once_with(
+                refresh=False,
+                service_id="service_a",
+                session_id="session-1",
+                model="missing-model",
+                view="full",
+            )
+            self.assertFalse(any(name == "refresh_tts_catalog" for name, _ in application.calls))
             self.assertFalse(
                 any(name == "update_session_settings" for name, _ in application.calls)
             )
 
-    def test_configure_audio_cpp_refresh_uses_new_managed_voice_metadata(self):
+    def test_configure_audio_cpp_uses_managed_voice_metadata_after_explicit_refresh(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime, application = _runtime(Path(directory))
             stale = _audio_cpp_service(
@@ -467,30 +583,23 @@ class McpEndToEndToolTests(unittest.TestCase):
                 ["qwen3_tts_1_7b_base_q8_0"],
                 model_voice_modes={"qwen3_tts_1_7b_base_q8_0": "cloning"},
             )
-            application.tts_catalog = mock.Mock(
-                side_effect=[_tts_catalog_payload(stale), _tts_catalog_payload(refreshed)]
-            )
-            application.list_voices = mock.Mock(
-                side_effect=[
-                    {"items": []},
-                    {
-                        "items": [
-                            {
-                                "id": "managed-qwen",
-                                "name": "Narrator",
-                                "metadata_json": {
-                                    "providers": {
-                                        "audio_cpp": {
-                                            "status": "ready",
-                                            "voice_id": "fresh-reference",
-                                        }
-                                    }
-                                },
+            application.services = [stale]
+            application.refreshed_services = [refreshed]
+            application.voices = [
+                {
+                    "id": "managed-qwen",
+                    "name": "Narrator",
+                    "metadata_json": {
+                        "providers": {
+                            "audio_cpp": {
+                                "status": "ready",
+                                "voice_id": "fresh-reference",
                             }
-                        ]
+                        }
                     },
-                ]
-            )
+                }
+            ]
+            refresh_tts_catalog(runtime, TtsCatalogRefreshInput(service_id="audio_cpp"))
 
             outcome = _configure_audio_cpp(
                 runtime,
@@ -500,16 +609,38 @@ class McpEndToEndToolTests(unittest.TestCase):
 
             self.assertEqual("fresh-reference", outcome.result["selection"]["voice"])
             self.assertEqual(
-                [mock.call(refresh=False, service_id="audio_cpp"), mock.call(refresh=True, service_id="audio_cpp")],
-                application.tts_catalog.call_args_list,
+                [
+                    ("refresh_tts_catalog", {"service_id": "audio_cpp"}),
+                    (
+                        "tts_catalog",
+                        {
+                            "refresh": False,
+                            "service_id": "audio_cpp",
+                            "session_id": "session-1",
+                            "model": "qwen3_tts_1_7b_base_q8_0",
+                            "view": "full",
+                        },
+                    ),
+                    ("list_voices", {"session_id": "session-1"}),
+                ],
+                [
+                    call
+                    for call in application.calls
+                    if call[0] in {"refresh_tts_catalog", "tts_catalog", "list_voices"}
+                ],
             )
-            self.assertEqual(2, application.list_voices.call_count)
+            self.assertFalse(
+                any(
+                    name == "tts_catalog" and values["refresh"]
+                    for name, values in application.calls
+                )
+            )
             self.assertEqual(
                 1,
                 len([name for name, _ in application.calls if name == "update_session_settings"]),
             )
 
-    def test_configure_audio_cpp_refresh_keeps_missing_and_offline_service_errors(self):
+    def test_configure_audio_cpp_keeps_missing_and_offline_errors_without_refreshing(self):
         cases = (
             ((), "not_found"),
             (
@@ -523,31 +654,31 @@ class McpEndToEndToolTests(unittest.TestCase):
                 "source_unavailable",
             ),
         )
-        for refreshed_services, expected_code in cases:
+        for services, expected_code in cases:
             with self.subTest(expected_code=expected_code):
                 with tempfile.TemporaryDirectory() as directory:
                     runtime, application = _runtime(Path(directory))
-                    stale = _audio_cpp_service(["qwen3_tts_0_6b_base_q8_0"])
-                    application.tts_catalog = mock.Mock(
-                        side_effect=[
-                            _tts_catalog_payload(stale),
-                            _tts_catalog_payload(*refreshed_services),
-                        ]
-                    )
+                    application.services = list(services)
 
                     with self.assertRaises(PandratorMcpError) as captured:
                         _configure_audio_cpp(runtime, model="kokoro_82m_q8_0")
 
                     self.assertEqual(expected_code, captured.exception.code)
                     self.assertEqual(
-                        [mock.call(refresh=False, service_id="audio_cpp"), mock.call(refresh=True, service_id="audio_cpp")],
-                        application.tts_catalog.call_args_list,
+                        {
+                            "refresh": False,
+                            "service_id": "audio_cpp",
+                            "session_id": "session-1",
+                            "model": "kokoro_82m_q8_0",
+                            "view": "full",
+                        },
+                        next(values for name, values in application.calls if name == "tts_catalog"),
                     )
                     self.assertFalse(
-                        any(
-                            name == "update_session_settings"
-                            for name, _ in application.calls
-                        )
+                        any(name == "refresh_tts_catalog" for name, _ in application.calls)
+                    )
+                    self.assertFalse(
+                        any(name == "update_session_settings" for name, _ in application.calls)
                     )
 
     def test_tts_capability_guards_and_atomic_context_settings(self):
@@ -783,7 +914,12 @@ class McpEndToEndToolTests(unittest.TestCase):
             output = root / "outputs"
             runtime, application = _runtime(root, output)
 
-            catalog = tts_catalog(runtime, TtsCatalogInput(refresh=True))
+            with self.assertRaises(PandratorMcpError) as rejected_refresh:
+                tts_catalog(runtime, TtsCatalogInput(refresh=True))
+            self.assertEqual("validation_error", rejected_refresh.exception.code)
+            self.assertIn("pandrator_refresh_tts_catalog", str(rejected_refresh.exception))
+
+            catalog = tts_catalog(runtime, TtsCatalogInput())
             self.assertEqual("service-a", catalog["services"][0]["id"])
             self.assertNotIn("base_url", catalog["services"][0])
             self.assertNotIn("credential", str(catalog))
@@ -792,11 +928,17 @@ class McpEndToEndToolTests(unittest.TestCase):
             self.assertEqual(1, len(catalog["managed_voices"]))
             filtered = tts_catalog(
                 runtime,
-                TtsCatalogInput(model="MODEL-A", available_only=True, detail="full"),
+                TtsCatalogInput(
+                    service_id="SERVICE-A",
+                    model="MODEL-A",
+                    available_only=True,
+                    detail="full",
+                ),
             )
             self.assertEqual(["native-a"], filtered["services"][0]["voices"])
 
-            vertex_services = [{
+            vertex_services = [
+                {
                     "id": "google_vertex",
                     "name": "Vertex AI",
                     "adapter": "vertex",
@@ -805,7 +947,8 @@ class McpEndToEndToolTests(unittest.TestCase):
                     "voices": ["Kore"],
                     "default_model": "gemini-2.5-pro-preview-tts",
                     "default_voice": "Kore",
-                }]
+                }
+            ]
 
             async def verify_registered_catalogue():
                 from mcp import Client
@@ -818,9 +961,7 @@ class McpEndToEndToolTests(unittest.TestCase):
                 ) as client:
                     tools = {tool.name: tool for tool in (await client.list_tools()).tools}
                     schema = tools["pandrator_get_tts_catalog"].input_schema
-                    self.assertTrue(
-                        schema["properties"]["include_managed_voices"]["default"]
-                    )
+                    self.assertTrue(schema["properties"]["include_managed_voices"]["default"])
                     with mock.patch.object(
                         application, "list_voices", wraps=application.list_voices
                     ) as list_voices:
@@ -838,9 +979,7 @@ class McpEndToEndToolTests(unittest.TestCase):
                 result = structured.structured_content["result"]
                 self.assertEqual([], result["managed_voices"])
                 self.assertEqual(["google_vertex"], [item["id"] for item in result["services"]])
-                self.assertEqual(
-                    ["gemini-2.5-pro-preview-tts"], result["services"][0]["models"]
-                )
+                self.assertEqual(["gemini-2.5-pro-preview-tts"], result["services"][0]["models"])
                 self.assertLess(len(json.dumps(result).encode("utf-8")), 4 * 1024)
                 content = structured.content[0]
                 self.assertIsInstance(content, TextContent)
@@ -850,9 +989,7 @@ class McpEndToEndToolTests(unittest.TestCase):
                 self.assertLess(len(marker), 500)
                 self.assertNotIn("gemini-2.5-pro-preview-tts", marker)
 
-            with mock.patch.object(
-                application, "services", vertex_services, create=True
-            ):
+            with mock.patch.object(application, "services", vertex_services, create=True):
                 asyncio.run(verify_registered_catalogue())
 
             configured = configure_tts(
@@ -868,13 +1005,9 @@ class McpEndToEndToolTests(unittest.TestCase):
                     idempotency_key="tts:configure:1",
                 ),
             )
-            self.assertEqual(
-                "provider-voice-9", configured.result["selection"]["voice"]
-            )
+            self.assertEqual("provider-voice-9", configured.result["selection"]["voice"])
             update = next(
-                call
-                for call in application.calls
-                if call[0] == "update_session_settings"
+                call for call in application.calls if call[0] == "update_session_settings"
             )
             self.assertEqual(0.95, update[1]["value"]["speed"])
             self.assertEqual(
@@ -908,9 +1041,7 @@ class McpEndToEndToolTests(unittest.TestCase):
                     filename="../course-final.mp4",
                 ),
             )
-            self.assertEqual(
-                (output / "course-final.mp4").resolve(), Path(downloaded["path"])
-            )
+            self.assertEqual((output / "course-final.mp4").resolve(), Path(downloaded["path"]))
             self.assertEqual(b"data", Path(downloaded["path"]).read_bytes())
 
     def test_download_artifact_defaults_to_workspace_exports_for_local_managed(self):
@@ -948,17 +1079,39 @@ def test_configuration_filters_heavy_model_detail_and_preserves_advertised_model
     from types import SimpleNamespace
 
     application = mock.Mock()
-    application.tts_catalog.return_value = _tts_catalog_payload({
-        "id": "audio_cpp", "models": ["model-a", "model-b"],
-        "model_catalog": [{"id": "model-a"}, {"id": "model-b"}],
-        "voice_catalogues": {"model-a": ["voice-a"], "model-b": ["voice-b"]},
-        "voice_metadata": {"model-a:voice-a": {"id": "voice-a"}, "model-b:voice-b": {"id": "voice-b"}},
-        "catalogue": {"source": "runtime", "scope": "service", "service_id": "audio_cpp", "checked_at": None, "complete": True, "error": None},
-    })
+    application.tts_catalog.return_value = _tts_catalog_payload(
+        {
+            "id": "audio_cpp",
+            "models": ["model-a", "model-b"],
+            "model_catalog": [{"id": "model-a"}, {"id": "model-b"}],
+            "voice_catalogues": {"model-a": ["voice-a"], "model-b": ["voice-b"]},
+            "voice_metadata": {
+                "model-a:voice-a": {"id": "voice-a"},
+                "model-b:voice-b": {"id": "voice-b"},
+            },
+            "catalogue": {
+                "source": "runtime",
+                "scope": "service",
+                "service_id": "audio_cpp",
+                "checked_at": None,
+                "complete": True,
+                "error": None,
+            },
+        }
+    )
     application.list_voices.return_value = {"items": []}
     runtime = SimpleNamespace(require_application=lambda: application)
-    result = tts_catalog(runtime, TtsCatalogInput(service_id="AUDIO-CPP", model="model-a", detail="full"), _for_configuration=True)
-    application.tts_catalog.assert_called_once_with(refresh=False, service_id="audio_cpp")
+    result = tts_catalog(
+        runtime,
+        TtsCatalogInput(service_id="AUDIO-CPP", model="model-a", detail="full"),
+        _for_configuration=True,
+    )
+    application.tts_catalog.assert_called_once_with(
+        refresh=False,
+        service_id="audio_cpp",
+        view="full",
+        model="model-a",
+    )
     row = result["services"][0]
     assert row["models"] == ["model-a", "model-b"]
     assert row["model_catalog"] == [{"id": "model-a"}]

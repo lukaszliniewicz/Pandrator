@@ -21,7 +21,6 @@ from pandrator.runtime import DataPaths
 from .artifacts import ArtifactService
 from .database import SCHEMA_HEAD, Database, upgrade_database
 from .models import (
-    AppSetting,
     Artifact,
     AudioTake,
     Document,
@@ -33,8 +32,11 @@ from .models import (
     ProviderModel,
     Segment,
     SessionRecord,
+    WorkspaceSetting,
     new_id,
 )
+from .projects.identity import create_session_project
+from .settings_identity import settings_workspace_id
 
 MIGRATION_VERSION = 1
 GENERATION_PROMOTION_VERSION = 1
@@ -129,13 +131,17 @@ def _import_providers(database: Database, settings: dict[str, Any]) -> int:
     configs = llm.get("provider_configs") if isinstance(llm, dict) else []
     default_model = str(llm.get("default_model") or "") if isinstance(llm, dict) else ""
     count = 0
-    with database.session() as session:
+    with database.immediate_session() as session:
+        from .accounts.identity import initial_personal_workspace
+
+        workspace_id = initial_personal_workspace(session).id
         for raw in configs if isinstance(configs, list) else []:
             if not isinstance(raw, dict):
                 continue
             provider_key = str(raw.get("provider") or "custom")
             provider_label = str(raw.get("name") or raw.get("label") or raw.get("id") or provider_key)
             provider = Provider(
+                workspace_id=workspace_id,
                 kind="llm",
                 provider_key=provider_key,
                 label=provider_label,
@@ -348,8 +354,9 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
         database = Database(paths.database)
         try:
             settings = _legacy_settings(paths)
-            with database.session() as session:
-                session.add(AppSetting(key="global", value_json=_redact_mapping(settings)))
+            with database.immediate_session() as session:
+                workspace_id = settings_workspace_id(session)
+                session.add(WorkspaceSetting(workspace_id=workspace_id, key="global", value_json=_redact_mapping(settings)))
             provider_count = _import_providers(database, settings)
             artifact_service = ArtifactService(database, paths)
             imported_sessions = 0
@@ -375,8 +382,7 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
                     status=str(row.get("status") or "idle"),
                 )
                 with database.session() as session:
-                    session.add(record)
-                    session.flush()
+                    create_session_project(session, record, legacy=True)
                     session.expunge(record)
                 imported_sessions += 1
                 if legacy_path.is_dir() and paths.root in legacy_path.parents:

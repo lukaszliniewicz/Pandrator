@@ -7,6 +7,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from unittest import mock
 
+import pytest
 from sqlalchemy import select
 
 from pandrator.logic import xtts_trainer_handler
@@ -15,13 +16,14 @@ from pandrator.logic.source_cleaning.deterministic import (
     EpubExtractionResult,
     EpubSourceProbe,
 )
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
-    AppSetting,
     Artifact,
     GenerationPlan,
     GenerationPlanRevision,
@@ -31,10 +33,12 @@ from pandrator.web.models import (
     ProviderModel,
     TrainingRun,
     UsageEvent,
+    WorkspaceSetting,
     utcnow,
 )
 from pandrator.web.provider_settings import build_llm_settings
 from pandrator.web.sessions import SessionService
+from pandrator.web.usage_identity import usage_creation_ownership
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import WorkflowService, _job_run_metrics
 from pandrator.web.workspace import OutcomePlanService
@@ -49,7 +53,8 @@ class ProviderSettingsTests(unittest.TestCase):
             os.environ["PANDRATOR_TEST_KEY"] = "secret-value"
             try:
                 with database.session() as session:
-                    provider = Provider(provider_key="openai", label="OpenAI", secret_ref="env:PANDRATOR_TEST_KEY", options_json={"request_options": {"organization": "pandrator"}})
+                    provider = Provider(workspace_id=initial_personal_workspace(session).id,
+                                        provider_key="openai", label="OpenAI", secret_ref="env:PANDRATOR_TEST_KEY", options_json={"request_options": {"organization": "pandrator"}})
                     session.add(provider)
                     session.flush()
                     session.add(ProviderModel(provider_id=provider.id, model_id="gpt-test", is_default=True, default_temperature=0.0, default_reasoning_effort="custom-fast"))
@@ -175,6 +180,7 @@ class AdvancedApiTests(unittest.TestCase):
         self.assertEqual(converted.get_json()["kind"], "rvc.convert")
 
 
+@pytest.mark.usefixtures("host_execution_actor", "host_model_acquisition")
 class TrainingHandlerTests(unittest.TestCase):
     @staticmethod
     def publish_fixture(paths, callback):
@@ -201,7 +207,7 @@ class TrainingHandlerTests(unittest.TestCase):
                     source_path.write_bytes(b"training source")
                     source = ArtifactService(database, paths).register(source_path, kind="audio", role="upload")
                     with database.session() as session:
-                        training = TrainingRun(source_artifact_id=source.id, model_name="narrator")
+                        training = TrainingRun(workspace_id=source.workspace_id, source_artifact_id=source.id, model_name="narrator")
                         session.add(training)
                         session.flush()
                         training_id = training.id
@@ -238,7 +244,7 @@ class TrainingHandlerTests(unittest.TestCase):
                     source_path.write_bytes(b"training source")
                     source = ArtifactService(database, paths).register(source_path, kind="audio", role="upload")
                     with database.session() as session:
-                        training = TrainingRun(source_artifact_id=source.id, model_name="narrator")
+                        training = TrainingRun(workspace_id=source.workspace_id, source_artifact_id=source.id, model_name="narrator")
                         session.add(training)
                         session.flush()
                         training_id = training.id
@@ -260,6 +266,7 @@ class TrainingHandlerTests(unittest.TestCase):
                                 handler.train_xtts(payload, lambda *_args: None, cancel)
                     with database.session() as session:
                         record = session.get(TrainingRun, training_id)
+                        assert record is not None
                         self.assertEqual("canceled" if canceled else "failed", record.status)
                         self.assertIsNone(record.output_artifact_id)
                         self.assertEqual(None if canceled else "trainer stopped", record.error_message)
@@ -276,7 +283,7 @@ class TrainingHandlerTests(unittest.TestCase):
                 source_path.write_bytes(b"training source")
                 source = ArtifactService(database, paths).register(source_path, kind="audio", role="upload")
                 with database.session() as session:
-                    training = TrainingRun(source_artifact_id=source.id, model_name="narrator", settings_json={"epochs": 2})
+                    training = TrainingRun(workspace_id=source.workspace_id, source_artifact_id=source.id, model_name="narrator", settings_json={"epochs": 2})
                     session.add(training)
                     session.flush()
                     training_id = training.id
@@ -296,11 +303,14 @@ class TrainingHandlerTests(unittest.TestCase):
                     )
                 with database.session() as session:
                     record = session.get(TrainingRun, training_id)
+                    assert record is not None
                     self.assertEqual("succeeded", record.status)
                     self.assertEqual(result["artifact_id"], record.output_artifact_id)
                     artifact = session.get(Artifact, record.output_artifact_id)
+                    assert artifact is not None
                     self.assertEqual("xtts_model", artifact.role)
-                    defaults = session.get(AppSetting, "services.tts")
+                    workspace_id = initial_personal_workspace(session).id
+                    defaults = session.get(WorkspaceSetting, (workspace_id, "services.tts"))
                     if defaults is not None:
                         providers = defaults.value_json.get("provider_configs", [])
                         xtts = next(
@@ -370,7 +380,8 @@ class AgenticCleaningTests(unittest.TestCase):
                 source_path.write_text("Chapter One\n\nA beginning.", encoding="utf-8")
                 source = ArtifactService(database, paths).register(source_path, kind="source", role="upload", session_id=session_record.id)
                 with database.session() as session:
-                    provider = Provider(provider_key="openai", label="Local", base_url="http://127.0.0.1:1234/v1")
+                    provider = Provider(workspace_id=initial_personal_workspace(session).id,
+                                        provider_key="openai", label="Local", base_url="http://127.0.0.1:1234/v1")
                     session.add(provider)
                     session.flush()
                     session.add(ProviderModel(provider_id=provider.id, model_id="test", is_default=True))
@@ -386,6 +397,11 @@ class AgenticCleaningTests(unittest.TestCase):
                 self.assertEqual(result["report"]["pipeline"]["llm_usage"]["prompt_tokens"], 10)
                 with database.session() as session:
                     usage = session.scalar(select(UsageEvent).where(UsageEvent.stage == "source_cleaning"))
+                    assert usage is not None
+                    self.assertEqual(
+                        (source.workspace_id, session_record.project_id),
+                        (usage.workspace_id, usage.project_id),
+                    )
                     self.assertEqual(usage.cached_input_tokens, 3)
                     self.assertEqual(usage.cost_source, "custom_rates")
             finally:
@@ -413,6 +429,7 @@ class AgenticCleaningTests(unittest.TestCase):
                 )
                 with database.session() as session:
                     provider = Provider(
+                        workspace_id=initial_personal_workspace(session).id,
                         provider_key="openai",
                         label="Local",
                         base_url="http://127.0.0.1:1234/v1",
@@ -612,6 +629,7 @@ class AgenticCleaningTests(unittest.TestCase):
                 )
                 with database.session() as session:
                     provider = Provider(
+                        workspace_id=initial_personal_workspace(session).id,
                         provider_key="openai",
                         label="Local",
                         base_url="http://127.0.0.1:1234/v1",
@@ -698,8 +716,11 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                     metadata={"original_filename": source_path.name},
                 )
                 with database.session() as session:
+                    ownership = job_creation_ownership(session, session_id=record.id)
                     job = Job(
                         kind="generation.run",
+                        workspace_id=ownership.workspace_id,
+                        project_id=ownership.project_id,
                         session_id=record.id,
                         status="running",
                         started_at=datetime(2026, 9, 4, 10, 0),  # noqa: DTZ001
@@ -782,8 +803,11 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 value["inputs"]["generation"] = "source"
                 outcomes.update(record.id, current["revision"], value)
                 with database.session() as session:
+                    usage_owner = usage_creation_ownership(session, session_id=record.id)
                     session.add(
                         UsageEvent(
+                            workspace_id=usage_owner.workspace_id,
+                            project_id=usage_owner.project_id,
                             session_id=record.id,
                             stage="tts_optimization",
                             provider_key="local",
@@ -847,8 +871,11 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                 )
                 started = utcnow()
                 with database.session() as session:
+                    ownership = job_creation_ownership(session, session_id=record.id)
                     job = Job(
                         kind="workflow.continue",
+                        workspace_id=ownership.workspace_id,
+                        project_id=ownership.project_id,
                         session_id=record.id,
                         status="completed",
                         started_at=started,
@@ -856,9 +883,14 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                     )
                     session.add(job)
                     session.flush()
+                    usage_owner = usage_creation_ownership(
+                        session, session_id=record.id, job_id=job.id, artifact_id=correction.id
+                    )
                     session.add_all(
                         [
                             UsageEvent(
+                                workspace_id=usage_owner.workspace_id,
+                                project_id=usage_owner.project_id,
                                 session_id=record.id,
                                 job_id=job.id,
                                 stage="web_research",
@@ -869,6 +901,8 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                                 cost_usd=0.03,
                             ),
                             UsageEvent(
+                                workspace_id=usage_owner.workspace_id,
+                                project_id=usage_owner.project_id,
                                 session_id=record.id,
                                 job_id=job.id,
                                 artifact_id=correction.id,

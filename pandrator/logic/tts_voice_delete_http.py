@@ -8,7 +8,14 @@ import requests
 
 
 class _VoiceExistenceCheck(Protocol):
-    def __call__(self, voice_id: str, *, base_url: str, api_key: str = "") -> bool | None: ...
+    def __call__(
+        self,
+        voice_id: str,
+        *,
+        base_url: str,
+        api_key: str = "",
+        before_io: Callable[[], None] | None = None,
+    ) -> bool | None: ...
 
 
 def _voice_catalog_can_confirm_absence(payload: object) -> bool:
@@ -47,15 +54,19 @@ def _remote_voice_exists(
     _should_try_next_openai_candidate: Callable[[int], bool],
     _extract_voices_from_openai_payload: Callable[[object], list[str]],
     _voice_catalog_can_confirm_absence: Callable[[object], bool],
+    before_io: Callable[[], None] | None = None,
 ) -> bool | None:
     """Verify a remote voice after an idempotent or unsupported DELETE."""
 
     expected = str(voice_id or "").strip().casefold()
     for voices_url in _openai_voice_catalog_urls(base_url):
+        request_headers = _openai_auth_headers(api_key)
+        if before_io is not None:
+            before_io()
         try:
             response = requests.get(
                 voices_url,
-                headers=_openai_auth_headers(api_key),
+                headers=request_headers,
                 timeout=8,
             )
         except requests.exceptions.RequestException:
@@ -87,6 +98,7 @@ def _delete_speaker_voice_openai_compatible(
     _openai_voice_catalog_urls: Callable[[str], list[str]],
     _openai_auth_headers: Callable[[str], dict[str, str]],
     _remote_voice_exists: _VoiceExistenceCheck,
+    before_io: Callable[[], None] | None = None,
 ) -> bool:
     """Delete an uploaded voice without confusing an absent route with an absent voice."""
 
@@ -106,32 +118,45 @@ def _delete_speaker_voice_openai_compatible(
     missing_responses = 0
 
     try:
-        for collection_url in _openai_voice_catalog_urls(normalized_base_url):
-            response = requests.delete(
-                f"{collection_url.rstrip('/')}/{encoded_voice_id}",
-                headers=_openai_auth_headers(api_key),
-                timeout=30,
-            )
-            if 200 <= response.status_code < 300:
-                return True
-            if response.status_code in {404, 410}:
-                missing_responses += 1
-                continue
-            if response.status_code in {405, 501}:
-                unsupported_responses += 1
-                continue
-            raise RuntimeError(
-                f"{service_name} voice deletion failed ({response.status_code}): {response.text}"
-            )
+        collection_urls = _openai_voice_catalog_urls(normalized_base_url)
     except requests.exceptions.RequestException as error:
         raise RuntimeError(
             f"Failed deleting voice from {service_name} server {normalized_base_url}: {error}"
         ) from error
 
+    for collection_url in collection_urls:
+        request_url = f"{collection_url.rstrip('/')}/{encoded_voice_id}"
+        request_headers = _openai_auth_headers(api_key)
+        if before_io is not None:
+            before_io()
+        try:
+            response = requests.delete(
+                request_url,
+                headers=request_headers,
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as error:
+            raise RuntimeError(
+                f"Failed deleting voice from {service_name} server {normalized_base_url}: {error}"
+            ) from error
+        if 200 <= response.status_code < 300:
+            return True
+        if response.status_code in {404, 410}:
+            missing_responses += 1
+            continue
+        if response.status_code in {405, 501}:
+            unsupported_responses += 1
+            continue
+        raise RuntimeError(
+            f"{service_name} voice deletion failed ({response.status_code}): {response.text}"
+        )
+
+    verification_options = {"before_io": before_io} if before_io is not None else {}
     remote_exists = _remote_voice_exists(
         normalized_voice_id,
         base_url=normalized_base_url,
         api_key=api_key,
+        **verification_options,
     )
     if remote_exists is False:
         # A prior deletion or manual cleanup is success from the caller's point

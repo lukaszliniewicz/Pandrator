@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import case, func, select
@@ -38,11 +41,14 @@ from pandrator.logic.dubbing.srt_utils import (
     subtitle_boundary_cue,
     subtitle_task_cue,
 )
+from pandrator.logic.dubbing.subtitle_integrity import subtitle_text_integrity
 from pandrator.logic.dubbing.subtitle_projection import project_subtitle_display
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
 from .artifact_selection import ROLE_TO_STAGE
-from .artifacts import ArtifactService, sha256_file
-from .database import Database
+from .artifacts import ArtifactService, PreparedArtifactRegistration, sha256_file
+from .database import Database, is_sqlite_busy
 from .dispatch_context import (
     context_capsule_for_wave,
     execution_policy,
@@ -76,8 +82,10 @@ from .models import (
     SubtitleEvidence,
     utcnow,
 )
+from .provider_identity import provider_namespace
 from .settings_policy import adapt_runtime_settings
 from .subtitle_evidence import evidence_route_catalog, evidence_stt_routes
+from .temporal_overlap import overlap_indexes
 from .workspace_settings import WorkspaceSettingsService
 
 TERMINAL_DISPATCH_RUN_STATUSES = frozenset(
@@ -175,6 +183,48 @@ def _lease_is_active(value: datetime | None, now: datetime) -> bool:
 def _lease_is_expired(value: datetime | None, now: datetime) -> bool:
     expires_at = _aware(value)
     return expires_at is not None and expires_at <= now
+
+
+
+@dataclass(frozen=True)
+class _MaterializationSnapshot:
+    run: Any
+    source: Any
+    revision: Any
+    batches: list[Any]
+    source_segments: list[Any]
+    timing_words: list[dict[str, Any]]
+    split_words: list[dict[str, Any]]
+    timing_reference: dict[str, Any] | None
+    witness: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _PreparedMaterialization:
+    snapshot: _MaterializationSnapshot
+    destination: Path
+    registration: PreparedArtifactRegistration
+    values: list[dict[str, Any]]
+    logical_values: list[dict[str, Any]] | None
+    content_hash: str
+    parent_indexes: list[list[int]]
+    metadata: dict[str, Any]
+    source_stat: tuple[int, int, int, int]
+
+
+def _plain_row(row: Any) -> Any:
+    return SimpleNamespace(**{
+        column.key: deepcopy(getattr(row, column.key))
+        for column in row.__table__.columns
+    })
+
+
+def _stat_witness(path: Path) -> tuple[int, int, int, int]:
+    try:
+        stat = path.stat()
+    except OSError as error:
+        raise DispatchError("source_changed", "The pinned source content is no longer available.", 409) from error
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
 class DispatchRunService:
@@ -320,6 +370,7 @@ class DispatchRunService:
         db_session: Session | None = None,
     ) -> list[dict[str, Any]]:
         if db_session is not None:
+            require_current_session_access(db_session, session_id, ProjectAction.READ)
             runs = list(
                 db_session.scalars(
                     select(DispatchRun)
@@ -334,7 +385,13 @@ class DispatchRunService:
 
     def get(self, run_id: str, *, db_session: Session | None = None) -> dict[str, Any]:
         if db_session is not None:
-            run = db_session.get(DispatchRun, run_id)
+            header = db_session.execute(
+                select(DispatchRun.id, DispatchRun.session_id).where(DispatchRun.id == run_id)
+            ).one_or_none()
+            if header is None:
+                raise DispatchError("not_found", "Dispatch run not found.", 404)
+            require_current_session_access(db_session, header.session_id, ProjectAction.READ)
+            run = db_session.get(DispatchRun, header.id)
             if run is None:
                 raise DispatchError("not_found", "Dispatch run not found.", 404)
             batches = list(
@@ -1048,15 +1105,20 @@ class DispatchRunService:
         )
 
     @staticmethod
-    def _audio_witness_models(session: Session) -> list[dict[str, Any]]:
+    def _audio_witness_models(
+        session: Session, *, session_id: str
+    ) -> list[dict[str, Any]]:
+        namespace = provider_namespace(session, session_id=session_id)
         rows = session.execute(
             select(ProviderModel, Provider)
             .join(Provider, Provider.id == ProviderModel.provider_id)
             .where(
+                Provider.workspace_id == namespace.workspace_id,
                 Provider.kind == "llm",
                 Provider.enabled.is_(True),
             )
             .order_by(Provider.label, ProviderModel.model_id)
+            .execution_options(populate_existing=True)
         ).all()
         return [
             {
@@ -1107,7 +1169,9 @@ class DispatchRunService:
         block = list(batch.input_json or [])
         audio_witness_models: list[dict[str, Any]] = []
         if run.kind == "correction":
-            audio_witness_models = self._audio_witness_models(session)
+            audio_witness_models = self._audio_witness_models(
+                session, session_id=run.session_id
+            )
             instructions = build_correction_task_instructions(
                 subtitle_count=len(block),
                 correction_instructions=str(settings.get("instructions") or ""),
@@ -1305,7 +1369,7 @@ class DispatchRunService:
                         "evidence_status_tool": "pandrator_get_subtitle_evidence",
                         "available_routes": evidence_stt_routes()
                         + (["audio_llm"] if audio_witness_models else []),
-                        "route_catalog": evidence_route_catalog(session, run.source_language, database=self.database, paths=self.artifacts.paths),
+                        "route_catalog": evidence_route_catalog(session, run.source_language, database=self.database, paths=self.artifacts.paths, session_id=run.session_id),
                         "audio_witness_models": audio_witness_models,
                         "audio_witness_policy": (
                             "Each configured model supplies an untimed bounded-clip "
@@ -1928,6 +1992,7 @@ class DispatchRunService:
         result: dict[str, Any] | None,
         response_text: str | None,
         context_delta: dict[str, Any] | None = None,
+        defer_finalization: bool = False,
     ) -> tuple[dict[str, Any], int]:
         batch = session.get(DispatchBatch, batch_id)
         if batch is None:
@@ -1957,7 +2022,7 @@ class DispatchRunService:
             )
         if batch.status == "completed":
             if batch.submission_key == submission_key and batch.output_hash == raw_hash:
-                if run.status == "finalizing":
+                if run.status == "finalizing" and not defer_finalization:
                     self._retry_finalize(session, run)
                 return self._submit_payload(
                     run, batch
@@ -2073,7 +2138,8 @@ class DispatchRunService:
             run.status = "finalizing"
             run.error_code = None
             run.error_message = None
-            self._retry_finalize(session, run)
+            if not defer_finalization:
+                self._retry_finalize(session, run)
             status = 200 if run.status == "completed" else 202
         else:
             run.status = "running"
@@ -2110,11 +2176,12 @@ class DispatchRunService:
         session: Session,
         *,
         run_id: str,
+        defer_finalization: bool = False,
     ) -> tuple[dict[str, Any], int]:
         run = session.get(DispatchRun, run_id)
         if run is None:
             raise DispatchError("not_found", "Dispatch run not found.", 404)
-        if run.status == "finalizing":
+        if run.status == "finalizing" and not defer_finalization:
             self._retry_finalize(session, run)
         batch = session.scalar(
             select(DispatchBatch)
@@ -2141,7 +2208,11 @@ class DispatchRunService:
     def _same_timing_language(left: str | None, right: str | None) -> bool:
         return same_timing_language(left, right)
 
-    def _materialize(self, session: Session, run: DispatchRun) -> None:
+    @staticmethod
+    def _require_run_access(session: Session, run: DispatchRun) -> None:
+        require_current_session_access(session, run.session_id, ProjectAction.RUN)
+
+    def _check_materialization(self, session: Session, run: DispatchRun) -> tuple[Artifact, DocumentRevision, list[DispatchBatch]]:
         if run.status in TERMINAL_DISPATCH_RUN_STATUSES and run.status != "completed":
             raise DispatchError(
                 "run_terminal",
@@ -2158,8 +2229,7 @@ class DispatchRunService:
             changed_stages = sorted(
                 stage_key
                 for stage_key in expected_selections
-                if current_selections.get(stage_key)
-                != expected_selections.get(stage_key)
+                if current_selections.get(stage_key) != expected_selections.get(stage_key)
             )
             raise DispatchError(
                 "finalization_conflict",
@@ -2170,9 +2240,7 @@ class DispatchRunService:
         source = session.get(Artifact, run.source_artifact_id)
         revision = session.get(DocumentRevision, run.source_revision_id)
         if source is None or revision is None or source.state == "deleted":
-            raise DispatchError(
-                "source_changed", "The pinned source is no longer available.", 409
-            )
+            raise DispatchError("source_changed", "The pinned source is no longer available.", 409)
         if source.state != run.source_state:
             raise DispatchError(
                 "source_changed",
@@ -2187,18 +2255,6 @@ class DispatchRunService:
             raise DispatchError(
                 "source_changed", "The pinned source revision or hash changed.", 409
             )
-        try:
-            path = self.artifacts.paths.managed_path(source.relative_path)
-            if sha256_file(path) != run.source_content_hash:
-                raise DispatchError(
-                    "source_changed", "The pinned source content changed.", 409
-                )
-        except (OSError, ValueError) as error:
-            raise DispatchError(
-                "source_changed",
-                "The pinned source content is no longer available.",
-                409,
-            ) from error
         current_head = session.scalar(
             select(Artifact)
             .where(
@@ -2214,9 +2270,7 @@ class DispatchRunService:
                 "A newer subtitle result already exists for this session.",
                 409,
                 details={
-                    "current_output_head_artifact_id": current_head.id
-                    if current_head
-                    else None
+                    "current_output_head_artifact_id": current_head.id if current_head else None
                 },
             )
         batches = list(
@@ -2226,13 +2280,103 @@ class DispatchRunService:
                 .order_by(DispatchBatch.ordinal)
             ).all()
         )
-        if any(batch.status != "completed" for batch in batches):
+        if len(batches) != run.batch_count or any(batch.status != "completed" for batch in batches):
             raise DispatchError(
                 "finalization_incomplete",
                 "Not all dispatch batches are accepted.",
                 409,
                 retryable=True,
             )
+        return source, revision, batches
+
+    @staticmethod
+    def _materialization_witness(
+        run: DispatchRun, source: Artifact, revision: DocumentRevision, batches: list[DispatchBatch]
+    ) -> dict[str, Any]:
+        return deepcopy(
+            {
+                "run": {
+                    key: getattr(run, key)
+                    for key in (
+                        "session_id",
+                        "kind",
+                        "source_artifact_id",
+                        "source_revision_id",
+                        "source_content_hash",
+                        "source_state",
+                        "source_language",
+                        "target_language",
+                        "output_role",
+                        "output_head_artifact_id",
+                        "selection_snapshot_json",
+                        "settings_json",
+                        "glossary_json",
+                        "input_hash",
+                        "batch_count",
+                        "completed_batch_count",
+                    )
+                },
+                "revision": {
+                    key: getattr(revision, key)
+                    for key in (
+                        "id",
+                        "document_id",
+                        "content_hash",
+                        "revision_number",
+                    )
+                },
+                "source": {
+                    key: getattr(source, key)
+                    for key in ("id", "relative_path", "content_hash", "state")
+                },
+                "batches": [
+                    (batch.id, batch.ordinal, batch.status, batch.output_hash, batch.submission_key)
+                    for batch in batches
+                ],
+            }
+        )
+
+    def _capture_materialization(
+        self, session: Session, run: DispatchRun
+    ) -> _MaterializationSnapshot:
+        self._require_run_access(session, run)
+        source, revision, batches = self._check_materialization(session, run)
+        timing_words, timing_reference = self._timing_reference(session, source)
+        split_words, _ = (
+            load_timing_reference(session, source)
+            if any(
+                item.get("split_boundary_ids")
+                for batch in batches
+                for item in (batch.normalized_output_json or [])
+            )
+            else ([], None)
+        )
+        segments = list(
+            session.scalars(
+                select(Segment)
+                .where(
+                    Segment.revision_id == revision.id,
+                )
+                .order_by(Segment.ordinal)
+            ).all()
+        )
+        return _MaterializationSnapshot(
+            _plain_row(run),
+            _plain_row(source),
+            _plain_row(revision),
+            [_plain_row(batch) for batch in batches],
+            [_plain_row(segment) for segment in segments],
+            deepcopy(timing_words),
+            deepcopy(split_words),
+            deepcopy(timing_reference),
+            self._materialization_witness(run, source, revision, batches),
+        )
+
+    def _prepare_materialization(
+        self, snapshot: _MaterializationSnapshot
+    ) -> _PreparedMaterialization:
+        run, source = snapshot.run, snapshot.source
+        batches = snapshot.batches
         values = [
             item
             for batch in batches
@@ -2247,14 +2391,39 @@ class DispatchRunService:
             )
         logical_values = None
         if (run.settings_json or {}).get("_logical_passages_version") == 1:
-            split_ids = {int(cue_id) for item in values if item.get("split_boundary_ids") for cue_id in item["source_cue_ids"]}
+            split_ids = {
+                int(cue_id)
+                for item in values
+                if item.get("split_boundary_ids")
+                for cue_id in item["source_cue_ids"]
+            }
             all_inputs = [item for batch in batches for item in (batch.input_json or [])]
             if split_ids:
-                all_inputs = self._with_split_evidence(session, run, all_inputs, split_ids)
-            input_passages = [
-                item["_passage"]
-                for item in all_inputs
-            ]
+                words = snapshot.split_words
+                if not same_timing_language(
+                    run.source_language, (snapshot.timing_reference or {}).get("language")
+                ):
+                    words = []
+                all_inputs = [
+                    {
+                        **item,
+                        "_passage": {
+                            **item["_passage"],
+                            "split_boundaries": split_boundaries(
+                                item["_passage"],
+                                words,
+                                str(
+                                    (snapshot.timing_reference or {}).get("revision_id")
+                                    or run.source_revision_id
+                                ),
+                            ),
+                        },
+                    }
+                    if int(item["index"]) in split_ids and item.get("_passage")
+                    else item
+                    for item in all_inputs
+                ]
+            input_passages = [item["_passage"] for item in all_inputs]
             logical_values = map_output_passages(values, input_passages)
             values = logical_values
         finalization_settings = (run.settings_json or {}).get("subtitle_finalization")
@@ -2263,13 +2432,18 @@ class DispatchRunService:
         timing_reference: dict[str, Any] | None = None
         # Existing durable runs keep their original publication contract.
         if isinstance(finalization_settings, dict):
-            timing_words, timing_reference = self._timing_reference(session, source)
-            output_language = run.target_language if run.kind == "translation" else run.source_language
+            timing_words, timing_reference = snapshot.timing_words, snapshot.timing_reference
+            output_language = (
+                run.target_language if run.kind == "translation" else run.source_language
+            )
             match_words = self._same_timing_language(
-                output_language, (timing_reference or {}).get("language"),
+                output_language,
+                (timing_reference or {}).get("language"),
             )
             values = _finalize_dispatch_values(
-                values, {**finalization_settings, "subtitle_language": output_language}, timing_words=timing_words,
+                values,
+                {**finalization_settings, "subtitle_language": output_language},
+                timing_words=timing_words,
                 match_source_words=match_words,
             )
             if timing_reference:
@@ -2286,19 +2460,98 @@ class DispatchRunService:
                 for ordinal, item in enumerate(values)
             ]
         )
-        destination = (
-            self.session_dir_resolver(run.session_id)
-            / f"dispatch-{run.id}-{run.output_role}.srt"
+        integrity = subtitle_text_integrity(accepted_srt, srt)
+        if not integrity["matches"]:
+            raise RuntimeError("Subtitle finalization changed accepted text.")
+        try:
+            source_path = self.artifacts.paths.managed_path(source.relative_path)
+            source_stat = _stat_witness(source_path)
+            if (
+                sha256_file(source_path) != run.source_content_hash
+                or _stat_witness(source_path) != source_stat
+            ):
+                raise DispatchError("source_changed", "The pinned source content changed.", 409)
+        except (OSError, ValueError) as error:
+            raise DispatchError(
+                "source_changed", "The pinned source content is no longer available.", 409
+            ) from error
+        destination = self.session_dir_resolver(run.session_id) / (
+            f"dispatch-{run.id}-{secrets.token_hex(16)}-{run.output_role}.srt"
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(srt, encoding="utf-8")
-        source_segments = list(
-            session.scalars(
-                select(Segment)
-                .where(Segment.revision_id == revision.id)
-                .order_by(Segment.ordinal)
-            ).all()
-        )
+        created = False
+        try:
+            with destination.open("x", encoding="utf-8") as stream:
+                created = True
+                stream.write(srt)
+            registration = self.artifacts.prepare_registration(destination)
+            parents = overlap_indexes(
+                [
+                    (parent.start_ms, parent.end_ms)
+                    if parent.start_ms is not None and parent.end_ms is not None
+                    else (0, 0)
+                    for parent in snapshot.source_segments
+                ],
+                [(int(item["start_ms"]), int(item["end_ms"])) for item in values],
+            )
+            logical_metadata = {}
+            if logical_values is not None:
+                # Reuse canonical packet construction before taking the writer.
+                transient = Artifact(
+                    content_hash=registration.content_hash, metadata_json={"revision_id": "pending"}
+                )
+                attach_passages(transient, logical_values, source=source)
+                logical_metadata = {"logical_passages": transient.metadata_json["logical_passages"]}
+            return _PreparedMaterialization(
+                snapshot,
+                destination,
+                registration,
+                values,
+                logical_values,
+                _segment_hash(values),
+                parents,
+                {
+                    **logical_metadata,
+                    "subtitle_finalization": finalization_settings,
+                    "subtitle_diagnostics": subtitle_export_diagnostics(
+                        accepted_srt,
+                        srt,
+                        finalization_settings or {},
+                        None,
+                        language=output_language or "",
+                        language_origin="dispatch_language",
+                    ),
+                    "subtitle_text_integrity": integrity,
+                    "subtitle_boundary_timing_reference": timing_reference,
+                    "uncertain_segment_count": sum(
+                        str(item.get("review_state") or "") == "uncertain" for item in values
+                    ),
+                },
+                source_stat,
+            )
+        except BaseException:
+            if created:
+                destination.unlink(missing_ok=True)
+            raise
+
+    def _publish_materialization(
+        self, session: Session, run: DispatchRun, prepared: _PreparedMaterialization
+    ) -> None:
+        self._require_run_access(session, run)
+        if run.status == "completed":
+            return
+        source, revision, batches = self._check_materialization(session, run)
+        if (
+            run.status != "finalizing"
+            or self._materialization_witness(run, source, revision, batches)
+            != prepared.snapshot.witness
+        ):
+            raise DispatchError(
+                "finalization_conflict",
+                "The accepted dispatch inputs changed during finalization.",
+                409,
+            )
+        values = prepared.values
         reuse_source_document = (
             run.kind == "correction"
             and source.role == "translation"
@@ -2333,9 +2586,7 @@ class DispatchRunService:
             document = Document(
                 session_id=run.session_id,
                 stage=run.output_role,
-                language=run.target_language
-                if run.kind == "translation"
-                else run.source_language,
+                language=run.target_language if run.kind == "translation" else run.source_language,
             )
             session.add(document)
             session.flush()
@@ -2345,7 +2596,7 @@ class DispatchRunService:
             document_id=document.id,
             parent_revision_id=parent_revision_id,
             revision_number=next_revision_number,
-            content_hash=_segment_hash(values),
+            content_hash=prepared.content_hash,
         )
         session.add(output_revision)
         session.flush()
@@ -2362,35 +2613,29 @@ class DispatchRunService:
                     "review_state": str(item.get("review_state") or "clear"),
                     "review_note": str(item.get("review_note") or ""),
                     "evidence_ids": list(item.get("evidence_ids") or []),
-                    "uncertain_source_cue_ids": list(
-                        item.get("uncertain_source_cue_ids") or []
-                    ),
+                    "uncertain_source_cue_ids": list(item.get("uncertain_source_cue_ids") or []),
                 },
             )
             session.add(segment)
             output_segments.append(segment)
         session.flush()
         document.active_revision_id = output_revision.id
-        for child in output_segments:
-            for sequence, parent in enumerate(
-                parent
-                for parent in source_segments
-                if parent.start_ms is not None
-                and parent.end_ms is not None
-                and min(child.end_ms or 0, parent.end_ms)
-                > max(child.start_ms or 0, parent.start_ms)
-            ):
-                session.add(
-                    SegmentLineage(
-                        parent_segment_id=parent.id,
-                        child_segment_id=child.id,
-                        relation="temporal_overlap",
-                        sequence=sequence,
-                    )
+        session.add_all(
+            [
+                SegmentLineage(
+                    parent_segment_id=prepared.snapshot.source_segments[parent_index].id,
+                    child_segment_id=child.id,
+                    relation="temporal_overlap",
+                    sequence=sequence,
                 )
+                for child, indexes in zip(output_segments, prepared.parent_indexes, strict=True)
+                for sequence, parent_index in enumerate(indexes)
+            ]
+        )
         artifact = self.artifacts.register_in_session(
             session,
-            destination,
+            prepared.destination,
+            _prepared=prepared.registration,
             kind="srt",
             role=run.output_role,
             session_id=run.session_id,
@@ -2404,25 +2649,177 @@ class DispatchRunService:
                 "stage": run.output_role,
                 "dispatch_kind": run.kind,
                 "language": document.language,
-                "subtitle_finalization": finalization_settings,
-                "subtitle_diagnostics": subtitle_export_diagnostics(
-                    accepted_srt, srt, finalization_settings or {}, None,
-                    language=output_language or "",
-                    language_origin="dispatch_language",
-                ),
-                "subtitle_boundary_timing_reference": timing_reference,
-                "uncertain_segment_count": sum(
-                    1
-                    for item in values
-                    if str(item.get("review_state") or "") == "uncertain"
+                **prepared.metadata,
+                **(
+                    {
+                        "logical_passages": {
+                            **prepared.metadata["logical_passages"],
+                            "display_revision_id": output_revision.id,
+                        }
+                    }
+                    if "logical_passages" in prepared.metadata
+                    else {}
                 ),
             },
         )
-        if logical_values is not None:
-            attach_passages(artifact, logical_values, source=source)
         run.result_artifact_id = artifact.id
         run.result_revision_id = output_revision.id
         run.status = "completed"
         run.error_code = None
         run.error_message = None
         run.updated_at = utcnow()
+
+    def _materialize(self, session: Session, run: DispatchRun) -> None:
+        # Compatibility for internal callers that own their transaction.
+        prepared = self._prepare_materialization(self._capture_materialization(session, run))
+        try:
+            self._publish_materialization(session, run, prepared)
+        except BaseException:
+            prepared.destination.unlink(missing_ok=True)
+            raise
+
+    def _pending_receipt(self, session: Session, run: DispatchRun) -> tuple[dict[str, Any], int]:
+        self._require_run_access(session, run)
+        batch = session.scalar(
+            select(DispatchBatch)
+            .where(
+                DispatchBatch.dispatch_run_id == run.id,
+            )
+            .order_by(DispatchBatch.ordinal.desc())
+        )
+        if batch is None:
+            raise DispatchError("not_found", "Dispatch batch not found.", 404)
+        return self._submit_payload(run, batch), 200 if run.status == "completed" else 202
+
+    def finalize_pending(
+        self,
+        run_id: str,
+        *,
+        complete: Callable[[Session, dict[str, Any], int], None] | None = None,
+        error_payload: Callable[[DispatchError], dict[str, Any]] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        """Prepare without a writer, then publish one immutable winning result."""
+        prepared: _PreparedMaterialization | None = None
+        try:
+            with self.database.snapshot_session() as session:
+                run = session.get(DispatchRun, run_id)
+                if run is None:
+                    raise DispatchError("not_found", "Dispatch run not found.", 404)
+                receipt = self._pending_receipt(session, run)
+                snapshot = (
+                    self._capture_materialization(session, run)
+                    if run.status == "finalizing"
+                    else None
+                )
+            if snapshot is None:
+                if complete is None:
+                    return receipt
+
+                def finish(session: Session) -> tuple[dict[str, Any], int]:
+                    run = session.get(DispatchRun, run_id)
+                    if run is None:
+                        raise DispatchError("not_found", "Dispatch run not found.", 404)
+                    result, status = self._pending_receipt(session, run)
+                    complete(session, result, status)
+                    return result, status
+
+                return self.database.run_immediate(finish)
+            prepared = self._prepare_materialization(snapshot)
+            source_path = self.artifacts.paths.managed_path(snapshot.source.relative_path)
+            if _stat_witness(source_path) != prepared.source_stat:
+                raise DispatchError("source_changed", "The pinned source content changed.", 409)
+
+            def publish(session: Session) -> tuple[dict[str, Any], int]:
+                run = session.get(DispatchRun, run_id)
+                if run is None:
+                    raise DispatchError("not_found", "Dispatch run not found.", 404)
+                self._publish_materialization(session, run, prepared)
+                result, status = self._pending_receipt(session, run)
+                if complete is not None:
+                    complete(session, result, status)
+                return result, status
+
+            return self.database.run_immediate(publish)
+        except (
+            DispatchError,
+            OSError,
+            RuntimeError,
+            SQLAlchemyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            if is_sqlite_busy(error):
+                with self.database.snapshot_session() as session:
+                    run = session.get(DispatchRun, run_id)
+                    if run is None:
+                        raise DispatchError("not_found", "Dispatch run not found.", 404) from error
+                    return self._pending_receipt(session, run)
+
+            failure_error = error
+            failure_payload = None
+            if isinstance(failure_error, DispatchError):
+                details = (
+                    dict(failure_error.details) if isinstance(failure_error.details, dict) else {}
+                )
+                details.update({"batch_accepted": True, "run_id": run_id})
+                failure_error.details = details
+                if error_payload is not None:
+                    failure_payload = error_payload(failure_error)
+
+            def fail(session: Session) -> tuple[dict[str, Any], int]:
+                run = session.get(DispatchRun, run_id)
+                if run is None:
+                    raise DispatchError("not_found", "Dispatch run not found.", 404)
+                self._require_run_access(session, run)
+                if run.status != "finalizing":
+                    result, status = self._pending_receipt(session, run)
+                    if complete is not None:
+                        complete(session, result, status)
+                    return result, status
+                run.status = "failed" if isinstance(failure_error, DispatchError) else "finalizing"
+                run.error_code = (
+                    failure_error.code
+                    if isinstance(failure_error, DispatchError)
+                    else "materialization_failed"
+                )
+                run.error_message = str(failure_error)[:2000]
+                run.updated_at = utcnow()
+                result, status = self._pending_receipt(session, run)
+                if complete is not None:
+                    if isinstance(failure_error, DispatchError):
+                        if failure_payload is not None:
+                            complete(session, failure_payload, failure_error.status)
+                    else:
+                        complete(session, result, status)
+                return result, status
+
+            try:
+                result = self.database.run_immediate(fail)
+            except SQLAlchemyError as failure:
+                if not is_sqlite_busy(failure):
+                    raise
+                with self.database.snapshot_session() as session:
+                    run = session.get(DispatchRun, run_id)
+                    if run is None:
+                        raise DispatchError(
+                            "not_found", "Dispatch run not found.", 404
+                        ) from failure
+                    return self._pending_receipt(session, run)
+            if isinstance(error, DispatchError) and result[0]["status"] == "failed":
+                raise
+            return result
+        finally:
+            if prepared is not None:
+                # The unique attempt path can never name another attempt's output.
+                # A committed registration wins even if response construction fails.
+                try:
+                    with self.database.snapshot_session() as session:
+                        registered = session.scalar(
+                            select(Artifact.id).where(
+                                Artifact.relative_path == prepared.registration.relative_path,
+                            )
+                        )
+                    if registered is None:
+                        prepared.destination.unlink(missing_ok=True)
+                except (OSError, SQLAlchemyError):
+                    pass

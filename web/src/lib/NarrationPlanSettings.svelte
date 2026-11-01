@@ -8,6 +8,10 @@
   import { invalidationBus, invalidates } from './invalidation';
   import { notifySessionFlowChange } from './session-flow';
   import { modalDialog } from './modal-dialog';
+  import NarrationPackingSettings from './NarrationPackingSettings.svelte';
+  import ParameterLabel from './ParameterLabel.svelte';
+  import { useProjectInterface } from './project-interface.svelte';
+  const projectInterface = useProjectInterface();
   let {
     sessionId,
     busy = false,
@@ -29,6 +33,12 @@
   let modelDefault = $state<Budget | null>(null);
   let policy = $state<'model' | 'manual'>('model');
   let characters = $state<number | undefined>();
+  let sentencePacking = $state<'auto' | 'sentences' | 'clauses'>('auto');
+  let sentencePackingThreshold = $state<number | undefined>(300);
+  let dialogueFlow = $state('auto');
+  const initialDialogueFlow = $derived(
+    String(settings?.effective.audiobook_dialogue_flow ?? 'auto')
+  );
   let loading = $state(false),
     saving = $state(false),
     error = $state(''),
@@ -41,22 +51,40 @@
       ? Number(settings?.effective.max_sentence_length ?? budget.target_chars)
       : budget?.target_chars
   );
+  const initialPacking = $derived(
+    settings?.effective.audiobook_sentence_packing === 'sentences' ||
+      settings?.effective.audiobook_sentence_packing === 'clauses'
+      ? settings.effective.audiobook_sentence_packing
+      : 'auto'
+  );
+  const initialPackingThreshold = $derived(
+    Number(settings?.effective.audiobook_sentence_packing_threshold ?? 300)
+  );
   const dirty = $derived(
     Boolean(
       budget &&
       (policy !== budget.mode ||
-        (policy === 'manual' && characters !== initialCharacters))
+        (policy === 'manual' && characters !== initialCharacters) ||
+        sentencePacking !== initialPacking ||
+        sentencePackingThreshold !== initialPackingThreshold ||
+        dialogueFlow !== initialDialogueFlow)
     )
   );
   const valid = $derived(
-    policy === 'model' ||
+    (policy === 'model' ||
       (Number.isInteger(characters) &&
         Number(characters) >= 20 &&
-        Number(characters) <= 8192)
+        Number(characters) <= 8192)) &&
+      Number.isInteger(sentencePackingThreshold) &&
+      Number(sentencePackingThreshold) >= 1 &&
+      Number(sentencePackingThreshold) <= 8192
   );
   function reset() {
     if (budget) policy = budget.mode;
     characters = initialCharacters;
+    sentencePacking = initialPacking;
+    sentencePackingThreshold = initialPackingThreshold;
+    dialogueFlow = initialDialogueFlow;
   }
   beforeNavigate((navigation) => {
     if (
@@ -89,6 +117,9 @@
       policy = budget.mode;
       modelDefault = setup.model_default_segmentation;
       characters = initialCharacters;
+      sentencePacking = initialPacking;
+      sentencePackingThreshold = initialPackingThreshold;
+      dialogueFlow = initialDialogueFlow;
       error = '';
     } catch (caught) {
       if (request === serial) error = errorMessage(caught);
@@ -104,13 +135,16 @@
     try {
       await sessionApi.patchSettings(sessionId, 'text', settings.revision, {
         audiobook_chunking: policy,
+        audiobook_sentence_packing: sentencePacking,
+        audiobook_sentence_packing_threshold: sentencePackingThreshold,
+        audiobook_dialogue_flow: dialogueFlow,
         ...(policy === 'manual' ? { max_sentence_length: characters } : {})
       });
       await load();
       notifySessionFlowChange(sessionId);
       await onchanged?.();
       notice =
-        'Saved. Run Segment narration again, then prepare a new plan, to use this length.';
+        'Saved. Run Segment narration again, then prepare a new plan, to use these settings.';
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -119,6 +153,7 @@
   }
   onMount(() => {
     void load();
+    const releaseGuard = projectInterface?.guard(async () => !dirty && !saving);
     const disconnect = invalidationBus.subscribe((batch) => {
       if (
         !dirty &&
@@ -131,6 +166,7 @@
     return () => {
       serial++;
       disconnect();
+      releaseGuard?.();
     };
   });
 </script>
@@ -149,7 +185,12 @@
   <legend>Length of new narration blocks</legend>
   <div class="length-controls">
     <label
-      >Length policy<select class="input" bind:value={policy}
+      ><ParameterLabel
+        section="text"
+        name="audiobook_chunking"
+        label="Length policy"
+        description="Automatic uses the selected speech model’s default block length. Custom limit sets your own character budget. Shorter blocks generally use less GPU memory. These settings apply when you segment narration again; existing plans keep their boundaries."
+      /><select class="input" bind:value={policy}
         ><option value="model">Automatic · model default</option><option
           value="manual">Custom limit</option
         ></select
@@ -174,13 +215,29 @@
         type="button"
         class="btn btn-secondary"
         disabled={!valid}
-        onclick={save}>Save length</button
+        onclick={save}>Save narration settings</button
       ><button type="button" class="btn" onclick={reset}>Reset</button>{/if}
   </div>
+  <NarrationPackingSettings
+    bind:policy={sentencePacking}
+    bind:threshold={sentencePackingThreshold}
+  />
+  <label class="block text-sm">
+    <ParameterLabel
+      section="text"
+      name="audiobook_dialogue_flow"
+      label="Dialogue flow"
+      description="On by default for new projects. Recognises clear, short dialogue exchanges using punctuation and language rules, without an LLM. Compatible turns can share a block and use sentence-length pauses. It does not identify characters or assign voices. Your explicit Off setting is preserved."
+    />
+    <select class="input mt-2 w-full" bind:value={dialogueFlow}>
+      <option value="auto">Recognise short dialogue exchanges (default)</option>
+      <option value="off">Off · keep paragraph pauses</option>
+    </select>
+  </label>
   <p>
     {#if budget}{budget.target_chars.toLocaleString()} characters per block · {policy ===
       'model'
-        ? 'Complete sentences, with model headroom.'
+        ? 'Selected model default.'
         : 'Current effective length.'}{:else}Loading model defaults…{/if} Clear dialogue
     turns can share a block when Dialogue flow is enabled. Chapter and scene breaks
     stay separate. Existing plans keep their boundaries.
@@ -198,8 +255,8 @@
     class="length-confirm"
     aria-labelledby="length-unsaved-title"
   >
-    <h3 id="length-unsaved-title">Keep your length changes?</h3>
-    <p>The narration length has unsaved changes.</p>
+    <h3 id="length-unsaved-title">Keep your narration changes?</h3>
+    <p>The narration settings have unsaved changes.</p>
     <div class="confirm-actions">
       <button type="button" class="btn" onclick={() => (destination = null)}
         >Keep editing</button

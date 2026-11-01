@@ -496,7 +496,7 @@ def create_plan(
             "base_adopted_plan_version": adopted.version if adopted else None,
         }
     )
-    if annotation_format == "xml":
+    if annotation_format == "xml" or any(record_markup(value) for value in seed.values()):
         settings["character_dictionary"] = deepcopy(characters)
         settings["character_dictionary_revision"] = int(controls.get("revision") or 0)
     plan = m.PerformancePlan(
@@ -1317,6 +1317,7 @@ def run_analysis(handlers, payload, progress, cancel_event) -> dict[str, Any]:
             handlers.paths,
             requested_model=requested_model,
             request_timeout_seconds=600,
+            session_id=session_id,
         )
         if plan.settings_json.get("effective_model_name") and model_name != plan.settings_json["effective_model_name"]:
             raise RevisionConflict("The frozen performance analysis model is unavailable.")

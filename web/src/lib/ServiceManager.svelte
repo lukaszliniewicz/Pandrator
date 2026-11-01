@@ -1,5 +1,10 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
+  import WorkspaceSpeechServices from './WorkspaceSpeechServices.svelte';
+  import { fetchTtsServiceDetail } from './speech-catalogue-api';
+  import { speechCatalogueKey } from './tts-catalogue-cache';
   import { errorMessage } from './errors';
+  import { appState } from './app-state.svelte';
   import {
     CheckCircle2,
     ExternalLink,
@@ -30,6 +35,17 @@
     type CredentialBackendProfile
   } from './CredentialStorageFields.svelte';
   import { modalFocus } from './modal-focus';
+
+  let {
+    workspaceId,
+    workspaceName = 'your projects'
+  }: { workspaceId?: string; workspaceName?: string } = $props();
+  let alive = true;
+  let loaded = $state(false);
+  let loadRequest = 0;
+  onDestroy(() => {
+    alive = false;
+  });
 
   const SERVICE_SETTING_KEYS: Record<string, string[]> = {
     xtts: [
@@ -172,19 +188,41 @@
       .map((model) => model.id)
   );
 
-  async function load() {
-    const [servicePayload, backendPayload] = await Promise.all([
-      speechServiceApi.catalogueAs<ServicePayload>(true),
-      credentialApi.backends<CredentialBackendProfile>()
-    ]);
+  async function load(refresh = false) {
+    const scope = { workspaceId };
+    const key = speechCatalogueKey(scope);
+    const request = ++loadRequest;
+    const servicePayload = await speechServiceApi.catalogueAs<ServicePayload>(
+      refresh,
+      scope
+    );
+    if (
+      !alive ||
+      key !== speechCatalogueKey({ workspaceId }) ||
+      request !== loadRequest
+    )
+      return;
     payload = servicePayload;
-    credentialBackends = backendPayload.items;
+    loaded = true;
+    if (payload.can_manage) {
+      const backends = await credentialApi.backends<CredentialBackendProfile>();
+      if (
+        !alive ||
+        key !== speechCatalogueKey({ workspaceId }) ||
+        request !== loadRequest
+      )
+        return;
+      credentialBackends = backends.items.filter(
+        (backend) => !appState.collaborationEnabled || backend.id === 'database'
+      );
+    }
   }
   async function persist(value: TtsSettingsValue) {
     await settingApi.put<TtsSettingsValue>(
       'services.tts',
       payload.revision,
-      value
+      value,
+      payload.workspace_id ?? workspaceId
     );
     await load();
   }
@@ -428,10 +466,13 @@
     discovering = true;
     error = '';
     try {
-      result = await speechServiceApi.discover({
-        base_url: baseUrl,
-        ...(discoveryApiKey.trim() ? { api_key: discoveryApiKey.trim() } : {})
-      });
+      result = await speechServiceApi.discover(
+        {
+          base_url: baseUrl,
+          ...(discoveryApiKey.trim() ? { api_key: discoveryApiKey.trim() } : {})
+        },
+        payload.workspace_id ?? workspaceId
+      );
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -480,7 +521,8 @@
     await settingApi.put<Record<string, unknown>>(
       'defaults.tts',
       payload.default_revision,
-      { ...defaults, service: service.id }
+      { ...defaults, service: service.id },
+      payload.workspace_id ?? workspaceId
     );
     await load();
   }
@@ -527,7 +569,7 @@
     service: TtsService,
     action: 'start' | 'stop' | 'restart'
   ) {
-    if (!service.managed_service_id) return;
+    if (!service.managed_service_id || !appState.isAdministrator) return;
     managerBusy = service.id;
     error = '';
     try {
@@ -543,21 +585,17 @@
     refreshing = service.id;
     error = '';
     try {
-      const found = await speechServiceApi.discover({
-        base_url: service.api_base ?? '',
-        service_id: service.id
+      const found = await fetchTtsServiceDetail(service.id, {
+        refresh: true,
+        workspaceId: payload.workspace_id ?? workspaceId
       });
-      const existing = configuredRecord(service) ?? { id: service.id };
-      await persist({
-        ...payload.value,
-        provider_configs: [
-          ...(payload.value.provider_configs ?? []).filter(
-            (item) =>
-              item.id !== existing.id && item.api_base !== service.api_base
-          ),
-          recordFrom(found, existing)
-        ]
-      });
+      if (alive)
+        payload = {
+          ...payload,
+          services: payload.services.map((item) =>
+            item.id === service.id ? found.service : item
+          )
+        };
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -565,539 +603,557 @@
     }
   }
 
-  load();
+  onMount(() => {
+    void load().catch((caught) => {
+      if (alive) error = errorMessage(caught);
+    });
+  });
 </script>
 
-<section>
-  <div class="flex flex-wrap items-end justify-between gap-4">
-    <div>
-      <h2 class="mt-1 text-2xl font-semibold">External connections</h2>
-      <p class="muted mt-2 max-w-2xl text-sm">
-        Manage remote or independently hosted endpoints, API keys, defaults, and
-        model catalogues here. Local installations live in the Local tab.
-      </p>
-    </div>
-    <div class="flex flex-wrap gap-2">
-      <a href="/voices?view=prebuilt" class="btn btn-secondary"
-        ><Library size={15} /> Open Voice Library</a
-      ><button onclick={load} class="btn btn-secondary"
-        ><RefreshCw size={16} /> Refresh all</button
-      ><button
-        onclick={() => {
-          discoverOpen = true;
-          discoveryApiKey = '';
-          result = null;
-        }}
-        class="btn btn-primary"><Plus size={16} /> Connect endpoint</button
-      >
-    </div>
-  </div>
-  {#if error}<p
-      class="mt-3 rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-sm text-red-600"
-    >
-      {error}
-    </p>{/if}
-  <div class="mt-6 space-y-7">
-    {#each serviceGroups as group}
-      {#if group.items.length}<section>
-          <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
-            <div>
-              <div class="flex items-center gap-2">
-                <h3 class="text-sm font-semibold">{group.label}</h3>
-                <span
-                  class="muted rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold"
-                  >{group.items.length}</span
-                >
-              </div>
-              <p class="muted mt-1 text-xs">{group.description}</p>
-            </div>
-          </div>
-          <div class="grid gap-3 md:grid-cols-2">
-            {#each group.items as service}
-              <article class="rounded-2xl border border-[var(--line)] p-4">
-                <div class="flex items-center gap-3">
-                  <div
-                    class="grid size-9 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
-                  >
-                    <Server size={17} />
-                  </div>
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <div class="truncate font-semibold">{service.name}</div>
-                      {#if service.credential_configured}<span
-                          class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.62rem] font-bold uppercase"
-                          >Credentials: {service.credential_source}</span
-                        >{:else if service.credential_required}<span
-                          class="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[.62rem] font-bold uppercase text-amber-700"
-                          >Credentials required</span
-                        >{:else}<span
-                          class="muted rounded-full border border-[var(--line)] px-2 py-0.5 text-[.62rem] font-bold uppercase"
-                          >No key required</span
-                        >{/if}
-                      {#if service.manager_component_id}
-                        <span
-                          class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.62rem] font-bold uppercase text-[var(--accent)]"
-                          >{isManaged(service)
-                            ? 'Managed local'
-                            : 'External'}</span
-                        >
-                      {/if}
-                    </div>
-                    <div class="muted truncate text-xs">{service.api_base}</div>
-                  </div>
-                  {#if service.models?.length}<CheckCircle2
-                      class="text-[var(--success)]"
-                      size={17}
-                    />{/if}
-                </div>
-                <div class="muted mt-3 text-xs">
-                  {service.models?.length ?? 0} models · {new Set([
-                    ...(service.voices ?? []),
-                    ...(service.live_voices ?? [])
-                  ]).size} voices{service.default_model
-                    ? ` · default ${service.default_model}`
-                    : ''}
-                  {#if service.manager_component_id}
-                    · local {service.manager_component_state ??
-                      'unknown'}{service.manager_service
-                      ? ` / ${managedHealth(service)}`
-                      : ''}
-                  {/if}
-                </div>
-                {#if service.description}<p class="muted mt-2 text-xs">
-                    {service.description}
-                  </p>{/if}
-                {#if service.voice_catalogue_warning}<p
-                    class="muted mt-2 text-xs"
-                    role="status"
-                  >
-                    {service.voice_catalogue_warning}
-                  </p>{/if}
-                <div class="mt-3 flex flex-wrap gap-2">
-                  <button
-                    class="btn btn-sm btn-secondary"
-                    onclick={() => openSettings(service)}
-                    ><Settings2 size={13} /> Service settings</button
-                  >
-                  {#if service.supports_prebuilt_voices}<a
-                      href={`/voices?view=prebuilt&service=${encodeURIComponent(service.id)}`}
-                      class="btn btn-sm btn-secondary"
-                      ><Library size={13} /> Preview voices</a
-                    >{/if}
-                  <button
-                    class="btn btn-sm btn-secondary"
-                    onclick={() => setDefault(service)}
-                    disabled={isDefault(service)}
-                    >{isDefault(service) ? 'Default' : 'Make default'}</button
-                  >
-                  {#if !service.direct_http || service.supports_dynamic_catalog}<button
-                      class="btn btn-sm btn-secondary"
-                      onclick={() => refreshService(service)}
-                      disabled={refreshing === service.id}
-                      ><RefreshCw size={13} />{refreshing === service.id
-                        ? 'Testing…'
-                        : 'Test & refresh'}</button
-                    >{/if}
-                  {#if service.manager_available && service.manager_component_id}
-                    {#if ['absent', 'unknown'].includes(service.manager_component_state ?? '') && service.manager_supported_actions?.includes('install')}
-                      <a
-                        class="btn btn-sm btn-primary"
-                        data-sveltekit-reload
-                        href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
-                        >Install locally</a
-                      >
-                    {:else if service.manager_component_state === 'degraded' && service.manager_supported_actions?.includes('repair')}
-                      <a
-                        class="btn btn-sm btn-primary"
-                        data-sveltekit-reload
-                        href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
-                        >Repair local service</a
-                      >
-                    {:else if service.manager_component_state === 'present'}
-                      {#if !service.manager_service?.process}
-                        <button
-                          class="btn btn-sm btn-secondary"
-                          disabled={managerBusy === service.id}
-                          onclick={() => managedRuntime(service, 'start')}
-                          >Start local service</button
-                        >
-                      {:else}
-                        <button
-                          class="btn btn-sm btn-secondary"
-                          disabled={managerBusy === service.id}
-                          onclick={() => managedRuntime(service, 'stop')}
-                          >Stop local service</button
-                        >
-                      {/if}
-                      {#if isManaged(service)}
-                        <button
-                          class="btn btn-sm btn-secondary"
-                          disabled={managerBusy === service.id}
-                          onclick={() => setConnectionMode(service, 'external')}
-                          >Use external endpoint</button
-                        >
-                      {:else if managedHealth(service) === 'healthy'}
-                        <button
-                          class="btn btn-sm btn-primary"
-                          disabled={managerBusy === service.id}
-                          onclick={() =>
-                            setConnectionMode(service, 'managed_local')}
-                          >Use managed local</button
-                        >
-                      {/if}
-                    {/if}
-                  {/if}
-                  {#if configuredRecord(service)}<button
-                      class="btn btn-sm btn-secondary text-red-500"
-                      onclick={() => removeService(service)}>Remove</button
-                    >{/if}
-                </div>
-              </article>
-            {/each}
-          </div>
-        </section>{/if}
-    {/each}
-    {#if externalServices.length === 0}<div
-        class="rounded-2xl border border-dashed border-[var(--line)] p-5 text-sm"
-      >
-        <div class="font-semibold">No external connections yet</div>
-        <p class="muted mt-1">
-          Connect a hosted endpoint or configure a cloud speech service to see
-          it here. Local engines remain available in the Local tab.
+{#if !loaded}
+  <p class="muted" role="status">{error || 'Loading speech connections…'}</p>
+{:else if !payload.can_manage}
+  <WorkspaceSpeechServices {workspaceId} {workspaceName} kind="tts" />
+{:else}
+  <section>
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h2 class="mt-1 text-2xl font-semibold">External connections</h2>
+        <p class="muted mt-2 max-w-2xl text-sm">
+          Manage remote or independently hosted endpoints, API keys, defaults,
+          and model catalogues here. Local installations live in the Local tab.
         </p>
-      </div>{/if}
-  </div>
-  <details class="mt-6 rounded-2xl border border-[var(--line)] p-4">
-    <summary class="cursor-pointer font-semibold"
-      >Known compatible endpoint profiles</summary
-    >
-    <div class="mt-4 grid gap-2 md:grid-cols-2">
-      {#each payload.profiles ?? [] as profile}<div
-          class="rounded-xl border border-[var(--line)] p-3"
-        >
-          <div class="text-sm font-semibold">{profile.name}</div>
-          <div class="muted mt-1 text-xs">{profile.description}</div>
-          <div class="mt-3 flex gap-2">
-            <button
-              onclick={() => useProfile(profile)}
-              class="btn btn-sm btn-secondary">Use profile</button
-            >{#if profile.source_url}<a
-                href={profile.source_url}
-                target="_blank"
-                rel="noreferrer"
-                class="btn btn-sm btn-quiet"
-                >Project <ExternalLink size={12} /></a
-              >{/if}
-          </div>
-        </div>{/each}
-    </div>
-  </details>
-</section>
-
-{#if editing}
-  <div
-    class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-2 sm:p-5"
-  >
-    <div
-      use:modalFocus={{ onclose: () => (editing = null) }}
-      class="surface modal-panel flex w-full max-w-3xl flex-col"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="service-settings-title"
-    >
-      <header
-        class="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7"
-      >
-        <div>
-          <h2 id="service-settings-title" class="mt-1 text-2xl font-semibold">
-            {editing.name}
-          </h2>
-          <p class="muted mt-2 text-sm">
-            Connection, model, and generation defaults.
-          </p>
-        </div>
-        <button
-          onclick={() => (editing = null)}
-          class="btn btn-icon btn-secondary"
-          aria-label="Close service settings"><X size={18} /></button
-        >
-      </header>
-      <div class="modal-scroll p-5 sm:p-7">
-        <section class="rounded-2xl border border-[var(--line)] p-4 sm:p-5">
-          <h3 class="font-semibold">Connection and defaults</h3>
-          {#if editing.manager_component_id}<label
-              class="mt-4 block text-sm font-semibold"
-              >Connection type<select
-                value={editing.connection_mode ?? 'external'}
-                onchange={(event) =>
-                  setEditingConnectionMode(
-                    event.currentTarget.value as 'external' | 'managed_local'
-                  )}
-                class="field"
-                ><option value="external">External endpoint</option><option
-                  value="managed_local"
-                  disabled={!editing.manager_available ||
-                    editing.manager_component_state !== 'present'}
-                  >Managed local service</option
-                ></select
-              ></label
-            >{/if}<label class="mt-4 block text-sm font-semibold"
-            >Base URL<input
-              bind:value={editing.api_base}
-              disabled={editing.connection_mode === 'managed_local'}
-              class="field"
-            />{#if editing.connection_mode === 'managed_local'}<small
-                class="muted mt-1 block font-normal"
-                >Resolved at runtime from {editing.managed_service_id}; managed
-                by Pandrator Manager.</small
-              >{:else if normalizedId(editing) === 'elevenlabs'}<small
-                class="muted mt-1 block font-normal"
-                >Native ElevenLabs API. Pandrator adds the official
-                /v1/text-to-speech/{'{voice_id}'} route and xi-api-key header.</small
-              >{/if}</label
-          >{#if normalizedId(editing) === 'vertex_ai'}<div
-              class="mt-4 grid gap-3 sm:grid-cols-2"
-            >
-              <label class="block text-sm font-semibold"
-                >Google Cloud project<input
-                  bind:value={editing.vertex_project}
-                  placeholder="Uses project_id from JSON when blank"
-                  class="field"
-                /></label
-              ><label class="block text-sm font-semibold"
-                >Vertex location<input
-                  bind:value={editing.vertex_location}
-                  placeholder="us-central1"
-                  class="field"
-                /></label
-              >
-            </div>{/if}
-          <div class="mt-4">
-            <CredentialStorageFields
-              backends={credentialBackends}
-              bind:backend={editingCredentialBackend}
-              bind:reference={editingCredentialReference}
-              bind:secret={editingApiKey}
-              bind:deletePrevious={deletePreviousCredential}
-              configured={Boolean(editing.credential_configured)}
-              currentSource={editing.credential_source ?? 'none'}
-              existingBackend={editingExistingCredentialBackend}
-              suggestedEnvironment={editing.api_key_env ?? ''}
-              secretLabel={normalizedId(editing) === 'vertex_ai'
-                ? 'Google service-account JSON'
-                : normalizedId(editing) === 'elevenlabs'
-                  ? 'ElevenLabs API key'
-                  : normalizedId(editing) === 'azure_speech_mai_voice_2'
-                    ? 'Azure Speech key'
-                    : 'API key'}
-              multiline={normalizedId(editing) === 'vertex_ai'}
-            />
-          </div>
-          {#if editing.credential_configured || editing.secret_ref}<label
-              class="mt-3 flex items-center gap-2 text-sm"
-              ><input
-                type="checkbox"
-                bind:checked={removeEditingApiKey}
-                onchange={() => {
-                  if (removeEditingApiKey) {
-                    editingApiKey = '';
-                    deletePreviousCredential = false;
-                  }
-                }}
-                class="accent-[var(--accent)]"
-              />
-              Remove this service's credential reference{#if ['database', 'keyring'].includes(editing.credential_source ?? '')}
-                and stored value{/if}</label
-            >{/if}<label class="mt-4 block text-sm font-semibold"
-            >Models / deployment names<textarea
-              bind:value={editingModelsText}
-              rows="4"
-              spellcheck="false"
-              placeholder="One model or Azure deployment name per line"
-              class="field font-mono text-xs"></textarea><small
-              class="muted mt-1 block font-normal"
-              >Enter one ID per line. Azure deployment names are kept exactly as
-              entered.</small
-            ></label
-          >{#if showGroupedEditingModels}<div class="mt-4">
-              <LocalModelPicker
-                id="service-default-model"
-                label="Default model"
-                value={selectedModel}
-                catalog={editingCatalog}
-                listedIds={editing?.models ?? []}
-                loadedIds={editingLoadedIds}
-                modelVoiceModes={editing?.model_voice_modes ?? {}}
-                onchange={setDefaultModel}
-              />
-            </div>{:else}<label class="mt-4 block text-sm font-semibold"
-              >Default model{#if modelChoices.length}<select
-                  value={selectedModel}
-                  onchange={(event) =>
-                    setDefaultModel(event.currentTarget.value)}
-                  class="field"
-                  >{#each modelChoices as model}<option value={model}
-                      >{model}</option
-                    >{/each}</select
-                >{:else}<input
-                  value={selectedModel}
-                  oninput={(event) =>
-                    setDefaultModel(event.currentTarget.value)}
-                  placeholder="Model ID"
-                  class="field"
-                />{/if}</label
-            >{/if}{#if settingKeys.length}<details
-              class="mt-5 border-t border-[var(--line)] pt-4"
-              open
-            >
-              <summary class="cursor-pointer text-sm font-semibold"
-                >Provider defaults</summary
-              >
-              <div class="provider-default-grid mt-4">
-                {#each settingKeys as key}
-                  {#if key.startsWith('fishs2_') && !['fishs2_temperature', 'fishs2_top_p'].includes(key)}
-                    {@const meta = numberPresentation(key)}
-                    <label class="block text-xs font-semibold">
-                      <ParameterLabel
-                        section="tts"
-                        name={key}
-                        label={settingLabel(key)}
-                        compact
-                      />
-                      {#if key === 'fishs2_verbose'}
-                        <select
-                          class="field"
-                          value={editing.settings?.[key] == null
-                            ? ''
-                            : String(editing.settings[key])}
-                          onchange={(event) =>
-                            setServiceSetting(
-                              key,
-                              event.currentTarget.value === ''
-                                ? null
-                                : event.currentTarget.value === 'true'
-                            )}
-                        >
-                          <option value="">Backend default</option>
-                          <option value="false">Off</option>
-                          <option value="true">On</option>
-                        </select>
-                      {:else}
-                        <input
-                          class="field"
-                          type="number"
-                          min={meta.min}
-                          max={meta.max}
-                          step={meta.step}
-                          value={(editing.settings?.[key] as number) ?? ''}
-                          placeholder="Backend default"
-                          oninput={(event) =>
-                            setServiceSetting(
-                              key,
-                              event.currentTarget.value === ''
-                                ? null
-                                : event.currentTarget.valueAsNumber
-                            )}
-                        />
-                      {/if}
-                    </label>
-                  {:else}<SettingField
-                      section="tts"
-                      keyName={key}
-                      value={editing.settings?.[key] ??
-                        payload.builtin_defaults?.[key]}
-                      onchange={(value) => setServiceSetting(key, value)}
-                      compact
-                    />{/if}
-                {/each}
-              </div>
-              {#if normalizedId(editing) === 'fishs2'}<p
-                  class="muted mt-3 text-xs"
-                >
-                  These settings reach the FishS2 wrapper. Its API does not
-                  apply speed, volume, latency or chunk-length overrides; use
-                  text delivery cues or audio processing for those effects.
-                </p>{/if}
-            </details>{/if}
-        </section>
-        {#if editing.supports_prebuilt_voices}<a
-            href={`/voices?view=prebuilt&service=${encodeURIComponent(editing.id)}`}
-            class="mt-5 flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
-            ><Library class="shrink-0 text-[var(--accent)]" size={20} /><span
-              class="min-w-0 flex-1"
-              ><strong class="block text-sm"
-                >Voice preview is in the Voice Library</strong
-              ><span class="muted mt-1 block text-xs"
-                >Browse by language, compare samples, and choose defaults there.</span
-              ></span
-            ><ExternalLink size={15} /></a
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <a href="/voices?view=prebuilt" class="btn btn-secondary"
+          ><Library size={15} /> Open Voice Library</a
+        ><button
+          onclick={() =>
+            load(true).catch((caught) => (error = errorMessage(caught)))}
+          disabled={!payload.can_refresh}
+          class="btn btn-secondary"><RefreshCw size={16} /> Refresh all</button
+        >{#if appState.isAdministrator}<button
+            onclick={() => {
+              discoverOpen = true;
+              discoveryApiKey = '';
+              result = null;
+            }}
+            class="btn btn-primary"><Plus size={16} /> Connect endpoint</button
           >{/if}
       </div>
-      <footer
-        class="flex shrink-0 justify-end gap-2 border-t border-[var(--line)] px-5 py-4 sm:px-7"
-      >
-        <button onclick={() => (editing = null)} class="btn btn-secondary"
-          >Cancel</button
-        ><button onclick={persistEditing} class="btn btn-primary"
-          >{editingCredentialBackend !== editingExistingCredentialBackend
-            ? 'Verify move and save'
-            : 'Save service settings'}</button
-        >
-      </footer>
     </div>
-  </div>
-{/if}
+    {#if error}<p
+        class="mt-3 rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-sm text-red-600"
+      >
+        {error}
+      </p>{/if}
+    <div class="mt-6 space-y-7">
+      {#each serviceGroups as group}
+        {#if group.items.length}<section>
+            <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <div class="flex items-center gap-2">
+                  <h3 class="text-sm font-semibold">{group.label}</h3>
+                  <span
+                    class="muted rounded-full border border-[var(--line)] px-2 py-0.5 text-[.65rem] font-bold"
+                    >{group.items.length}</span
+                  >
+                </div>
+                <p class="muted mt-1 text-xs">{group.description}</p>
+              </div>
+            </div>
+            <div class="grid gap-3 md:grid-cols-2">
+              {#each group.items as service}
+                <article class="rounded-2xl border border-[var(--line)] p-4">
+                  <div class="flex items-center gap-3">
+                    <div
+                      class="grid size-9 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
+                    >
+                      <Server size={17} />
+                    </div>
+                    <div class="min-w-0 flex-1">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <div class="truncate font-semibold">{service.name}</div>
+                        {#if service.credential_configured}<span
+                            class="rounded-full border border-[var(--line)] px-2 py-0.5 text-[.62rem] font-bold uppercase"
+                            >Credentials: {service.credential_source}</span
+                          >{:else if service.credential_required}<span
+                            class="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[.62rem] font-bold uppercase text-amber-700"
+                            >Credentials required</span
+                          >{:else}<span
+                            class="muted rounded-full border border-[var(--line)] px-2 py-0.5 text-[.62rem] font-bold uppercase"
+                            >No key required</span
+                          >{/if}
+                        {#if service.manager_component_id}
+                          <span
+                            class="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.62rem] font-bold uppercase text-[var(--accent)]"
+                            >{isManaged(service)
+                              ? 'Managed local'
+                              : 'External'}</span
+                          >
+                        {/if}
+                      </div>
+                      <div class="muted truncate text-xs">
+                        {service.api_base}
+                      </div>
+                    </div>
+                    {#if service.models?.length}<CheckCircle2
+                        class="text-[var(--success)]"
+                        size={17}
+                      />{/if}
+                  </div>
+                  <div class="muted mt-3 text-xs">
+                    {service.models?.length ?? 0} models · {new Set([
+                      ...(service.voices ?? []),
+                      ...(service.live_voices ?? [])
+                    ]).size} voices{service.default_model
+                      ? ` · default ${service.default_model}`
+                      : ''}
+                    {#if service.manager_component_id}
+                      · local {service.manager_component_state ??
+                        'unknown'}{service.manager_service
+                        ? ` / ${managedHealth(service)}`
+                        : ''}
+                    {/if}
+                  </div>
+                  {#if service.description}<p class="muted mt-2 text-xs">
+                      {service.description}
+                    </p>{/if}
+                  {#if service.voice_catalogue_warning}<p
+                      class="muted mt-2 text-xs"
+                      role="status"
+                    >
+                      {service.voice_catalogue_warning}
+                    </p>{/if}
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <button
+                      class="btn btn-sm btn-secondary"
+                      onclick={() => openSettings(service)}
+                      ><Settings2 size={13} /> Service settings</button
+                    >
+                    {#if service.supports_prebuilt_voices}<a
+                        href={`/voices?view=prebuilt&service=${encodeURIComponent(service.id)}`}
+                        class="btn btn-sm btn-secondary"
+                        ><Library size={13} /> Preview voices</a
+                      >{/if}
+                    <button
+                      class="btn btn-sm btn-secondary"
+                      onclick={() => setDefault(service)}
+                      disabled={isDefault(service)}
+                      >{isDefault(service) ? 'Default' : 'Make default'}</button
+                    >
+                    {#if !service.direct_http || service.supports_dynamic_catalog}<button
+                        class="btn btn-sm btn-secondary"
+                        onclick={() => refreshService(service)}
+                        disabled={refreshing === service.id ||
+                          !payload.can_refresh}
+                        ><RefreshCw size={13} />{refreshing === service.id
+                          ? 'Testing…'
+                          : 'Test & refresh'}</button
+                      >{/if}
+                    {#if appState.isAdministrator && service.manager_available && service.manager_component_id}
+                      {#if ['absent', 'unknown'].includes(service.manager_component_state ?? '') && service.manager_supported_actions?.includes('install')}
+                        <a
+                          class="btn btn-sm btn-primary"
+                          data-sveltekit-reload
+                          href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
+                          >Install locally</a
+                        >
+                      {:else if service.manager_component_state === 'degraded' && service.manager_supported_actions?.includes('repair')}
+                        <a
+                          class="btn btn-sm btn-primary"
+                          data-sveltekit-reload
+                          href={`/providers?tab=speech&speech=local#component-${service.manager_component_id}`}
+                          >Repair local service</a
+                        >
+                      {:else if service.manager_component_state === 'present'}
+                        {#if !service.manager_service?.process}
+                          <button
+                            class="btn btn-sm btn-secondary"
+                            disabled={managerBusy === service.id}
+                            onclick={() => managedRuntime(service, 'start')}
+                            >Start local service</button
+                          >
+                        {:else}
+                          <button
+                            class="btn btn-sm btn-secondary"
+                            disabled={managerBusy === service.id}
+                            onclick={() => managedRuntime(service, 'stop')}
+                            >Stop local service</button
+                          >
+                        {/if}
+                        {#if isManaged(service)}
+                          <button
+                            class="btn btn-sm btn-secondary"
+                            disabled={managerBusy === service.id}
+                            onclick={() =>
+                              setConnectionMode(service, 'external')}
+                            >Use external endpoint</button
+                          >
+                        {:else if managedHealth(service) === 'healthy'}
+                          <button
+                            class="btn btn-sm btn-primary"
+                            disabled={managerBusy === service.id}
+                            onclick={() =>
+                              setConnectionMode(service, 'managed_local')}
+                            >Use managed local</button
+                          >
+                        {/if}
+                      {/if}
+                    {/if}
+                    {#if configuredRecord(service)}<button
+                        class="btn btn-sm btn-secondary text-red-500"
+                        onclick={() => removeService(service)}>Remove</button
+                      >{/if}
+                  </div>
+                </article>
+              {/each}
+            </div>
+          </section>{/if}
+      {/each}
+      {#if externalServices.length === 0}<div
+          class="rounded-2xl border border-dashed border-[var(--line)] p-5 text-sm"
+        >
+          <div class="font-semibold">No external connections yet</div>
+          <p class="muted mt-1">
+            Connect a hosted endpoint or configure a cloud speech service to see
+            it here. Local engines remain available in the Local tab.
+          </p>
+        </div>{/if}
+    </div>
+    <details class="mt-6 rounded-2xl border border-[var(--line)] p-4">
+      <summary class="cursor-pointer font-semibold"
+        >Known compatible endpoint profiles</summary
+      >
+      <div class="mt-4 grid gap-2 md:grid-cols-2">
+        {#each payload.profiles ?? [] as profile}<div
+            class="rounded-xl border border-[var(--line)] p-3"
+          >
+            <div class="text-sm font-semibold">{profile.name}</div>
+            <div class="muted mt-1 text-xs">{profile.description}</div>
+            <div class="mt-3 flex gap-2">
+              <button
+                onclick={() => useProfile(profile)}
+                class="btn btn-sm btn-secondary">Use profile</button
+              >{#if profile.source_url}<a
+                  href={profile.source_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  class="btn btn-sm btn-quiet"
+                  >Project <ExternalLink size={12} /></a
+                >{/if}
+            </div>
+          </div>{/each}
+      </div>
+    </details>
+  </section>
 
-{#if discoverOpen}
-  <div
-    class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-2 sm:p-5"
-  >
-    <div class="surface modal-panel flex w-full max-w-xl flex-col">
-      <div class="modal-scroll p-5 sm:p-7">
-        <div class="flex justify-between gap-4">
+  {#if editing}
+    <div
+      class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-2 sm:p-5"
+    >
+      <div
+        use:modalFocus={{ onclose: () => (editing = null) }}
+        class="surface modal-panel flex w-full max-w-3xl flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="service-settings-title"
+      >
+        <header
+          class="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7"
+        >
           <div>
-            <h2 class="mt-1 text-2xl font-semibold">Discover an endpoint</h2>
+            <h2 id="service-settings-title" class="mt-1 text-2xl font-semibold">
+              {editing.name}
+            </h2>
+            <p class="muted mt-2 text-sm">
+              Connection, model, and generation defaults.
+            </p>
           </div>
           <button
-            onclick={() => (discoverOpen = false)}
-            aria-label="Close endpoint discovery"
-            class="btn btn-icon btn-secondary"><X size={19} /></button
+            onclick={() => (editing = null)}
+            class="btn btn-icon btn-secondary"
+            aria-label="Close service settings"><X size={18} /></button
           >
-        </div>
-        <label class="mt-6 block text-sm font-semibold"
-          >Base URL<input bind:value={baseUrl} class="field" /></label
-        ><label class="mt-4 block text-sm font-semibold"
-          >API key<input
-            bind:value={discoveryApiKey}
-            type="password"
-            autocomplete="new-password"
-            placeholder="Optional API key"
-            class="field"
-          /><small class="muted mt-1 block font-normal"
-            >Used for discovery, then saved only after you choose Save
-            connection.</small
-          ></label
-        ><button
-          onclick={discover}
-          disabled={discovering}
-          class="btn btn-primary mt-4 w-full"
-          >{discovering ? 'Inspecting…' : 'Detect API'}</button
-        >{#if result}<div
-            class="mt-5 rounded-xl border border-[var(--line)] p-4"
-          >
-            <div class="font-semibold">{result.name}</div>
-            <p class="muted mt-2 text-sm">{result.message}</p>
-            <div class="muted mt-2 text-xs">
-              {result.models?.length ?? 0} models · {result.voices?.length ?? 0} voices
-              · {result.confidence} confidence
+        </header>
+        <div class="modal-scroll p-5 sm:p-7">
+          <section class="rounded-2xl border border-[var(--line)] p-4 sm:p-5">
+            <h3 class="font-semibold">Connection and defaults</h3>
+            {#if editing.manager_component_id}<label
+                class="mt-4 block text-sm font-semibold"
+                >Connection type<select
+                  value={editing.connection_mode ?? 'external'}
+                  onchange={(event) =>
+                    setEditingConnectionMode(
+                      event.currentTarget.value as 'external' | 'managed_local'
+                    )}
+                  class="field"
+                  ><option value="external">External endpoint</option><option
+                    value="managed_local"
+                    disabled={!editing.manager_available ||
+                      editing.manager_component_state !== 'present'}
+                    >Managed local service</option
+                  ></select
+                ></label
+              >{/if}<label class="mt-4 block text-sm font-semibold"
+              >Base URL<input
+                bind:value={editing.api_base}
+                disabled={editing.connection_mode === 'managed_local'}
+                class="field"
+              />{#if editing.connection_mode === 'managed_local'}<small
+                  class="muted mt-1 block font-normal"
+                  >Resolved at runtime from {editing.managed_service_id};
+                  managed by Pandrator Manager.</small
+                >{:else if normalizedId(editing) === 'elevenlabs'}<small
+                  class="muted mt-1 block font-normal"
+                  >Native ElevenLabs API. Pandrator adds the official
+                  /v1/text-to-speech/{'{voice_id}'} route and xi-api-key header.</small
+                >{/if}</label
+            >{#if normalizedId(editing) === 'vertex_ai'}<div
+                class="mt-4 grid gap-3 sm:grid-cols-2"
+              >
+                <label class="block text-sm font-semibold"
+                  >Google Cloud project<input
+                    bind:value={editing.vertex_project}
+                    placeholder="Uses project_id from JSON when blank"
+                    class="field"
+                  /></label
+                ><label class="block text-sm font-semibold"
+                  >Vertex location<input
+                    bind:value={editing.vertex_location}
+                    placeholder="us-central1"
+                    class="field"
+                  /></label
+                >
+              </div>{/if}
+            <div class="mt-4">
+              <CredentialStorageFields
+                backends={credentialBackends}
+                bind:backend={editingCredentialBackend}
+                bind:reference={editingCredentialReference}
+                bind:secret={editingApiKey}
+                bind:deletePrevious={deletePreviousCredential}
+                configured={Boolean(editing.credential_configured)}
+                currentSource={editing.credential_source ?? 'none'}
+                existingBackend={editingExistingCredentialBackend}
+                suggestedEnvironment={editing.api_key_env ?? ''}
+                secretLabel={normalizedId(editing) === 'vertex_ai'
+                  ? 'Google service-account JSON'
+                  : normalizedId(editing) === 'elevenlabs'
+                    ? 'ElevenLabs API key'
+                    : normalizedId(editing) === 'azure_speech_mai_voice_2'
+                      ? 'Azure Speech key'
+                      : 'API key'}
+                multiline={normalizedId(editing) === 'vertex_ai'}
+              />
             </div>
-            <button onclick={saveDiscovered} class="btn btn-primary mt-4"
-              >Save connection</button
-            >
-          </div>{/if}
+            {#if editing.credential_configured || editing.secret_ref}<label
+                class="mt-3 flex items-center gap-2 text-sm"
+                ><input
+                  type="checkbox"
+                  bind:checked={removeEditingApiKey}
+                  onchange={() => {
+                    if (removeEditingApiKey) {
+                      editingApiKey = '';
+                      deletePreviousCredential = false;
+                    }
+                  }}
+                  class="accent-[var(--accent)]"
+                />
+                Remove this service's credential reference{#if ['database', 'keyring'].includes(editing.credential_source ?? '')}
+                  and stored value{/if}</label
+              >{/if}<label class="mt-4 block text-sm font-semibold"
+              >Models / deployment names<textarea
+                bind:value={editingModelsText}
+                rows="4"
+                spellcheck="false"
+                placeholder="One model or Azure deployment name per line"
+                class="field font-mono text-xs"></textarea><small
+                class="muted mt-1 block font-normal"
+                >Enter one ID per line. Azure deployment names are kept exactly
+                as entered.</small
+              ></label
+            >{#if showGroupedEditingModels}<div class="mt-4">
+                <LocalModelPicker
+                  id="service-default-model"
+                  label="Default model"
+                  value={selectedModel}
+                  catalog={editingCatalog}
+                  listedIds={editing?.models ?? []}
+                  loadedIds={editingLoadedIds}
+                  modelVoiceModes={editing?.model_voice_modes ?? {}}
+                  onchange={setDefaultModel}
+                />
+              </div>{:else}<label class="mt-4 block text-sm font-semibold"
+                >Default model{#if modelChoices.length}<select
+                    value={selectedModel}
+                    onchange={(event) =>
+                      setDefaultModel(event.currentTarget.value)}
+                    class="field"
+                    >{#each modelChoices as model}<option value={model}
+                        >{model}</option
+                      >{/each}</select
+                  >{:else}<input
+                    value={selectedModel}
+                    oninput={(event) =>
+                      setDefaultModel(event.currentTarget.value)}
+                    placeholder="Model ID"
+                    class="field"
+                  />{/if}</label
+              >{/if}{#if settingKeys.length}<details
+                class="mt-5 border-t border-[var(--line)] pt-4"
+                open
+              >
+                <summary class="cursor-pointer text-sm font-semibold"
+                  >Provider defaults</summary
+                >
+                <div class="provider-default-grid mt-4">
+                  {#each settingKeys as key}
+                    {#if key.startsWith('fishs2_') && !['fishs2_temperature', 'fishs2_top_p'].includes(key)}
+                      {@const meta = numberPresentation(key)}
+                      <label class="block text-xs font-semibold">
+                        <ParameterLabel
+                          section="tts"
+                          name={key}
+                          label={settingLabel(key)}
+                          compact
+                        />
+                        {#if key === 'fishs2_verbose'}
+                          <select
+                            class="field"
+                            value={editing.settings?.[key] == null
+                              ? ''
+                              : String(editing.settings[key])}
+                            onchange={(event) =>
+                              setServiceSetting(
+                                key,
+                                event.currentTarget.value === ''
+                                  ? null
+                                  : event.currentTarget.value === 'true'
+                              )}
+                          >
+                            <option value="">Backend default</option>
+                            <option value="false">Off</option>
+                            <option value="true">On</option>
+                          </select>
+                        {:else}
+                          <input
+                            class="field"
+                            type="number"
+                            min={meta.min}
+                            max={meta.max}
+                            step={meta.step}
+                            value={(editing.settings?.[key] as number) ?? ''}
+                            placeholder="Backend default"
+                            oninput={(event) =>
+                              setServiceSetting(
+                                key,
+                                event.currentTarget.value === ''
+                                  ? null
+                                  : event.currentTarget.valueAsNumber
+                              )}
+                          />
+                        {/if}
+                      </label>
+                    {:else}<SettingField
+                        section="tts"
+                        keyName={key}
+                        value={editing.settings?.[key] ??
+                          payload.builtin_defaults?.[key]}
+                        onchange={(value) => setServiceSetting(key, value)}
+                        compact
+                      />{/if}
+                  {/each}
+                </div>
+                {#if normalizedId(editing) === 'fishs2'}<p
+                    class="muted mt-3 text-xs"
+                  >
+                    These settings reach the FishS2 wrapper. Its API does not
+                    apply speed, volume, latency or chunk-length overrides; use
+                    text delivery cues or audio processing for those effects.
+                  </p>{/if}
+              </details>{/if}
+          </section>
+          {#if editing.supports_prebuilt_voices}<a
+              href={`/voices?view=prebuilt&service=${encodeURIComponent(editing.id)}`}
+              class="mt-5 flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
+              ><Library class="shrink-0 text-[var(--accent)]" size={20} /><span
+                class="min-w-0 flex-1"
+                ><strong class="block text-sm"
+                  >Voice preview is in the Voice Library</strong
+                ><span class="muted mt-1 block text-xs"
+                  >Browse by language, compare samples, and choose defaults
+                  there.</span
+                ></span
+              ><ExternalLink size={15} /></a
+            >{/if}
+        </div>
+        <footer
+          class="flex shrink-0 justify-end gap-2 border-t border-[var(--line)] px-5 py-4 sm:px-7"
+        >
+          <button onclick={() => (editing = null)} class="btn btn-secondary"
+            >Cancel</button
+          ><button onclick={persistEditing} class="btn btn-primary"
+            >{editingCredentialBackend !== editingExistingCredentialBackend
+              ? 'Verify move and save'
+              : 'Save service settings'}</button
+          >
+        </footer>
       </div>
     </div>
-  </div>
+  {/if}
+
+  {#if discoverOpen}
+    <div
+      class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-2 sm:p-5"
+    >
+      <div class="surface modal-panel flex w-full max-w-xl flex-col">
+        <div class="modal-scroll p-5 sm:p-7">
+          <div class="flex justify-between gap-4">
+            <div>
+              <h2 class="mt-1 text-2xl font-semibold">Discover an endpoint</h2>
+            </div>
+            <button
+              onclick={() => (discoverOpen = false)}
+              aria-label="Close endpoint discovery"
+              class="btn btn-icon btn-secondary"><X size={19} /></button
+            >
+          </div>
+          <label class="mt-6 block text-sm font-semibold"
+            >Base URL<input bind:value={baseUrl} class="field" /></label
+          ><label class="mt-4 block text-sm font-semibold"
+            >API key<input
+              bind:value={discoveryApiKey}
+              type="password"
+              autocomplete="new-password"
+              placeholder="Optional API key"
+              class="field"
+            /><small class="muted mt-1 block font-normal"
+              >Used for discovery, then saved only after you choose Save
+              connection.</small
+            ></label
+          ><button
+            onclick={discover}
+            disabled={discovering}
+            class="btn btn-primary mt-4 w-full"
+            >{discovering ? 'Inspecting…' : 'Detect API'}</button
+          >{#if result}<div
+              class="mt-5 rounded-xl border border-[var(--line)] p-4"
+            >
+              <div class="font-semibold">{result.name}</div>
+              <p class="muted mt-2 text-sm">{result.message}</p>
+              <div class="muted mt-2 text-xs">
+                {result.models?.length ?? 0} models · {result.voices?.length ??
+                  0} voices · {result.confidence} confidence
+              </div>
+              <button onclick={saveDiscovered} class="btn btn-primary mt-4"
+                >Save connection</button
+              >
+            </div>{/if}
+        </div>
+      </div>
+    </div>
+  {/if}
 {/if}
 
 <style>

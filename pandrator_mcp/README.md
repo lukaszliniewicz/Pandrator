@@ -299,10 +299,9 @@ by both modern and maintained legacy hosts.
 ## Install
 
 Use the MCP and application packages from the same [Pandrator release](https://github.com/lukaszliniewicz/Pandrator/releases).
-Pandrator 0.13.0 provides the complete current tool set, including speech editing,
-selective voice regeneration, pronunciation rules, and subtitle passage editing.
-Older applications retain their existing workflows but cannot serve the new routes. Restart or
-reconnect long-running MCP clients after upgrading so their tool schemas refresh.
+Keep the adapter and application versions compatible. An older application may
+not provide routes required by newer tools. After upgrading, restart or reconnect
+your MCP client so it loads the current tool schemas.
 With Python 3.11 or 3.12, install it as an isolated command-line tool:
 
 ```console
@@ -317,10 +316,13 @@ For development from the repository root:
 python -m pip install -e "./pandrator_mcp[credential-stores,manager]"
 ```
 
-The `credential-stores` extra is recommended because the enrollment flow can
-then save tokens in Windows Credential Manager, macOS Keychain, or Linux
-Secret Service. The `manager` extra supports local Manager discovery; you may
-omit it when the sidecar will use only external targets.
+The `credential-stores` extra is required for `target login`, which saves tokens
+in Windows Credential Manager, macOS Keychain, or Linux Secret Service. The
+keychain must be available and unlocked for your user. `--headless` changes the
+browser approval flow; it does not remove this storage requirement.
+
+The `manager` extra supports local Manager discovery. You can omit it for a
+sidecar that connects only to external targets.
 
 ## Choose a transport
 
@@ -357,16 +359,20 @@ explains the transport choice and local-root configuration.
 
 ### Stdio
 
-For an explicit stdio target backed by a local Manager installation:
+For an explicit stdio target backed by a local Manager installation, use the
+same **parent directory** chosen during installation. For example, in Windows
+PowerShell, if the managed installation is `C:\Applications\Pandrator`:
 
 ```console
-pandrator-mcp target add local --mode local --workspace C:\Pandrator
+pandrator-mcp target add local --mode local --workspace C:\Applications
 pandrator-mcp target pin local
 pandrator-mcp doctor --target local
 pandrator-mcp stdio --target local
 ```
 
-On Linux, the workspace could instead be `/srv/pandrator`. A process is bound
+On Linux, an installation at `/srv/Pandrator` uses `--workspace /srv` instead.
+Use an absolute parent path; supplying the inner `Pandrator` directory makes
+discovery look for another `Pandrator` directory inside it. A process is bound
 to one named target at startup; tools cannot switch its destination.
 
 ## Target configuration
@@ -374,9 +380,14 @@ to one named target at startup; tools cannot switch its destination.
 The default non-secret target file is:
 
 - `%APPDATA%\Pandrator\mcp-targets.json` on Windows; or
-- `$XDG_CONFIG_HOME/pandrator/mcp-targets.json` on Linux.
+- `$XDG_CONFIG_HOME/pandrator/mcp-targets.json` on Linux/macOS, falling back to
+  `~/.config/pandrator/mcp-targets.json` when `XDG_CONFIG_HOME` is unset.
 
-Use `--config PATH` or `PANDRATOR_MCP_CONFIG` to select another file.
+Use `PANDRATOR_MCP_CONFIG` to select another file for the process. For target
+commands, place the option before the subcommand:
+`pandrator-mcp target --config PATH add NAME ...`.
+Other commands own their own option, for example
+`pandrator-mcp print-config --config PATH`.
 `pandrator-mcp print-config` prints a public projection without credential
 references.
 
@@ -388,7 +399,7 @@ directory:
 
 ```console
 pandrator-mcp target source-root-add local downloads /home/me/Downloads
-pandrator-mcp target source-root-add local library /mnt/storage/14-Library
+pandrator-mcp target source-root-add local library /srv/media/library
 pandrator-mcp target output-root-set local /home/me/Pandrator-outputs
 pandrator-mcp target source-root-list local
 ```
@@ -466,6 +477,47 @@ choice only when the requested option is absent or ambiguous. Upload chunking,
 download resumption, and retry transport details are automatic rather than
 model-facing knobs.
 
+### Collaboration and per-person enrollment
+
+Pandrator starts in Solo. An Administrator sets the initial Administrator
+password and enables collaboration; existing private projects are not shared.
+Use [the collaboration guide](guides/collaboration.md) or call
+`pandrator_explain_system(topic="collaboration", detail="full")` for the complete
+account/workspace workflow. Workspace Members can edit/process/export ordinary
+shared content; workspace Managers additionally manage membership. Instance
+Administrators manage users and missing-model acquisition. These roles are
+separate.
+
+Each teammate runs a personal stdio sidecar, enrolls with browser PKCE as their
+own named account, and explicitly approves the relevant workspaces or view-only
+projects. Never share the managed local HTTP bearer or use an Owner bootstrap
+profile as a teammate identity. The scope recipes below apply alongside current
+role, membership and resource approval.
+
+For example, on a workstation connecting to an already configured HTTPS server:
+
+```console
+pandrator-mcp target add team --mode external --origin https://pandrator.example --scope app.read --scope app.write --scope app.workspaces.enroll --scope app.run
+pandrator-mcp target login team
+pandrator-mcp target pin team
+pandrator-mcp doctor --target team
+pandrator-mcp stdio --target team
+```
+
+Sign in as the intended teammate in the approval browser. To request additional
+scopes later, use `target login team --scope ...` with the **complete desired
+set**, including scopes still needed, then review the new browser approval.
+Use `pandrator_get_target_status` to inspect granted and missing requested scopes;
+it currently does not display the account's name/instance role. Check that in
+the enrollment browser.
+
+Use `pandrator_list_workspaces` and explicitly supply `workspace_id` on creation
+tools that advertise it. There is no persistent MCP workspace selection,
+`list_sessions` workspace filter or folder tool. Organize folders in the browser.
+Copy existing private projects through preview/current-copy tools, supplying any
+required destination connections. A copy is independent and starts Unfiled;
+private credentials and personal folders do not become shared.
+
 ### Scope recipes
 
 Request only the authority the agent needs:
@@ -473,7 +525,11 @@ Request only the authority the agent needs:
 | Purpose | Application enrollment scopes |
 |---|---|
 | Explain and inspect | `app.read` |
-| Create and edit sessions | `app.read`, `app.write` |
+| Create and edit sessions in approved workspaces | `app.read`, `app.write` |
+| Create a workspace or accept an invitation | `app.read`, `app.write`, `app.workspaces.enroll` |
+| Manage users and reset links as instance Administrator | `app.admin` |
+| Enable collaboration as instance Administrator | `app.admin`, `app.write` |
+| Inspect / recover a workspace without a Manager as instance Administrator | `app.admin`, `app.read` / add `app.write` for recovery |
 | Import approved local files or configure TTS | `app.read`, `app.write` |
 | Run and cancel workflows | `app.read`, `app.write`, `app.run`, `app.cancel` |
 | Complete media-to-deliverables workflow | `app.read`, `app.write`, `app.run` (add `app.cancel` if cancellation is required) |
@@ -482,7 +538,7 @@ Request only the authority the agent needs:
 | Optimize prepared speech text through passive dispatch | `app.read`, `app.run` |
 | Inspect Manager through Pandrator | add `manager.read` |
 | Start or stop managed runtimes | add `manager.runtime` |
-| Execute reviewed Manager plans | add `manager.mutate` |
+| Execute reviewed installation/model plans as instance Administrator | add `app.admin`, `manager.read`, `manager.mutate` |
 
 `app.credentials.read` and `app.credentials.write` exist in the application
 authorization model, but the MCP does not expose credential values or general
@@ -513,7 +569,7 @@ pandrator-mcp doctor --target production
 ```
 
 Use `\` instead of `^` for POSIX shell line continuation. `target login`
-opens an out-of-band owner-consent page, uses S256 PKCE, and writes the issued
+opens an out-of-band account-consent page, uses S256 PKCE, and writes the issued
 token directly to the OS credential store. `--headless` provides the
 copy/paste TTY flow, while `--no-open-browser` prints the authorization URL.
 Tokens are never accepted on the command line.
@@ -605,8 +661,10 @@ recovery. Authorization, scope, identity, and policy failures never do.
 
 Remote Manager mutations through the application proxy also require the
 operator to set `PANDRATOR_ALLOW_REMOTE_MANAGER_MUTATIONS=1` on that
-single-owner deployment. Possessing an application or recovery token does not
-enable that server-side policy.
+deployment. Calls still require current instance Administrator authority and
+the relevant Manager scopes; workspace management rights are insufficient.
+Possessing an application or recovery token does not enable that server-side
+policy.
 
 ## Preparing a home server or pod
 
@@ -634,38 +692,14 @@ policy. A production deployment should:
 7. enroll and pin from the workstation running the agent host; and
 8. pass `doctor` before enabling writes.
 
-### Fedora standalone smoke
+### Standalone application
 
-For a disposable Fedora workstation/server smoke without Manager, install a
-parallel supported Python and create a dedicated data root:
-
-```bash
-sudo dnf install python3.12 python3.12-devel
-python3.12 -m venv ~/.local/share/pandrator/venv
-~/.local/share/pandrator/venv/bin/pip install /path/to/pandrator-VERSION-py3-none-any.whl
-ffmpeg -version
-
-export PANDRATOR_DATA_DIR="$HOME/.local/share/pandrator/data"
-~/.local/share/pandrator/venv/bin/pandrator auth init
-~/.local/share/pandrator/venv/bin/pandrator serve \
-  --host SERVER_LAN_IP \
-  --port 8097 \
-  --public-url http://SERVER_LAN_IP:8097 \
-  --allow-insecure-remote \
-  --no-open-browser
-```
-
-Run `pandrator worker` with the same `PANDRATOR_DATA_DIR` in a second
-terminal or user service. Restrict the listener to the controller address;
-for example, a temporary firewalld rule can use:
-
-```bash
-sudo firewall-cmd --add-rich-rule='rule family="ipv4" source address="CONTROLLER_IP/32" port port="8097" protocol="tcp" accept'
-```
-
-This deliberately accepted HTTP layout is suitable only for a trusted LAN
-smoke. Use HTTPS or a VPN for a durable home/server installation, and create
-reviewable user-service units instead of relying on terminal processes.
+For a Python installation without Manager, follow the
+[public-hosting guide](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/operations/public-hosting-protection.md).
+It covers password initialization, the web process, the separate worker and
+using one persistent data directory for all three. Use HTTPS or a VPN for
+access from another computer. The MCP target should use
+`--mode external-application` when Manager is absent.
 
 Losing the application or Manager state volume changes its stable identity.
 The MCP rejects the replacement until the owner verifies and deliberately

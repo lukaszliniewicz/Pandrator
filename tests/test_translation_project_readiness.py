@@ -6,10 +6,11 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import func, select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
-    AppSetting,
     Artifact,
     Document,
     DocumentRevision,
@@ -17,6 +18,7 @@ from pandrator.web.models import (
     Job,
     SessionRecord,
     SessionSetting,
+    WorkspaceSetting,
     utcnow,
 )
 from pandrator.web.output_settings_snapshot import build_output_settings_snapshot
@@ -273,8 +275,10 @@ def test_produced_translation_is_separate_from_review_and_subtitle_export(projec
 def test_copied_effective_limits_and_target_settings_mismatch(project_case):
     services, _, _, source, _, _ = project_case
     with services.database.session() as db:
+        workspace_id = initial_personal_workspace(db).id
         db.add(
-            AppSetting(
+            WorkspaceSetting(
+                workspace_id=workspace_id,
                 key="defaults.subtitles", value_json={"max_chars_per_line": 42, "max_cps": 15}
             )
         )
@@ -313,6 +317,10 @@ def test_active_failed_jobs_and_http_replay_are_enriched(project_case):
             error_code="provider_error",
             error_message="Backend failed",
         )
+        for job in (active, failed):
+            ownership = job_creation_ownership(db, session_id=job.session_id)
+            job.workspace_id = ownership.workspace_id
+            job.project_id = ownership.project_id
         db.add_all([active, failed])
         db.flush()
         active_id, failed_id = active.id, failed.id

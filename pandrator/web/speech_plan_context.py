@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import regex
-from sqlalchemy import select
+from sqlalchemy import and_, literal, select
 
 from . import models as m
 from .settings_policy import stable_hash
@@ -29,13 +29,49 @@ SIGNATURE_FIELDS = (
 
 
 def plan_signature(session, revision_id: str) -> str:
+    from .project_speech_references import (
+        StoredProjectSpeechReference,
+        segment_speech_reference_identity,
+    )
+    from .projects.identity import session_project
+    from .speech_input_contracts import SpeechInputOwner
+
     columns = [getattr(m.GenerationSegment, key) for key in SIGNATURE_FIELDS]
+    reference = m.ProjectSpeechReference
     rows = session.execute(
-        select(*columns)
+        select(*columns, m.GenerationSegment.id, reference.session_id,
+               reference.selector_json, reference.selector_hash, reference.binding_json,
+               reference.input_artifact_id, reference.input_content_hash, reference.revision)
+        .join(m.GenerationPlanRevision, m.GenerationPlanRevision.id == m.GenerationSegment.plan_revision_id)
+        .join(m.GenerationPlan, m.GenerationPlan.id == m.GenerationPlanRevision.plan_id)
+        .outerjoin(reference, and_(
+            reference.session_id == m.GenerationPlan.session_id,
+            reference.slot_key == literal("segment:") + m.GenerationSegment.id,
+        ))
         .where(m.GenerationSegment.plan_revision_id == revision_id)
         .order_by(m.GenerationSegment.ordinal)
     )
-    return stable_hash([dict(zip(SIGNATURE_FIELDS, row, strict=True)) for row in rows])
+    values, owners = [], {}
+    for row in rows:
+        payload: dict[str, Any] = dict(zip(SIGNATURE_FIELDS, row[:len(SIGNATURE_FIELDS)], strict=True))
+        identifier, session_id, selector, selector_hash, binding, artifact_id, digest, version = row[len(SIGNATURE_FIELDS):]
+        if session_id is not None:
+            if session_id not in owners:
+                project = session_project(session, session_id)
+                owners[session_id] = SpeechInputOwner(project.workspace_id, project.id, session_id)
+            stored = StoredProjectSpeechReference(
+                owner=owners[session_id], slot_key=f"segment:{identifier}",
+                selector=selector, selector_hash=selector_hash, binding=binding,
+                pin=None if artifact_id is None and digest is None else {
+                    "version": 1, "artifact_id": artifact_id, "content_hash": digest,
+                }, revision=version,
+            )
+            payload["_speech_reference"] = segment_speech_reference_identity(stored)
+            # Library FK deletion does not edit the authored project choice.
+            payload["voice_id"] = stored.selector.get("voice_id")
+            payload["voice"] = stored.selector.get("voice") or None
+        values.append(payload)
+    return stable_hash(values)
 
 
 def semantic_context_units(session, revision_id: str) -> list[dict[str, Any]]:

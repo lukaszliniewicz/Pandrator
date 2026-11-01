@@ -1,5 +1,6 @@
 import { errorMessage } from './errors';
 import { managerApi } from './admin-api';
+import { browserStorageKey, onBrowserIdentityReset } from './browser-identity';
 
 export type ManagerOperation = {
   id: string;
@@ -19,7 +20,6 @@ type ManagerStatus = {
   };
 };
 
-const MANAGER_OPERATION_STORAGE_KEY = 'pandrator-manager-operation';
 export const MANAGER_TERMINAL_STATES = new Set([
   'succeeded',
   'failed',
@@ -40,6 +40,17 @@ class ManagerOperationStore {
   private inFlight: Promise<void> | null = null;
   private stopped = true;
   private lastNotification = '';
+  private identityEpoch = 0;
+
+  constructor() {
+    onBrowserIdentityReset(() => {
+      this.identityEpoch += 1;
+      this.status = null;
+      this.operation = null;
+      this.error = '';
+      this.lastNotification = '';
+    });
+  }
 
   connect(listener?: OperationListener) {
     this.consumers += 1;
@@ -86,8 +97,10 @@ class ManagerOperationStore {
   }
 
   private async load(knownStatus?: ManagerStatus) {
+    const identityEpoch = this.identityEpoch;
     try {
       const status = knownStatus ?? (await managerApi.status<ManagerStatus>());
+      if (identityEpoch !== this.identityEpoch) return;
       this.status = status;
       if (!status.available) {
         this.remember(null);
@@ -98,7 +111,7 @@ class ManagerOperationStore {
       const storedId =
         typeof localStorage === 'undefined'
           ? null
-          : localStorage.getItem(MANAGER_OPERATION_STORAGE_KEY);
+          : localStorage.getItem(browserStorageKey('manager-operation'));
       const operationId =
         status.status?.active_operation_id ??
         (this.operation && !MANAGER_TERMINAL_STATES.has(this.operation.state)
@@ -106,9 +119,10 @@ class ManagerOperationStore {
           : storedId);
 
       if (operationId) {
-        this.remember(
-          await managerApi.operation<ManagerOperation>(operationId)
-        );
+        const operation =
+          await managerApi.operation<ManagerOperation>(operationId);
+        if (identityEpoch !== this.identityEpoch) return;
+        this.remember(operation);
       } else if (
         !this.operation ||
         !MANAGER_TERMINAL_STATES.has(this.operation.state)
@@ -117,7 +131,8 @@ class ManagerOperationStore {
       }
       this.error = '';
     } catch (caught) {
-      this.error = errorMessage(caught);
+      if (identityEpoch === this.identityEpoch)
+        this.error = errorMessage(caught);
     }
   }
 
@@ -125,9 +140,12 @@ class ManagerOperationStore {
     this.operation = operation;
     if (typeof localStorage !== 'undefined') {
       if (operation && !MANAGER_TERMINAL_STATES.has(operation.state)) {
-        localStorage.setItem(MANAGER_OPERATION_STORAGE_KEY, operation.id);
+        localStorage.setItem(
+          browserStorageKey('manager-operation'),
+          operation.id
+        );
       } else {
-        localStorage.removeItem(MANAGER_OPERATION_STORAGE_KEY);
+        localStorage.removeItem(browserStorageKey('manager-operation'));
       }
     }
 

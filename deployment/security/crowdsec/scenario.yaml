@@ -1,0 +1,12 @@
+type: leaky
+name: pandrator/auth-bf
+description: Repeated failed Pandrator sign-in or link-redemption attempts
+filter: "evt.Meta.service == 'pandrator' && evt.Meta.log_type in ['authentication_failed', 'project_link_redemption_failed']"
+groupby: evt.Meta.source_ip
+capacity: 5
+leakspeed: 60s
+blackhole: 10m
+labels:
+  service: pandrator
+  type: bruteforce
+  remediation: true

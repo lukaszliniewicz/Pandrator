@@ -18,7 +18,7 @@ from pandrator.runtime import DataPaths
 from pandrator.web import jobs as jobs_module
 from pandrator.web import sound_mix_manifest
 from pandrator.web.artifacts import ArtifactService, sha256_file
-from pandrator.web.database import Database
+from pandrator.web.database import Database, upgrade_database
 from pandrator.web.job_execution import current_job_lease
 from pandrator.web.jobs import JobQueue
 from pandrator.web.media_process import MediaProcessCancelled, MediaProcessResult
@@ -26,7 +26,6 @@ from pandrator.web.models import (
     Artifact,
     ArtifactEdge,
     AudioTake,
-    Base,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationSegment,
@@ -36,6 +35,7 @@ from pandrator.web.models import (
     SoundVariant,
     utcnow,
 )
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.sound_mix_service import SoundMixService
 from pandrator.web.sound_mix_state import invalidate_sound_mixes
 from pandrator.web.sound_project_models import ProjectSoundCue
@@ -65,7 +65,7 @@ class SoundMixDomain:
     def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.paths = DataPaths.from_value(root / "data").ensure()
         self.database = Database(self.paths.database)
-        Base.metadata.create_all(self.database.engine)
+        upgrade_database(self.database.path)
         monkeypatch.setattr(jobs_module, "ensure_app_job_allowed", lambda _path: None)
         self.artifacts = ArtifactService(self.database, self.paths)
         self.jobs = JobQueue(self.database)
@@ -80,6 +80,7 @@ class SoundMixDomain:
         effect = self.artifacts.register(effect_path, kind="audio", role="sound.original")
         with self.database.immediate_session() as session:
             variant = SoundVariant(
+                workspace_id=effect.workspace_id,
                 artifact_id=effect.id,
                 state="ready",
                 sample_rate=8000,
@@ -100,8 +101,7 @@ class SoundMixDomain:
     ) -> dict[str, Any]:
         with self.database.immediate_session() as session:
             record = SessionRecord(name=f"{workflow_kind} project", workflow_kind=workflow_kind)
-            session.add(record)
-            session.flush()
+            create_session_project(session, record)
             session_id = record.id
             storage_key = record.storage_key
             segment_ids: list[str] = []
@@ -614,7 +614,7 @@ def test_timed_word_anchor_is_refused_without_take_to_assembly_mapping(
 
 
 def test_worker_payload_is_path_free_and_changed_fingerprint_is_rejected(
-    domain: SoundMixDomain,
+    domain: SoundMixDomain, monkeypatch,
 ) -> None:
     project = domain.audiobook
     domain.add_cue(
@@ -640,8 +640,12 @@ def test_worker_payload_is_path_free_and_changed_fingerprint_is_rejected(
     lease = current_job_lease.set(
         {"job_id": receipt["job_id"], "owner_id": "worker", "lease_generation": 4}
     )
+    def no_preparation(*_args, **_kwargs):
+        pytest.fail("A mismatched accepted job reached media preparation")
+
+    monkeypatch.setattr(domain.service, "prepare", no_preparation)
     try:
-        with pytest.raises(ValueError, match="changed after admission"):
+        with pytest.raises(ValueError, match="no longer matches its accepted request"):
             domain.service.run_mix(payload, lambda _fraction, _detail: None, threading.Event())
     finally:
         current_job_lease.reset(lease)

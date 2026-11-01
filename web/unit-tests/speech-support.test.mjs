@@ -115,6 +115,20 @@ test('Gemini structured style feedback distinguishes native request scope and in
   );
 });
 
+test('Drama 3 describes paired phrase controls without promising acoustic boundaries', () => {
+  const profile = {
+    status: 'documented',
+    instructions: 'inline',
+    instruction_scope: ['request', 'span'],
+    phrase_instruction_transport: 'scoped_inline'
+  };
+  const phrase = deliverySupport(profile, 'instruction', 'whisper', 'phrase');
+  assert.equal(phrase.status, 'hint');
+  assert.equal(phrase.label, 'Paired phrase tags');
+  assert.match(phrase.description, /paired Drama 3 tags/);
+  assert.match(phrase.description, /not guaranteed/);
+});
+
 test('unknown transports and generation switches do not promise delivery', () => {
   assert.equal(deliverySupport(undefined, 'instruction').status, 'unknown');
   assert.equal(

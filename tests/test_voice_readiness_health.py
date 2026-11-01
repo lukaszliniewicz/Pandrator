@@ -2,10 +2,11 @@ from unittest.mock import Mock
 
 import pytest
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import ResolvedCredential
-from pandrator.web.models import AppSetting
+from pandrator.web.models import WorkspaceSetting
 from pandrator.web.tts_catalogue_projection import _project_compact_service
 from pandrator.web.tts_catalogue_service import TtsCatalogueService
 from pandrator.web.tts_provider_contracts import TtsHealth, TtsProviderError
@@ -37,8 +38,10 @@ def catalogue_case(tmp_path, monkeypatch):
 
 def _configure_audio_cpp(services):
     with services["database"].session() as session:
+        workspace_id = initial_personal_workspace(session).id
         session.add(
-            AppSetting(
+            WorkspaceSetting(
+                workspace_id=workspace_id,
                 key="services.tts",
                 value_json={
                     "provider_configs": [

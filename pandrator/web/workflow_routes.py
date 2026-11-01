@@ -9,11 +9,14 @@ from typing import Any, Protocol
 from flask import Request, Response
 from sqlalchemy.orm import Session
 
+from .access.contracts import AccessContext, ProjectAction
+from .access.session_policy import require_session_access
 from .database import Database
 from .domain_blueprints import DomainBlueprints
 from .models import Job
 from .schemas import StageSelectionUpdate
 from .sessions import SessionService
+from .subtitle_selection import SubtitleSelectionUnavailable
 from .workflow_handlers import WorkflowHandlers
 from .workflows import WorkflowService
 
@@ -63,13 +66,13 @@ class WorkflowRouteContext:
     clear_selection: Callable[[Session, str, str], dict[str, Any]]
     selection_update_type: Callable[[], type[StageSelectionUpdate]]
     job_payload: Callable[[Job], dict[str, Any]]
+    access_context: Callable[[], AccessContext]
 
 
 def register_workflow_session_routes(
     app: DomainBlueprints, context: WorkflowRouteContext,
 ) -> None:
     database = context.database
-    sessions = context.sessions
     workflows = context.workflows
     workflow_handlers = context.workflow_handlers
     require_auth = context.require_auth
@@ -83,7 +86,7 @@ def register_workflow_session_routes(
             view = context.request().args.get("view", "full")
             if view not in {"full", "summary"}:
                 return error_response("validation_error", "Unknown workflow view.", 422)
-            snapshot = workflows.snapshot(session_id)
+            snapshot = workflows.snapshot(session_id, access_context=context.access_context())
             return context.jsonify(workflow_summary(snapshot) if view == "summary" else snapshot)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
@@ -92,8 +95,8 @@ def register_workflow_session_routes(
     @require_auth
     def workflow_stage_artifacts(session_id: str, stage_key: str):
         try:
-            sessions.get(session_id)
-            with database.session() as db_session:
+            with database.snapshot_session() as db_session:
+                require_session_access(db_session, context.access_context(), session_id)
                 return context.jsonify(
                     context.stage_history(
                         db_session,
@@ -121,7 +124,8 @@ def register_workflow_session_routes(
         artifact_id: str,
     ):
         try:
-            with database.session() as db_session:
+            with database.immediate_session() as db_session:
+                require_session_access(db_session, context.access_context(), session_id, ProjectAction.TRASH)
                 return context.jsonify(
                     context.trash_stage_artifact(
                         db_session,
@@ -139,8 +143,8 @@ def register_workflow_session_routes(
     @require_auth
     def workflow_stage_impact(session_id: str, stage_key: str):
         try:
-            sessions.get(session_id)
-            with database.session() as db_session:
+            with database.snapshot_session() as db_session:
+                require_session_access(db_session, context.access_context(), session_id)
                 return context.jsonify(context.rerun_impact(db_session, session_id, stage_key))
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
@@ -151,12 +155,13 @@ def register_workflow_session_routes(
     @require_auth
     def workflow_stage_settings_mismatches(session_id: str, stage_key: str):
         try:
-            sessions.get(session_id)
+            with database.snapshot_session() as db_session:
+                require_session_access(db_session, context.access_context(), session_id)
+                return context.jsonify(
+                    {"mismatches": workflow_handlers.settings_mismatches(session_id, stage_key)}
+                )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        return context.jsonify(
-            {"mismatches": workflow_handlers.settings_mismatches(session_id, stage_key)}
-        )
 
     @app.put("/api/v1/sessions/<session_id>/stages/<stage_key>/selection")
     @require_auth
@@ -175,6 +180,7 @@ def register_workflow_session_routes(
             )
         try:
             with database.immediate_session() as db_session:
+                require_session_access(db_session, context.access_context(), session_id, ProjectAction.EDIT)
                 history = context.stage_history(db_session, session_id, stage_key)
                 if int(history["revision"]) != expected:
                     return error_response(
@@ -197,6 +203,13 @@ def register_workflow_session_routes(
     @app.post("/api/v1/sessions/<session_id>/stages/<stage_key>/run")
     @require_auth
     def workflow_run_stage(session_id: str, stage_key: str):
+        try:
+            with database.snapshot_session() as db_session:
+                require_session_access(
+                    db_session, context.access_context(), session_id, ProjectAction.RUN
+                )
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
         settings = context.request().get_json(silent=True) or {}
         if not isinstance(settings, dict):
             return error_response(
@@ -205,9 +218,11 @@ def register_workflow_session_routes(
         if rejected := inline_credential_error(settings):
             return rejected
         try:
-            job = workflows.run_stage(session_id, stage_key, settings)
+            job = workflows.run_stage_for_user(context.access_context(), session_id, stage_key, settings)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
+        except SubtitleSelectionUnavailable as error:
+            return error_response(error.code, str(error), 409)
         except ValueError as error:
             return error_response("stage_unavailable", str(error), 409)
         return context.jsonify(context.job_payload(job)), 202
@@ -228,7 +243,7 @@ def register_workflow_job_routes(
         if not isinstance(body, dict) or body.get("action") not in ("stop", "extend"):
             return error_response("validation_error", "Choose stop or extend.", 422)
         try:
-            job = workflows.decide_video_tail(job_id, body["action"])
+            job = workflows.decide_video_tail_for_user(context.access_context(), job_id, body["action"])
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
         except ValueError as error:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, StrictStr, field_validator, model_validator
 
 from .common import ToolInput
 
@@ -63,6 +63,12 @@ class UpdateVoiceMetadataInput(_StrictModel):
     voice_id: str = Field(min_length=1, max_length=80)
     expected_revision: int = Field(ge=1)
     changes: VoiceMetadataChanges
+    workspace_id: StrictStr | None = Field(default=None, min_length=1, max_length=80)
+
+    @field_validator("workspace_id", mode="before")
+    @classmethod
+    def trim_workspace_root(_cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
 
 VOICE_METADATA_INPUT_MODELS = (UpdateVoiceMetadataInput,)

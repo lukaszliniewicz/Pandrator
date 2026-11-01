@@ -3,6 +3,7 @@ import unittest
 
 from sqlalchemy import select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.agentic_runs import AgenticRunStore, stable_payload_hash
 from pandrator.web.context_budget import ContextBudgetService
 from pandrator.web.database import Database
@@ -17,6 +18,8 @@ from pandrator.web.models import (
     SessionRecord,
     utcnow,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.projects.identity import create_session_project
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -27,11 +30,15 @@ class AgenticRunStoreTests(unittest.TestCase):
         self.database = Database(paths.database)
         with self.database.session() as session:
             record = SessionRecord(name="Resume me", storage_key="resume-store")
-            session.add(record)
-            session.flush()
+            create_session_project(session, record)
             self.session_id = record.id
+            artifact_ownership = resolve_artifact_ownership(
+                session, session_id=record.id
+            )
             artifact = Artifact(
                 session_id=record.id,
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="srt",
                 role="transcription",
                 relative_path="sessions/resume-store/source.srt",
@@ -48,6 +55,7 @@ class AgenticRunStoreTests(unittest.TestCase):
     def _artifact(self):
         with self.database.session() as session:
             artifact = session.get(Artifact, self.artifact_id)
+            assert artifact is not None
             session.expunge(artifact)
             return artifact
 
@@ -147,6 +155,7 @@ class AgenticRunStoreTests(unittest.TestCase):
         )
         with self.database.session() as session:
             managed_job = session.get(Job, job.id)
+            assert managed_job is not None
             managed_job.status = "failed"
             managed_job.error_message = "worker disappeared"
             managed_job.finished_at = utcnow()
@@ -166,6 +175,7 @@ class AgenticRunStoreTests(unittest.TestCase):
 
         with self.database.session() as session:
             run = session.scalar(select(AgentRun).where(AgentRun.job_id == job.id))
+            assert run is not None
             self.assertEqual("failed", run.status)
             self.assertEqual("worker disappeared", run.error_message)
 
@@ -215,6 +225,7 @@ class AgenticRunStoreTests(unittest.TestCase):
     def test_context_budget_preserves_slashes_in_custom_provider_model_ids(self):
         with self.database.session() as session:
             provider = Provider(
+                workspace_id=initial_personal_workspace(session).id,
                 kind="llm",
                 provider_key="openai-compatible",
                 label="Test provider",

@@ -1,9 +1,9 @@
 # Create your first voiceover
 
-A voiceover session begins with timed source cues, optionally corrects and
-translates them, converts the selected display and speech text into synthesis
-blocks, generates reviewable takes, and aligns the selected audio to the source
-timeline. Generated speech is not automatically a finished mix.
+Start with timed subtitles, correct or translate them, then choose a voice for
+each speaker. Pandrator generates recordings you can review before fitting them
+to the original timeline. You choose the soundtrack and subtitles when exporting
+the finished audio or video.
 
 ## 1. Prepare timed cues
 
@@ -16,7 +16,18 @@ carried forward. If the target-language track needs stylistic cleanup, correct
 that translation as another translation revision rather than relabeling it as
 source-language correction.
 
-## 2. Prepare text for speech
+## 2. Choose voices
+
+Choose the speech service and model, then map each recognized speaker to a compatible provider voice, built-in voice, or
+lawfully obtained reference voice. Check language support and listen to short
+samples. A voice that works for one language or backend is not automatically
+available to every service.
+
+For mixed-language material, isolate a foreign phrase as a separate segment
+when practical and use a per-segment language or alternate take. Literal tags
+such as `[en]…[/en]` are not a portable inline language-switching protocol.
+
+## 3. Prepare text for speech
 
 Display cues and TTS requests serve different purposes. Pandrator can keep
 readable display text while creating a separate reviewed speech-text revision.
@@ -27,17 +38,6 @@ Subtitle cues are then converted into speaker-safe speech blocks. A block may
 combine nearby cues or split one long cue. Its source references and alignment
 group preserve the relationship to the subtitle timeline.
 
-## 3. Assign speakers and voices
-
-Map each recognized speaker to a compatible provider voice, built-in voice, or
-lawfully obtained reference voice. Check language support and listen to short
-samples. A voice that works for one language or backend is not automatically
-available to every service.
-
-For mixed-language material, isolate a foreign phrase as a separate segment
-when practical and use a per-segment language or alternate take. Literal tags
-such as `[en]…[/en]` are not a portable inline language-switching protocol.
-
 ## 4. Generate and review takes
 
 Generate a small representative section before the whole timeline. Check
@@ -45,7 +45,10 @@ pronunciation, pacing, emotion, speaker consistency, noise, and whether speech
 can fit the source window without sounding rushed. Regenerate selected blocks
 or create alternate takes rather than overwriting the subtitle track.
 
-In **Block settings**, optionally enable **Reduce speech getting ahead of subtitles**.
+### Optional timing repairs
+
+In **Block settings**, enable **Reduce speech getting ahead of subtitles** if
+short speech is finishing too early within its subtitle window.
 After a complete generation run, Pandrator checks multi-cue blocks that finish
 at least one second and 20% early by default, accounting for the configured start delay.
 Open **Repair thresholds** to adjust these two limits, the minimum timing

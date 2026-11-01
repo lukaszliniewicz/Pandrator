@@ -4,11 +4,13 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import google.auth
 import pytest
 from sqlalchemy import event, select
 
 from pandrator.web import models as m
 from pandrator.web import performance_plans as plans
+from pandrator.web import tts_catalogue_service
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.performance_read_projections import capability_profile_id
@@ -438,8 +440,12 @@ def test_edit_next_action_reads_only_affected_annotation_units():
 def test_preview_metadata_uses_cached_catalogue_without_refresh(read_case, monkeypatch):
     plan = create_plan(read_case)
     catalogue = read_case["services"]["tts_catalogue"]
-    snapshot = Mock(return_value=({"services": []}, None))
+    snapshot = Mock(wraps=catalogue.snapshot)
     monkeypatch.setattr(catalogue, "snapshot", snapshot)
+    credential_effect = Mock(side_effect=AssertionError("Preview resolved credentials"))
+    monkeypatch.setattr(tts_catalogue_service, "resolve_provider_credentials", credential_effect)
+    monkeypatch.setattr(google.auth, "default", credential_effect)
+    monkeypatch.setattr(catalogue, "_refresh", credential_effect)
 
     def compiled_preview(*_args, **_kwargs):
         return {
@@ -455,4 +461,89 @@ def test_preview_metadata_uses_cached_catalogue_without_refresh(read_case, monke
     )
 
     assert response.status_code == 200, response.get_json()
-    snapshot.assert_called_once_with(refresh=False)
+    snapshot.assert_called_once()
+    with read_case["services"]["database"].snapshot_session() as session:
+        record = session.get_one(m.SessionRecord, read_case["session_id"])
+        workspace_id = session.get_one(m.Project, record.project_id).workspace_id
+    options = snapshot.call_args.kwargs
+    assert options["workspace_id"] == workspace_id
+    assert options["approved_only"] is True and options["allow_host_adc"] is False
+    assert options["refresh"] is False and options["include_profiles"] is False
+    assert options["view"] == "compact"
+    assert len(options["settings_snapshot"]) == 4
+    credential_effect.assert_not_called()
+
+
+def test_project_only_viewer_can_preview_without_workspace_or_host_credentials(
+    read_case, monkeypatch
+):
+    from pandrator.web.accounts.commands import AccountActor
+    from pandrator.web.accounts.credential_resources import CredentialResources
+    from pandrator.web.accounts.models import WorkspaceMembership
+    from pandrator.web.accounts.resource_grant_models import ApiTokenWorkspaceGrant
+    from pandrator.web.auth import ALL_SCOPES
+    from pandrator.web.projects.models import ProjectMembership
+    from tests.test_collaboration_authentication import enable, new_account
+
+    plan = create_plan(read_case)
+    services = read_case["services"]
+    original = services["auth"].initial_account()
+    account_case = SimpleNamespace(
+        auth=services["auth"],
+        database=services["database"],
+        client=read_case["client"],
+        csrf=read_case["headers"]["X-CSRF-Token"],
+        actor=AccountActor(original.user_id, original.auth_revision, ALL_SCOPES),
+    )
+    viewer = new_account(account_case, "performance-reader")
+    enable(account_case, monkeypatch)
+    with services["database"].immediate_session() as session:
+        record = session.get_one(m.SessionRecord, read_case["session_id"])
+        project_id = record.project_id
+        assert project_id is not None
+        workspace_id = session.get_one(m.Project, project_id).workspace_id
+        session.add(ProjectMembership(project_id=project_id, user_id=viewer.user_id, role="viewer"))
+    token, raw = services["auth"].create_api_token(
+        "Project-only performance reader",
+        user_id=viewer.user_id,
+        scopes=frozenset({"app.read"}),
+        resource_grants=CredentialResources(project_ids=frozenset({project_id})),
+    )
+    with services["database"].snapshot_session() as session:
+        assert session.get(WorkspaceMembership, (workspace_id, viewer.user_id)) is None
+        assert (
+            list(
+                session.scalars(
+                    select(ApiTokenWorkspaceGrant.workspace_id).where(
+                        ApiTokenWorkspaceGrant.token_id == token.id
+                    )
+                )
+            )
+            == []
+        )
+    credential_effect = Mock(side_effect=AssertionError("Reader preview resolved credentials"))
+    monkeypatch.setattr(tts_catalogue_service, "resolve_provider_credentials", credential_effect)
+    monkeypatch.setattr(google.auth, "default", credential_effect)
+    monkeypatch.setattr(services["tts_catalogue"], "_refresh", credential_effect)
+    monkeypatch.setattr(
+        plans,
+        "preview_segment",
+        lambda *_args, **_kwargs: {
+            "capabilities": {"model": "model-a", "backend": "provider-a"},
+            "speech_structure": {"boundary_after": None},
+        },
+    )
+    client = read_case["app"].test_client()
+    headers = {"Authorization": f"Bearer {raw}"}
+    assert (
+        client.get(f"/api/v1/sessions/{read_case['session_id']}", headers=headers).status_code
+        == 200
+    )
+    response = client.post(
+        f"{read_case['base']}/{plan['id']}/preview",
+        json={"segment_id": read_case["segment_ids"][0]},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["readiness"]["compilation_only"] is True
+    credential_effect.assert_not_called()

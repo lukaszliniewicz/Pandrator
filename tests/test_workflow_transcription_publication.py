@@ -55,6 +55,7 @@ def _artifact(case, name, text, role, *, parents=()):
 def _attach(case, artifact, role, kind):
     with case.database.session() as session:
         asset = SourceAsset(
+            workspace_id=session.get_one(Artifact, artifact.id).workspace_id,
             artifact_id=artifact.id, display_name=artifact.relative_path, kind=kind, state="current"
         )
         session.add(asset)

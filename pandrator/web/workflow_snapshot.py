@@ -9,6 +9,8 @@ from typing import Any, Protocol, cast
 from sqlalchemy import and_, case, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
+from .access.contracts import AccessContext
+from .access.session_policy import require_session_access
 from .database import Database
 from .models import (
     AgentRun,
@@ -157,9 +159,11 @@ def _latest_stage_agent_states(
 
 
 def build_workflow_snapshot(
-    context: WorkflowSnapshotContext, session_id: str
+    context: WorkflowSnapshotContext, session_id: str, *, access_context: AccessContext | None = None,
 ) -> dict[str, Any]:
-    with context.database.session() as session:
+    with (context.database.snapshot_session() if access_context is not None else context.database.session()) as session:
+        if access_context is not None:
+            require_session_access(session, access_context, session_id)
         record_row = session.execute(
             select(
                 SessionRecord,

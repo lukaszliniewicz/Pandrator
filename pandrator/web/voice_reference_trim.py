@@ -11,6 +11,8 @@ from numbers import Real
 from pathlib import Path
 from typing import Any
 
+from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+
 from .audio_imports import MAX_IMPORT_DURATION_SECONDS
 from .media_process import (
     resolve_ffmpeg_executable,
@@ -108,6 +110,7 @@ def probe_voice_reference_audio(
     result = run_media_process(
         [
             resolve_ffprobe_executable(ffprobe_executable),
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             "-v",
             "error",
             "-select_streams",
@@ -220,6 +223,7 @@ def trim_voice_reference_audio(
         resolve_ffmpeg_executable(ffmpeg_executable),
         "-hide_banner",
         "-n",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(source),
         "-map",

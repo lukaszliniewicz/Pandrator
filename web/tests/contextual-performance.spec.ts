@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('contextual performance opens lazily, saves a draft and previews without synthesizing', async ({
   page
-}) => {
+}, testInfo) => {
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in' }).click();
@@ -183,14 +183,14 @@ test('contextual performance opens lazily, saves a draft and previews without sy
   await page.goto(`/sessions/${sessionId}`);
   const card = page.getByRole('region', { name: 'Speech plan', exact: true });
   await expect(card).toBeVisible();
-  const panel = card
-    .locator('details')
-    .filter({
-      has: page.locator('summary').filter({ hasText: 'Speakers and delivery' })
-    })
-    .first();
   expect(reads).toBe(0);
-  await panel.locator('summary').first().click();
+  await card
+    .getByRole('link', { name: 'Annotate & review', exact: true })
+    .click();
+  const panel = page.getByRole('region', {
+    name: 'Annotation workspace',
+    exact: true
+  });
   await expect(panel.getByText('Model:', { exact: false })).toContainText(
     'fish_audio_s2_pro_q8_0'
   );
@@ -206,7 +206,7 @@ test('contextual performance opens lazily, saves a draft and previews without sy
     .getByLabel('Block delivery direction')
     .fill('Introduce a restrained contrast.');
   await panel
-    .getByRole('button', { name: 'Save block directions', exact: true })
+    .getByRole('button', { name: 'Save block annotations', exact: true })
     .click();
   await expect(
     panel.getByText('Block directions and speaker assignments saved', {
@@ -233,5 +233,43 @@ test('contextual performance opens lazily, saves a draft and previews without sy
   await expect(
     panel.getByText('"previous_text"', { exact: false })
   ).toBeVisible();
+  await panel
+    .getByLabel('Block delivery direction')
+    .fill('Unsaved direction stays here.');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const drawer = panel.getByRole('dialog', {
+    name: 'Blocks & filters',
+    exact: true
+  });
+  await expect(drawer).toBeVisible();
+  await drawer
+    .getByRole('navigation', { name: 'Speech blocks' })
+    .getByRole('button')
+    .first()
+    .click();
+  await expect(drawer).toBeHidden();
+  const warning = page.getByRole('dialog', {
+    name: 'Save this block before leaving?',
+    exact: true
+  });
+  await expect(warning).toBeVisible();
+  await warning.getByRole('button', { name: 'Stay here', exact: true }).click();
+  await expect(panel.getByLabel('Block delivery direction')).toHaveValue(
+    'Unsaved direction stays here.'
+  );
+  await panel
+    .getByRole('button', { name: 'Show blocks & filters', exact: true })
+    .click();
+  await expect(drawer).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(drawer).toBeHidden();
+  await expect(panel.getByLabel('Block delivery direction')).toHaveValue(
+    'Unsaved direction stays here.'
+  );
+  expect(writes).toBe(1);
+  await page.screenshot({
+    path: testInfo.outputPath('annotations-phone.png'),
+    fullPage: true
+  });
   expect(synthesized).toBe(false);
 });

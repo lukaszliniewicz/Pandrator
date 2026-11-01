@@ -7,7 +7,8 @@ from copy import deepcopy
 import pytest
 
 from pandrator.logic.tts_provider_switch import normalize_tts_voice_aliases
-from pandrator.web.models import AppSetting, SessionSetting
+from pandrator.web.accounts.identity import initial_personal_workspace
+from pandrator.web.models import SessionSetting, WorkspaceSetting
 from pandrator.web.workflow_handlers import (
     _apply_segment_tts_overrides,
     _apply_selected_segment_tts_override,
@@ -149,9 +150,12 @@ def test_old_saved_layers_are_repaired_on_read_without_rewriting_history(app_cas
     sid = _new_session(app_case)
     database = app_case.app.extensions["pandrator"]["database"]
     with database.session() as db:
-        global_row = db.get(AppSetting, "defaults.tts")
+        workspace_id = initial_personal_workspace(db).id
+        global_row = db.get(WorkspaceSetting, (workspace_id, "defaults.tts"))
         if global_row is None:
-            global_row = AppSetting(key="defaults.tts", value_json={})
+            global_row = WorkspaceSetting(
+                workspace_id=workspace_id, key="defaults.tts", value_json={}
+            )
             db.add(global_row)
         global_row.value_json = {"voice": "global-voice", "speaker": "stale-global"}
         historical_row = db.get(SessionSetting, (sid, "tts"))

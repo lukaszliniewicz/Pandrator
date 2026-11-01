@@ -32,6 +32,7 @@ from .auth import ALL_SCOPES, AuthService, BootstrapTokenStore
 from .automation_enrollment import AutomationEnrollmentService
 from .bundles import SessionBundleService
 from .database import Database
+from .job_inputs import artifact_job_ownership
 from .job_registry import JobHandlerRegistry
 from .jobs import JobQueue, Worker, noop_handler
 from .legacy_migration import import_legacy_data
@@ -41,7 +42,6 @@ from .models import (
     ProviderModel,
     SessionRecord,
     SourceRecord,
-    Voice,
     VoiceSample,
     utcnow,
 )
@@ -521,8 +521,10 @@ def command_worker(args) -> int:
             if presence.conflict:
                 conflict_pid = int(presence.conflict.get("pid") or 0)
                 conflict_worker = str(presence.conflict.get("worker_id") or "unknown")
+                expected_companion = os.environ.get("PANDRATOR_EXPECTED_WORKERS") == "2"
                 print(
-                    "WARNING: Another Pandrator worker appears to be active for this data root "
+                    ("INFO: " if expected_companion else "WARNING: ")
+                    + "Another Pandrator worker appears to be active for this data root "
                     f"(PID {conflict_pid}, worker {conflict_worker}). Concurrent queue "
                     "processing is supported; ensure this additional worker is intentional.",
                     file=sys.stderr,
@@ -834,7 +836,14 @@ def command_provider_list(args) -> int:
     _, database = _database(args)
     try:
         with database.session() as session:
-            providers = list(session.scalars(select(Provider).order_by(Provider.label)).all())
+            from .provider_identity import provider_namespace
+
+            namespace = provider_namespace(session)
+            providers = list(session.scalars(
+                select(Provider)
+                .where(Provider.workspace_id == namespace.workspace_id)
+                .order_by(Provider.label)
+            ).all())
             payload = []
             for provider in providers:
                 models = list(session.scalars(select(ProviderModel).where(ProviderModel.provider_id == provider.id).order_by(ProviderModel.model_id)).all())
@@ -849,7 +858,8 @@ def command_voice_list(args) -> int:
     _, database = _database(args)
     try:
         with database.session() as session:
-            voices = list(session.scalars(select(Voice).order_by(Voice.name)).all())
+            from .voice_queries import voices_in_workspace
+            voices = voices_in_workspace(session)
             payload = []
             for voice in voices:
                 samples = list(session.scalars(select(VoiceSample).where(VoiceSample.voice_id == voice.id)).all())
@@ -881,7 +891,12 @@ def command_rvc_upload(args) -> int:
     try:
         weights = _import_cli_artifact(paths, database, args.weights, "rvc_upload")
         index = _import_cli_artifact(paths, database, args.index, "rvc_upload")
-        job = JobQueue(database).enqueue("rvc.model.upload", {"pth_artifact_id": weights.id, "index_artifact_id": index.id})
+        with database.immediate_session() as session:
+            owner = artifact_job_ownership(session, [weights.id, index.id], project_scoped=False)
+            job = JobQueue(database).enqueue_in_session(
+                session, "rvc.model.upload", {"pth_artifact_id": weights.id, "index_artifact_id": index.id},
+                workspace_id=owner.workspace_id,
+            )
         _emit(_job_dict(job), args.json)
         return 0
     finally:
@@ -893,7 +908,12 @@ def command_rvc_convert(args) -> int:
     try:
         settings = json.loads(args.settings)
         settings["rvc_model"] = args.model
-        job = JobQueue(database).enqueue("rvc.convert", {"source_artifact_id": args.artifact_id, "session_id": args.session_id, "settings": settings}, session_id=args.session_id)
+        with database.immediate_session() as session:
+            owner = artifact_job_ownership(session, [args.artifact_id], session_id=args.session_id)
+            job = JobQueue(database).enqueue_in_session(
+                session, "rvc.convert", {"source_artifact_id": args.artifact_id, "session_id": args.session_id, "settings": settings},
+                session_id=args.session_id, workspace_id=owner.workspace_id, project_id=owner.project_id,
+            )
         _emit(_job_dict(job), args.json)
         return 0
     finally:
@@ -1212,7 +1232,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.server:
             return int(command_remote(args) or 0)
-        return int(args.handler(args) or 0)
+        from pandrator.logic.model_acquisition import host_model_acquisition_scope
+
+        from .accounts.execution_actor import HostActor, execution_actor_scope
+
+        with execution_actor_scope(HostActor("pandrator-cli")), host_model_acquisition_scope():
+            return int(args.handler(args) or 0)
     except KeyError as error:
         print(f"Not found: {error.args[0]}", file=sys.stderr)
         return 5

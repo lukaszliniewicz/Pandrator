@@ -136,19 +136,43 @@ export const soundAudioUrl = (artifactId: string) =>
   `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`;
 export const soundCatalogue = () =>
   apiJson<SoundCatalogue>('/sounds/catalogue');
-export const soundCandidate = (id: string) =>
-  apiJson<SoundCandidate>(`/sounds/candidates/${encodeURIComponent(id)}`);
-export const soundCandidates = (cursor?: string) =>
+function workspacePath(path: string, workspaceId?: string) {
+  if (!workspaceId) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}${new URLSearchParams({ workspace_id: workspaceId })}`;
+}
+export const soundCandidate = (id: string, workspaceId?: string) =>
+  apiJson<SoundCandidate>(
+    workspacePath(`/sounds/candidates/${encodeURIComponent(id)}`, workspaceId)
+  );
+export const soundCandidates = (cursor?: string, workspaceId?: string) =>
   apiJson<SoundPage<SoundCandidate>>(
-    `/sounds/candidates?${new URLSearchParams({ limit: '20', ...(cursor ? { cursor } : {}) })}`
+    workspacePath(
+      `/sounds/candidates?${new URLSearchParams({ limit: '20', ...(cursor ? { cursor } : {}) })}`,
+      workspaceId
+    )
   );
-export const soundList = (query = '', cursor?: string, archived = false) =>
+export const soundList = (
+  query = '',
+  cursor?: string,
+  archived = false,
+  workspaceId?: string
+) =>
   apiJson<SoundPage<SoundItem>>(
-    `/sounds?${new URLSearchParams({ query, limit: '40', archived: String(archived), ...(cursor ? { cursor } : {}) })}`
+    workspacePath(
+      `/sounds?${new URLSearchParams({ query, limit: '40', archived: String(archived), ...(cursor ? { cursor } : {}) })}`,
+      workspaceId
+    )
   );
-export const soundDetail = (id: string, cursor?: string) =>
+export const soundDetail = (
+  id: string,
+  cursor?: string,
+  workspaceId?: string
+) =>
   apiJson<SoundDetail>(
-    `/sounds/${encodeURIComponent(id)}?${new URLSearchParams({ limit: '20', ...(cursor ? { cursor } : {}) })}`
+    workspacePath(
+      `/sounds/${encodeURIComponent(id)}?${new URLSearchParams({ limit: '20', ...(cursor ? { cursor } : {}) })}`,
+      workspaceId
+    )
   );
 
 function mutate<T>(
@@ -168,8 +192,14 @@ function mutate<T>(
 }
 export const generateSound = (
   body: SoundGeneration,
-  attempt: ApiMutationAttempt
-) => mutate<SoundGenerationReceipt>('/sounds/generate', body, attempt);
+  attempt: ApiMutationAttempt,
+  workspaceId?: string
+) =>
+  mutate<SoundGenerationReceipt>(
+    workspacePath('/sounds/generate', workspaceId),
+    body,
+    attempt
+  );
 export const saveSound = (
   body: {
     candidate_id: string;
@@ -178,10 +208,11 @@ export const saveSound = (
     item_id?: string;
     expected_revision?: number;
   },
-  attempt: ApiMutationAttempt
+  attempt: ApiMutationAttempt,
+  workspaceId?: string
 ) =>
   mutate<{ item: SoundItem; item_id: string; reused: boolean }>(
-    '/sounds/save',
+    workspacePath('/sounds/save', workspaceId),
     body,
     attempt
   ).then((receipt) => receipt.item);
@@ -192,27 +223,36 @@ export const updateSound = (
     tags?: string[];
     archived?: boolean;
     preferred_variant_id?: string;
-  }
+  },
+  workspaceId?: string
 ) =>
   mutate<SoundItem>(
-    `/sounds/${encodeURIComponent(item.id)}`,
+    workspacePath(`/sounds/${encodeURIComponent(item.id)}`, workspaceId),
     { expected_revision: item.revision, ...changes },
     undefined,
     'PATCH'
   );
-export const discardSound = (id: string) =>
-  apiJson(`/sounds/candidates/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    headers: new ApiMutationAttempt().headersFor(`discard-sound-${id}`, {})
-  });
+export const discardSound = (id: string, workspaceId?: string) =>
+  apiJson(
+    workspacePath(`/sounds/candidates/${encodeURIComponent(id)}`, workspaceId),
+    {
+      method: 'DELETE',
+      headers: new ApiMutationAttempt().headersFor(`discard-sound-${id}`, {})
+    }
+  );
 export const cancelSound = (jobId: string) =>
   apiJson(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
-export const importSound = (file: File, attempt: ApiMutationAttempt) => {
+export const importSound = (
+  file: File,
+  attempt: ApiMutationAttempt,
+  workspaceId?: string
+) => {
   const form = new FormData();
   form.set('file', file);
-  return apiJson<SoundCandidate>('/sounds/import', {
+  const path = workspacePath('/sounds/import', workspaceId);
+  return apiJson<SoundCandidate>(path, {
     method: 'POST',
-    headers: attempt.headersFor('/sounds/import', {
+    headers: attempt.headersFor(path, {
       name: file.name,
       size: file.size,
       modified: file.lastModified

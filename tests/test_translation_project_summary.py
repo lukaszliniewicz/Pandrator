@@ -11,10 +11,19 @@ from sqlalchemy.orm import Session
 from pandrator.web import models as m
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.translation_project_routes import translation_project_paths
 from pandrator.web.translation_project_summary import get_compact_project
 from pandrator.web.translation_projects import get_project
 from tests.web_test_support import prepare_web_test_data_root
+
+
+def _session_project(db, session_id):
+    record = db.get(m.SessionRecord, session_id)
+    assert record is not None and record.project_id is not None
+    project = db.get(m.Project, record.project_id)
+    assert project is not None
+    return project
 
 
 @pytest.fixture
@@ -32,7 +41,10 @@ def summary_case(tmp_path):
         included_stages=["correct", "export"],
     )
     with services.database.session() as db:
+        source_project = _session_project(db, source.id)
         checkpoint = m.Artifact(
+            workspace_id=source_project.workspace_id,
+            project_id=source_project.id,
             session_id=source.id,
             kind="srt",
             role="correction",
@@ -43,6 +55,7 @@ def summary_case(tmp_path):
         db.add(checkpoint)
         db.flush()
         project = m.TranslationProject(
+            project_root_id=source_project.id,
             name="Compact project",
             source_session_id=source.id,
             checkpoint_artifact_id=checkpoint.id,
@@ -60,6 +73,10 @@ def add_branches(case, count, *, start=0):
     services, _, _, project_id, _ = case
     result = []
     with services.database.session() as db:
+        translation_project = db.get(m.TranslationProject, project_id)
+        assert translation_project is not None
+        root_project = db.get(m.Project, translation_project.project_root_id)
+        assert root_project is not None
         for index in range(start, start + count):
             record = m.SessionRecord(
                 name=f"Language {index}",
@@ -67,9 +84,10 @@ def add_branches(case, count, *, start=0):
                 source_language="en",
                 target_language=f"xx-{index}",
             )
-            db.add(record)
-            db.flush()
+            create_session_project(db, record, project_id=root_project.id)
             checkpoint = m.Artifact(
+                workspace_id=root_project.workspace_id,
+                project_id=root_project.id,
                 session_id=record.id,
                 kind="srt",
                 role="correction",
@@ -99,8 +117,11 @@ def test_complete_branch_summary_matches_full_basic_projection(summary_case):
     branches = add_branches(summary_case, 5)
     with services.database.session() as db:
         for index, state in ((1, "current"), (2, "stale")):
+            branch_project = _session_project(db, branches[index]["session_id"])
             db.add(
                 m.Artifact(
+                    workspace_id=branch_project.workspace_id,
+                    project_id=branch_project.id,
                     session_id=branches[index]["session_id"],
                     role="translation",
                     kind="srt",
@@ -108,8 +129,15 @@ def test_complete_branch_summary_matches_full_basic_projection(summary_case):
                     state=state,
                 )
             )
+        job_project = _session_project(db, branches[3]["session_id"])
         db.add(
-            m.Job(kind="dubbing.translate", session_id=branches[3]["session_id"], status="queued")
+            m.Job(
+                workspace_id=job_project.workspace_id,
+                project_id=job_project.id,
+                kind="dubbing.translate",
+                session_id=branches[3]["session_id"],
+                status="queued",
+            )
         )
         doc = m.Document(session_id=branches[4]["session_id"], stage="correction")
         db.add(doc)
@@ -196,7 +224,7 @@ def test_default_and_explicit_full_keep_enrichment(summary_case, suffix):
     _, client, source_id, project_id, _ = summary_case
     with patch(
         "pandrator.web.translation_project_routes.enrich_project_payload",
-        side_effect=lambda _services, payload: {**payload, "full_marker": True},
+        side_effect=lambda _services, payload, **_options: {**payload, "full_marker": True},
     ) as enrich:
         direct = client.get(f"/api/v1/translation-projects/{project_id}{suffix}")
         session = client.get(f"/api/v1/sessions/{source_id}/translation-project{suffix}")
@@ -245,6 +273,7 @@ def test_historical_payloads_and_generation_runs_are_not_hydrated(summary_case):
     branch = add_branches(summary_case, 1)[0]
     large = {"history_payload": "x" * 10_000}
     with services.database.session() as db:
+        branch_project = _session_project(db, branch["session_id"])
         plan = m.GenerationPlan(session_id=branch["session_id"])
         db.add(plan)
         db.flush()
@@ -256,6 +285,8 @@ def test_historical_payloads_and_generation_runs_are_not_hydrated(summary_case):
         for index in range(40):
             db.add(
                 m.Job(
+                    workspace_id=branch_project.workspace_id,
+                    project_id=branch_project.id,
                     session_id=branch["session_id"],
                     kind="dubbing.translate",
                     status="completed",
@@ -264,6 +295,8 @@ def test_historical_payloads_and_generation_runs_are_not_hydrated(summary_case):
             )
             db.add(
                 m.Artifact(
+                    workspace_id=branch_project.workspace_id,
+                    project_id=branch_project.id,
                     session_id=branch["session_id"],
                     kind="srt",
                     role="translation",
@@ -307,7 +340,10 @@ def test_historical_payloads_and_generation_runs_are_not_hydrated(summary_case):
 def test_source_status_detects_new_selection_without_file_hashing(summary_case):
     services, client, source_id, project_id, _ = summary_case
     with services.database.session() as db:
+        source_project = _session_project(db, source_id)
         newer = m.Artifact(
+            workspace_id=source_project.workspace_id,
+            project_id=source_project.id,
             session_id=source_id,
             kind="srt",
             role="correction",
@@ -338,7 +374,10 @@ def test_new_correction_changes_transcription_pinned_source(summary_case):
     assert baseline["checkpoint_role"] == "transcription"
     assert not baseline["source_status"]["source_changed"]
     with services.database.session() as db:
+        source_project = _session_project(db, source_id)
         correction = m.Artifact(
+            workspace_id=source_project.workspace_id,
+            project_id=source_project.id,
             session_id=source_id,
             kind="srt",
             role="correction",

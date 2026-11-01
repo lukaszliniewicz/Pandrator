@@ -14,6 +14,7 @@ from pandrator.web.generation_audio_versions import (
     initialize_audio_version,
     record_audio_version_take,
 )
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     AudioTake,
@@ -22,6 +23,7 @@ from pandrator.web.models import (
     Job,
     OutputAssembly,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.sessions import SessionService
 from pandrator.web.settings_policy import RevisionConflict
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -36,10 +38,17 @@ def rig():
         fixture.segment_ids = fixture._plan_with_takes()
         with fixture.database.session() as session:
             segments = [session.get(GenerationSegment, key) for key in fixture.segment_ids]
+            ownership = job_creation_ownership(session, session_id=fixture.record.id)
             root = GenerationRun(session_id=fixture.record.id,
                                  plan_revision_id=segments[0].plan_revision_id,
                                  sequence_number=1, status="completed")
-            job = Job(session_id=fixture.record.id, kind="generation", status="running")
+            job = Job(
+                session_id=fixture.record.id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
+                kind="generation",
+                status="running",
+            )
             session.add_all([root, job])
             session.flush()
             run = GenerationRun(session_id=fixture.record.id, plan_revision_id=root.plan_revision_id,
@@ -256,23 +265,24 @@ def test_worker_rejects_pin_drift_before_rendering(rig):
 def test_final_transaction_rejects_unavailable_artifact_and_retains_pin(rig):
     finish(rig)
     queued = queue(rig)
-    original_register = support.ArtifactService.register
+    original_prepare = support.ArtifactService.prepare_registration
 
     def invalidate(service, *args, **kwargs):
-        artifact = original_register(service, *args, **kwargs)
-        if kwargs.get("role") == "assembled_audio":
-            with rig.database.session() as session:
-                take = session.get(AudioTake, rig.before[rig.segment_ids[1]])
-                session.get(Artifact, take.artifact_id).state = "stale"
-        return artifact
+        prepared = original_prepare(service, *args, **kwargs)
+        with rig.database.session() as session:
+            take = session.get_one(AudioTake, rig.before[rig.segment_ids[1]])
+            session.get_one(Artifact, take.artifact_id).state = "stale"
+        return prepared
 
-    with mock.patch.object(support.ArtifactService, "register", invalidate), pytest.raises(RevisionConflict):
+    # Input invalidation now races hashing/preparation, before the atomic
+    # artifact+assembly publication unit. Nothing is registered on denial.
+    with mock.patch.object(support.ArtifactService, "prepare_registration", invalidate), pytest.raises(RevisionConflict):
         render(rig, queued)
     with rig.database.session() as session:
-        assembly = session.get(OutputAssembly, queued["id"])
+        assembly = session.get_one(OutputAssembly, queued["id"])
         assert assembly.status == "failed"
         assert assembly.settings_json["audio_version_side"] == "after"
-        assert session.get(Artifact, assembly.artifact_id).state == "stale"
+        assert assembly.artifact_id is None
 
 
 def _assembly_snapshot(rig, queued):
@@ -436,7 +446,10 @@ def test_export_rejects_wrong_assembly_pin_without_other_available_side_fallback
     if pin_kind == "wrong_project":
         foreign = SessionService(rig.database).create("Another project", workflow_kind="audiobook")
         with rig.database.session() as session:
+            ownership = resolve_artifact_ownership(session, session_id=foreign.id)
             artifact = Artifact(session_id=foreign.id, kind="audio", role="assembled_audio",
+                                workspace_id=ownership.workspace_id,
+                                project_id=ownership.project_id,
                                 relative_path="foreign.wav", state="current")
             session.add(artifact)
             session.flush()

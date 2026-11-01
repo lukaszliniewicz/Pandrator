@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from pandrator.web import workflows
 from pandrator.web.database import Database
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
     AgentRun,
@@ -21,6 +22,7 @@ from pandrator.web.models import (
     SessionStageSelection,
     new_id,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflows import WorkflowService
 from scripts.phase0_baseline import QueryCounter
@@ -56,19 +58,21 @@ def projection_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
         record = SessionService(database).create("Agent projection", workflow_kind="voiceover")
         job_id = new_id()
         with database.session() as session:
-            session.add(
-                Job(
-                    id=job_id,
-                    session_id=record.id,
-                    kind="dubbing.translate",
-                    status="running",
-                    created_at=CURRENT,
-                    updated_at=CURRENT,
-                    started_at=CURRENT,
-                    progress=0.4,
-                    progress_detail="Current translation",
-                )
+            job = Job(
+                id=job_id,
+                session_id=record.id,
+                kind="dubbing.translate",
+                status="running",
+                created_at=CURRENT,
+                updated_at=CURRENT,
+                started_at=CURRENT,
+                progress=0.4,
+                progress_detail="Current translation",
             )
+            ownership = job_creation_ownership(session, session_id=record.id)
+            job.workspace_id = ownership.workspace_id
+            job.project_id = ownership.project_id
+            session.add(job)
         monkeypatch.setattr(workflows, "utcnow", lambda: METRIC_NOW)
         yield ProjectionCase(
             database, WorkflowService(database, JobQueue(database)), record.id, job_id
@@ -132,17 +136,19 @@ def _add_job(
 ) -> str:
     job_id = new_id()
     with case.database.session() as session:
-        session.add(
-            Job(
-                id=job_id,
-                session_id=case.session_id,
-                kind=kind,
-                status=status,
-                created_at=created_at,
-                updated_at=created_at,
-                started_at=created_at,
-            )
+        job = Job(
+            id=job_id,
+            session_id=case.session_id,
+            kind=kind,
+            status=status,
+            created_at=created_at,
+            updated_at=created_at,
+            started_at=created_at,
         )
+        ownership = job_creation_ownership(session, session_id=case.session_id)
+        job.workspace_id = ownership.workspace_id
+        job.project_id = ownership.project_id
+        session.add(job)
     return job_id
 
 
@@ -178,19 +184,23 @@ def _selected_artifact(case: ProjectionCase, *, metadata_run_id: str | None = No
     artifact_id = new_id()
     timestamp = BASE + timedelta(hours=12)
     with case.database.session() as session:
-        session.add(
-            Artifact(
-                id=artifact_id,
-                session_id=case.session_id,
-                role="translation",
-                kind="srt",
-                state="current",
-                relative_path=f"artifacts/{artifact_id}.srt",
-                metadata_json={"agent_run_id": metadata_run_id} if metadata_run_id else {},
-                created_at=timestamp,
-                updated_at=timestamp,
-            )
+        artifact = Artifact(
+            id=artifact_id,
+            session_id=case.session_id,
+            role="translation",
+            kind="srt",
+            state="current",
+            relative_path=f"artifacts/{artifact_id}.srt",
+            metadata_json={"agent_run_id": metadata_run_id} if metadata_run_id else {},
+            created_at=timestamp,
+            updated_at=timestamp,
         )
+        ownership = resolve_artifact_ownership(
+            session, session_id=case.session_id
+        )
+        artifact.workspace_id = ownership.workspace_id
+        artifact.project_id = ownership.project_id
+        session.add(artifact)
         session.flush()
         session.add(
             SessionStageSelection(
@@ -241,6 +251,11 @@ def _seed_history(
             )
         )
     with case.database.session() as session:
+        if jobs:
+            ownership = job_creation_ownership(session, session_id=case.session_id)
+            for job in jobs:
+                job.workspace_id = ownership.workspace_id
+                job.project_id = ownership.project_id
         session.add_all(jobs)
         session.flush()
         session.add_all(runs)

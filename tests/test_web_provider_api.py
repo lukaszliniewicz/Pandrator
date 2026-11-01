@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 from pandrator.logic.llm_handler import ModelDiscoveryResult
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import (
@@ -255,7 +256,7 @@ class ProviderApiTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             stored = session.get(
-                StoredCredential, shared_provider_credential_key("openai")
+                StoredCredential, (initial_personal_workspace(session).id, shared_provider_credential_key("openai"))
             )
             self.assertEqual(secret, stored.secret_value)
 
@@ -286,7 +287,7 @@ class ProviderApiTests(unittest.TestCase):
         self.assertFalse(removed.get_json()["credential_configured"])
         with database.session() as session:
             self.assertIsNone(
-                session.get(StoredCredential, shared_provider_credential_key("openai"))
+                session.get(StoredCredential, (initial_personal_workspace(session).id, shared_provider_credential_key("openai")))
             )
 
     def test_vertex_service_account_json_is_validated_and_hydrated_for_litellm(self):
@@ -413,7 +414,7 @@ class ProviderApiTests(unittest.TestCase):
         with extension["database"].session() as session:
             stored = session.get(
                 StoredCredential,
-                stt_service_credential_key("azure_mai_transcribe_1_5"),
+                (initial_personal_workspace(session).id, stt_service_credential_key("azure_mai_transcribe_1_5")),
             )
             self.assertEqual(secret, stored.secret_value)
 

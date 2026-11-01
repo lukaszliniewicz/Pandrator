@@ -23,8 +23,10 @@ in the Manager audit stream. It cannot read network settings, arbitrary files,
 or the permanent local Manager bearer.
 
 Normal remote Manager mutations also require the deployment operator to
-enable the server-side single-owner mutation policy. Enrollment and scopes
-cannot bypass that gate.
+enable `PANDRATOR_ALLOW_REMOTE_MANAGER_MUTATIONS`. Application calls require a
+current instance Administrator with `app.admin` and the relevant Manager scopes;
+a workspace Manager role is insufficient. Enrollment and scopes cannot bypass
+the separate server-side deployment policy.
 
 Repairs and component changes use two steps:
 
@@ -38,9 +40,11 @@ remove, rollback, and data-purge actions are consequential and require their
 declared confirmation level.
 
 For audio.cpp models, inspect `pandrator_manager_status` for known and installed
-packages, and `pandrator_get_tts_catalog(refresh=true)` for live selectable and
-loaded models. A catalogue entry is not evidence of installation; a configured
-model need not be resident in GPU memory.
+packages, then `pandrator_get_tts_catalog` for the saved service observations and
+selectable/loaded model state. Catalogue reads are passive. When a fresh service
+observation is needed, use `pandrator_refresh_tts_catalog` with `app.write` and the
+intended workspace/service scope. A catalogue entry is not evidence of installation;
+a configured model need not be resident in GPU memory.
 
 Use the existing component plan tool with `component_id=audio_cpp` and
 `options={"add_models":["fish_audio_s2_pro_q8_0"]}` to retain installed/desired
@@ -55,9 +59,10 @@ service restart and confirmations before executing the immutable plan digest.
 Model-changing operations refuse to start while application work is active;
 new jobs are refused while that maintenance operation is active. Stop or finish
 the work, then create a fresh plan if the previous operation failed. Poll with
-`pandrator_get_work`; successful completion refreshes the live TTS catalogue
-when the application is reachable. If it is restarting, refresh explicitly after
-it returns. Select the desired session model with `pandrator_configure_tts`.
+`pandrator_get_work`; successful completion inspects the saved TTS catalogue
+when the application is reachable. If observations are stale after activation,
+refresh explicitly after the application returns. Select the desired session
+model with `pandrator_configure_tts`; configuration does not refresh the catalogue.
 Package activation and session model selection are separate steps.
 
 Qwen CustomVoice uses its native speakers, so cloned cast references must be

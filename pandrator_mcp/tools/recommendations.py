@@ -14,6 +14,26 @@ def recommend_next_steps(
 ) -> dict[str, Any]:
     raw_goal = str(arguments.goal or "").strip()
     goal = raw_goal.casefold()
+    if not arguments.session_id and any(term in goal for term in (
+        "collaborat", "shared workspace", "team workspace", "invite user",
+        "invite a user", "manage users", "reset password", "multi-user", "multiuser",
+    )):
+        return {
+            "schema_version": "1",
+            "goal": arguments.goal,
+            "basis": "static_guidance",
+            "steps": [
+                {
+                    "tool": "pandrator_explain_system",
+                    "arguments": {"topic": "collaboration", "detail": "full"},
+                    "reason": "Read Solo opt-in, account roles, workspace approval and complete scope requirements.",
+                },
+                {
+                    "tool": "pandrator_get_target_status",
+                    "reason": "Inspect the enrolled target and granted scopes before authorized workspace operations.",
+                },
+            ],
+        }
     multivoice = any(
         term in goal
         for term in (

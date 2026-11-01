@@ -147,37 +147,66 @@ class TranslationSourceRepairMigrationTests(unittest.TestCase):
                         role="upload",
                         relative_path="parent/source.mp4",
                     )
-                    session.add_all([foreign, local_clone, local_valid, foreign_media])
-                    attached_asset = SourceAsset(
-                        id="attached-foreign-asset",
-                        artifact_id=foreign.id,
-                        display_name="Attached foreign source",
-                        kind="srt",
+                    historical_artifacts = Table(
+                        "artifacts", MetaData(), autoload_with=session.connection()
                     )
-                    session.add(attached_asset)
+                    session.execute(
+                        historical_artifacts.insert(),
+                        [
+                            {
+                                "id": item.id,
+                                "session_id": item.session_id,
+                                "kind": item.kind,
+                                "role": item.role,
+                                "relative_path": item.relative_path,
+                                "state": "current",
+                                "metadata_json": item.metadata_json or {},
+                                "created_at": timestamp,
+                                "updated_at": timestamp,
+                            }
+                            for item in (foreign, local_clone, local_valid, foreign_media)
+                        ],
+                    )
                     session.flush()
+                    # Current ORM ownership columns do not exist at 0027.
+                    historical_assets = Table(
+                        "source_assets", MetaData(), autoload_with=session.connection()
+                    )
+                    session.execute(
+                        historical_assets.insert(),
+                        [
+                            {
+                                "id": identifier,
+                                "artifact_id": artifact_id,
+                                "display_name": display_name,
+                                "kind": kind,
+                                "state": "current",
+                                "metadata_json": {},
+                                "revision": 1,
+                                "created_at": timestamp,
+                                "updated_at": timestamp,
+                            }
+                            for identifier, artifact_id, display_name, kind in (
+                                ("attached-foreign-asset", foreign.id, "Attached foreign source", "srt"),
+                                ("attached-foreign-media-asset", foreign_media.id, "Attached foreign media", "video"),
+                            )
+                        ],
+                    )
                     session.add(
                         SessionSource(
                             id="attached-foreign-link",
                             session_id=attached_setting.id,
-                            source_asset_id=attached_asset.id,
+                            source_asset_id="attached-foreign-asset",
                             role="primary",
                             is_current=True,
                         )
                     )
-                    attached_media_asset = SourceAsset(
-                        id="attached-foreign-media-asset",
-                        artifact_id=foreign_media.id,
-                        display_name="Attached foreign media",
-                        kind="video",
-                    )
-                    session.add(attached_media_asset)
                     session.flush()
                     session.add(
                         SessionSource(
                             id="attached-foreign-media-link",
                             session_id=attached_media_setting.id,
-                            source_asset_id=attached_media_asset.id,
+                            source_asset_id="attached-foreign-media-asset",
                             role="primary",
                             is_current=True,
                         )
@@ -482,6 +511,7 @@ class TranslationSourceResolutionTests(unittest.TestCase):
         with self.database.session() as session:
             asset = SourceAsset(
                 id="attached-media-asset",
+                workspace_id=session.get_one(Artifact, media.id).workspace_id,
                 artifact_id=media.id,
                 display_name="Attached media",
                 kind="video",

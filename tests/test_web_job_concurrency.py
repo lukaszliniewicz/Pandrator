@@ -533,8 +533,9 @@ class WorkerResilienceTests(unittest.TestCase):
             self.assertTrue(cancel_event.is_set())
             self.assertEqual(len(elapsed_points), heartbeat_successes)
             second_claim = self.queue.claim("second-worker")
-            self.assertIsNotNone(second_claim)
-            self.assertEqual(competing_job.id, second_claim.id)
+            self.assertIsNone(second_claim)
+            self.assertEqual("queued", self.queue.get(competing_job.id).status)
+            self.assertEqual(0, self.queue.get(competing_job.id).attempts)
             with self.database.session() as session:
                 resource_claim = session.get(ResourceClaim, "gpu:0")
                 self.assertIsNotNone(resource_claim)
@@ -544,14 +545,6 @@ class WorkerResilienceTests(unittest.TestCase):
                     resource_claim.expires_at,
                     clock.utcnow().replace(tzinfo=None),
                 )
-            self.assertFalse(
-                self.queue.acquire_resources(
-                    competing_job.id,
-                    "second-worker",
-                    ["gpu:0"],
-                    lease_generation=second_claim.lease_generation,
-                )
-            )
             return {"must_not_succeed": True}
 
         worker = Worker(

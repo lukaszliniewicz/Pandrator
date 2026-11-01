@@ -25,8 +25,9 @@ from unittest import mock
 
 import pytest
 from sqlalchemy import event, select
-from sqlalchemy.orm import Session
 
+from pandrator.web.accounts.execution_actor import HostActor, execution_actor_scope
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService, sha256_file
 from pandrator.web.auth import BootstrapTokenStore
@@ -78,13 +79,18 @@ def stub_cleanup_module(calls: dict, *, failure: Exception | None = None):
 
 
 class VoiceCleanupWorkerTests(unittest.TestCase):
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_off_bypass_needs_no_cleanup_dependency_or_download(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="Reference", language="en")
+                    voice = Voice(
+                        name="Reference",
+                        language="en",
+                        workspace_id=initial_personal_workspace(session).id,
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -115,13 +121,18 @@ class VoiceCleanupWorkerTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_deepfilternet2_preprocesses_48k_and_preserves_raw(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="Noisy reference", language="en")
+                    voice = Voice(
+                        name="Noisy reference",
+                        language="en",
+                        workspace_id=initial_personal_workspace(session).id,
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -182,13 +193,18 @@ class VoiceCleanupWorkerTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_deepfilternet2_failure_commits_no_sample(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="Failing cleanup", language="en")
+                    voice = Voice(
+                        name="Failing cleanup",
+                        language="en",
+                        workspace_id=initial_personal_workspace(session).id,
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -237,13 +253,18 @@ class VoiceCleanupWorkerTests(unittest.TestCase):
             finally:
                 database.dispose()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_unknown_flag_rejected_by_worker(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
             database = Database(paths.database)
             try:
                 with database.session() as session:
-                    voice = Voice(name="Strict flags", language="en")
+                    voice = Voice(
+                        name="Strict flags",
+                        language="en",
+                        workspace_id=initial_personal_workspace(session).id,
+                    )
                     session.add(voice)
                     session.flush()
                     voice_id = voice.id
@@ -323,6 +344,7 @@ class VoiceCleanupRouteTests(unittest.TestCase):
                 voice["revision"], session.get(Voice, voice["id"]).revision
             )
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_upload_and_replace_pass_flag_to_job(self):
         voice = self._create_voice()
         upload = self.client.post(
@@ -411,6 +433,7 @@ class VoiceCleanupRouteTests(unittest.TestCase):
             replace.get_json()["payload_json"]["noise_reduction"],
         )
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_replace_rejects_unknown_flag_before_side_effects(self):
         voice = self._create_voice()
         extension = self.app.extensions["pandrator"]
@@ -478,8 +501,14 @@ def test_recording_request_failure_leaves_no_orphans(recording_route_case, repla
     original_path.write_bytes(original_bytes)
     artifact = artifacts.register(original_path, kind="audio", role="voice_sample")
     with case.database.session() as session:
-        sample = VoiceSample(voice_id=voice["id"], artifact_id=artifact.id,
-                             transcript="Keep this", transcript_reviewed=True)
+        voice_workspace_id = session.get(Voice, voice["id"]).workspace_id
+        sample = VoiceSample(
+            voice_id=voice["id"],
+            workspace_id=voice_workspace_id,
+            artifact_id=artifact.id,
+            transcript="Keep this",
+            transcript_reviewed=True,
+        )
         session.add(sample)
         session.flush()
         sample_id = sample.id
@@ -528,9 +557,13 @@ def normalization_case(tmp_path):
     database = Database(paths.database)
     try:
         with database.session() as session:
-            voice = Voice(name="S2 reference", metadata_json={
-                "providers": {"test": {"voice_id": "reference", "status": "ready"}}
-            })
+            voice = Voice(
+                name="S2 reference",
+                workspace_id=initial_personal_workspace(session).id,
+                metadata_json={
+                    "providers": {"test": {"voice_id": "reference", "status": "ready"}}
+                },
+            )
             session.add(voice)
             session.flush()
             voice_id = voice.id
@@ -540,9 +573,15 @@ def normalization_case(tmp_path):
         old_path.write_bytes(silent_wav())
         old_artifact = artifacts.register(old_path, kind="audio", role="voice_sample")
         with database.session() as session:
-            sample = VoiceSample(voice_id=voice_id, artifact_id=old_artifact.id,
-                                 transcript="Keep me", transcript_language="en",
-                                 transcript_reviewed=True)
+            voice_workspace_id = session.get(Voice, voice_id).workspace_id
+            sample = VoiceSample(
+                voice_id=voice_id,
+                workspace_id=voice_workspace_id,
+                artifact_id=old_artifact.id,
+                transcript="Keep me",
+                transcript_language="en",
+                transcript_reviewed=True,
+            )
             session.add(sample)
             session.flush()
             sample_id = sample.id
@@ -605,6 +644,7 @@ def test_normalization_owner_runs_with_explicit_standalone_context(normalization
         assert session.get(Voice, case.voice_id).revision == 2
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 @pytest.mark.parametrize("replace", [False, True])
 @pytest.mark.parametrize("noise_reduction", ["none", "deepfilternet2"])
 @pytest.mark.parametrize("failure", ["ffmpeg", "prepare", "registration", "commit"])
@@ -638,9 +678,11 @@ def test_normalization_failure_removes_only_uncommitted_output(
         reached.append(failure)
         raise RuntimeError("S2 registration failed after flush")
 
-    def fail_commit(session):
-        voice = session.get(Voice, case.voice_id)
-        if voice is not None and voice.revision == 2:
+    def fail_commit(connection):
+        voice_revision = connection.scalar(
+            select(Voice.revision).where(Voice.id == case.voice_id)
+        )
+        if voice_revision == 2:
             reached.append(failure)
             raise RuntimeError("S2 commit rejected")
 
@@ -654,8 +696,8 @@ def test_normalization_failure_removes_only_uncommitted_output(
         elif failure == "registration":
             stack.enter_context(mock.patch.object(case.handlers.artifacts, "register_in_session", fail_registration))
         elif failure == "commit":
-            event.listen(Session, "before_commit", fail_commit)
-            stack.callback(event.remove, Session, "before_commit", fail_commit)
+            event.listen(case.database.engine, "commit", fail_commit)
+            stack.callback(event.remove, case.database.engine, "commit", fail_commit)
         with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
             case.handlers.normalize_voice_recording(payload, lambda *_args: None, threading.Event())
     assert reached == [failure]
@@ -663,6 +705,7 @@ def test_normalization_failure_removes_only_uncommitted_output(
     assert {p: p.read_bytes() for p in case.paths.root.rglob("*.wav")} == original_files
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 @pytest.mark.parametrize("failure", ["retirement", "progress"])
 def test_postcommit_failure_preserves_new_normalized_sample(normalization_case, failure):
     case = normalization_case
@@ -700,6 +743,7 @@ def test_postcommit_failure_preserves_new_normalized_sample(normalization_case, 
     assert case.old_path.exists() is (failure == "retirement")
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 @pytest.mark.parametrize("noise_reduction", ["none", "deepfilternet2"])
 def test_canceled_normalization_preserves_existing_reference(normalization_case, noise_reduction):
     case = normalization_case

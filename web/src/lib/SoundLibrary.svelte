@@ -5,9 +5,13 @@
   import { soundList, type SoundItem } from './sound-api';
   let {
     selectedId = $bindable<string | null>(null),
-    onvariant
-  }: { selectedId?: string | null; onvariant?: (itemId: string) => void } =
-    $props();
+    onvariant,
+    workspaceId
+  }: {
+    selectedId?: string | null;
+    onvariant?: (itemId: string) => void;
+    workspaceId?: string;
+  } = $props();
   let query = $state('');
   let archived = $state(false);
   let items = $state<SoundItem[]>([]);
@@ -21,7 +25,7 @@
     busy = true;
     error = '';
     try {
-      const result = await soundList(query, next, archived);
+      const result = await soundList(query, next, archived, workspaceId);
       if (alive && request === requestId) {
         items = result.items;
         cursor = result.next_cursor;
@@ -120,6 +124,7 @@
   </section>
   {#if selectedId}{#key selectedId}<SoundDetails
         itemId={selectedId}
+        {workspaceId}
         onclose={() => (selectedId = null)}
         onchange={() => load()}
         {onvariant}

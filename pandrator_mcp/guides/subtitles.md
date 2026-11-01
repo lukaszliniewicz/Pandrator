@@ -99,3 +99,10 @@ dispatch and reviewed subtitle artifacts include reading-speed/layout counts,
 up to 20 issue locations, and a normalized text-integrity comparison. These
 diagnostics report unresolved delivery constraints; they do not shorten the
 translation or prove alignment against the recording.
+
+File exports retain explicit cue windows and report duration/CPS conflicts
+instead of extending a final cue to satisfy a nominal reading target. Ordinary
+body prefixes such as `Tonight:` are preserved. An independent body/structure
+check prevents publishing text lost during subtitle formatting.
+Review the selected current or historical display source; caption formatting
+does not synthesize speech or change selected recordings.

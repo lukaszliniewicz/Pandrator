@@ -17,6 +17,8 @@
     revision,
     language,
     samples,
+    workspaceId,
+    canEdit = false,
     onclose,
     onchanged
   }: {
@@ -24,6 +26,8 @@
     revision: number;
     language: string;
     samples: ReferenceSample[];
+    workspaceId: string;
+    canEdit?: boolean;
     onclose: () => void;
     onchanged: () => Promise<void>;
   } = $props();
@@ -76,7 +80,8 @@
     }
   }
   async function save() {
-    if (busy) return;
+    if (busy || !canEdit || !workspaceId) return;
+    const workspace = workspaceId;
     busy = true;
     error = '';
     try {
@@ -88,12 +93,18 @@
         if (!file)
           throw new Error('Choose an audio file or an existing sample.');
         if (importedFile !== file) {
-          const receipt = await importReferenceAudio(file, uploadAttempt);
+          const receipt = await importReferenceAudio(
+            file,
+            uploadAttempt,
+            workspace
+          );
+          if (!alive || workspaceId !== workspace) return;
           importedFile = file;
           importedId = receipt.artifact_id;
         }
         artifactId = importedId;
       }
+      if (!alive || workspaceId !== workspace) return;
       const job = await prepareReference(
         voiceId,
         {
@@ -104,7 +115,8 @@
           transcript_reviewed: reviewed,
           ...crop
         },
-        prepareAttempt
+        prepareAttempt,
+        workspace
       );
       if (!alive) return;
       jobId = job.id;
@@ -157,7 +169,7 @@
       Keep a clean excerpt of speech. The original remains available; the new
       sample gets its own audio and transcript.
     </p>
-    <fieldset disabled={busy} class="space-y-3">
+    <fieldset disabled={busy || !canEdit} class="space-y-3">
       <label class="block text-sm"
         >Source
         <select
@@ -245,7 +257,10 @@
         {error}
       </p>{/if}
     <div class="mt-4 flex flex-wrap gap-2">
-      <button class="action primary" disabled={busy} onclick={() => void save()}
+      <button
+        class="action primary"
+        disabled={busy || !canEdit}
+        onclick={() => void save()}
         >{busy ? 'Preparing…' : 'Create sample'}</button
       >
       {#if busy && jobId}<button class="action" onclick={() => void cancel()}

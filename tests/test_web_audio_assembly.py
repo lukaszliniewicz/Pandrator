@@ -1489,7 +1489,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
     def test_assembly_canceled_after_registration_retains_only_a_stale_artifact(self):
         self._assert_assembly_invalidated_after_registration("cancel")
 
-    def test_assembly_plan_changed_after_registration_retains_only_a_stale_artifact(self):
+    def test_assembly_plan_changed_before_publication_registers_no_artifact(self):
         self._assert_assembly_invalidated_after_registration("replace_plan")
 
     def _assert_assembly_invalidated_after_registration(self, invalidation):
@@ -1497,26 +1497,30 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         queued = self.generation.create_assembly(self.record.id)
         canceled = threading.Event()
         handlers = WorkflowHandlers(self.database, self.paths)
-        register = handlers.artifacts.register
+        register = handlers.artifacts.register_in_session
+        prepare = handlers.artifacts.prepare_registration
         registered = []
         reported = []
 
         def register_then_invalidate(*args, **kwargs):
             artifact = register(*args, **kwargs)
             registered.append(artifact.id)
-            if invalidation == "cancel":
-                canceled.set()
-            else:
-                self.generation.create_plan(
-                    self.record.id,
-                    source_revision_id=None,
-                    segments=[{"text": "A new plan before publication."}],
-                )
+            canceled.set()
             return artifact
 
-        with mock.patch.object(
-            handlers.artifacts, "register", side_effect=register_then_invalidate
-        ):
+        def prepare_then_replace_plan(*args, **kwargs):
+            prepared = prepare(*args, **kwargs)
+            # Concurrent writers serialize with publication now. A real plan
+            # edit can race the preparation, before the publication writer.
+            self.generation.create_plan(
+                self.record.id, source_revision_id=None,
+                segments=[{"text": "A new plan before publication."}],
+            )
+            return prepared
+
+        target = "register_in_session" if invalidation == "cancel" else "prepare_registration"
+        callback = register_then_invalidate if invalidation == "cancel" else prepare_then_replace_plan
+        with mock.patch.object(handlers.artifacts, target, side_effect=callback):
             result = handlers.assemble_generation_output(
                 {"output_assembly_id": queued["id"]},
                 lambda value, _detail=None: reported.append(value),
@@ -1524,15 +1528,18 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             )
 
         self.assertEqual({}, result)
-        self.assertEqual(1, len(registered))
+        self.assertEqual(1 if invalidation == "cancel" else 0, len(registered))
         self.assertNotIn(1.0, reported)
         with self.database.session() as session:
-            assembly = session.get(OutputAssembly, queued["id"])
+            assembly = session.get_one(OutputAssembly, queued["id"])
             self.assertEqual("canceled", assembly.status)
-            self.assertEqual(registered[0], assembly.artifact_id)
-            artifact = session.get(Artifact, registered[0])
-            self.assertEqual("stale", artifact.state)
-            self.assertTrue(self.paths.managed_path(artifact.relative_path).is_file())
+            if invalidation == "cancel":
+                self.assertEqual(registered[0], assembly.artifact_id)
+                artifact = session.get_one(Artifact, registered[0])
+                self.assertEqual("stale", artifact.state)
+                self.assertTrue(self.paths.managed_path(artifact.relative_path).is_file())
+            else:
+                self.assertIsNone(assembly.artifact_id)
 
 
 if __name__ == "__main__":

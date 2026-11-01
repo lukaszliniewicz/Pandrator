@@ -129,7 +129,7 @@ test('media-edit wizard attaches a reused recording and uploaded captions with c
     sessionNameBox!.y + sessionNameBox!.height
   );
 
-  await page.getByRole('button', { name: 'Create workspace' }).click();
+  await page.getByRole('button', { name: 'Create project' }).click();
   // The wizard first commits its settings and attachments, then navigates.
   // Give the destination its own bounded readiness wait after that work.
   await page.waitForURL(/\/sessions\/[^/?]+$/);
@@ -682,7 +682,7 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   await expect(
     review.getByLabel('Find in transcription segments')
   ).toBeHidden();
-  await review.getByText('Find, filter & compare', { exact: true }).click();
+  await review.getByRole('button', { name: /^Tools/ }).click();
   await expect(
     review.getByRole('button', { name: 'Changed only' })
   ).toBeVisible();
@@ -695,10 +695,10 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
     .poll(() => reviewRequests)
     .toEqual([['artifact-15'], ['artifact-15', 'artifact-14']]);
   await expect(
-    review.getByRole('columnheader').filter({ hasText: 'transcription v15' })
+    review.getByRole('columnheader').filter({ hasText: 'transcription r15' })
   ).toBeVisible();
   await expect(
-    review.getByRole('columnheader').filter({ hasText: 'transcription v14' })
+    review.getByRole('columnheader').filter({ hasText: 'transcription r14' })
   ).toBeVisible();
   await expect(review.getByText('The alternate transcription.')).toBeVisible();
   await review
@@ -727,7 +727,7 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   await review.getByRole('button', { name: 'Previous', exact: true }).click();
   await expect(review.getByText('Showing 1–50 of 75 rows')).toBeVisible();
 
-  await review.getByText('Find, filter & compare', { exact: true }).click();
+  await review.getByRole('button', { name: /^Tools/ }).click();
   await expect(
     review.getByRole('button', { name: 'Delete' }).last()
   ).toBeEnabled();
@@ -745,8 +745,11 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   ).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(
-    review.getByRole('button', { name: 'Review tour' })
+    review.getByRole('button', { name: 'Save revision', exact: true })
   ).toBeFocused();
+  await expect(
+    review.getByRole('button', { name: 'Review tour' })
+  ).toBeHidden();
 });
 
 test('a selected correction checkpoint can fork a clean project branch', async ({
@@ -1193,7 +1196,13 @@ test('speech-plan history shows repair outcomes in a full dialog without changin
   await page.screenshot({
     path: testInfo.outputPath('speech-plan-history-mobile.png')
   });
-  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(
+    page.getByRole('dialog', { name: 'Versions', exact: true })
+  ).toBeHidden();
+  await dialog
+    .getByRole('button', { name: 'Close speech-plan history', exact: true })
+    .click();
   await expect(dialog).toBeHidden();
 });
 

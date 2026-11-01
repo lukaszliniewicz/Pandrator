@@ -15,7 +15,7 @@ import unicodedata
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -23,9 +23,15 @@ from urllib.request import Request, urlopen
 import pandrator.logic.dubbing.qwen_alignment as qwen_alignment
 
 from ..cancellable_process import ProcessCancelled, run_cancellable
+from ..model_acquisition import require_model_acquisition
 from .languages import normalize_language_code
 from .stt_languages import PARAKEET_V3_LANGUAGE_CODES, validate_stt_language
 from .text_units import infer_cjk_language, join_fragments
+
+
+class _BeforeIoOptions(TypedDict, total=False):
+    before_io: Callable[[], None]
+
 
 CRISPASR_VERSION = "0.8.36"
 CRISPASR_EXECUTABLE_ENV = "CRISPASR_EXECUTABLE"
@@ -152,6 +158,10 @@ DEFAULT_CTC_ALIGNER_ARTIFACT = CrispASRArtifact(
         "canary-ctc-aligner-q4_k.gguf"
     ),
 )
+DEFAULT_LID_ARTIFACT = CrispASRArtifact(
+    filename="ggml-tiny.bin",
+    url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+)
 
 
 MODEL_QUANTIZATION_ALIASES = {
@@ -173,7 +183,13 @@ def _run_tool(
     *,
     run_func: Callable[..., Any],
     cancel_event: threading.Event | None,
+    before_io: Callable[[], None] | None = None,
 ) -> Any:
+    if before_io is not None:
+        before_io()
+    _require_native_acquisition_if_needed(command)
+    if before_io is not None:
+        before_io()
     if cancel_event is not None and run_func is subprocess.run:
         return run_cancellable(
             command,
@@ -182,6 +198,125 @@ def _run_tool(
             capture_output=True,
         )
     return run_func(command, check=True, capture_output=True)
+
+
+def _local_model_file(path: str | None) -> bool:
+    """Return whether an argv path names an existing, non-empty regular file."""
+
+    if path is None or not path.strip():
+        return False
+    try:
+        candidate = Path(path)
+        return candidate.is_file() and candidate.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _last_option_value(command: list[str], *options: str) -> str | None:
+    """Read the final value for an exact short/long argv option spelling."""
+
+    value: str | None = None
+    for index, argument in enumerate(command):
+        for option in options:
+            if argument == option:
+                value = command[index + 1] if index + 1 < len(command) else None
+                break
+            if argument.startswith(f"{option}="):
+                value = argument[len(option) + 1 :]
+                break
+    return value
+
+
+def _has_option(command: list[str], *options: str) -> bool:
+    return any(
+        argument == option or argument.startswith(f"{option}=")
+        for argument in command
+        for option in options
+    )
+
+
+def _native_diarization_may_acquire(command: list[str]) -> bool:
+    method = str(_last_option_value(command, "--diarize-method") or "").strip().lower()
+    if method in {"pyannote", "foxnose", "sherpa", "ecapa"}:
+        return True
+    if _has_option(command, "--diarize-speakers"):
+        return True
+
+    embedder = _last_option_value(command, "--diarize-embedder")
+    if embedder is not None and embedder.strip().lower() not in {"off", "none"}:
+        if not _local_model_file(embedder):
+            return True
+
+    for option in (
+        "--sherpa-segment-model",
+        "--sherpa-embedding-model",
+        "--titanet-model",
+        "--spk-model",
+    ):
+        model_path = _last_option_value(command, option)
+        if model_path is not None and not _local_model_file(model_path):
+            return True
+
+    return _has_option(command, "--enroll-speaker", "--speaker-db")
+
+
+def _require_native_acquisition_if_needed(command: list[str]) -> None:
+    """Guard native CrispASR cache/download paths at the process boundary."""
+
+    needs_acquisition = _has_option(command, "--hf-repo", "--auto-download")
+    align_only = _has_option(command, "--align-only")
+    lid_backend = str(_last_option_value(command, "--lid-backend") or "").strip().lower()
+    lid_disabled = lid_backend in {"off", "none"}
+    lid_model_path = _last_option_value(command, "--lid-model")
+    local_lid_model = _local_model_file(lid_model_path)
+
+    if _has_option(command, "--lid-on-transcript"):
+        needs_acquisition = True
+
+    if not align_only:
+        backend = str(_last_option_value(command, "--backend") or "").strip().lower()
+        model_path = _last_option_value(command, "-m", "--model")
+        if backend not in {"whisper", "parakeet", "moss-diarize", "qwen3"}:
+            needs_acquisition = True
+        if not _local_model_file(model_path):
+            needs_acquisition = True
+
+        language = _last_option_value(command, "-l", "--language")
+        detect_language = _has_option(command, "--detect-language")
+        if detect_language and not (local_lid_model or lid_disabled):
+            needs_acquisition = True
+        if (
+            (language is None or language.strip().lower() in {"", "auto"})
+            and not (local_lid_model or lid_disabled)
+        ):
+            needs_acquisition = True
+
+        vad_model = _last_option_value(command, "--vad-model")
+        if _has_option(command, "--vad") and not (
+            (vad_model or "").strip().lower() == "webrtc"
+            or _local_model_file(vad_model)
+        ):
+            needs_acquisition = True
+        if (
+            vad_model is not None
+            and vad_model.strip().lower() != "webrtc"
+            and not _local_model_file(vad_model)
+        ):
+            needs_acquisition = True
+        if not _has_option(command, "--chunk-seconds", "-ck") and vad_model is None:
+            needs_acquisition = True
+
+        if _native_diarization_may_acquire(command):
+            needs_acquisition = True
+
+    aligner_model = _last_option_value(command, "-am", "--aligner-model")
+    if _has_option(command, "--align-only") and not _local_model_file(aligner_model):
+        needs_acquisition = True
+    if aligner_model is not None and not _local_model_file(aligner_model):
+        needs_acquisition = True
+
+    if needs_acquisition:
+        require_model_acquisition()
 
 
 def normalize_model_quantization_alias(value: str | None) -> str:
@@ -301,6 +436,8 @@ def _prefetch_windows_artifact(
 
     if platform.system() != "Windows":
         return None
+
+    require_model_acquisition()
 
     configured_cache = _cache_dir(settings)
     cache_dir = Path(configured_cache) if configured_cache else Path.home() / ".cache" / "crispasr"
@@ -564,6 +701,7 @@ def build_command(
         resolve_executable(executable),
         "--backend",
         backend,
+        "--no-auto-aligner",
     ]
     if model_path is None:
         command.extend(
@@ -589,6 +727,8 @@ def build_command(
             "-ojf",
             "-pp",
             "--split-on-punct",
+            "-l",
+            language,
         )
     )
     _append_runtime_options(command, settings)
@@ -623,8 +763,7 @@ def build_command(
         # VAD off, Crisp seeks the lowest-energy 100 ms in the final five
         # seconds rather than cutting blindly at this limit.
         chunk_seconds = max(30.0, min(120.0, float(_setting(settings, "moss_max_chunk_seconds", 120.0))))
-    if chunk_seconds > 0:
-        command.extend(("--chunk-seconds", f"{chunk_seconds:g}"))
+    command.extend(("--chunk-seconds", f"{chunk_seconds:g}"))
     # MOSS supplies native speaker turns but no token stream to Crisp's
     # cross-chunk overlap stitcher. Re-decoding overlap therefore duplicated
     # speech with conflicting speaker IDs. Keep MOSS overlap independently
@@ -645,6 +784,10 @@ def build_command(
     lid_backend = str(settings.get("stt_lid_backend") or "whisper").strip().lower()
     if lid_backend not in {"", "auto", "whisper"}:
         command.extend(("--lid-backend", lid_backend))
+    if language == "auto" and lid_backend in {"", "auto", "whisper"}:
+        cached_lid_model = _cached_artifact_path(settings, DEFAULT_LID_ARTIFACT)
+        if cached_lid_model is not None:
+            command.extend(("--lid-model", str(cached_lid_model)))
     beam_size = max(1, int(_setting(settings, "stt_beam_size", 1)))
     if beam_size > 1:
         command.extend(("--beam-size", str(beam_size)))
@@ -656,13 +799,11 @@ def build_command(
         command.append("--diarize")
 
     if engine == STT_ENGINE_WHISPER:
-        command.extend(("-l", language, "-dtw", "large.v3"))
+        command.extend(("-dtw", "large.v3"))
         prompt = str(settings.get("whisper_prompt") or "").strip()
         if prompt:
             command.extend(("--prompt", prompt))
     elif engine == STT_ENGINE_QWEN3:
-        if language != "auto":
-            command.extend(("-l", language))
         command.extend(("--max-new-tokens", str(int(_setting(settings, "qwen_asr_max_tokens", 512)))))
         command.append("--strict-pipeline")
         if require_word_timestamps:
@@ -958,6 +1099,7 @@ def run_vad_export(
     executable: str = "",
     run_func: Callable[..., Any] = subprocess.run,
     cancel_event: threading.Event | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> Path:
     """Execute one standalone full-recording VAD export."""
 
@@ -966,6 +1108,8 @@ def run_vad_export(
     # This standalone export is owned by caption alignment, so its model
     # prefetch follows crispasr_vad_enabled rather than the fallback STT
     # engine's MOSS-specific switch.
+    if before_io is not None:
+        before_io()
     prefetched = _prefetch_windows_vad_model(settings, force=True)
     command = build_vad_export_command(
         audio_path,
@@ -974,6 +1118,8 @@ def run_vad_export(
         executable=executable,
         vad_model_path=prefetched,
     )
+    if before_io is not None:
+        before_io()
     try:
         _run_tool(command, run_func=run_func, cancel_event=cancel_event)
     except ProcessCancelled:
@@ -983,6 +1129,8 @@ def run_vad_export(
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
         raise CrispASRError(f"CrispASR VAD export failed: {str(stderr or error).strip()}") from error
+    if before_io is not None:
+        before_io()
     generated = Path(output_path)
     if not generated.is_file():
         # Some CrispASR builds append ``.json`` to the requested export path.
@@ -1005,24 +1153,35 @@ def run_ctc_alignment(
     executable: str = "",
     run_func: Callable[..., Any] = subprocess.run,
     cancel_event: threading.Event | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> Any:
     """Run one bounded align-only CTC batch and return its JSON payload."""
 
+    hook_options: _BeforeIoOptions = {"before_io": before_io} if before_io is not None else {}
+    if before_io is not None:
+        before_io()
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelled("CTC alignment was canceled.")
     problem = ctc_language_problem(settings, Path(text_path).read_text(encoding="utf-8-sig"))
     if problem:
         raise CrispASRError(problem)
     import pandrator.logic.dubbing.qwen_alignment as qwen_alignment
+    if before_io is not None:
+        before_io()
     if qwen_alignment.uses_qwen(settings, Path(text_path).read_text(encoding="utf-8-sig")):
         try:
             return qwen_alignment.run_alignment(
                 audio_path, text_path, output_path, settings,
                 cancel_event=cancel_event, run_func=run_func,
+                **hook_options,
             )
         except qwen_alignment.QwenAlignmentError as error:
             raise CrispASRError(str(error)) from error
+    if before_io is not None:
+        before_io()
     prefetched = _prefetch_windows_ctc_aligner(settings)
+    if before_io is not None:
+        before_io()
     command = build_ctc_alignment_command(
         audio_path,
         text_path,
@@ -1032,7 +1191,7 @@ def run_ctc_alignment(
         aligner_model_path=prefetched,
     )
     try:
-        _run_tool(command, run_func=run_func, cancel_event=cancel_event)
+        _run_tool(command, run_func=run_func, cancel_event=cancel_event, **hook_options)
     except ProcessCancelled:
         raise
     except (FileNotFoundError, subprocess.CalledProcessError) as error:
@@ -1045,6 +1204,8 @@ def run_ctc_alignment(
         raise CrispASRError("CrispASR did not produce CTC alignment JSON.")
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelled("CTC alignment was canceled.")
+    if before_io is not None:
+        before_io()
     try:
         return json.loads(produced.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -1060,9 +1221,13 @@ def _align_moss_segments(
     run_func: Callable[..., Any],
     cancel_event: threading.Event | None = None,
     aligner_model_path: str | os.PathLike[str] | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> None:
     """Attach CTC words to each MOSS turn using a small acoustic margin."""
 
+    hook_options: _BeforeIoOptions = {"before_io": before_io} if before_io is not None else {}
+    if before_io is not None:
+        before_io()
     try:
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -1073,11 +1238,15 @@ def _align_moss_segments(
 
     moss_text = join_fragments(item.get("text", "") for item in segments if isinstance(item, dict))
     if qwen_alignment.uses_qwen(settings, moss_text, model_key="moss_ctc_aligner_model"):
-        qwen_alignment.align_moss_turns(audio_path, payload, settings, cancel_event=cancel_event, run_func=run_func)
+        qwen_alignment.align_moss_turns(audio_path, payload, settings, cancel_event=cancel_event, run_func=run_func, **hook_options)
+        if before_io is not None:
+            before_io()
         metadata_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return
 
     padding = max(0.0, min(2.0, float(_setting(settings, "moss_ctc_padding_seconds", 0.5))))
+    if before_io is not None:
+        before_io()
     try:
         source = wave.open(str(audio_path), "rb")
     except (OSError, wave.Error) as error:
@@ -1094,6 +1263,8 @@ def _align_moss_segments(
         audio_frames = source.readframes(params.nframes)
 
     frame_size = params.nchannels * params.sampwidth
+    if before_io is not None:
+        before_io()
     with tempfile.TemporaryDirectory(prefix="pandrator-moss-ctc-", dir=str(metadata_path.parent)) as temp_dir:
         temp_root = Path(temp_dir)
         for index, segment in enumerate(segments):
@@ -1124,9 +1295,13 @@ def _align_moss_segments(
             clip_path = temp_root / f"{stem}.wav"
             text_path = temp_root / f"{stem}.txt"
             aligned_path = temp_root / f"{stem}.json"
+            if before_io is not None:
+                before_io()
             with wave.open(str(clip_path), "wb") as clip:
                 clip.setparams(params)
                 clip.writeframes(audio_frames[start_frame * frame_size : end_frame * frame_size])
+            if before_io is not None:
+                before_io()
             text_path.write_text(text, encoding="utf-8")
             command = build_moss_alignment_command(
                 clip_path,
@@ -1136,11 +1311,14 @@ def _align_moss_segments(
                 executable=executable,
                 aligner_model_path=aligner_model_path,
             )
+            if before_io is not None:
+                before_io()
             try:
                 _run_tool(
                     command,
                     run_func=run_func,
                     cancel_event=cancel_event,
+                    **hook_options,
                 )
             except (FileNotFoundError, subprocess.CalledProcessError) as error:
                 stderr = getattr(error, "stderr", b"")
@@ -1149,6 +1327,8 @@ def _align_moss_segments(
                 raise CrispASRError(
                     f"CTC alignment failed for MOSS segment {index + 1}: {str(stderr or error).strip()}"
                 ) from error
+            if before_io is not None:
+                before_io()
             try:
                 aligned = json.loads(aligned_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
@@ -1191,6 +1371,8 @@ def _align_moss_segments(
             segment.setdefault("id", segment_id)
             segment["words"] = words
 
+    if before_io is not None:
+        before_io()
     metadata_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -1206,7 +1388,9 @@ def transcribe(
     model_path: str | os.PathLike[str] | None = None,
     aligner_model_path: str | os.PathLike[str] | None = None,
     require_word_timestamps: bool = True,
+    before_io: Callable[[], None] | None = None,
 ) -> CrispASRTranscriptionResult:
+    hook_options: _BeforeIoOptions = {"before_io": before_io} if before_io is not None else {}
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
     if engine != STT_ENGINE_QWEN3:
         validate_stt_language(
@@ -1214,29 +1398,39 @@ def transcribe(
             settings.get("stt_language") or settings.get("whisper_language"),
         )
     session_path = Path(session_dir)
+    if before_io is not None:
+        before_io()
     session_path.mkdir(parents=True, exist_ok=True)
     temporary_base = session_path / f"{output_name}_crispasr"
     prefetched_model: Path | None = None
     prefetched_vad_model: Path | None = None
     prefetched_aligner: Path | None = None
-    if engine == STT_ENGINE_QWEN3:
-        prefetched_model = Path(model_path) if model_path is not None else None
-    else:
+    if before_io is not None:
+        before_io()
+    if model_path is not None:
+        prefetched_model = Path(model_path)
+    elif engine != STT_ENGINE_QWEN3:
         try:
             prefetched_model = _prefetch_windows_model(settings)
         except (OSError, URLError, ValueError) as error:
             # Keep the native downloader as a fallback for proxies and managed
             # networks where Python and WinHTTP may have different access.
             logger.warning("Could not prefetch the CrispASR model: %s", error)
+    if before_io is not None:
+        before_io()
     try:
         prefetched_vad_model = _prefetch_windows_vad_model(settings)
     except (OSError, URLError, ValueError) as error:
         logger.warning("Could not prefetch the CrispASR VAD model: %s", error)
+    if before_io is not None:
+        before_io()
     if engine != STT_ENGINE_QWEN3:
         try:
             prefetched_aligner = _prefetch_windows_moss_aligner(settings)
         except (OSError, URLError, ValueError) as error:
             logger.warning("Could not prefetch the CrispASR CTC aligner: %s", error)
+    if before_io is not None:
+        before_io()
     command = build_command(
         audio_path,
         temporary_base,
@@ -1252,6 +1446,7 @@ def transcribe(
             command,
             run_func=run_func,
             cancel_event=cancel_event,
+            **hook_options,
         )
     except (FileNotFoundError, subprocess.CalledProcessError) as error:
         stderr = getattr(error, "stderr", b"")
@@ -1263,6 +1458,8 @@ def transcribe(
     # CrispASR appends output extensions to ``-of``.  ``Path.with_suffix()``
     # cannot model that contract because source stems may legitimately contain
     # dots (for example, ``meeting.v2_crispasr``), which it treats as a suffix.
+    if before_io is not None:
+        before_io()
     srt_generated = Path(f"{temporary_base}.srt")
     json_generated = Path(f"{temporary_base}.json")
     if not srt_generated.is_file() or not json_generated.is_file():
@@ -1280,6 +1477,8 @@ def transcribe(
         )
     align_moss_words = engine == STT_ENGINE_MOSS and moss_ctc_alignment_enabled(settings)
     qwen_moss = False
+    if before_io is not None:
+        before_io()
     if align_moss_words:
         moss_payload = json.loads(json_generated.read_text(encoding="utf-8"))
         moss_text = join_fragments(segment.get("text", "") for segment in moss_payload.get("transcription", []) if isinstance(segment, dict))
@@ -1289,7 +1488,11 @@ def transcribe(
             align_moss_words = False
             logger.warning(problem)
             moss_payload["pandrator_ctc_alignment"] = {"status": "skipped", "reason": problem, "timing_source": "native_turn"}
+            if before_io is not None:
+                before_io()
             json_generated.write_text(json.dumps(moss_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if before_io is not None:
+        before_io()
     if align_moss_words:
         _align_moss_segments(
             audio_path,
@@ -1299,7 +1502,10 @@ def transcribe(
             run_func=run_func,
             cancel_event=cancel_event,
             aligner_model_path=prefetched_aligner,
+            **hook_options,
         )
+    if before_io is not None:
+        before_io()
     if engine == STT_ENGINE_QWEN3:
         _validate_qwen_json(json_generated, audio_path, require_word_timestamps)
     else:
@@ -1311,7 +1517,11 @@ def transcribe(
 
     srt_path = session_path / f"{output_name}.srt"
     words_path = session_path / f"{output_name}_words.json"
+    if before_io is not None:
+        before_io()
     srt_generated.replace(srt_path)
+    if before_io is not None:
+        before_io()
     json_generated.replace(words_path)
     return CrispASRTranscriptionResult(
         srt_path=str(srt_path),

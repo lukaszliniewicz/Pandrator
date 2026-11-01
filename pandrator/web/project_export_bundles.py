@@ -14,16 +14,24 @@ import threading
 import unicodedata
 import zipfile
 from collections.abc import Callable, Iterator
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy import select
 
 from . import models as m
+from .access.contracts import AccessDenied, ProjectAction, ProjectNotFound
+from .access.project_visibility import project_ids_for_user
+from .accounts.credential_resources import credential_project_clause
+from .accounts.execution_actor import UserActor, current_execution_actor, execution_actor_scope
+from .accounts.job_authorization import require_execution_actor_in_session
+from .artifacts import PreparedArtifactRegistration
 from .auth import Principal
+from .job_execution import current_job_lease
 from .multilingual_setup import canonical_language
 from .project_operations import ProjectOperationError, TranslationProjectOperationService
+from .projects.models import Project
 from .settings_policy import stable_hash
 
 ProgressCallback = Callable[[float, str | None], None]
@@ -62,6 +70,30 @@ _ALLOWED_EXTENSIONS = frozenset(
     }
 )
 _CHUNK_SIZE = 1024 * 1024
+
+
+_FileVersion = tuple[int, int, int, int, int]
+_PreparedPair = tuple[PreparedArtifactRegistration, PreparedArtifactRegistration]
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedBundleFile:
+    relative_path: str
+    sha256: str
+    size_bytes: int
+    version: _FileVersion
+
+
+@dataclass(frozen=True, slots=True)
+class _BundlePublicationProof:
+    relative_directory: str
+    directory_version: _FileVersion
+    files: tuple[_VerifiedBundleFile, _VerifiedBundleFile]
+    prepared: _PreparedPair
+
+
+def _stat_version(info: os.stat_result) -> _FileVersion:
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
 class ProjectExportBundleError(RuntimeError):
@@ -169,6 +201,19 @@ class ProjectExportBundleService:
             os.close(descriptor)
             raise
 
+    def _file_version(self, relative_path: str) -> _FileVersion:
+        path = self._managed_regular_file(relative_path)
+        info = path.stat(follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("The export artifact must be a regular file.")
+        return _stat_version(info)
+
+    def _file_proof_matches(self, proof: _VerifiedBundleFile) -> bool:
+        try:
+            return proof.version[1] != 0 and self._file_version(proof.relative_path) == proof.version
+        except (OSError, ValueError):
+            return False
+
     def _hash_file(
         self,
         relative_path: str,
@@ -217,7 +262,9 @@ class ProjectExportBundleService:
         return {}
 
     @classmethod
-    def _child_artifact_ids(cls, child: dict[str, Any], db=None) -> list[str]:
+    def _child_artifact_ids(
+        cls, child: dict[str, Any], db=None, *, session_id: str | None = None
+    ) -> list[str]:
         result = cls._child_result(child)
         values: list[str] = []
         artifacts = result.get("artifacts")
@@ -232,7 +279,12 @@ class ProjectExportBundleService:
             values.append(str(result["artifact_id"]))
         if not values and db is not None:
             job_id = cls._child_job_id(child)
-            job = db.get(m.Job, str(job_id or "")) if job_id else None
+            if job_id and session_id is not None:
+                job = db.scalar(
+                    select(m.Job).where(m.Job.id == job_id, m.Job.session_id == session_id)
+                )
+            else:
+                job = db.get(m.Job, str(job_id or "")) if job_id else None
             job_result = job.result_json if job and isinstance(job.result_json, dict) else {}
             raw_ids = job_result.get("artifact_ids")
             if isinstance(raw_ids, list):
@@ -279,7 +331,7 @@ class ProjectExportBundleService:
         cancel_event: threading.Event | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
-            operation_view = self.operations.get(
+            operation_view = self.operations.get_export_receipts(
                 operation_id,
                 principal=principal,
                 target_identity=target_identity,
@@ -306,10 +358,12 @@ class ProjectExportBundleService:
             )
 
         with self.database.snapshot_session() as db:
+            self.operations.require_export_operation_access(
+                db, operation_id, principal, target_identity
+            )
             operation = db.get(m.TranslationProjectOperation, operation_id)
             if (
                 operation is None
-                or operation.principal_subject != principal.subject
                 or operation.target_instance_id != str(target_identity.get("instance_id") or "")
             ):
                 raise ProjectExportBundleError("not_found", "Project operation not found.", 404)
@@ -348,7 +402,12 @@ class ProjectExportBundleService:
                     "The selected language branches no longer match the operation.",
                 )
 
-            checkpoint = db.get(m.Artifact, project.checkpoint_artifact_id)
+            checkpoint = db.execute(
+                select(m.Artifact.id, m.Artifact.session_id, m.Artifact.content_hash).where(
+                    m.Artifact.id == project.checkpoint_artifact_id,
+                    m.Artifact.session_id == project.source_session_id,
+                )
+            ).one_or_none()
             checkpoint_valid = bool(
                 checkpoint
                 and checkpoint.session_id == project.source_session_id
@@ -380,7 +439,12 @@ class ProjectExportBundleService:
             for child in ordered_views:
                 _check_canceled(cancel_event)
                 branch_id = str(child.get("branch_id") or "")
-                branch = db.get(m.TranslationProjectBranch, branch_id)
+                branch = db.scalar(
+                    select(m.TranslationProjectBranch).where(
+                        m.TranslationProjectBranch.id == branch_id,
+                        m.TranslationProjectBranch.project_id == project.id,
+                    )
+                )
                 language = ""
                 child_reasons: list[str] = []
                 validation_blocked = False
@@ -388,7 +452,12 @@ class ProjectExportBundleService:
                     validation_blocked = True
                     child_reasons.append("The selected branch is no longer a project member.")
                 else:
-                    branch_checkpoint = db.get(m.Artifact, branch.source_checkpoint_artifact_id)
+                    branch_checkpoint = db.execute(
+                        select(m.Artifact.id, m.Artifact.session_id, m.Artifact.content_hash).where(
+                            m.Artifact.id == branch.source_checkpoint_artifact_id,
+                            m.Artifact.session_id == branch.session_id,
+                        )
+                    ).one_or_none()
                     if (
                         branch.source_content_hash != project.source_content_hash
                         or branch_checkpoint is None
@@ -409,7 +478,14 @@ class ProjectExportBundleService:
                         language = canonical_language(str(child.get("target_language") or ""))
                     except ValueError:
                         language = ""
-                session_record = db.get(m.SessionRecord, branch.session_id) if branch else None
+                session_record = (
+                    db.execute(
+                        select(m.SessionRecord.id, m.SessionRecord.trashed_at).where(
+                            m.SessionRecord.id == branch.session_id
+                        )
+                    ).one_or_none()
+                    if branch else None
+                )
                 if branch and (session_record is None or session_record.trashed_at is not None):
                     validation_blocked = True
                     child_reasons.append("The selected language session is unavailable or trashed.")
@@ -428,13 +504,25 @@ class ProjectExportBundleService:
 
                 artifact_records: list[dict[str, Any]] = []
                 child_files: list[dict[str, Any]] = []
-                ids = self._child_artifact_ids(child, db)
+                ids = (
+                    self._child_artifact_ids(child, db, session_id=branch.session_id)
+                    if branch else []
+                )
                 if operation_state in {"completed", "existing"} and not ids:
                     validation_blocked = True
                     child_reasons.append("The completed export has no artifact receipt.")
                 if ids and branch and session_record and session_record.trashed_at is None:
                     for artifact_id in sorted(ids):
-                        artifact = db.get(m.Artifact, artifact_id)
+                        artifact = db.execute(
+                            select(
+                                m.Artifact.id, m.Artifact.session_id, m.Artifact.state,
+                                m.Artifact.role, m.Artifact.content_hash, m.Artifact.size_bytes,
+                                m.Artifact.relative_path, m.Artifact.kind,
+                            ).where(
+                                m.Artifact.id == artifact_id,
+                                m.Artifact.session_id == branch.session_id,
+                            )
+                        ).one_or_none()
                         if (
                             artifact is None
                             or artifact.session_id != branch.session_id
@@ -647,7 +735,9 @@ class ProjectExportBundleService:
             "manifest_digest": str(payload.get("manifest_digest") or ""),
         }
 
-    def _cached_job_valid(self, db, job: m.Job, input_digest: str) -> bool:
+    def _cached_job_valid(
+        self, db, job: m.Job, input_digest: str, *, before_io: Callable[[], None] | None = None
+    ) -> bool:
         if (
             job.kind != self.JOB_KIND
             or job.status
@@ -703,7 +793,15 @@ class ProjectExportBundleService:
             (result.get("artifact_id"), "project_export_bundle"),
             (result.get("manifest_artifact_id"), "project_export_manifest"),
         ):
-            artifact = db.get(m.Artifact, str(artifact_id or ""))
+            if before_io is not None:
+                before_io()
+            artifact = db.scalar(
+                select(m.Artifact).where(
+                    m.Artifact.id == str(artifact_id or ""),
+                    m.Artifact.session_id == source_session_id,
+                    m.Artifact.role == role,
+                )
+            )
             expected_hash = str(
                 result.get("sha256")
                 if role == "project_export_bundle"
@@ -752,6 +850,10 @@ class ProjectExportBundleService:
         target_identity: dict[str, Any],
         idempotency_key: object,
     ) -> tuple[dict[str, Any], int]:
+        with self.database.snapshot_session() as db:
+            self.operations.require_export_operation_access(
+                db, operation_id, principal, target_identity, ProjectAction.RUN, write=True
+            )
         key = self.services.idempotency.validate_key(idempotency_key)
         document, frozen = self._collect(
             operation_id, principal=principal, target_identity=target_identity
@@ -786,6 +888,9 @@ class ProjectExportBundleService:
             "target_identity": frozen["target_identity"],
         }
         with self.database.immediate_session() as db:
+            self.operations.require_export_operation_access(
+                db, operation_id, principal, target_identity, ProjectAction.RUN, write=True
+            )
             reservation = self.services.idempotency.begin(
                 db,
                 principal=principal,
@@ -796,7 +901,13 @@ class ProjectExportBundleService:
             if reservation.replayed:
                 response, status_code = reservation.response or ({}, 202)
                 job_id = str(response.get("job_id") or reservation.record.resource_id or "")
-                job = db.get(m.Job, job_id) if job_id else None
+                job = db.scalar(
+                    select(m.Job).where(
+                        m.Job.id == job_id,
+                        m.Job.kind == self.JOB_KIND,
+                        m.Job.session_id == frozen["source_session_id"],
+                    )
+                ) if job_id else None
                 if job is not None and self._cached_job_valid(db, job, frozen["input_digest"]):
                     return self._bundle_response(job, job.result_json), 200
                 if (
@@ -891,13 +1002,14 @@ class ProjectExportBundleService:
                 return response, 202
 
             job_payload = dict(frozen)
-            job = self.services.jobs.enqueue_in_session(
-                db,
-                self.JOB_KIND,
-                job_payload,
-                session_id=frozen["source_session_id"],
-                resource_keys=[f"project:{frozen['project_id']}:bundle"],
-            )
+            with execution_actor_scope(self.operations._context(principal).actor):
+                job = self.services.jobs.enqueue_in_session(
+                    db,
+                    self.JOB_KIND,
+                    job_payload,
+                    session_id=frozen["source_session_id"],
+                    resource_keys=[f"project:{frozen['project_id']}:bundle"],
+                )
             job.payload_json = {**job_payload, "bundle_job_id": job.id}
             response = {
                 "status": "queued",
@@ -920,10 +1032,17 @@ class ProjectExportBundleService:
         payload: dict[str, Any],
         *,
         cancel_event: threading.Event | None = None,
-    ) -> list[str]:
+        before_io: Callable[[], None] | None = None,
+        _file_proofs: dict[str, _VerifiedBundleFile] | None = None,
+    ) -> tuple[m.Job, list[str]]:
         bundle_job = self._validate_bundle_job(db, payload)
-        del bundle_job
-        operation = db.get(m.TranslationProjectOperation, payload["operation_id"])
+        operation = db.scalar(
+            select(m.TranslationProjectOperation).where(
+                m.TranslationProjectOperation.id == payload["operation_id"],
+                m.TranslationProjectOperation.project_id == payload["project_id"],
+                m.TranslationProjectOperation.action == "export",
+            )
+        )
         project = db.get(m.TranslationProject, payload["project_id"])
         if (
             operation is None
@@ -961,10 +1080,28 @@ class ProjectExportBundleService:
         parent_ids: list[str] = []
         for branch_id, frozen_child in frozen_by_branch.items():
             _check_canceled(cancel_event)
-            branch = db.get(m.TranslationProjectBranch, branch_id)
-            session_record = db.get(m.SessionRecord, branch.session_id) if branch else None
+            branch = db.scalar(
+                select(m.TranslationProjectBranch).where(
+                    m.TranslationProjectBranch.id == branch_id,
+                    m.TranslationProjectBranch.project_id == project.id,
+                    m.TranslationProjectBranch.session_id == frozen_child["session_id"],
+                )
+            )
+            session_record = (
+                db.execute(
+                    select(m.SessionRecord.id, m.SessionRecord.trashed_at).where(
+                        m.SessionRecord.id == branch.session_id
+                    )
+                ).one_or_none()
+                if branch else None
+            )
             branch_checkpoint = (
-                db.get(m.Artifact, branch.source_checkpoint_artifact_id) if branch else None
+                db.execute(
+                    select(m.Artifact.id, m.Artifact.session_id, m.Artifact.content_hash).where(
+                        m.Artifact.id == branch.source_checkpoint_artifact_id,
+                        m.Artifact.session_id == branch.session_id,
+                    )
+                ).one_or_none() if branch else None
             )
             if (
                 branch is None
@@ -987,7 +1124,13 @@ class ProjectExportBundleService:
                     "bundle_inputs_changed",
                     "A selected export is no longer complete.",
                 )
-            job = db.get(m.Job, str(frozen_child.get("job_id") or ""))
+            job = db.scalar(
+                select(m.Job).where(
+                    m.Job.id == str(frozen_child.get("job_id") or ""),
+                    m.Job.session_id == branch.session_id,
+                    m.Job.status == "succeeded",
+                )
+            )
             if job is None or job.session_id != branch.session_id or job.status != "succeeded":
                 raise ProjectExportBundleError(
                     "bundle_inputs_changed",
@@ -1012,7 +1155,16 @@ class ProjectExportBundleService:
                     "The completed export job's artifact receipts changed.",
                 )
             for source_file in frozen_child["files"]:
-                artifact = db.get(m.Artifact, source_file["artifact_id"])
+                artifact = db.execute(
+                    select(
+                        m.Artifact.id, m.Artifact.session_id, m.Artifact.state,
+                        m.Artifact.role, m.Artifact.kind, m.Artifact.relative_path,
+                        m.Artifact.content_hash,
+                    ).where(
+                        m.Artifact.id == source_file["artifact_id"],
+                        m.Artifact.session_id == branch.session_id,
+                    )
+                ).one_or_none()
                 if (
                     artifact is None
                     or artifact.session_id != branch.session_id
@@ -1027,10 +1179,22 @@ class ProjectExportBundleService:
                         "bundle_inputs_changed",
                         "An export artifact changed before bundle publication.",
                     )
+                if before_io is not None:
+                    before_io()
+                proof = (_file_proofs or {}).get(artifact.relative_path)
                 try:
-                    _path, size, digest = self._hash_file(
-                        artifact.relative_path, cancel_event=cancel_event
-                    )
+                    if (
+                        proof is not None
+                        and proof.relative_path == source_file["relative_path"]
+                        and proof.sha256 == source_file["sha256"]
+                        and proof.size_bytes == source_file["size_bytes"]
+                        and self._file_proof_matches(proof)
+                    ):
+                        size, digest = proof.size_bytes, proof.sha256
+                    else:
+                        _path, size, digest = self._hash_file(
+                            artifact.relative_path, cancel_event=cancel_event
+                        )
                 except (OSError, ValueError) as error:
                     raise ProjectExportBundleError(
                         "bundle_inputs_changed",
@@ -1042,16 +1206,48 @@ class ProjectExportBundleService:
                         "An export artifact hash or size changed before bundle publication.",
                     )
                 parent_ids.append(artifact.id)
-        return sorted(set(parent_ids))
+        return bundle_job, sorted(set(parent_ids))
 
     def _validate_bundle_job(self, db, payload: dict[str, Any]) -> m.Job:
         stored_job_id = str(payload.get("bundle_job_id") or "")
         worker_job_id = str(payload.get("_job_id") or "")
-        if not stored_job_id or (worker_job_id and worker_job_id != stored_job_id):
+        actor = current_execution_actor.get()
+        lease = current_job_lease.get()
+        if type(actor) is not UserActor or lease is None or lease.get("job_id") != stored_job_id:
+            raise AccessDenied()
+        require_execution_actor_in_session(
+            db, actor, required_scopes=("app.read", "app.run", "app.write")
+        )
+        if not stored_job_id or worker_job_id != stored_job_id:
             raise ProjectExportBundleError(
                 "bundle_job_changed", "The bundle job identity changed before publication."
             )
-        job = db.get(m.Job, stored_job_id)
+        root_id = db.scalar(
+            select(m.TranslationProject.project_root_id).where(
+                m.TranslationProject.id == payload.get("project_id")
+            )
+        )
+        root = db.execute(
+            select(Project.id, Project.workspace_id).where(
+                Project.id == root_id,
+                Project.id.in_(project_ids_for_user(actor.user_id, action=ProjectAction.RUN)),
+                credential_project_clause(actor),
+            )
+        ).one_or_none()
+        if root is None:
+            raise ProjectNotFound()
+        job = db.scalar(
+            select(m.Job).where(
+                m.Job.id == stored_job_id,
+                m.Job.kind == self.JOB_KIND,
+                m.Job.session_id == payload.get("source_session_id"),
+                m.Job.project_id == root.id,
+                m.Job.workspace_id == root.workspace_id,
+                m.Job.status == "running",
+                m.Job.lease_owner == lease["owner_id"],
+                m.Job.lease_generation == lease["lease_generation"],
+            )
+        )
         stored_payload = job.payload_json if job and isinstance(job.payload_json, dict) else {}
         lease_generation = payload.get("_lease_generation")
         if (
@@ -1065,7 +1261,12 @@ class ProjectExportBundleService:
             or stored_payload.get("manifest_digest") != payload.get("manifest_digest")
             or stored_payload.get("operation_id") != payload.get("operation_id")
             or stored_payload.get("project_id") != payload.get("project_id")
-            or (lease_generation is not None and int(lease_generation) != int(job.lease_generation))
+            or lease_generation is None
+            or int(lease_generation) != int(job.lease_generation)
+            or stored_payload != {
+                key: value for key, value in payload.items()
+                if key not in {"_job_id", "_lease_generation"}
+            }
         ):
             raise ProjectExportBundleError(
                 "bundle_lease_lost",
@@ -1201,22 +1402,155 @@ class ProjectExportBundleService:
                 "bundle_publication_invalid", "The published ZIP could not be verified."
             ) from error
 
+    def _publication_directory_version(self, directory: Path) -> _FileVersion:
+        relative = directory.relative_to(self.services.paths.root).as_posix()
+        if self.services.paths.relative_managed_path(directory) != relative:
+            raise ValueError("The managed bundle directory is unsafe.")
+        current = self.services.paths.root
+        if current.is_symlink():
+            raise ValueError("The managed bundle directory is unsafe.")
+        for part in PurePosixPath(relative).parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError("The managed bundle directory is unsafe.")
+        info = directory.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode) or (
+            os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            raise ValueError("The managed bundle directory is not private.")
+        names: set[str] = set()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                names.add(entry.name)
+                if len(names) > 2:
+                    break
+        if names != {"bundle.zip", "manifest.json"}:
+            raise ValueError("The managed bundle directory contains unexpected files.")
+        return _stat_version(info)
+
+    def _publication_proof_matches(
+        self, proof: _BundlePublicationProof, directory: Path
+    ) -> bool:
+        try:
+            return (
+                proof.directory_version[1] != 0
+                and self.services.paths.relative_managed_path(directory) == proof.relative_directory
+                and self._publication_directory_version(directory) == proof.directory_version
+                and all(self._file_proof_matches(item) for item in proof.files)
+            )
+        except (OSError, ValueError):
+            return False
+
+    def _prepare_publication(
+        self,
+        directory: Path,
+        document_bytes: bytes,
+        files: list[dict[str, Any]],
+        *,
+        cancel_event: threading.Event | None,
+        before_io: Callable[[], None],
+    ) -> _BundlePublicationProof | None:
+        before_io()
+        # Invalid candidates retain the verifier's established rejection behavior.
+        try:
+            directory_version = self._publication_directory_version(directory)
+            relative_paths = tuple(
+                self.services.paths.relative_managed_path(directory / name)
+                for name in ("bundle.zip", "manifest.json")
+            )
+            versions = tuple(self._file_version(path) for path in relative_paths)
+        except (OSError, ValueError):
+            directory_version = None
+            relative_paths = ()
+            versions = ()
+        if directory_version is not None and (
+            directory_version[1] == 0 or any(version[1] == 0 for version in versions)
+        ):
+            return None
+        self._verify_published_directory(
+            directory, document_bytes, files, cancel_event=cancel_event
+        )
+        before_io()
+        self._file_version(self.services.paths.relative_managed_path(directory / "bundle.zip"))
+        bundle_prepared = self.services.artifacts.prepare_registration(
+            directory / "bundle.zip", calculate_hash=True
+        )
+        before_io()
+        self._file_version(self.services.paths.relative_managed_path(directory / "manifest.json"))
+        manifest_prepared = self.services.artifacts.prepare_registration(
+            directory / "manifest.json", calculate_hash=True
+        )
+        before_io()
+        if directory_version is None:
+            return None
+        prepared = (bundle_prepared, manifest_prepared)
+        witnesses = tuple(
+            _VerifiedBundleFile(path, str(item.content_hash), item.size_bytes, version)
+            for path, item, version in zip(relative_paths, prepared, versions, strict=True)
+        )
+        proof = _BundlePublicationProof(
+            self.services.paths.relative_managed_path(directory),
+            directory_version,
+            (witnesses[0], witnesses[1]),
+            prepared,
+        )
+        if any(
+            item.relative_path != witness.relative_path
+            or item.content_hash != witness.sha256
+            or item.size_bytes != witness.version[2]
+            for item, witness in zip(prepared, proof.files, strict=True)
+        ):
+            return None
+        return proof if self._publication_proof_matches(proof, directory) else None
+
+    def _rebase_publication_proof(
+        self, proof: _BundlePublicationProof, published: Path
+    ) -> _BundlePublicationProof | None:
+        try:
+            version = self._publication_directory_version(published)
+            if version[:2] != proof.directory_version[:2]:
+                return None
+            relative_paths = tuple(
+                self.services.paths.relative_managed_path(published / name)
+                for name in ("bundle.zip", "manifest.json")
+            )
+            files = tuple(
+                replace(item, relative_path=path)
+                for item, path in zip(proof.files, relative_paths, strict=True)
+            )
+            prepared = tuple(
+                replace(item, relative_path=path)
+                for item, path in zip(proof.prepared, relative_paths, strict=True)
+            )
+            rebased = _BundlePublicationProof(
+                self.services.paths.relative_managed_path(published), version,
+                (files[0], files[1]), (prepared[0], prepared[1]),
+            )
+            return rebased if self._publication_proof_matches(rebased, published) else None
+        except (OSError, ValueError):
+            return None
+
     def _publication_result(
         self,
         db,
         payload: dict[str, Any],
         published: Path,
         parent_ids: list[str],
+        *,
+        _prepared_pair: _PreparedPair | None = None,
     ) -> dict[str, Any]:
         source_artifact_ids = sorted(set(parent_ids))
         bundle_path = published / "bundle.zip"
         manifest_path = published / "manifest.json"
-        bundle_prepared = self.services.artifacts.prepare_registration(
-            bundle_path, calculate_hash=True
-        )
-        manifest_prepared = self.services.artifacts.prepare_registration(
-            manifest_path, calculate_hash=True
-        )
+        if _prepared_pair is None:
+            bundle_prepared = self.services.artifacts.prepare_registration(
+                bundle_path, calculate_hash=True
+            )
+            manifest_prepared = self.services.artifacts.prepare_registration(
+                manifest_path, calculate_hash=True
+            )
+        else:
+            bundle_prepared, manifest_prepared = _prepared_pair
         expected_metadata = {
             "project_id": payload["project_id"],
             "operation_id": payload["operation_id"],
@@ -1225,19 +1559,15 @@ class ProjectExportBundleService:
             "input_digest": payload["input_digest"],
             "manifest_digest": payload["manifest_digest"],
         }
-        all_outputs = list(
+        matching = list(
             db.scalars(
                 select(m.Artifact).where(
                     m.Artifact.session_id == payload["source_session_id"],
                     m.Artifact.role.in_(("project_export_bundle", "project_export_manifest")),
-                )
+                    m.Artifact.metadata_json["input_digest"].as_string() == payload["input_digest"],
+                ).limit(3)
             ).all()
         )
-        matching = [
-            artifact
-            for artifact in all_outputs
-            if (artifact.metadata_json or {}).get("input_digest") == payload["input_digest"]
-        ]
         reused: dict[str, m.Artifact] = {}
         if matching:
             for role, kind, prepared in (
@@ -1357,6 +1687,30 @@ class ProjectExportBundleService:
         if not isinstance(payload, dict):
             raise TypeError("Project export bundle payload must be an object.")
         _check_canceled(cancel_event)
+        original_actor = current_execution_actor.get()
+        original_lease = current_job_lease.get()
+        if type(original_actor) is not UserActor or original_lease is None:
+            raise AccessDenied()
+        lease_identity = (
+            original_lease["job_id"], original_lease["owner_id"],
+            original_lease["lease_generation"],
+        )
+
+        def require_original_context() -> None:
+            lease = current_job_lease.get()
+            if (
+                current_execution_actor.get() != original_actor
+                or lease is None
+                or (lease["job_id"], lease["owner_id"], lease["lease_generation"]) != lease_identity
+            ):
+                raise AccessDenied()
+
+        def before_io() -> None:
+            _check_canceled(cancel_event)
+            require_original_context()
+            with self.database.snapshot_session() as db:
+                self._validate_bundle_job(db, payload)
+
         document = payload.get("manifest")
         input_digest = str(payload.get("input_digest") or "")
         if (
@@ -1375,13 +1729,17 @@ class ProjectExportBundleService:
         # A committed receipt survives a worker crash after publication. Verify the
         # frozen inputs and output artifacts before returning it to a retried worker.
         with self.database.snapshot_session() as db:
-            self._validate_frozen_inputs(db, payload, cancel_event=cancel_event)
-            bundle_job = self._validate_bundle_job(db, payload)
-            if self._cached_job_valid(db, bundle_job, input_digest):
+            require_original_context()
+            bundle_job, _ = self._validate_frozen_inputs(
+                db, payload, cancel_event=cancel_event, before_io=before_io
+            )
+            if self._cached_job_valid(db, bundle_job, input_digest, before_io=before_io):
                 cached_result = bundle_job.result_json
                 if isinstance(cached_result, dict):
+                    before_io()
                     return dict(cached_result)
 
+        before_io()
         parent = self._output_parent(str(payload["project_id"]))
         published = parent / input_digest
         self.services.paths.relative_managed_path(published)
@@ -1395,12 +1753,14 @@ class ProjectExportBundleService:
             json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
         ).encode("utf-8")
         try:
-            _check_canceled(cancel_event)
+            before_io()
             manifest_staged.write_bytes(document_bytes)
             files = [item for child in payload["languages"] for item in child["files"]]
             files.sort(key=lambda item: (item["language"], item["filename"], item["artifact_id"]))
             total = sum(max(1, int(item["size_bytes"])) for item in files)
             copied = 0
+            source_proofs: dict[str, _VerifiedBundleFile] = {}
+            before_io()
             with zipfile.ZipFile(
                 zip_staged,
                 "w",
@@ -1413,7 +1773,7 @@ class ProjectExportBundleService:
                 with archive.open(manifest_info, "w", force_zip64=True) as output:
                     output.write(document_bytes)
                 for index, item in enumerate(files, start=1):
-                    _check_canceled(cancel_event)
+                    before_io()
                     if (
                         not _LANGUAGE_FILENAME.fullmatch(str(item["language"]))
                         or PurePosixPath(str(item["filename"])).name != item["filename"]
@@ -1426,6 +1786,7 @@ class ProjectExportBundleService:
                     info = self._zip_info(str(item["filename"]))
                     info.file_size = int(item["size_bytes"])
                     with source, archive.open(info, "w", force_zip64=True) as destination:
+                        source_version = _stat_version(os.fstat(source.fileno()))
                         digest = hashlib.sha256()
                         size = 0
                         while chunk := source.read(_CHUNK_SIZE):
@@ -1439,24 +1800,43 @@ class ProjectExportBundleService:
                                     min(0.88, 0.1 + 0.78 * copied / max(1, total)),
                                     f"Packing language export {index} of {len(files)}",
                                 )
+                                before_io()
+                        source_final_version = _stat_version(os.fstat(source.fileno()))
                     if digest.hexdigest() != item["sha256"] or size != int(item["size_bytes"]):
                         raise ProjectExportBundleError(
                             "bundle_inputs_changed",
                             "An export artifact changed while the bundle was being written.",
                         )
+                    source_proof = _VerifiedBundleFile(
+                        self.services.paths.relative_managed_path(_path),
+                        digest.hexdigest(), size, source_version,
+                    )
+                    if (
+                        source_version == source_final_version
+                        and self._file_proof_matches(source_proof)
+                    ):
+                        source_proofs[item["relative_path"]] = source_proof
                     if progress:
                         progress(
                             min(0.88, 0.1 + 0.78 * copied / max(1, total)),
                             f"Packing language export {index} of {len(files)}",
                         )
+                        before_io()
 
             _check_canceled(cancel_event)
             if progress:
                 progress(0.9, "Verifying frozen export inputs")
 
+            candidate = published if published.exists() or published.is_symlink() else staging
+            publication_proof = self._prepare_publication(
+                candidate, document_bytes, files,
+                cancel_event=cancel_event, before_io=before_io,
+            )
             with self.database.immediate_session() as db:
-                parent_ids = self._validate_frozen_inputs(db, payload, cancel_event=cancel_event)
-                bundle_job = self._validate_bundle_job(db, payload)
+                require_original_context()
+                bundle_job, parent_ids = self._validate_frozen_inputs(
+                    db, payload, cancel_event=cancel_event, _file_proofs=source_proofs
+                )
                 if self._cached_job_valid(db, bundle_job, input_digest):
                     cached_result = bundle_job.result_json
                     if not isinstance(cached_result, dict):
@@ -1466,23 +1846,37 @@ class ProjectExportBundleService:
                         )
                     result = dict(cached_result)
                 else:
+                    prepared_pair = None
                     if published.exists() or published.is_symlink():
-                        self._verify_published_directory(
-                            published,
-                            document_bytes,
-                            files,
-                            cancel_event=cancel_event,
-                        )
+                        if publication_proof is not None and self._publication_proof_matches(
+                            publication_proof, published
+                        ):
+                            prepared_pair = publication_proof.prepared
                     else:
-                        os.replace(staging, published)
-                        published_created = True
+                        if publication_proof is not None and self._publication_proof_matches(
+                            publication_proof, staging
+                        ):
+                            os.replace(staging, published)
+                            published_created = True
+                            publication_proof = self._rebase_publication_proof(
+                                publication_proof, published
+                            )
+                            if publication_proof is not None:
+                                prepared_pair = publication_proof.prepared
+                        else:
+                            os.replace(staging, published)
+                            published_created = True
+                    if prepared_pair is None:
                         self._verify_published_directory(
                             published,
                             document_bytes,
                             files,
                             cancel_event=cancel_event,
                         )
-                    result = self._publication_result(db, payload, published, parent_ids)
+                    _check_canceled(cancel_event)
+                    result = self._publication_result(
+                        db, payload, published, parent_ids, _prepared_pair=prepared_pair
+                    )
                     bundle_job.result_json = result
                     bundle_job.updated_at = m.utcnow()
                     db.flush()

@@ -23,7 +23,9 @@ def _job_settings(settings: dict[str, Any]) -> dict[str, Any]:
     return {key: deepcopy(value) for key, value in settings.items() if not is_sensitive_field(key)}
 
 
-def resolve_speech_model(services, settings: dict[str, Any]) -> str:
+def resolve_speech_model(
+    services, settings: dict[str, Any], *, session_id: str | None = None
+) -> str:
     """Resolve a default before enqueue, without making an inference request."""
     if bool(settings.get("llm_tts_document_optimization")):
         raise ValueError("Document and final-unit speech optimization cannot both run for one preparation. Review the document optimization first, then prepare the speech plan without final-unit optimization.")
@@ -35,6 +37,7 @@ def resolve_speech_model(services, settings: dict[str, Any]) -> str:
     _llm_settings, model = build_llm_settings(
         services.database, services.paths, requested_model=requested,
         request_timeout_seconds=int(settings.get("request_timeout_seconds") or 600),
+        session_id=session_id,
     )
     return model
 
@@ -172,6 +175,7 @@ def run_speech_preparation(handlers, payload: dict[str, Any], progress, cancel_e
     llm_settings, resolved_model = build_llm_settings(
         handlers.database, handlers.paths, requested_model=model,
         request_timeout_seconds=int(settings.get("request_timeout_seconds") or 600),
+        session_id=session_id,
     )
     if resolved_model != model:
         raise RevisionConflict("The queued speech optimization model is no longer available.")

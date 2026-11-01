@@ -23,6 +23,12 @@ from .generation_performance_snapshot import (
 )
 from .settings_policy import RevisionConflict, adapt_runtime_settings, stable_hash
 from .source_management import ACTIVE_JOB, DISPATCH_MODELS, TERMINAL, assert_session_idle
+from .speech_input_contracts import (
+    PROJECT_SPEECH_BINDING_KEY,
+    PROJECT_SPEECH_INPUT_KEY,
+    MissingSpeechSelection,
+)
+from .speech_inputs import speech_input_adapter
 from .speech_plan_context import (
     SIGNATURE_FIELDS as SIGNATURE_FIELDS,
 )
@@ -45,6 +51,9 @@ def freeze_speech_snapshot(
     explicit: bool = False,
     segment_ids: Collection[str] | None = None,
     cast_segment_ids: Collection[str] | None = None,
+    _missing_narrator_selection: MissingSpeechSelection | None = None,
+    _missing_audible_selection: MissingSpeechSelection | None = None,
+    _carried_cast_snapshot: dict[str, Any] | None = None,
 ) -> None:
     """Freeze plan metadata and language bindings for all or selected segments.
 
@@ -55,10 +64,48 @@ def freeze_speech_snapshot(
     revision = session.get(m.GenerationPlanRevision, revision_id)
     if revision is not None and (revision.operation_json or {}).get("draft"):
         raise RevisionConflict("Adopt this resegmentation draft with a topology restore before generation.")
-    performance_frozen = bool(
-        revision is not None
-        and freeze_generation_performance_snapshot(session, revision_id, snapshot, cast_segment_ids=cast_segment_ids)
+    tts = snapshot.get("tts") or {}
+    from .generation_rendering import is_strict_single_voice
+    from .project_tts_settings import bind_project_tts_reference
+
+    root_eligible = (
+        speech_input_adapter(tts)[0] == "audio_cpp"
+        or PROJECT_SPEECH_INPUT_KEY in tts or PROJECT_SPEECH_BINDING_KEY in tts
     )
+    plan = None
+    def bind_root(current, settings, allow_capture):
+        nonlocal plan
+        if plan is None and revision is not None:
+            plan = current.get(m.GenerationPlan, revision.plan_id)
+        if plan is None:
+            raise ValueError("The speech plan is unavailable.")
+        local = {"tts": settings}
+        bind_project_tts_reference(
+            current, plan.session_id, local,
+            _missing_selection=_missing_audible_selection if allow_capture else None,
+            _resolve_missing_managed=not allow_capture,
+        )
+        return local["tts"]
+
+    defer_root = (root_eligible and _missing_audible_selection is not None
+                  and not is_strict_single_voice(tts))
+    if not defer_root and revision is not None and root_eligible:
+        plan = session.get(m.GenerationPlan, revision.plan_id)
+        if plan is None:
+            raise ValueError("The speech plan is unavailable.")
+        bind_project_tts_reference(
+            session, plan.session_id, snapshot, _missing_selection=_missing_narrator_selection,
+        )
+    performance_frozen = bool(
+        revision is not None and freeze_generation_performance_snapshot(
+            session, revision_id, snapshot, cast_segment_ids=cast_segment_ids,
+            _missing_selection=_missing_audible_selection,
+            _root_binding=bind_root if defer_root else None,
+            _carried_snapshot=_carried_cast_snapshot,
+        )
+    )
+    if defer_root and not snapshot.get("generation_control_snapshot"):
+        snapshot["tts"] = bind_root(session, tts, True)
     from .speech_boundaries import freeze_boundaries
     freeze_boundaries(session, revision_id, snapshot)
     if revision is not None and (
@@ -163,58 +210,61 @@ def freeze_speech_snapshot(
         }
 
 
+def segment_edit_fork_source(
+    session, segments: dict[str, Any], updates: list[dict[str, Any]]
+) -> tuple[m.GenerationPlan, m.GenerationPlanRevision] | None:
+    """Decide whether editorial changes require a copy, without writing one."""
+    with session.no_autoflush:
+        editorial = set[str](SIGNATURE_FIELDS) - {"ordinal"}
+        editorial.update({"speech_plan", "source_segment_ids", "speech_block_provenance"})
+        edited = [
+            segments[str(item["id"])] for item in updates if editorial.intersection(item["changes"])
+        ]
+        if not edited:
+            return None
+        revision_ids = {item.plan_revision_id for item in edited}
+        revisions = {value: session.get(m.GenerationPlanRevision, value) for value in revision_ids}
+        frozen = []
+        for revision in revisions.values():
+            if revision is None:
+                continue
+            approved = session.get(m.SpeechPlanReview, revision.id) is not None
+            plan = session.get(m.GenerationPlan, revision.plan_id)
+            if plan.active_revision_id != revision.id:
+                raise RevisionConflict(
+                    "Select this historical speech plan before editing it; its saved content was not changed."
+                )
+            latest = session.scalar(
+                select(m.GenerationPlanRevision.id)
+                .where(m.GenerationPlanRevision.plan_id == plan.id)
+                .order_by(m.GenerationPlanRevision.revision_number.desc())
+                .limit(1)
+            )
+            used = (
+                session.scalar(
+                    select(m.GenerationRun.id)
+                    .where(m.GenerationRun.plan_revision_id == revision.id)
+                    .limit(1)
+                )
+                is not None
+            )
+            if approved or used or latest != revision.id:
+                frozen.append((plan, revision))
+        if not frozen:
+            return None
+        if len({segment.plan_revision_id for segment in segments.values()}) != 1:
+            raise ValueError("Edit one speech-plan revision at a time.")
+        return frozen[0]
+
+
 def prepare_segment_edit_targets(
     service, session, segments: dict[str, Any], updates: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """Copy reviewed/historical prepared plans before editorial content changes.
-
-    Selection and synthesis do not copy a plan. Editing a frozen version creates
-    exactly one descendant for a whole batch, retaining the old text and takes.
-    """
-    editorial = set[str](SIGNATURE_FIELDS) - {"ordinal"}
-    editorial.update({"speech_plan", "source_segment_ids", "speech_block_provenance"})
-    edited = [
-        segments[str(item["id"])]
-        for item in updates
-        if editorial.intersection(item["changes"])
-    ]
-    if not edited:
+    """Copy reviewed/historical prepared plans before editorial content changes."""
+    source = segment_edit_fork_source(session, segments, updates)
+    if source is None:
         return segments
-    revision_ids = {item.plan_revision_id for item in edited}
-    revisions = {
-        value: session.get(m.GenerationPlanRevision, value) for value in revision_ids
-    }
-    frozen = []
-    for revision in revisions.values():
-        if revision is None:
-            continue
-        approved = session.get(m.SpeechPlanReview, revision.id) is not None
-        plan = session.get(m.GenerationPlan, revision.plan_id)
-        if plan.active_revision_id != revision.id:
-            raise RevisionConflict(
-                "Select this historical speech plan before editing it; its saved content was not changed."
-            )
-        latest = session.scalar(
-            select(m.GenerationPlanRevision.id)
-            .where(m.GenerationPlanRevision.plan_id == plan.id)
-            .order_by(m.GenerationPlanRevision.revision_number.desc())
-            .limit(1)
-        )
-        used = (
-            session.scalar(
-                select(m.GenerationRun.id)
-                .where(m.GenerationRun.plan_revision_id == revision.id)
-                .limit(1)
-            )
-            is not None
-        )
-        if approved or used or latest != revision.id:
-            frozen.append((plan, revision))
-    if not frozen:
-        return segments
-    if len({segment.plan_revision_id for segment in segments.values()}) != 1:
-        raise ValueError("Edit one speech-plan revision at a time.")
-    plan, revision = frozen[0]
+    plan, revision = source
     from .generation_edit_audio import inherit_edit_copy_audio
 
     inherit_edit_copy_audio(session, revision.id)
@@ -228,10 +278,7 @@ def prepare_segment_edit_targets(
             "reason": "edit_copy",
         },
     )
-    return {
-        old: session.get(m.GenerationSegment, result["lineage"][old][0])
-        for old in segments
-    }
+    return {old: session.get(m.GenerationSegment, result["lineage"][old][0]) for old in segments}
 
 
 def selected_text(services, session_id: str) -> dict[str, Any] | None:

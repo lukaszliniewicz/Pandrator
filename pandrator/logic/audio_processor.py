@@ -15,6 +15,13 @@ from mutagen.oggopus import OggOpus
 from PIL import Image
 from pydub import AudioSegment
 
+from .local_audio_decode import load_local_audio_segment
+from .media_input_policy import (
+    CONCAT_MEMBER_OPTIONS,
+    GENERATED_CONCAT_INPUT_OPTIONS,
+    LOCAL_MEDIA_INPUT_OPTIONS,
+)
+
 
 def apply_fade(audio_data: AudioSegment, fade_in: int, fade_out: int) -> AudioSegment:
     """Applies fade in and fade out to an AudioSegment."""
@@ -66,7 +73,7 @@ def save_output(
         wav_filename = os.path.join(sentence_wavs_dir, f"{session_name}_sentence_{sentence_number}.wav")
         if os.path.exists(wav_filename):
             wav_files.append(wav_filename)
-            audio = AudioSegment.from_wav(wav_filename)
+            audio = load_local_audio_segment(wav_filename)
             
             if sentence_dict.get("chapter") == "yes":
                 chapters.append((current_time_ms / 1000, sentence_dict.get("original_sentence", "")))
@@ -79,10 +86,10 @@ def save_output(
 
     with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding='utf-8', suffix=".txt") as temp_file:
         for wav_file in wav_files:
-            temp_file.write(f"file '{os.path.abspath(wav_file)}'\n")
+            temp_file.write(f"file '{os.path.abspath(wav_file)}'\n{CONCAT_MEMBER_OPTIONS}")
         input_list_path = temp_file.name
 
-    ffmpeg_command = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", input_list_path, "-y"]
+    ffmpeg_command = ["ffmpeg", "-f", "concat", "-safe", "0", *GENERATED_CONCAT_INPUT_OPTIONS, "-i", input_list_path, "-y"]
 
     if output_format == "wav":
         ffmpeg_command += ["-c:a", "pcm_s16le"]
@@ -256,7 +263,7 @@ def _add_chapters_to_m4b(
             chapter_file = temp_file.name
 
         ffmpeg_command = [
-            "ffmpeg", "-i", file_path, "-i", chapter_file,
+            "ffmpeg", *LOCAL_MEDIA_INPUT_OPTIONS, "-i", file_path, *LOCAL_MEDIA_INPUT_OPTIONS, "-i", chapter_file,
             "-map", "0", "-map_chapters", "1",
             "-c", "copy", "-y", temp_output_path
         ]

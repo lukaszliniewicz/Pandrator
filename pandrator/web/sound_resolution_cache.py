@@ -7,6 +7,7 @@ import os
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -33,7 +34,8 @@ def cache_key(item: WorkItem) -> str:
 
 
 def find_cache(
-    session: Session, paths: DataPaths, session_id: str, item: WorkItem
+    session: Session, paths: DataPaths, session_id: str, item: WorkItem,
+    *, before_io: Callable[[], None] | None = None,
 ) -> AlignedBookText | None:
     assert item.artifact_id is not None and item.transcript is not None
     candidates = session.scalars(
@@ -53,10 +55,24 @@ def find_cache(
             ArtifactEdge, (item.artifact_id, artifact.id)
         ):
             continue
+        if before_io is not None:
+            before_io()
         try:
             path = paths.managed_path(artifact.relative_path)
-            if not path.is_file() or sha256_file(path) != artifact.content_hash:
+            if not path.is_file():
                 continue
+        except (OSError, ValueError):
+            continue
+        if before_io is not None:
+            before_io()
+        try:
+            if sha256_file(path) != artifact.content_hash:
+                continue
+        except (OSError, ValueError):
+            continue
+        if before_io is not None:
+            before_io()
+        try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if payload.get("schema_version") != 1 or payload.get("cache_key") != cache_key(item):
                 continue
@@ -72,9 +88,14 @@ def find_cache(
     return None
 
 
-def stage_cache(paths: DataPaths, item: WorkItem, aligned: AlignedBookText, workdir: Path) -> Path:
+def stage_cache(
+    paths: DataPaths, item: WorkItem, aligned: AlignedBookText, workdir: Path,
+    *, before_io: Callable[[], None] | None = None,
+) -> Path:
     content = {"schema_version": 1, "cache_key": cache_key(item), "alignment": aligned.as_dict()}
     path = workdir / f"alignment-{uuid.uuid4()}.json"
+    if before_io is not None:
+        before_io()
     with path.open("x", encoding="utf-8") as handle:
         json.dump(content, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return path
@@ -88,8 +109,11 @@ def publish_cache(
     item: WorkItem,
     staged: Path,
     prepared: PreparedArtifactRegistration,
+    *, before_io: Callable[[], None] | None = None,
 ) -> str:
     assert item.artifact_id is not None
+    if before_io is not None:
+        before_io()
     directory = paths.root / "sounds" / "alignment"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     for _ in range(8):
@@ -103,6 +127,8 @@ def publish_cache(
             is not None
         ):
             continue
+        if before_io is not None:
+            before_io()
         try:
             os.link(staged, destination)
         except FileExistsError:
@@ -111,6 +137,8 @@ def publish_cache(
         identity = (stat.st_dev, stat.st_ino)
         try:
             registration = replace(prepared, relative_path=paths.relative_managed_path(destination))
+            if before_io is not None:
+                before_io()
             artifact = artifacts.register_in_session(
                 session,
                 destination,

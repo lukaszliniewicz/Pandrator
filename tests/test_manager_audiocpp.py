@@ -182,7 +182,7 @@ class AudioCppManagerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "requires the CUDA backend"):
                     server_config(backend, [cuda_only_id])
 
-    def test_linux_cuda_resolves_to_the_upstream_colab_asset_best_effort(self):
+    def test_linux_cuda_resolves_to_the_upstream_drama3_base_small_colab_asset_best_effort(self):
         with tempfile.TemporaryDirectory() as directory:
             context = ManagerContext(
                 layout=WorkspaceLayout.from_value(directory),
@@ -196,12 +196,15 @@ class AudioCppManagerTests(unittest.TestCase):
         self.assertEqual(ComputeVariant.CUDA, effective)
         self.assertEqual(1, len(assets))
         self.assertEqual("cuda_binary", assets[0].kind)
-        self.assertEqual("audio-v0.9.2-bin-ubuntu-x64-cuda12.8-colab.tar.gz", assets[0].name)
         self.assertEqual(
-            "d1ffb5b314bd9905425e9122831fcda015b2e82fb339b1c0812794ba4ebbf3b8",
+            "audio-v0.9.2-drama3-base-small-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
+            assets[0].name,
+        )
+        self.assertEqual(
+            "fc59545092eab869013c74d11273c17c96a050befe257523b9019d1a5073962c",
             assets[0].sha256,
         )
-        self.assertEqual("0.9.2", assets[0].version)
+        self.assertEqual("0.9.2-drama3-base-small", assets[0].version)
         self.assertEqual(AUDIO_CPP_RELEASE_BASE, assets[0].release_base)
         self.assertEqual(
             f"{assets[0].release_base}/{assets[0].name}", assets[0].url

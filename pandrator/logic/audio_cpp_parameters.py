@@ -91,6 +91,24 @@ _TTS_UNSUPPORTED_NATIVE_OPTIONS = {
     # Higgs accepts this field for API compatibility, but audio-code sampling
     # does not consume it.
     "higgs_audio_tts": {"repetition_penalty"},
+    # Drama 3 reference encoding, reference inputs, and continuation history
+    # use task artifacts and are not scalar TTS tuning controls.
+    "fish_drama3": {
+        "encode_reference_only",
+        "references",
+        "previous_takes",
+        "previous_takes_file",
+    },
+    # Plapre edit, pronunciation, duration, and prosodic-context workflows are
+    # not integrated into the scalar TTS request path.
+    "plapre": {
+        "word_duration_frames",
+        "pronunciations",
+        "edit_start_frame",
+        "edit_end_frame",
+        "context_text",
+        "same_speaker",
+    },
 }
 _AUK_FLASH_MODEL_IDS = frozenset(
     {"auk_flash_f16", "auk_flash_f32", "auk_flash_q8_0"}
@@ -171,6 +189,9 @@ _CHUNK_MODE = _string(enum=_CHUNK_MODES)
 # voice, or instruction fields here: those values have separate safeguards in
 # the request builder and are not generic tuning controls.
 AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY: dict[str, dict[str, dict[str, Any]]] = {
+    "fish_drama3": {
+        "text_chunk_mode": _string(default="tag_aware", enum=_CHUNK_MODES),
+    },
     "moss_voicegen": {
         "seed": copy.deepcopy(_UINT32_OPTIONAL),
         "temperature": _number(exclusive_minimum=0),

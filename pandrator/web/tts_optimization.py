@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from threading import Event, Lock
 from typing import Any
@@ -219,10 +220,28 @@ def optimize_texts(
     voice_languages: list[str] | None = None,
     completed_units: Mapping[str, Mapping[str, Any]] | None = None,
     on_unit_completed: UnitCompletedCallback | None = None,
+    completion_func: Callable[..., ChatCompletionResult] | None = None,
 ) -> tuple[list[str], OptimizationUsage]:
     """Optimize indexed text units in JSON batches while retaining order and count."""
     speech_mode = str(settings.get("speech_optimization_mode") or "").strip().lower()
     if speech_mode in {"guarded", "flexible"}:
+        if completion_func is None:
+            return _optimize_with_speech_plans(
+                texts,
+                settings,
+                llm_settings,
+                model_name,
+                cancel_event,
+                progress,
+                mode=speech_mode,
+                on_batch=on_batch,
+                on_plan_batch=on_plan_batch,
+                known_pronunciation_resolver=known_pronunciation_resolver,
+                languages=languages,
+                voice_languages=voice_languages,
+                completed_units=completed_units,
+                on_unit_completed=on_unit_completed,
+            )
         return _optimize_with_speech_plans(
             texts,
             settings,
@@ -238,6 +257,7 @@ def optimize_texts(
             voice_languages=voice_languages,
             completed_units=completed_units,
             on_unit_completed=on_unit_completed,
+            completion_func=completion_func,
         )
     prompts = prompt_sequence(settings)
     workers = max(1, min(16, int(settings.get("llm_concurrent_calls") or 1)))
@@ -339,8 +359,7 @@ def optimize_texts(
                         f"{last_error}. Return a complete corrected response with every "
                         "required index and no explanation."
                     )
-                result = chat_completion_with_metadata(
-                    messages=[
+                messages = [
                         {"role": "system", "content": system_prompt},
                         {
                             "role": "user",
@@ -349,11 +368,20 @@ def optimize_texts(
                                 f"{json.dumps(request_payload, ensure_ascii=False)}"
                             ),
                         },
-                    ],
-                    model_name=model_name,
-                    llm_settings=llm_settings,
-                    cancel_event=cancel_event,
-                )
+                    ]
+                if completion_func is None:
+                    result = chat_completion_with_metadata(
+                        messages=messages,
+                        model_name=model_name,
+                        llm_settings=llm_settings,
+                        cancel_event=cancel_event,
+                    )
+                else:
+                    result = completion_func(
+                        messages=messages,
+                        model_name=model_name,
+                        llm_settings=llm_settings,
+                    )
                 unit_usage.add(result)
                 try:
                     current = _parse_batch_response(result.content, indexes)
@@ -393,7 +421,13 @@ def optimize_texts(
     with ThreadPoolExecutor(
         max_workers=workers, thread_name_prefix="tts-optimize"
     ) as executor:
-        futures = {executor.submit(process, batch): batch for batch in batches}
+        if completion_func is None:
+            futures = {executor.submit(process, batch): batch for batch in batches}
+        else:
+            futures = {
+                executor.submit(copy_context().run, process, batch): batch
+                for batch in batches
+            }
         for future in as_completed(futures):
             revised_items, batch_usage = future.result()
             for index, revised in revised_items:
@@ -422,6 +456,7 @@ def _optimize_with_speech_plans(
     voice_languages: list[str] | None,
     completed_units: Mapping[str, Mapping[str, Any]] | None,
     on_unit_completed: UnitCompletedCallback | None,
+    completion_func: Callable[..., ChatCompletionResult] | None = None,
 ) -> tuple[list[str], OptimizationUsage]:
     """Plan stable units in optional transport batches with per-unit validation."""
     from .speech_planning import (
@@ -554,30 +589,57 @@ def _optimize_with_speech_plans(
 
         contexts = [context(index, text) for index, text in pending]
         if len(contexts) == 1:
-            result = plan_speech_text(
-                contexts[0]["text"],
-                language=contexts[0]["language"],
-                voice_language=contexts[0]["voice_language"],
-                mode=mode,
-                model_name=model_name,
-                llm_settings=llm_settings,
-                known_pronunciations=contexts[0]["known_pronunciations"],
-                cancel_event=cancel_event,
-                min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
-                max_attempts_per_mode=structured_attempts,
-            )
+            if completion_func is None:
+                result = plan_speech_text(
+                    contexts[0]["text"],
+                    language=contexts[0]["language"],
+                    voice_language=contexts[0]["voice_language"],
+                    mode=mode,
+                    model_name=model_name,
+                    llm_settings=llm_settings,
+                    known_pronunciations=contexts[0]["known_pronunciations"],
+                    cancel_event=cancel_event,
+                    min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
+                    max_attempts_per_mode=structured_attempts,
+                )
+            else:
+                result = plan_speech_text(
+                    contexts[0]["text"],
+                    language=contexts[0]["language"],
+                    voice_language=contexts[0]["voice_language"],
+                    mode=mode,
+                    model_name=model_name,
+                    llm_settings=llm_settings,
+                    known_pronunciations=contexts[0]["known_pronunciations"],
+                    cancel_event=cancel_event,
+                    min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
+                    max_attempts_per_mode=structured_attempts,
+                    completion_func=completion_func,
+                )
             results = [result]
             responses = result.responses
         else:
-            planned = plan_speech_text_batch(
-                contexts,
-                mode=mode,
-                model_name=model_name,
-                llm_settings=llm_settings,
-                cancel_event=cancel_event,
-                min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
-                max_attempts_per_mode=structured_attempts,
-            )
+            if completion_func is None:
+                planned = plan_speech_text_batch(
+                    contexts,
+                    mode=mode,
+                    model_name=model_name,
+                    llm_settings=llm_settings,
+                    cancel_event=cancel_event,
+                    min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
+                    max_attempts_per_mode=structured_attempts,
+                )
+            else:
+                planned = plan_speech_text_batch(
+                    contexts,
+                    mode=mode,
+                    model_name=model_name,
+                    llm_settings=llm_settings,
+                    cancel_event=cancel_event,
+                    min_retention=float(settings.get("speech_plan_min_retention") or 0.9),
+                    max_attempts_per_mode=structured_attempts,
+                    completion_func=completion_func,
+                )
             results = planned.results
             responses = planned.responses
         request_usage = OptimizationUsage()
@@ -604,7 +666,13 @@ def _optimize_with_speech_plans(
         max_workers=workers,
         thread_name_prefix="speech-plan",
     ) as executor:
-        futures = {executor.submit(process, batch): batch for batch in batches}
+        if completion_func is None:
+            futures = {executor.submit(process, batch): batch for batch in batches}
+        else:
+            futures = {
+                executor.submit(copy_context().run, process, batch): batch
+                for batch in batches
+            }
         for future in as_completed(futures):
             revised_items, batch_usage = future.result()
             public_items = [

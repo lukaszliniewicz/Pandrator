@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import stat
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -33,7 +34,11 @@ def _validate_claim(
     cancel_event: threading.Event,
     *,
     require_sound_mix: bool = False,
-) -> Job | None:
+    authorization_guard: Callable[[Session], None] | None = None,
+) -> str | None:
+    if authorization_guard is not None:
+        with session.no_autoflush:
+            authorization_guard(session)
     if cancel_event.is_set():
         raise MediaProcessCancelled("Sound-mix rendering was canceled.")
     lease = current_job_lease.get()
@@ -46,11 +51,17 @@ def _validate_claim(
     generation = lease.get("lease_generation")
     if not job_id or not owner_id or type(generation) is not int:
         raise ValueError("The current job lease is incomplete.")
-    job = session.get(Job, job_id)
+    job = session.execute(select(
+        Job.id, Job.session_id, Job.kind, Job.status, Job.lease_owner,
+        Job.lease_generation, Job.lease_expires_at,
+    ).where(Job.id == job_id)).one_or_none()
     if (
         job is None
         or job.session_id != prepared.session_id
-        or job.kind not in _ALLOWED_LEASE_KINDS
+        or (
+            job.kind not in _ALLOWED_LEASE_KINDS
+            and not (job.kind == "workflow.continue" and authorization_guard is not None)
+        )
         or (require_sound_mix and job.kind != "sound.mix")
         or job.status != "running"
         or job.lease_owner != owner_id
@@ -59,7 +70,7 @@ def _validate_claim(
         or _utc(job.lease_expires_at) <= utcnow()
     ):
         raise ValueError("The sound-mix job no longer owns a valid publication lease.")
-    return job
+    return job.id
 
 
 def _cached_artifact(
@@ -69,13 +80,26 @@ def _cached_artifact(
     progress_cancel: threading.Event,
     *,
     require_sound_mix: bool,
+    before_io: Callable[[], None] | None = None,
+    authorization_guard: Callable[[Session], None] | None = None,
+    authorize_input: Callable[[Session, str], None] | None = None,
 ) -> tuple[Artifact, dict[str, Any]] | None:
     if not prepared.cache_artifact_id:
         return None
-    try:
-        artifact, path = artifacts.resolve(prepared.cache_artifact_id)
-    except KeyError:
-        return None
+    with database.snapshot_session() as session:
+        if authorization_guard is not None:
+            with session.no_autoflush:
+                authorization_guard(session)
+        if authorize_input is not None:
+            with session.no_autoflush:
+                authorize_input(session, prepared.cache_artifact_id)
+        artifact = session.get(Artifact, prepared.cache_artifact_id)
+        if artifact is None or artifact.state == "deleted":
+            return None
+        path = artifacts.paths.managed_path(artifact.relative_path)
+        session.expunge(artifact)
+    if before_io is not None:
+        before_io()
     if (
         artifact.state != "current"
         or artifact.content_hash != prepared.cache_artifact_hash
@@ -84,6 +108,8 @@ def _cached_artifact(
         return None
     from .artifacts import sha256_file
 
+    if before_io is not None:
+        before_io()
     if sha256_file(path) != artifact.content_hash:
         return None
     with database.immediate_session() as session:
@@ -92,8 +118,12 @@ def _cached_artifact(
             prepared,
             progress_cancel,
             require_sound_mix=require_sound_mix,
+            authorization_guard=authorization_guard,
         )
-        assert_current_pins(session, prepared)
+        assert_current_pins(session, prepared, authorize_input=authorize_input)
+        if authorize_input is not None:
+            with session.no_autoflush:
+                authorize_input(session, artifact.id)
         current = session.get(Artifact, artifact.id)
         mix = (current.metadata_json or {}).get("sound_mix") if current else None
         if (
@@ -121,15 +151,16 @@ def _cleanup_uncommitted(
     output_path: Path,
     relative_path: str,
     content_hash: str | None,
+    *,
+    owned_identity: tuple[int, int] | None = None,
 ) -> None:
-    if not output_path.exists():
+    if owned_identity is None or content_hash is None:
         return
     try:
         with database.snapshot_session() as session:
             registered = session.scalar(
                 select(Artifact.id).where(
                     Artifact.relative_path == relative_path,
-                    Artifact.content_hash == content_hash,
                 )
             )
     except Exception:
@@ -137,8 +168,10 @@ def _cleanup_uncommitted(
         return
     if registered is None:
         try:
-            output_path.unlink()
-        except FileNotFoundError:
+            current = output_path.lstat()
+            if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == owned_identity:
+                output_path.unlink()
+        except OSError:
             pass
 
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { apiTimestamp } from './run-metrics';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { errorMessage } from './errors';
@@ -16,6 +17,7 @@
   import { appState } from './app-state.svelte';
   import { generationApi, jobApi } from './domain-api';
   import { jobProgressDetail } from './job-progress';
+  import { isStorageWait } from './job-status';
   import GenerationStartDialog from './GenerationStartDialog.svelte';
 
   let {
@@ -24,6 +26,9 @@
   }: { jobs: JobRecord[]; allowCancel?: boolean } = $props();
   let expanded = $state<Record<string, boolean>>({});
   let logs = $state<Record<string, JobLog[]>>({});
+  let providerEffects = $state<Record<string, JobRecord['external_effect']>>(
+    {}
+  );
   let loading = $state<Record<string, boolean>>({});
   let errors = $state<Record<string, string>>({});
   let canceling = $state<Record<string, boolean>>({});
@@ -171,8 +176,17 @@
     loading[id] = true;
     errors[id] = '';
     try {
-      const result = await jobApi.logs(id);
+      const job = jobs.find((item) => item.id === id);
+      const inspectProvider =
+        job?.kind === 'voice.publish' ||
+        job?.kind === 'voice.unpublish' ||
+        job?.kind === 'voice.google_design';
+      const [result, details] = await Promise.all([
+        jobApi.logs(id),
+        inspectProvider ? jobApi.get(id) : Promise.resolve(null)
+      ]);
       logs[id] = result.items;
+      if (inspectProvider) providerEffects[id] = details?.external_effect;
     } catch (caught) {
       errors[id] = errorMessage(caught);
     } finally {
@@ -208,10 +222,15 @@
   {#each jobs as job (job.id)}
     {@const project = projectFor(job)}
     {@const continuation = continuationRun(job)}
+    {@const effect = providerEffects[job.id] ?? job.external_effect}
+    {@const storageWait = isStorageWait(job)}
     <article class="border-b border-[var(--line)] last:border-0">
       <div class="flex flex-wrap items-start gap-4 p-4 lg:items-center">
         {#if ['running', 'queued', 'cancel_requested'].includes(job.status)}
-          <LoaderCircle class="animate-spin text-[var(--accent)]" size={19} />
+          <LoaderCircle
+            class={storageWait ? 'muted' : 'animate-spin text-[var(--accent)]'}
+            size={19}
+          />
         {:else if job.status === 'succeeded'}
           <CheckCircle2 class="text-[var(--success)]" size={19} />
         {:else}
@@ -225,28 +244,42 @@
           >
             <div class="flex items-center gap-2">
               <span class="truncate font-semibold"
-                >{job.kind === 'generation.run'
-                  ? 'Audio generation'
-                  : job.kind}</span
+                >{job.kind === 'project.copy.current'
+                  ? 'Project copy'
+                  : job.kind === 'generation.run'
+                    ? 'Audio generation'
+                    : job.kind}</span
               ><ChevronDown
                 class={`muted transition-transform ${expanded[job.id] ? 'rotate-180' : ''}`}
                 size={15}
               />
             </div>
             <div class="muted mt-1 text-xs">
-              {job.status} - {new Date(job.created_at).toLocaleString()}
+              {storageWait ? 'Waiting for storage' : job.status} - {new Date(
+                apiTimestamp(job.created_at)
+              ).toLocaleString()}
             </div>
-            {#if currentDetail(job)}<p
+            {#if currentDetail(job) && !storageWait}<p
                 class="muted mt-1 truncate text-xs"
                 title={currentDetail(job)}
               >
                 {currentDetail(job)}
               </p>{/if}
             {#if job.error_message}<p
-                class="mt-1 break-words text-xs text-red-500 [overflow-wrap:anywhere]"
+                class="mt-1 break-words text-xs [overflow-wrap:anywhere]"
+                class:text-red-500={!storageWait}
+                class:muted={storageWait}
+                role={storageWait ? 'status' : undefined}
               >
                 {job.error_message}
               </p>{/if}
+            {#if storageWait && job.available_at}
+              <p class="muted mt-2 text-xs">
+                Next check <time datetime={job.available_at}
+                  >{new Date(apiTimestamp(job.available_at)).toLocaleString()}</time
+                >
+              </p>
+            {/if}
           </button>
           {#if project}
             <div
@@ -275,9 +308,9 @@
             </div>
           {/if}
         </div>
-        <div class="flex w-full flex-wrap items-center gap-3 lg:contents">
+        <div class="flex w-full flex-col gap-2 lg:w-52 lg:shrink-0">
           <div
-            class="min-w-24 flex-1 lg:w-32 lg:flex-none"
+            class="w-full"
             role="progressbar"
             aria-label={`${job.kind} progress`}
             aria-valuemin="0"
@@ -294,34 +327,40 @@
               {progressPercent(job)}%
             </div>
           </div>
-          <button
-            onclick={() => {
-              expanded[job.id] = true;
-              loadLogs(job.id, true);
-            }}
-            class="btn btn-sm btn-secondary"><FileText size={14} /> Logs</button
+          <div
+            class="flex flex-wrap justify-end gap-2"
+            aria-label="Job actions"
           >
-          {#if continuation}
             <button
-              onclick={() => openContinuation(job)}
-              disabled={Boolean(recovering) || Boolean(recovery)}
+              onclick={() => {
+                expanded[job.id] = true;
+                loadLogs(job.id, true);
+              }}
               class="btn btn-sm btn-secondary"
-              aria-label={`Continue unfinished audio for ${project?.name || 'this project'}`}
-              ><Play size={14} />
-              {recovering === job.id
-                ? 'Loading continuation…'
-                : 'Continue unfinished audio…'}</button
+              ><FileText size={14} /> Logs</button
             >
-          {/if}
-          {#if allowCancel && ['running', 'queued', 'cancel_requested'].includes(job.status)}
-            <button
-              onclick={() => cancel(job)}
-              disabled={canceling[job.id]}
-              class="btn btn-sm border-red-400/40 text-red-500"
-              ><Ban size={14} />
-              {canceling[job.id] ? 'Canceling...' : 'Cancel'}</button
-            >
-          {/if}
+            {#if continuation}
+              <button
+                onclick={() => openContinuation(job)}
+                disabled={Boolean(recovering) || Boolean(recovery)}
+                class="btn btn-sm btn-secondary"
+                aria-label={`Continue unfinished audio for ${project?.name || 'this project'}`}
+                ><Play size={14} />
+                {recovering === job.id
+                  ? 'Loading continuation…'
+                  : 'Continue unfinished audio…'}</button
+              >
+            {/if}
+            {#if allowCancel && ['running', 'queued', 'cancel_requested'].includes(job.status)}
+              <button
+                onclick={() => cancel(job)}
+                disabled={canceling[job.id]}
+                class="btn btn-sm border-red-400/40 text-red-500"
+                ><Ban size={14} />
+                {canceling[job.id] ? 'Canceling...' : 'Cancel'}</button
+              >
+            {/if}
+          </div>
         </div>
       </div>
       {#if expanded[job.id]}
@@ -340,6 +379,36 @@
               /> Refresh</button
             >
           </div>
+          {#if effect}
+            <section
+              class="mb-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3 text-xs"
+              aria-label="Provider operation receipt"
+            >
+              <p class="font-semibold">
+                Provider operation · {effect.service_id}
+              </p>
+              <p class="muted mt-1">
+                {effect.state === 'rejected'
+                  ? 'Google rejected the creation request. Check the error above before submitting a new request.'
+                  : effect.state === 'completed'
+                    ? effect.binding_state === 'not_applied'
+                      ? 'The provider completed the operation. The local voice was not changed.'
+                      : effect.binding_state === 'stale'
+                        ? 'The upload completed, but the local reference changed. This provider copy is marked stale.'
+                        : effect.binding_state === 'removed'
+                          ? 'Provider removal completed and the local registration was removed.'
+                          : effect.operation === 'voice.google_design'
+                            ? 'The Google voice was created and saved in the library.'
+                            : 'The upload completed and the local registration is ready.'
+                    : effect.state === 'prepared'
+                      ? 'The operation was prepared. No provider request has been sent by this attempt.'
+                      : 'The provider outcome is not confirmed. Check the provider before submitting another operation.'}
+              </p>
+              {#if effect.provider_voice_id}<p class="mt-2 break-all">
+                  Provider voice ID: {effect.provider_voice_id}
+                </p>{/if}
+            </section>
+          {/if}
           {#if errors[job.id]}<p class="text-xs text-red-500" role="alert">
               {errors[job.id]}
             </p>

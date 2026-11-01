@@ -7,6 +7,8 @@ from sqlalchemy import select
 
 from . import models as m
 from . import performance_plans as plans
+from .access.contracts import ProjectAction
+from .access.session_policy import require_session_access
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .performance_read_projections import (
     PERFORMANCE_PLAN_VIEWS,
@@ -345,6 +347,9 @@ def register_performance_routes(app, context) -> None:
                 request.get_json(silent=True) or {}
             )
             with services.database.session() as session:
+                project_access = require_session_access(
+                    session, guards.access_context(), session_id, ProjectAction.READ
+                )
                 plan = plans.get_plan(session, session_id, plan_id)
                 runtime = settings(session, session_id)
                 if payload.service is not None:
@@ -405,7 +410,18 @@ def register_performance_routes(app, context) -> None:
                 }
                 model = result["capabilities"].get("model")
                 backend = result["capabilities"].get("backend")
-            catalogue, _ = services.tts_catalogue.snapshot(refresh=False)
+                catalogue_settings = services.tts_catalogue._settings(
+                    db_session=session, workspace_id=project_access.workspace_id
+                )
+            catalogue, _ = services.tts_catalogue.snapshot(
+                refresh=False,
+                view="compact",
+                include_profiles=False,
+                workspace_id=project_access.workspace_id,
+                settings_snapshot=catalogue_settings,
+                approved_only=True,
+                allow_host_adc=False,
+            )
             service = next((item for item in catalogue.get("services", []) if item.get("id") == backend), None)
             ready = bool(service and service.get("available") and model in (service.get("models") or []))
             result["readiness"] = {

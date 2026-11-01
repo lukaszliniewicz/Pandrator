@@ -161,7 +161,9 @@ def provider_status(
     runtime: McpRuntime,
     arguments: ProviderStatusInput,
 ) -> dict[str, Any]:
-    payload = runtime.require_application().list_providers()
+    payload = runtime.require_application().list_providers(
+        **({"workspace_id": arguments.workspace_id} if arguments.workspace_id is not None else {})
+    )
     source = payload.get("items")
     items: list[dict[str, Any]] = []
     if isinstance(source, list):
@@ -177,13 +179,20 @@ def provider_status(
                     "provider_key": item.get("provider_key"),
                     "label": item.get("label"),
                     "enabled": bool(item.get("enabled")),
-                    "base_url": item.get("base_url"),
                     "credential_backend": item.get("credential_backend"),
-                    "credential_configured": bool(item.get("credential_configured")),
+                    "credential_configured": (
+                        item["credential_configured"]
+                        if type(item.get("credential_configured")) is bool else None
+                    ),
                     "revision": item.get("revision"),
                 }
             )
-    return {"schema_version": "1", "items": items}
+    return {
+        "schema_version": "1",
+        "items": items,
+        **({"workspace_id": payload["workspace_id"]} if "workspace_id" in payload else {}),
+        **({"can_manage": payload["can_manage"]} if type(payload.get("can_manage")) is bool else {}),
+    }
 
 
 def voice_catalog(

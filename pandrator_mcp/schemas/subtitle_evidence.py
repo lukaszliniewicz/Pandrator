@@ -69,6 +69,7 @@ class GetSubtitleEvidenceInput(ToolInput):
 
 
 class GetSubtitleEvidenceRoutesInput(ToolInput):
+    session_id: str | None = Field(default=None, min_length=1, max_length=80)
     language: str | None = Field(default=None, min_length=2, max_length=40)
     include_languages: bool = False
 
@@ -80,6 +81,7 @@ class ResolveSubtitleEvidenceInput(ToolInput):
     candidate_id: str | None = Field(default=None, min_length=1, max_length=120)
     text: str | None = Field(default=None, max_length=16_000)
     note: str = Field(default="", max_length=4_000)
+    expected_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", strict=True)
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,

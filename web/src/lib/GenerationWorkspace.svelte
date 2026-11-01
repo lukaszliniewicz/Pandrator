@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectLinkUrl } from './project-link-context';
   import GenerationRunHistory from './GenerationRunHistory.svelte';
   import GenerationAudioVersionHistory from './GenerationAudioVersionHistory.svelte';
   import GenerationAlternateDialog, {
@@ -11,6 +12,7 @@
   } from './generation-history';
   import { errorMessage } from './errors';
   import { useProjectInterface } from './project-interface.svelte';
+  import { useSessionContext } from './session-context';
   import { invalidationBus, invalidates } from './invalidation';
   import PassageSplitDialog from './PassageSplitDialog.svelte';
   import PassageActionsPopover from './PassageActionsPopover.svelte';
@@ -117,6 +119,12 @@
     workflowKind?: string;
   } = $props();
   const projectInterface = useProjectInterface();
+  const sessionContext = useSessionContext();
+  const soundWorkspaceId = $derived(
+    appState.collaborationEnabled
+      ? sessionContext?.session?.workspace_id
+      : undefined
+  );
   const simpleMode = $derived(projectInterface?.mode === 'simple');
   const isVoiceover = $derived(workflowKind === 'voiceover');
   const workspaceState = useGenerationWorkspace(untrack(() => sessionId));
@@ -687,10 +695,7 @@
       .trim()
       .toLowerCase()
       .replaceAll('-', '_');
-  const speechOptions = new GenerationSpeechOptionsState(
-    () => sessionId,
-    normalizeId
-  );
+  const speechOptions = new GenerationSpeechOptionsState(() => sessionId);
   const progressPercent = (value: unknown) => {
     const numeric = Number(value ?? 0);
     return Math.round(
@@ -768,7 +773,7 @@
     speechCapabilities = undefined;
     if (!settings || !serviceId || !model || speechOptions.loading) return;
     let stale = false;
-    void getTtsServiceDetail(serviceId, { models: model })
+    void getTtsServiceDetail(serviceId, { sessionId, models: model })
       .then((detail) => {
         if (stale) return;
         const profile = detail.service.expressive_capabilities?.[model];
@@ -1080,6 +1085,13 @@
       : selectedRun?.assembly) ??
       (!selectedRun && !assembly?.generation_run_id ? assembly : null)
   );
+  // Current mixes use active takes without a run. The server validates
+  // every included block, including blocks outside the loaded page.
+  const assemblyInputReady = $derived(
+    selectedRun
+      ? selectedRun.status === 'completed'
+      : !selectedRunId && !run && Boolean(headerPlanId) && headerTotal > 0
+  );
   const headerAssembly = $derived(
     mode === 'collapsed' ? summary?.assembly : selectedAssembly
   );
@@ -1199,7 +1211,7 @@
     );
     await patchSegment(item, {
       language,
-      ...(voiceIsIncompatible ? { voice: null } : {})
+      ...(voiceIsIncompatible ? { voice: null, voice_id: null } : {})
     });
   }
 
@@ -1429,6 +1441,14 @@
   }
 
   function openOptimizationReview(item: GenerationSegment) {
+    if (inspectorPending) return;
+    if (inspectorTarget && inspector) {
+      inspector.requestClose(() => {
+        closeInspector();
+        openOptimizationReview(item);
+      });
+      return;
+    }
     comparisonItem = item;
     comparisonText = String(
       item.optimized_text ??
@@ -1445,7 +1465,10 @@
     const updated = await patchSegment(item, {
       optimized_text: comparisonText.trim()
     });
-    if (!updated) return;
+    if (!updated)
+      throw new Error(
+        error || 'The delivery could not be saved. Your edits are retained.'
+      );
     comparisonItem = null;
     if (regenerateAfterReview) await start('regenerate', [updated.id]);
   }
@@ -1937,7 +1960,7 @@
     const label =
       alternate && owner
         ? `${owner.label.split(':')[0]}: ${alternate}`
-        : (owner?.label ?? 'Legacy');
+        : (owner?.label ?? 'Saved recording');
     if (take.rendered_voices?.length) {
       const voices = [
         ...new Set(
@@ -1955,7 +1978,7 @@
           })
         )
       ];
-      return `${owner?.label ?? 'Legacy'} · ${voices.join(', ')} · ${take.is_reused ? 'Reused recording' : recordingLabel}`;
+      return `${owner?.label ?? 'Saved recording'} · ${voices.join(', ')} · ${take.is_reused ? 'Reused recording' : recordingLabel}`;
     }
     return `${label} · ${recordingLabel} · ${String(take.kind || 'audio').toUpperCase()}`;
   }
@@ -2813,6 +2836,11 @@
   >
     <div class="generation-heading flex min-w-0 items-center gap-2">
       <h2 class="flex min-h-11 items-center gap-2 font-semibold">Generation</h2>
+      <a
+        class="btn btn-sm btn-secondary"
+        href={`/sessions/${encodeURIComponent(sessionId)}/speech`}
+        >Annotate &amp; review</a
+      >
       <span
         class="drawer-summary muted min-w-0 whitespace-nowrap text-xs"
         title={`${headerTotal} segments · ${selectedHistoryRun?.label ?? 'Active mix'}${headerAssembly ? ` · output ${headerAssembly.status}` : ''}`}
@@ -2937,6 +2965,7 @@
         {/if}
       </div>
       <ProjectSoundControls
+        workspaceId={soundWorkspaceId}
         compact
         bind:this={soundControls}
         {sessionId}
@@ -3420,12 +3449,14 @@
           <button
             onclick={assemble}
             disabled={loading ||
-              selectedRun?.status !== 'completed' ||
+              !assemblyInputReady ||
               selectedAssembly?.status === 'queued' ||
               selectedAssembly?.status === 'running'}
             class="action icon-action"
-            title={selectedRun?.status !== 'completed'
-              ? 'Generate every remaining segment before assembly'
+            title={!assemblyInputReady
+              ? headerPlanId
+                ? 'Finish recording the speech plan before assembly'
+                : 'Prepare a speech plan before assembly'
               : selectedAssembly?.status === 'stale'
                 ? 'Reassemble output'
                 : 'Assemble output'}
@@ -3570,7 +3601,7 @@
           >
           <div class="min-w-64 flex-1">
             <AudioPlayer
-              src={`/api/v1/artifacts/${mixedAssemblyArtifactId ?? selectedAssembly.artifact_id}/content`}
+              src={projectLinkUrl(`/api/v1/artifacts/${mixedAssemblyArtifactId ?? selectedAssembly.artifact_id}/content`)}
               label={mixedAssemblyArtifactId
                 ? 'Speech with sound effects'
                 : 'Assembled speech'}
@@ -3580,7 +3611,7 @@
           <a
             class="action"
             download
-            href={`/api/v1/artifacts/${mixedAssemblyArtifactId ?? selectedAssembly.artifact_id}/content`}
+            href={projectLinkUrl(`/api/v1/artifacts/${mixedAssemblyArtifactId ?? selectedAssembly.artifact_id}/content`)}
             ><Download size={14} /> Download</a
           >
         </div>
@@ -3751,6 +3782,8 @@
                 loading={loading || inspectorDirty || inspectorPending}
                 speechOptionsLoading={speechOptions.loading}
                 selectedTtsServiceName={selectedTtsService?.name}
+                selectedTtsAdapter={selectedTtsService?.adapter ??
+                  selectedTtsService?.id}
                 {selectedTtsModel}
                 {inheritedVoice}
                 {inheritedLanguage}
@@ -4018,6 +4051,7 @@
   <SpeechPlanReviewDialog
     item={comparisonItem}
     plan={comparisonPlan}
+    readOnly={Boolean(selectedRunId)}
     decisionRows={comparisonDecisionRows}
     text={comparisonText}
     diff={comparisonDiff}

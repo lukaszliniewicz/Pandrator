@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 from authlib.common.security import generate_token
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.cli import main as cli_main
@@ -315,7 +316,7 @@ class AutomationSecurityTests(unittest.TestCase):
             ).status_code,
         )
 
-    def test_invalid_redirect_and_admin_scope_are_refused(self):
+    def test_invalid_redirect_is_refused_and_admin_scope_requires_explicit_consent(self):
         verifier = generate_token(64)
         base = {
             "response_type": "code",
@@ -342,7 +343,9 @@ class AutomationSecurityTests(unittest.TestCase):
             },
         )
         self.assertEqual(400, invalid_redirect.status_code)
-        self.assertEqual(400, admin.status_code)
+        self.assertEqual(200, admin.status_code)
+        self.assertIn(b"Administrator access requested", admin.data)
+        self.assertIn(b"app.admin", admin.data)
 
     def test_owner_cli_lists_and_revokes_automation_clients(self):
         authorization = self._authorization(scopes=("app.read",))
@@ -529,6 +532,7 @@ class AutomationSecurityTests(unittest.TestCase):
 
         with self.extension["database"].session() as db_session:
             source = SourceAsset(
+                workspace_id=initial_personal_workspace(db_session).id,
                 display_name="input.txt",
                 kind="txt",
                 mime_type="text/plain",

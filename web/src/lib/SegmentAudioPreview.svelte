@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectLinkUrl } from './project-link-context';
   import { Play } from '@lucide/svelte';
   import AudioPlayer from './AudioPlayer.svelte';
   import type { PlayableTake } from './generation-view-models';
@@ -59,7 +60,7 @@
         preload="none"
         autoplay
         bind:element={audioElement}
-        src={`/api/v1/artifacts/${take.artifact_id}/content`}
+        src={projectLinkUrl(`/api/v1/artifacts/${take.artifact_id}/content`)}
         label={`Segment ${segmentNumber}`}
       />
     {/key}

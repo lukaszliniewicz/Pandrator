@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import {
     hasPrebuiltVoices,
     selectableTtsServices
@@ -23,6 +24,7 @@
     TtsSettingsValue
   } from './api-models';
   import { jobApi } from './domain-api';
+  import { fetchTtsServiceDetail } from './speech-catalogue-api';
   import { jobProgressDetail } from './job-progress';
   import {
     defaultVoiceForLanguage,
@@ -33,7 +35,21 @@
   } from './voice-catalog';
   import AudioPlayer from './AudioPlayer.svelte';
 
-  let { initialService = '' }: { initialService?: string } = $props();
+  let {
+    initialService = '',
+    workspaceId,
+    canEdit = false
+  }: {
+    initialService?: string;
+    workspaceId: string;
+    canEdit?: boolean;
+  } = $props();
+  let alive = true;
+  const activeJobs = new Set<string>();
+  onDestroy(() => {
+    alive = false;
+    for (const jobId of activeJobs) void jobApi.cancel(jobId).catch(() => null);
+  });
   type VoiceLibraryPayload = TtsCatalogue & {
     services: TtsService[];
     value: TtsSettingsValue;
@@ -225,13 +241,26 @@
   }
 
   async function load() {
-    payload = await speechServiceApi.catalogueAs<VoiceLibraryPayload>(true);
+    if (!alive || !workspaceId) return;
+    const workspace = workspaceId;
+    const next = await speechServiceApi.catalogueAs<VoiceLibraryPayload>(
+      false,
+      { workspaceId: workspace }
+    );
+    if (!alive || workspaceId !== workspace) return;
+    if (next.workspace_id !== workspace)
+      throw new Error(
+        'The voice catalogue returned a different workspace. Refresh this view.'
+      );
+    payload = next;
     restorePreviews(payload.previews ?? []);
     if (initialService && services.some((item) => item.id === initialService))
       serviceId = initialService;
   }
 
   async function saveRecord(record: TtsService) {
+    if (!alive || !payload.can_manage || payload.workspace_id !== workspaceId)
+      return;
     const value = {
       ...payload.value,
       provider_configs: [
@@ -244,60 +273,30 @@
     await settingApi.put<TtsSettingsValue>(
       'services.tts',
       payload.revision,
-      value
+      value,
+      payload.workspace_id
     );
     await load();
   }
 
   async function refreshCatalogue() {
-    if (!service || refreshing) return;
+    if (!service || refreshing || !payload.can_refresh || !payload.workspace_id)
+      return;
     refreshing = true;
     error = '';
     notice = '';
     try {
-      const found = await speechServiceApi.discover({
-        base_url: service.api_base ?? ''
+      const refreshed = await fetchTtsServiceDetail(service.id, {
+        refresh: true,
+        workspaceId: payload.workspace_id
       });
-      const record = editableRecord(service);
-      const discoveredModels = (found.models ?? []).filter(Boolean);
-      const discoveredVoices = (found.voices ?? []).filter(Boolean);
-      record.models = Array.from(
-        new Set([...(record.models ?? []), ...discoveredModels])
-      );
-      record.voices = Array.from(
-        new Set([...(record.voices ?? []), ...discoveredVoices])
-      );
-      record.default_model ||= found.default_model || record.models[0] || '';
-      record.default_voice ||= found.default_voice || '';
-      for (const key of [
-        'adapter',
-        'speech_path',
-        'models_path',
-        'voices_path',
-        'request_fields',
-        'request_defaults'
-      ]) {
-        if (found[key] != null && found[key] !== '') record[key] = found[key];
-      }
-      if (discoveredVoices.length) {
-        const catalogues = { ...(record.voice_catalogues ?? {}) };
-        if (service.id !== 'kobold_qwen') {
-          const catalogueModels = discoveredModels.length
-            ? discoveredModels
-            : [model || record.default_model].filter(Boolean);
-          for (const catalogueModel of catalogueModels) {
-            catalogues[catalogueModel] = Array.from(
-              new Set([
-                ...(catalogues[catalogueModel] ?? []),
-                ...discoveredVoices
-              ])
-            );
-          }
-        }
-        record.voice_catalogues = catalogues;
-      }
-      await saveRecord(record);
-      notice = `Catalogue refreshed: ${discoveredModels.length} model${discoveredModels.length === 1 ? '' : 's'} and ${discoveredVoices.length} voice${discoveredVoices.length === 1 ? '' : 's'} discovered. Manual entries and defaults were preserved.`;
+      payload = {
+        ...payload,
+        services: payload.services.map((item) =>
+          item.id === refreshed.service.id ? refreshed.service : item
+        )
+      };
+      notice = 'Service catalogue refreshed.';
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -306,6 +305,7 @@
   }
 
   async function saveDefault(voice: VoiceDescriptor) {
+    if (!payload.can_manage) return;
     error = '';
     notice = '';
     try {
@@ -331,6 +331,7 @@
   }
 
   async function addCatalogueVoice() {
+    if (!payload.can_manage) return;
     const id = newVoice.trim();
     if (!id || !service || !model) return;
     try {
@@ -355,6 +356,7 @@
   }
 
   async function removeCatalogueVoice(voice: VoiceDescriptor) {
+    if (!payload.can_manage) return;
     try {
       const record = editableRecord(service);
       record.voice_catalogues = {
@@ -375,12 +377,14 @@
     }
   }
 
-  async function waitJob(id: string, key: string) {
+  async function waitJob(id: string, key: string, workspace: string) {
     // A Qwen Base-only installation downloads the 1.7B CustomVoice model on
     // the first pre-built preview.  Keep polling while that durable job does
     // its one-time preparation rather than claiming it timed out after 2 min.
     for (let attempt = 0; attempt < 4000; attempt += 1) {
       const job = await jobApi.get(id);
+      if (!alive || workspaceId !== workspace || !canEdit)
+        throw new Error('This audition view changed. Check Activity & logs.');
       previews = {
         ...previews,
         [key]: {
@@ -397,6 +401,10 @@
   }
 
   async function preview(voice: VoiceDescriptor, quiet = false) {
+    if (!alive || !canEdit || !workspaceId) return false;
+    const workspace = workspaceId;
+    const current = () => alive && workspaceId === workspace && canEdit;
+    let jobId = '';
     if (!previewText.trim()) {
       error = 'Enter preview text first.';
       return false;
@@ -422,22 +430,37 @@
       error = '';
       notice =
         service.id === 'kobold_qwen'
-          ? 'Using the Qwen CustomVoice model. If it was not installed initially, the first preview downloads it automatically and may take several minutes.'
+          ? 'Using the Qwen CustomVoice model. An installation administrator must install any missing model before previewing.'
           : '';
     }
     try {
-      const queued = await speechServiceApi.preview(service.id, {
-        text: previewText.trim(),
-        generation_prompt: inheritDirections ? undefined : '',
-        model: service.id === 'kobold_qwen' ? qwenPrebuiltModel : model,
-        voice: voice.id,
-        language
-      });
+      const queued = await speechServiceApi.preview(
+        service.id,
+        {
+          text: previewText.trim(),
+          generation_prompt: inheritDirections ? undefined : '',
+          model: service.id === 'kobold_qwen' ? qwenPrebuiltModel : model,
+          voice: voice.id,
+          language
+        },
+        workspace
+      );
+      if (queued.workspace_id !== workspace)
+        throw new Error(
+          'The audition returned a different workspace. Check Activity & logs before trying again.'
+        );
+      if (!current()) {
+        void jobApi.cancel(queued.id).catch(() => null);
+        return false;
+      }
+      jobId = queued.id;
+      activeJobs.add(jobId);
       if (queued.preview)
         notice = queued.preview.directions.present
           ? 'Saved style directions are included in this audition.'
           : 'This audition has no style directions.';
-      const complete = await waitJob(queued.id, key);
+      const complete = await waitJob(queued.id, key, workspace);
+      if (!current()) return false;
       const artifactId = String(complete.result_json?.artifact_id ?? '');
       if (!artifactId)
         throw new Error(
@@ -446,6 +469,7 @@
       previews = { ...previews, [key]: { status: 'ready', artifactId } };
       return true;
     } catch (caught) {
+      if (!current()) return false;
       const message = errorMessage(caught);
       previews = {
         ...previews,
@@ -457,22 +481,43 @@
       };
       if (!quiet) error = message;
       return false;
+    } finally {
+      if (jobId) activeJobs.delete(jobId);
     }
   }
 
   async function generateVisible() {
-    if (!visibleVoices.length || generatingAll) return;
+    if (!visibleVoices.length || generatingAll || !canEdit || !workspaceId)
+      return;
     generatingAll = true;
     generatedCount = 0;
     error = '';
     notice = '';
     let failures = 0;
-    for (const voice of visibleVoices) {
+    const shortlist = [...visibleVoices];
+    const selection = JSON.stringify([
+      workspaceId,
+      service?.id,
+      model,
+      language
+    ]);
+    for (const voice of shortlist) {
+      if (
+        !alive ||
+        !canEdit ||
+        JSON.stringify([workspaceId, service?.id, model, language]) !==
+          selection
+      )
+        break;
       if (!(await preview(voice, true))) failures += 1;
       generatedCount += 1;
     }
     generatingAll = false;
-    notice = `Generated ${visibleVoices.length - failures} of ${visibleVoices.length} previews${failures ? `; ${failures} failed` : ''}.`;
+    if (
+      alive &&
+      JSON.stringify([workspaceId, service?.id, model, language]) === selection
+    )
+      notice = `Generated ${generatedCount - failures} of ${shortlist.length} previews${failures ? `; ${failures} failed` : ''}.`;
   }
 
   load().catch((caught) => (error = errorMessage(caught)));
@@ -489,7 +534,7 @@
     </div>
     <button
       onclick={refreshCatalogue}
-      disabled={!service || refreshing || service?.available === false}
+      disabled={!service || refreshing || !payload.can_refresh}
       class="btn btn-secondary"
       ><RefreshCw class={refreshing ? 'animate-spin' : ''} size={15} />
       {refreshing ? 'Refreshing…' : 'Refresh service catalogue'}</button
@@ -595,7 +640,8 @@
       </p>
       <button
         onclick={generateVisible}
-        disabled={!visibleVoices.length ||
+        disabled={!canEdit ||
+          !visibleVoices.length ||
           generatingAll ||
           service?.available === false}
         class="btn btn-primary"
@@ -631,7 +677,8 @@
         <div class="flex flex-wrap justify-end gap-2">
           <button
             onclick={() => preview(voice)}
-            disabled={state?.status === 'generating' ||
+            disabled={!canEdit ||
+              state?.status === 'generating' ||
               generatingAll ||
               service?.available === false}
             class="btn btn-sm btn-secondary"
@@ -642,7 +689,7 @@
                 : 'Preview'}</button
           ><button
             onclick={() => saveDefault(voice)}
-            disabled={voice.id === languageDefault}
+            disabled={!payload.can_manage || voice.id === languageDefault}
             class="btn btn-sm btn-secondary"
             ><Save size={13} /> Use by default</button
           >
@@ -673,7 +720,7 @@
     {/each}
   </div>
 
-  {#if service}
+  {#if service && payload.can_manage}
     <details class="mt-5 rounded-2xl border border-[var(--line)] p-4">
       <summary class="cursor-pointer text-sm font-semibold"
         >Manage custom catalogue entries</summary

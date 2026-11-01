@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, StrictStr, field_validator
 
 from .common import ToolInput
 
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
+
+
+def _trim_optional_nonblank(value: Any) -> Any:
+    if value is None or not isinstance(value, str):
+        return value
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("This value may not be blank.")
+    return normalized
 
 
 class BrowseLocalSourcesInput(ToolInput):
@@ -38,6 +47,10 @@ class BrowseLocalSourcesInput(ToolInput):
 
 class ImportLocalSourceInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
+    workspace_id: str | None = Field(
+        default=None, min_length=1, max_length=80,
+        description="Source library workspace, matching the target project. Omit for a personal project.",
+    )
     root: str = Field(
         min_length=1,
         max_length=80,
@@ -63,6 +76,10 @@ class ImportLocalSourceInput(ToolInput):
 
 class CreateTextSourceInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
+    workspace_id: str | None = Field(
+        default=None, min_length=1, max_length=80,
+        description="Source library workspace, matching the target project. Omit for a personal project.",
+    )
     text: str = Field(
         min_length=1,
         max_length=1_000_000,
@@ -89,6 +106,8 @@ class CreateTextSourceInput(ToolInput):
 
 class TtsCatalogInput(ToolInput):
     service_id: str | None = Field(default=None, max_length=160)
+    workspace_id: StrictStr | None = Field(default=None, min_length=1, max_length=80)
+    session_id: StrictStr | None = Field(default=None, min_length=1, max_length=80)
     include_compatibility: bool = Field(
         default=False,
         description="Include services retained for compatibility with older configurations.",
@@ -117,8 +136,26 @@ class TtsCatalogInput(ToolInput):
     )
     refresh: bool = Field(
         default=False,
-        description="Probe configured services for current availability and dynamic catalogs.",
+        description=(
+            "Compatibility flag; true is rejected by this passive read. Use "
+            "pandrator_refresh_tts_catalog to refresh TTS connections."
+        ),
     )
+
+    @field_validator("workspace_id", "session_id", mode="before")
+    @classmethod
+    def trim_scope_ids(cls, value: Any) -> Any:
+        return _trim_optional_nonblank(value)
+
+
+class TtsCatalogRefreshInput(ToolInput):
+    workspace_id: StrictStr | None = Field(default=None, min_length=1, max_length=80)
+    service_id: StrictStr | None = Field(default=None, min_length=1, max_length=160)
+
+    @field_validator("workspace_id", "service_id", mode="before")
+    @classmethod
+    def trim_scope_ids(cls, value: Any) -> Any:
+        return _trim_optional_nonblank(value)
 
 
 class AudioCppCatalogueInput(ToolInput):
@@ -219,8 +256,8 @@ class PlanExportVariantInput(ToolInput):
     export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media"
     audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed"
     subtitle_mode: Literal["none", "soft", "burned"] = "none"
-    subtitle_text_source: Literal["current", "generation_run"] = "current"
-    subtitle_selection: Literal["source", "translation", "dual"] = "translation"
+    subtitle_text_source: Literal["current", "generation_run", "selected_artifact"] = "current"
+    subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None
     subtitle_format: Literal["srt", "vtt"] = "srt"
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
 

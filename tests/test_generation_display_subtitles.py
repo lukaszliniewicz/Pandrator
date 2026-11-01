@@ -335,12 +335,12 @@ class SnapshotAndExportTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 with self.assertRaisesRegex(
                     ValueError,
-                    r"subtitle_text_source must be current or generation_run\.",
+                    r"subtitle_text_source must be current, generation_run, or selected_artifact\.",
                 ):
                     validate_output_settings({"subtitle_text_source": invalid})
                 with self.assertRaisesRegex(
                     ValueError,
-                    r"subtitle_text_source must be current or generation_run\.",
+                    r"subtitle_text_source must be current, generation_run, or selected_artifact\.",
                 ):
                     self._snapshot({"subtitle_text_source": invalid})
         with self.assertRaisesRegex(

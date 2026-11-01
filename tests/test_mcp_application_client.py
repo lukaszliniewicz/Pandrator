@@ -339,6 +339,31 @@ class ApplicationClientTests(unittest.TestCase):
             self.assertEqual("network_policy_denied", captured.exception.code)
             self.assertEqual(b"do not overwrite", other.read_bytes())
 
+    def test_session_creation_forwards_an_explicit_workspace(self):
+        transport = FakeSession([FakeResponse(201, {"id": "session-1", "revision": 1})])
+        client = ApplicationClient(
+            local_registry("http://127.0.0.1:8097").bind("local"),
+            CredentialResolver(()),
+            session=transport,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        client.create_session(
+            name="Team project",
+            workspace_id="workspace-team",
+            workflow_kind="audiobook",
+            source_language="en",
+            target_language=None,
+            workflow_preset="custom",
+            included_stages=(),
+            idempotency_key="session:team:1",
+        )
+        self.assertEqual(1, len(transport.calls))
+        submitted = transport.calls[0]
+        self.assertEqual("POST", submitted["method"])
+        self.assertTrue(submitted["url"].endswith("/api/v1/sessions"))
+        self.assertEqual("workspace-team", json.loads(submitted["data"])["workspace_id"])
+        self.assertEqual("session:team:1", submitted["headers"]["Idempotency-Key"])
+
     def test_session_write_methods_map_exact_bodies_and_revisions(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(
@@ -1263,6 +1288,35 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertEqual(409, caught.exception.details["status"])
         self.assertEqual(21, len(caught.exception.details))
         self.assertNotIn("detail_18", caught.exception.details)
+
+    def test_evidence_project_scope_revision_and_conflict_survive_transport(self):
+        session = FakeSession([
+            FakeResponse(200, {"routes": [], "audio_models": [{"id": "team-model"}]}),
+            FakeResponse(409, {"error": {
+                "code": "evidence_revision_conflict",
+                "message": "This evidence decision changed. Refresh it before saving.",
+            }}),
+        ])
+        client = ApplicationClient(
+            local_registry("http://127.0.0.1:8097").bind("local"),
+            CredentialResolver(()), session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        choices = client.get_subtitle_evidence_routes(session_id="team-source", language="de")
+        self.assertEqual("team-model", choices["audio_models"][0]["id"])
+        self.assertEqual("team-source", session.calls[0]["params"]["session_id"])
+        with self.assertRaises(PandratorMcpError) as caught:
+            client.resolve_subtitle_evidence(
+                "team-source", "evidence-1", action="dismissed", candidate_id=None,
+                text=None, note="Keep the original.", expected_revision="a" * 64,
+                idempotency_key="evidence:transport-conflict",
+            )
+        self.assertEqual("evidence_revision_conflict", caught.exception.code)
+        self.assertEqual(409, caught.exception.details["status"])
+        self.assertFalse(caught.exception.retryable)
+        body = json.loads(session.calls[1]["data"])
+        self.assertEqual("a" * 64, body["expected_revision"])
+        self.assertEqual(2, len(session.calls))
 
     def test_bounded_post_uses_csrf_idempotency_and_typed_errors(self):
         origin = "http://127.0.0.1:8097"

@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { speechServiceApi } from './admin-api';
-  import { getTtsCompactCatalogue } from './tts-catalogue-cache';
+  import {
+    getTtsCompactCatalogue,
+    speechCatalogueKey
+  } from './tts-catalogue-cache';
   import type { TtsService } from './api-models';
   import { errorMessage } from './errors';
   import { selectableTtsServices, serviceMatches } from './tts-provider-policy';
@@ -10,9 +12,13 @@
     value,
     onchange,
     onloaded,
+    workspaceId,
+    sessionId,
     compact = false
   }: {
     value: string;
+    workspaceId?: string;
+    sessionId?: string;
     compact?: boolean;
     onloaded?: (services: TtsService[]) => void;
     onchange: (value: string, resetSelection: boolean) => void;
@@ -25,19 +31,29 @@
     services.find((service) => serviceMatches(service, value))
   );
 
-  onMount(async () => {
-    try {
-      services = (
-        await (compact
-          ? getTtsCompactCatalogue()
-          : speechServiceApi.catalogue())
-      ).services;
-      onloaded?.(services);
-    } catch (caught) {
-      error = errorMessage(caught);
-    } finally {
-      loading = false;
-    }
+  $effect(() => {
+    const scope = { workspaceId, sessionId };
+    const scopeKey = speechCatalogueKey(scope);
+    let active = true;
+    loading = true;
+    error = '';
+    void (async () => {
+      try {
+        const response = await (compact
+          ? getTtsCompactCatalogue(false, false, scope)
+          : speechServiceApi.catalogue(false, scope));
+        if (!active || speechCatalogueKey(scope) !== scopeKey) return;
+        services = response.services;
+        onloaded?.(services);
+      } catch (caught) {
+        if (active) error = errorMessage(caught);
+      } finally {
+        if (active) loading = false;
+      }
+    })();
+    return () => {
+      active = false;
+    };
   });
 </script>
 

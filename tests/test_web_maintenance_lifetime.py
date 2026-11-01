@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import CursorResult, delete, select
 
 from pandrator.web import startup
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.application_services import ApplicationServices
 from pandrator.web.maintenance import apply_retention
 from pandrator.web.maintenance_threads import MaintenanceThread
@@ -22,8 +23,10 @@ from pandrator.web.models import (
     JobEvent,
     SessionRecord,
     SessionSettingHistory,
+    WorkspaceSettingHistory,
     utcnow,
 )
+from pandrator.web.projects.identity import create_session_project
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -53,17 +56,18 @@ def test_retention_counts_native_deletes_and_preserves_recent_and_external_files
     recent = utcnow()
     with services.database.session() as session:
         record = SessionRecord(name="retention-contract")
-        session.add(record)
-        session.flush()
+        create_session_project(session, record)
         session_id = record.id
+        workspace_id = initial_personal_workspace(session).id
         for created in (old, recent):
             session.add_all([
                 JobEvent(event_type="retention.contract", payload_json={}, created_at=created),
                 AppSettingHistory(key="retention.contract", revision=1, value_json={}, created_at=created),
                 SessionSettingHistory(session_id=session_id, section="tts", revision=1, value_json={}, created_at=created),
+                WorkspaceSettingHistory(workspace_id=workspace_id, key="retention.contract", revision=1, value_json={}, created_at=created),
             ])
         session.flush()
-        for model in (JobEvent, AppSettingHistory, SessionSettingHistory):
+        for model in (JobEvent, AppSettingHistory, SessionSettingHistory, WorkspaceSettingHistory):
             result = session.execute(delete(model).where(model.created_at < old))
             assert isinstance(result, CursorResult)
             assert result.rowcount == 0
@@ -83,6 +87,7 @@ def test_retention_counts_native_deletes_and_preserves_recent_and_external_files
     link.symlink_to(outside)
     assert apply_retention(services.database, services.paths, 30) == {
         "job_events": 1, "app_setting_history": 1, "session_setting_history": 1, "files": 2,
+        "workspace_setting_history": 1,
     }
     assert all(not path.exists() for path in expired)
     assert all(path.read_text() == "current" for path in current)
@@ -92,8 +97,10 @@ def test_retention_counts_native_deletes_and_preserves_recent_and_external_files
         assert len(list(session.scalars(select(AppSettingHistory).where(AppSettingHistory.key == "retention.contract")))) == 1
         assert len(list(session.scalars(select(SessionSettingHistory).where(SessionSettingHistory.session_id == session_id)))) == 1
         assert session.get(SessionRecord, session_id) is not None
+        assert len(list(session.scalars(select(WorkspaceSettingHistory).where(WorkspaceSettingHistory.workspace_id == workspace_id)))) == 1
     assert apply_retention(services.database, services.paths, 30) == {
         "job_events": 0, "app_setting_history": 0, "session_setting_history": 0, "files": 0,
+        "workspace_setting_history": 0,
     }
 
 

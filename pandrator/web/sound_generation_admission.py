@@ -17,8 +17,11 @@ from sqlalchemy.orm import Session
 from pandrator.logic import audio_cpp_sfx
 from pandrator.runtime import DataPaths
 
+from .access.contracts import ProjectAction
+from .access.sound_library_policy import require_sound_library_workspace
 from .jobs import JobQueue
 from .models import Artifact, Job, SoundVariant
+from .sound_identity import sound_variant_workspace
 from .sound_schemas import DEFAULT_SOUND_MODEL_ID, SoundGenerate
 from .stt_resources import audio_cpp_resource_keys
 
@@ -96,9 +99,7 @@ def _same_prepared_request(payload: dict[str, Any], prepared: PreparedSoundGener
     request = SoundGenerate.model_validate(payload)
     if request.candidate_count != prepared.candidate_count:
         raise ValueError("Prepared sound generation count does not match the submitted request.")
-    canonical = audio_cpp_sfx.validate_request(
-        _public_request_payload(request), resolved_seed=0
-    )
+    canonical = audio_cpp_sfx.validate_request(_public_request_payload(request), resolved_seed=0)
     if request.seed is None:
         canonical.pop("seed")
     if canonical != prepared.request_template:
@@ -122,9 +123,7 @@ def _resolved_request(
         if type(maximum) is not int or not 0 <= maximum <= 2**32 - 1:
             raise ValueError("The sound model returned an invalid seed maximum.")
         request["seed"] = (
-            secrets.randbits(32)
-            if maximum == 2**32 - 1
-            else secrets.randbelow(maximum + 1)
+            secrets.randbits(32) if maximum == 2**32 - 1 else secrets.randbelow(maximum + 1)
         )
     return audio_cpp_sfx.validate_request(request)
 
@@ -161,12 +160,17 @@ def _cache_hit(
     paths: DataPaths,
     fingerprint: str,
     request: dict[str, Any],
+    *,
+    workspace_id: str,
 ) -> dict[str, Any] | None:
     statement = (
         select(SoundVariant, Job.status)
         .join(Job, Job.id == SoundVariant.job_id)
         .where(
+            SoundVariant.workspace_id == workspace_id,
             SoundVariant.fingerprint == fingerprint,
+            Job.workspace_id == workspace_id,
+            Job.project_id.is_(None),
             or_(
                 SoundVariant.state == "ready",
                 and_(
@@ -179,6 +183,10 @@ def _cache_hit(
         .limit(50)
     )
     for variant, job_status in session.execute(statement).all():
+        try:
+            sound_variant_workspace(session, variant, workspace_id=workspace_id)
+        except (KeyError, ValueError):
+            continue
         if variant.state == "ready":
             if not _valid_cached_artifact(session, paths, variant):
                 continue
@@ -204,8 +212,13 @@ def admit_generation_in_session(
     paths: DataPaths,
     payload: dict[str, Any],
     prepared: PreparedSoundGeneration,
+    *,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Reuse valid candidates or atomically enqueue one or more generation jobs."""
+    workspace = require_sound_library_workspace(
+        session, ProjectAction.RUN, workspace_id=workspace_id
+    )
     candidate_count = prepared.candidate_count
     if type(candidate_count) is not int or not 1 <= candidate_count <= 8:
         raise ValueError("Prepared sound generation count must be from 1 to 8.")
@@ -213,7 +226,12 @@ def admit_generation_in_session(
     if candidate_count == 1:
         request = _resolved_request(payload, prepared)
         return _admit_resolved_generation_in_session(
-            session, jobs, paths, request, prepared
+            session,
+            jobs,
+            paths,
+            request,
+            prepared,
+            workspace_id=workspace.id,
         )
 
     maximum = audio_cpp_sfx.seed_maximum(prepared.request_template["model_id"])
@@ -231,7 +249,12 @@ def admit_generation_in_session(
         child_request = audio_cpp_sfx.validate_request(child_request)
         receipts.append(
             _admit_resolved_generation_in_session(
-                session, jobs, paths, child_request, prepared
+                session,
+                jobs,
+                paths,
+                child_request,
+                prepared,
+                workspace_id=workspace.id,
             )
         )
 
@@ -258,18 +281,25 @@ def _admit_resolved_generation_in_session(
     paths: DataPaths,
     request: dict[str, Any],
     prepared: PreparedSoundGeneration,
+    *,
+    workspace_id: str,
 ) -> dict[str, Any]:
     """Reuse one valid candidate or enqueue one sound.generate job."""
-    fingerprint = audio_cpp_sfx.generation_fingerprint(
-        request, prepared.runtime_identity
-    )
-    if cached := _cache_hit(session, paths, fingerprint, request):
+    fingerprint = audio_cpp_sfx.generation_fingerprint(request, prepared.runtime_identity)
+    if cached := _cache_hit(
+        session,
+        paths,
+        fingerprint,
+        request,
+        workspace_id=workspace_id,
+    ):
         return cached
 
     provenance = deepcopy(request)
     if "kind" not in provenance and provenance.get("model_id") == DEFAULT_SOUND_MODEL_ID:
         provenance["kind"] = "sound"
     variant = SoundVariant(
+        workspace_id=workspace_id,
         state="queued",
         fingerprint=fingerprint,
         provenance_json={
@@ -286,12 +316,14 @@ def _admit_resolved_generation_in_session(
         "sound.generate",
         {
             "candidate_id": variant.id,
+            "workspace_id": workspace_id,
             "request": request,
             "runtime_identity": deepcopy(prepared.runtime_identity),
         },
         session_id=None,
         max_attempts=1,
         resource_keys=audio_cpp_resource_keys(request["backend"]),
+        workspace_id=workspace_id,
     )
     variant.job_id = job.id
     session.flush()

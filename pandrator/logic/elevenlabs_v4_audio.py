@@ -21,6 +21,7 @@ from .elevenlabs_speech_contracts import (
     ELEVENLABS_V4_TURBO_MODEL,
     _validated_elevenlabs_voice_settings,
 )
+from .tts_io_policy import TtsIoDenied, check_tts_io
 
 MAX_WEBSOCKET_FRAME_BYTES = 8 * 1024 * 1024
 MAX_WEBSOCKET_AUDIO_BYTES = 32 * 1024 * 1024
@@ -220,6 +221,7 @@ def stream_turbo_dialogue_audio(
         # Imported only when the v4 Turbo route is actually selected.
         connect = importlib.import_module("websockets.sync.client").connect
 
+        check_tts_io()
         connection = connect(
             uri,
             additional_headers={"xi-api-key": api_key},
@@ -227,14 +229,17 @@ def stream_turbo_dialogue_audio(
             open_timeout=remaining(),
             max_size=MAX_WEBSOCKET_FRAME_BYTES,
         )
+        denied = False
         try:
             initial: dict[str, object] = {"voices": [voice_id]}
             if "stability" in validated_settings:
                 initial["voice_settings"] = {
                     "stability": validated_settings["stability"]
                 }
+            check_tts_io()
             connection.send(json.dumps(initial, separators=(",", ":")))
             remaining()
+            check_tts_io()
             connection.send(
                 json.dumps(
                     {"inputs": [{"text": text, "voice_id": voice_id}], "flush": True},
@@ -242,6 +247,7 @@ def stream_turbo_dialogue_audio(
                 )
             )
             remaining()
+            check_tts_io()
             connection.send(json.dumps({"close_socket": True}, separators=(",", ":")))
 
             audio = bytearray()
@@ -287,8 +293,17 @@ def stream_turbo_dialogue_audio(
             if not audio:
                 raise _SafeWebsocketError("ElevenLabs realtime dialogue returned no audio.")
             return _audio_response(bytes(audio), output_format)
+        except TtsIoDenied:
+            denied = True
+            raise
         finally:
-            connection.close()
+            try:
+                connection.close()
+            except Exception:
+                if not denied:
+                    raise
+    except TtsIoDenied:
+        raise
     except _SafeWebsocketError:
         raise
     except TimeoutError:

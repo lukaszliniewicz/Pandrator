@@ -1,5 +1,7 @@
 import { dedupeInflight } from './inflight-dedupe';
 import { sessionApi } from './domain-api';
+import { browserStorageKey } from './browser-identity';
+import type { SpeechCatalogueScope } from './speech-catalogue-api';
 import type {
   ItemPage,
   TtsCompactCatalogue,
@@ -23,23 +25,32 @@ import type {
 // a monotonic request id (epoch) per selection and apply a response only
 // when it is still the latest, so a late full-catalogue or older detail
 // response never clobbers a newer selection.
-const compactSlots = new Map<boolean, Promise<TtsCompactCatalogue>>();
+const compactSlots = new Map<string, Promise<TtsCompactCatalogue>>();
 const detailSlots = new Map<string, Promise<TtsServiceDetailResponse>>();
-const voicesSlots = new Map<'voices', Promise<ItemPage<VoiceRecord>>>();
+const voicesSlots = new Map<string, Promise<ItemPage<VoiceRecord>>>();
+
+export function speechCatalogueKey(scope: SpeechCatalogueScope = {}) {
+  return browserStorageKey(
+    'speech-catalogue',
+    scope.sessionId,
+    scope.workspaceId
+  );
+}
 
 export function getTtsCompactCatalogue(
   refresh = false,
-  force = false
+  force = false,
+  scope: SpeechCatalogueScope = {}
 ): Promise<TtsCompactCatalogue> {
   return dedupeInflight(
     compactSlots,
-    refresh,
-    () => sessionApi.ttsCatalogueCompact(refresh),
+    `${speechCatalogueKey(scope)}:${refresh}`,
+    () => sessionApi.ttsCatalogueCompact(refresh, scope),
     force
   );
 }
 
-export type TtsDetailSelection = {
+export type TtsDetailSelection = SpeechCatalogueScope & {
   refresh?: boolean;
   models?: string[] | string;
   force?: boolean;
@@ -60,6 +71,7 @@ function normalizeDetailKey(
           .filter(Boolean)
           .sort();
   return [
+    speechCatalogueKey(selection),
     serviceId.trim().toLowerCase(),
     models.join(','),
     selection.refresh ? 'refresh' : 'cached'
@@ -77,17 +89,22 @@ export function getTtsServiceDetail(
     () =>
       sessionApi.ttsServiceDetail(serviceId, {
         refresh: selection.refresh,
-        models: selection.models
+        models: selection.models,
+        workspaceId: selection.workspaceId,
+        sessionId: selection.sessionId
       }),
     selection.force ?? false
   );
 }
 
-export function getVoiceLibrary(force = false): Promise<ItemPage<VoiceRecord>> {
+export function getVoiceLibrary(
+  force = false,
+  scope: SpeechCatalogueScope = {}
+): Promise<ItemPage<VoiceRecord>> {
   return dedupeInflight(
     voicesSlots,
-    'voices',
-    () => sessionApi.voices(),
+    speechCatalogueKey(scope),
+    () => sessionApi.voices(scope),
     force
   );
 }

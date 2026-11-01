@@ -74,6 +74,7 @@
   /><SettingsPanel {sessionId} section="rvc" title="RVC variants" />
 </div>
 {#if voicesOpen}<VoiceLibraryModal
+    {sessionId}
     initialService={service}
     initialModel={model}
     onclose={() => (voicesOpen = false)}

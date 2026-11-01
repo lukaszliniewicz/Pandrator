@@ -29,6 +29,8 @@ _RUNTIME_OUTPUT_BUDGETS = {
     "chatterbox": (384, "speech_tokens"),
     "fish_audio": (1024, "semantic_tokens_per_chunk"),
     "fish_audio_s2": (1024, "semantic_tokens_per_chunk"),
+    "fish_drama3": (1024, "acoustic_frames"),
+    "plapre": (500, "audio_tokens"),
     "voxcpm2": (4096, "audio_tokens"),
     "voxtral_tts": (2048, "audio_frames"),
 }
@@ -113,7 +115,7 @@ def generation_limit_metadata(
     audio_cpp = _normalised(service) in {"audio_cpp", "audio.cpp", "audiocpp"} or _normalised(adapter) == "audio_cpp"
     runtime_family = family.strip().casefold() or profile
     if audio_cpp:
-        result["checked_at"] = "2026-10-16"
+        result["checked_at"] = "2026-10-19"
         result["segmentation_owner"] = "pandrator"
         result["single_segment_supported"] = runtime_family not in NATIVE_SPLIT_ONLY_FAMILIES
         native_chunk = native_character_chunk_default(runtime_family)

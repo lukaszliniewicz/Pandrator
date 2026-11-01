@@ -3,13 +3,14 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from flask import Flask, session
 from PIL import Image
 from sqlalchemy import func, select
 
 from pandrator.web.api import create_app
-from pandrator.web.auth import ALL_SCOPES, PRINCIPAL_KINDS, BootstrapTokenStore
+from pandrator.web.auth import PRINCIPAL_KINDS, BootstrapTokenStore
 from pandrator.web.http_lifecycle import ApiGuards
 from pandrator.web.models import Artifact, SourceAsset
 from tests.web_test_support import prepare_web_test_data_root
@@ -305,9 +306,13 @@ class PrincipalContractTests(unittest.TestCase):
     def setUp(self):
         self.app = Flask(__name__)
         self.app.secret_key = "principal-contract-fixture"
+        self.session_store = SimpleNamespace(resolve=Mock(return_value=None))
+        self.auth = SimpleNamespace(
+            browser_sessions=self.session_store, solo_access_allowed=Mock(return_value=True)
+        )
         self.guards = ApiGuards(
             self.app,
-            SimpleNamespace(identity=SimpleNamespace(instance_id="fixture-instance")),
+            SimpleNamespace(identity=SimpleNamespace(instance_id="fixture-instance"), auth=self.auth),
             testing=True,
             script_policy="'self'",
         )
@@ -325,23 +330,35 @@ class PrincipalContractTests(unittest.TestCase):
                 self.assertEqual(expected, self.guards._network_zone())
 
     def test_session_principal_kind_scope_and_request_cache_contract(self):
-        for kind in (*sorted(PRINCIPAL_KINDS), "unknown-kind"):
+        for kind in sorted(PRINCIPAL_KINDS):
             with self.subTest(kind=kind), self.app.test_request_context():
-                session.update(authenticated=True, principal_kind=kind)
+                self.session_store.resolve.reset_mock()
+                self.session_store.resolve.return_value = SimpleNamespace(
+                    subject="server-actor", kind=kind, scopes=frozenset({"app.read"}),
+                    client_id=None, user_id="server-user-id", auth_revision=7, session_id="server-session-id",
+                )
+                session.update(
+                    authenticated=True, auth_session="synthetic-opaque-session",
+                    principal_kind="unknown-kind", principal_scopes=["invalid-scope"],
+                )
                 principal = self.guards.principal()
                 self.assertIsNotNone(principal)
-                self.assertEqual(kind if kind in PRINCIPAL_KINDS else "owner_session", principal.kind)
-                self.assertEqual(ALL_SCOPES, principal.scopes)
+                self.assertEqual(kind, principal.kind)
+                self.assertEqual(frozenset({"app.read"}), principal.scopes)
+                self.assertEqual("server-user-id", principal.user_id)
+                self.assertEqual(7, principal.auth_revision)
                 self.assertEqual("fixture-instance", principal.target_instance_id)
                 session["authenticated"] = False
                 self.assertIs(principal, self.guards.principal())
+                self.session_store.resolve.assert_called_once_with("synthetic-opaque-session")
         with self.app.test_request_context():
-            session.update(authenticated=True, principal_scopes=["invalid-scope"])
+            self.session_store.resolve.return_value = None
+            session.update(authenticated=True, auth_session="revoked-opaque-session", principal_scopes=["invalid-scope"])
             self.assertIsNone(self.guards.principal())
             session.pop("principal_scopes")
             self.assertIsNone(self.guards.principal())
         with self.app.test_request_context():
-            session["principal_kind"] = "service"
+            session.update(authenticated=True, principal_kind="service")
             self.assertIsNone(self.guards.principal())
 
 

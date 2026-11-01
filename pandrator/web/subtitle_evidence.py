@@ -12,6 +12,7 @@ import time
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -43,9 +44,12 @@ from pandrator.logic.dubbing.transcription import (
     transcribe_source_file_with_metadata,
 )
 
+from .access.contracts import AccessDenied
+from .accounts.actor_authorization import ActorAuthorizationDenied
 from .artifacts import ArtifactService, sha256_file
 from .credentials import hydrate_stt_settings
 from .database import Database
+from .evidence_execution import EvidenceExecution
 from .models import (
     Artifact,
     ArtifactEdge,
@@ -59,9 +63,30 @@ from .models import (
     SubtitleEvidence,
     utcnow,
 )
+from .provider_identity import (
+    model_in_namespace,
+    provider_in_namespace,
+    provider_namespace,
+)
 from .provider_settings import build_llm_settings
 from .stt_providers import stt_catalogue_snapshot
 from .subtitle_media import artifact_accessible_in_session, resolve_subtitle_media
+
+
+def _iso_utc(value: datetime | None) -> str | None:
+    """SQLite drops timezone metadata; expose the same UTC instant on every path."""
+    if value is None:
+        return None
+    return (value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)).isoformat()
+
+
+def _processing_stopped(record: SubtitleEvidence, job: Job | None) -> bool:
+    return (
+        record.status in {"queued", "running"}
+        and job is not None
+        and job.status in {"failed", "canceled"}
+    )
+
 
 EVIDENCE_STATUSES = frozenset(
     {
@@ -166,6 +191,8 @@ def evidence_route_catalog(
     *,
     database: Database | None = None,
     paths=None,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Describe evidence routes without returning credential material.
 
@@ -191,7 +218,9 @@ def evidence_route_catalog(
         except Exception:  # noqa: BLE001
             discovery_error = "Local STT capability discovery is unavailable."
         try:
-            payload, _revision = stt_catalogue_snapshot(database, paths)
+            payload, _revision = stt_catalogue_snapshot(
+                database, paths, session_id=session_id, workspace_id=workspace_id
+            )
             profiles = payload.get("profiles") if isinstance(payload, dict) else None
             discovered_remote = {
                 str(item.get("id") or "").strip().lower().replace("-", "_"): item
@@ -313,10 +342,10 @@ class SubtitleEvidenceService:
             "progress_detail": job.progress_detail,
             "error_code": job.error_code,
             "error_message": job.error_message,
-            "created_at": job.created_at.isoformat() if job.created_at else None,
-            "started_at": job.started_at.isoformat() if job.started_at else None,
-            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-            "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+            "created_at": _iso_utc(job.created_at),
+            "started_at": _iso_utc(job.started_at),
+            "finished_at": _iso_utc(job.finished_at),
+            "updated_at": _iso_utc(job.updated_at),
         }
 
     @staticmethod
@@ -342,15 +371,18 @@ class SubtitleEvidenceService:
             "candidates": deepcopy(record.candidates_json or []),
             "resolution": deepcopy(record.resolution_json or {}),
             "error_message": record.error_message,
-            "created_at": record.created_at.isoformat() if record.created_at else None,
-            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+            "created_at": _iso_utc(record.created_at),
+            "updated_at": _iso_utc(record.updated_at),
         }
 
     @classmethod
     def _projection(
         cls, record: SubtitleEvidence, job: Job | None = None
     ) -> dict[str, Any]:
-        return {"record": cls._record_payload(record), "job": cls._job_payload(job)}
+        payload = cls._record_payload(record)
+        if _processing_stopped(record, job):
+            payload.update(status="failed", error_message="Evidence processing stopped before completion.")
+        return {"record": payload, "job": cls._job_payload(job)}
 
     @staticmethod
     def _normalize_routes(routes: Any) -> list[str]:
@@ -381,19 +413,30 @@ class SubtitleEvidenceService:
         return normalized
 
     @staticmethod
-    def _validate_audio_models(session, model_ids: list[str]) -> None:
+    def _validate_audio_models(
+        session, model_ids: list[str], *, session_id: str
+    ) -> None:
+        if not model_ids:
+            return
+        namespace = provider_namespace(session, session_id=session_id)
         rows = {
-            row.id: row
-            for row in session.scalars(
-                select(ProviderModel).where(ProviderModel.id.in_(model_ids))
+            row.id: (row, provider)
+            for row, provider in session.execute(
+                select(ProviderModel, Provider)
+                .join(Provider, Provider.id == ProviderModel.provider_id)
+                .where(
+                    Provider.workspace_id == namespace.workspace_id,
+                    ProviderModel.id.in_(model_ids),
+                )
+                .execution_options(populate_existing=True)
             ).all()
         }
         for model_id in model_ids:
-            row = rows.get(model_id)
-            if row is None:
+            selected = rows.get(model_id)
+            if selected is None:
                 raise ValueError(f"Audio model {model_id!r} was not found.")
-            provider = session.get(Provider, row.provider_id)
-            if provider is None or provider.kind != "llm" or not provider.enabled:
+            row, provider = selected
+            if provider.kind != "llm" or not provider.enabled:
                 raise ValueError(
                     f"Audio model {row.model_id!r} belongs to a disabled LLM provider."
                 )
@@ -553,7 +596,9 @@ class SubtitleEvidenceService:
         )
         artifact, revision, segment = cue.artifact, cue.revision, cue.segment
         media = resolve_subtitle_media(session, session_id, artifact)
-        self._validate_audio_models(session, audio_model_ids)
+        self._validate_audio_models(
+            session, audio_model_ids, session_id=session_id
+        )
         start_ms, end_ms = self._clip_bounds(
             cue.start_ms,
             cue.end_ms,
@@ -686,7 +731,9 @@ class SubtitleEvidenceService:
         evidence = session.get(SubtitleEvidence, evidence_id)
         if evidence is None or evidence.session_id != session_id:
             raise KeyError(evidence_id)
-        if evidence.status not in {
+        job = session.get(Job, evidence.job_id) if evidence.job_id else None
+        status = "failed" if _processing_stopped(evidence, job) else evidence.status
+        if status not in {
             "completed",
             "failed",
             "resolved",
@@ -731,7 +778,6 @@ class SubtitleEvidenceService:
         )
         evidence.updated_at = utcnow()
         session.flush()
-        job = session.get(Job, evidence.job_id) if evidence.job_id else None
         return self._projection(evidence, job)
 
     @staticmethod
@@ -932,13 +978,18 @@ class SubtitleEvidenceService:
             }
         return {"kind": "unknown"}
 
-    def _audio_model_runtime(self, model_record_id: str) -> dict[str, Any]:
+    def _audio_model_runtime(
+        self, model_record_id: str, *, session_id: str
+    ) -> dict[str, Any]:
         with self.database.session() as session:
-            row = session.get(ProviderModel, model_record_id)
+            namespace = provider_namespace(session, session_id=session_id)
+            row = model_in_namespace(session, model_record_id, namespace)
             if row is None:
                 raise ValueError(f"Audio model {model_record_id!r} was not found.")
-            provider = session.get(Provider, row.provider_id)
-            if provider is None or provider.kind != "llm" or not provider.enabled:
+            provider = provider_in_namespace(session, row.provider_id, namespace)
+            if provider is None:
+                raise ValueError(f"Audio model {model_record_id!r} was not found.")
+            if provider.kind != "llm" or not provider.enabled:
                 raise ValueError(
                     f"Audio model {row.model_id!r} belongs to a disabled LLM provider."
                 )
@@ -977,11 +1028,15 @@ class SubtitleEvidenceService:
         llm_settings, resolved_model = build_llm_settings(
             self.database,
             self.paths,
-            requested_model=canonical_model,
+            requested_model=row.model_id,
             request_timeout_seconds=180,
+            session_id=session_id,
+            requested_provider_id=provider.id,
         )
         snapshot["llm_settings"] = llm_settings
         snapshot["resolved_model"] = resolved_model
+        if getattr(llm_settings, "provider_binding_id", None):
+            snapshot["canonical_model"] = resolved_model
         return snapshot
 
     @staticmethod
@@ -1315,9 +1370,12 @@ class SubtitleEvidenceService:
         current_media_artifact_id: str,
         current_media_path: Path,
         cancel_event: threading.Event,
+        _execution: EvidenceExecution | None = None,
     ) -> dict[str, Any] | None:
         """Return a recent successful witness only when all provenance is live."""
 
+        if _execution is not None:
+            _execution.check()
         with self.database.session() as session:
             records = list(
                 session.scalars(
@@ -1407,6 +1465,8 @@ class SubtitleEvidenceService:
                     )
                     if not {source.id, clip.id}.issubset(parent_ids):
                         continue
+                    if _execution is not None:
+                        _execution.check_artifacts([source.id, media.id, clip.id, transcript.id])
                     try:
                         source_path = self.paths.managed_path(source.relative_path)
                         transcript_path = self.paths.managed_path(
@@ -1447,6 +1507,40 @@ class SubtitleEvidenceService:
                     }
         return None
 
+    def _register_execution_artifact(
+        self, path: Path, *, _execution: EvidenceExecution | None = None, **values
+    ):
+        if _execution is None:
+            return self.artifacts.register(path, **values)
+        _execution.check()
+        _execution.validate_output(path)
+        prepared = self.artifacts.prepare_registration(
+            path, calculate_hash=values.get("calculate_hash", True), settings=values.get("settings")
+        )
+        body_error: BaseException | None = None
+        try:
+            with self.database.immediate_session() as session:
+                try:
+                    _execution.check_in_session(session)
+                    artifact = self.artifacts.register_in_session(
+                        session,
+                        path,
+                        **values,
+                        project_id=_execution.project_id,
+                        workspace_id=_execution.workspace_id,
+                        _prepared=prepared,
+                    )
+                    session.flush()
+                    session.expunge(artifact)
+                except BaseException as error:
+                    body_error = error
+                    raise
+            return artifact
+        except BaseException as error:
+            if error is not body_error:
+                _execution.uncertain = True
+            raise
+
     def _materialize_cached_candidate(
         self,
         cached: Mapping[str, Any],
@@ -1458,14 +1552,24 @@ class SubtitleEvidenceService:
         route: str,
         route_dir: Path,
         cache_metadata: Mapping[str, Any],
+        _execution: EvidenceExecution | None = None,
     ) -> dict[str, Any]:
+        if _execution is not None:
+            _execution.check_artifacts(
+                [
+                    cached["source_artifact_id"],
+                    cached["source_media_artifact_id"],
+                    cached["source_transcript_artifact_id"],
+                ]
+            )
         candidate = deepcopy(cached["candidate"])
         old_transcript_path = Path(cached["transcript_path"])
         route_dir.mkdir(parents=True, exist_ok=True)
         copy_path = route_dir / f"reused-{uuid4().hex}.json"
         shutil.copyfile(old_transcript_path, copy_path)
-        transcript_artifact = self.artifacts.register(
+        transcript_artifact = self._register_execution_artifact(
             copy_path,
+            _execution=_execution,
             kind="json",
             role="subtitle_evidence_transcript",
             session_id=session_id,
@@ -1479,9 +1583,7 @@ class SubtitleEvidenceService:
                 "timing_kind": candidate.get("timing_kind"),
                 "timing_method": candidate.get("timing_method"),
                 "reused_from_evidence_id": cached["source_evidence_id"],
-                "reused_from_transcript_artifact_id": cached[
-                    "source_transcript_artifact_id"
-                ],
+                "reused_from_transcript_artifact_id": cached["source_transcript_artifact_id"],
             },
         )
         candidate["id"] = self._candidate_id(route)
@@ -1503,8 +1605,12 @@ class SubtitleEvidenceService:
         evidence_id: str,
         candidates: list[dict[str, Any]],
         clip_artifact_id: str | None,
+        *,
+        _execution: EvidenceExecution | None = None,
     ) -> None:
         with self.database.immediate_session() as session:
+            if _execution is not None:
+                _execution.check_in_session(session)
             evidence = session.get(SubtitleEvidence, evidence_id)
             if evidence is None:
                 raise KeyError(evidence_id)
@@ -1520,8 +1626,11 @@ class SubtitleEvidenceService:
         *,
         candidates: list[dict[str, Any]] | None = None,
         clip_artifact_id: str | None = None,
+        _execution: EvidenceExecution | None = None,
     ) -> None:
         with self.database.immediate_session() as session:
+            if _execution is not None:
+                _execution.check_in_session(session)
             evidence = session.get(SubtitleEvidence, evidence_id)
             if evidence is not None:
                 evidence.status = "failed"
@@ -1539,20 +1648,68 @@ class SubtitleEvidenceService:
         cancel_event: threading.Event,
         *,
         force_refresh: bool = False,
+        _execution: EvidenceExecution | None = None,
+    ) -> dict[str, Any]:
+        if _execution is None:
+            return self._run_request(
+                evidence_id, progress, cancel_event, force_refresh=force_refresh
+            )
+        _execution.cancel_event = cancel_event
+
+        def report(value, _detail=None):
+            _execution.checkpoint()
+            progress(value, "Processing subtitle evidence")
+            if cancel_event.is_set():
+                raise ProcessCancelled("Evidence transcription was canceled.")
+
+        try:
+            if evidence_id != _execution.evidence_id or force_refresh != _execution.payload.get(
+                "force_refresh", False
+            ):
+                raise AccessDenied()
+            return self._run_request(
+                evidence_id,
+                report,
+                cancel_event,
+                force_refresh=force_refresh,
+                _execution=_execution,
+            )
+        except Exception as error:
+            _execution.failure_metadata()
+            _execution.cleanup_attempt()
+            if isinstance(error, (AccessDenied, ActorAuthorizationDenied, ProcessCancelled)):
+                raise error from None
+            raise RuntimeError("Subtitle evidence execution failed.") from None
+
+    def _run_request(
+        self,
+        evidence_id: str,
+        progress,
+        cancel_event: threading.Event,
+        *,
+        force_refresh: bool = False,
+        _execution: EvidenceExecution | None = None,
     ) -> dict[str, Any]:
         """Run each selected STT route independently and persist safe results."""
 
         with self.database.immediate_session() as session:
+            if _execution is not None:
+                _execution.check_in_session(session)
             evidence = session.get(SubtitleEvidence, evidence_id)
             if evidence is None:
                 raise KeyError(evidence_id)
             if evidence.status in {"completed", "resolved", "uncertain", "dismissed"}:
-                return {
+                result = {
                     "evidence_id": evidence.id,
                     "status": evidence.status,
                     "candidates": deepcopy(evidence.candidates_json or []),
                     "clip_artifact_id": evidence.clip_artifact_id,
                 }
+                return (
+                    _execution.complete_in_session(session, result)
+                    if _execution is not None
+                    else result
+                )
             if evidence.status == "running":
                 raise RuntimeError("Subtitle evidence request is already running.")
             evidence.status = "running"
@@ -1572,6 +1729,8 @@ class SubtitleEvidenceService:
         candidates: list[dict[str, Any]] = []
         clip_artifact_id: str | None = None
         try:
+            if _execution is not None:
+                _execution.check()
             with self.database.session() as session:
                 evidence = session.get(SubtitleEvidence, evidence_id)
                 if evidence is None:
@@ -1579,16 +1738,18 @@ class SubtitleEvidenceService:
                 media = self._pinned_media(session, evidence)
                 source_path = self.paths.managed_path(media.relative_path)
                 source_language = self._source_language_scope(session, evidence)
+            if _execution is not None:
+                _execution.check()
             if not source_path.is_file():
                 raise FileNotFoundError(source_path)
             media_sha256 = self._sha256_media(source_path, cancel_event)
-            root = (
-                Path(self.session_dir_resolver(session_id))
-                / "subtitle-evidence"
-                / evidence_id
-            )
+            root = Path(self.session_dir_resolver(session_id)) / "subtitle-evidence" / evidence_id
+            if _execution is not None:
+                root = _execution.create_attempt(root, self.paths)
             clip_dir = root / "clip"
             clip_dir.mkdir(parents=True, exist_ok=True)
+            if _execution is not None:
+                _execution.check()
             clip_path = Path(
                 extract_audio_excerpt(
                     source_path,
@@ -1599,8 +1760,9 @@ class SubtitleEvidenceService:
                     cancel_event=cancel_event,
                 )
             )
-            clip_artifact = self.artifacts.register(
+            clip_artifact = self._register_execution_artifact(
                 clip_path,
+                _execution=_execution,
                 kind="wav",
                 role="subtitle_evidence_audio",
                 session_id=session_id,
@@ -1615,6 +1777,8 @@ class SubtitleEvidenceService:
             )
             clip_artifact_id = clip_artifact.id
             with self.database.immediate_session() as session:
+                if _execution is not None:
+                    _execution.check_in_session(session)
                 evidence = session.get(SubtitleEvidence, evidence_id)
                 if evidence is None:
                     raise KeyError(evidence_id)
@@ -1624,7 +1788,11 @@ class SubtitleEvidenceService:
             stt_routes = [route for route in routes if route != "audio_llm"]
             witness_count = max(1, len(stt_routes) + len(audio_model_ids))
             for index, route in enumerate(stt_routes):
+                if _execution is not None:
+                    _execution.check()
                 if cancel_event.is_set():
+                    if _execution is not None:
+                        raise ProcessCancelled("Evidence transcription was canceled.")
                     self._set_failure(
                         evidence_id,
                         "Evidence transcription was canceled.",
@@ -1648,12 +1816,13 @@ class SubtitleEvidenceService:
                     total_routes=witness_count,
                 ):
                     progress(
-                        (route_index + max(0.0, min(1.0, float(value))))
-                        / max(1, total_routes),
+                        (route_index + max(0.0, min(1.0, float(value)))) / max(1, total_routes),
                         detail,
                     )
 
                 try:
+                    if _execution is not None:
+                        _execution.check()
                     settings, settings_hash = self.workspace_settings.resolve(
                         session_id,
                         ["stt"],
@@ -1662,15 +1831,11 @@ class SubtitleEvidenceService:
                     if route == "azure_mai_transcribe_2":
                         settings = self._legacy_mai_v2_config(settings)
                     runtime_settings = hydrate_stt_settings(
-                        self.database, self.paths, settings["stt"]
+                        self.database, self.paths, settings["stt"], session_id=session_id
                     )
                     model_id = str(
                         runtime_settings.get("stt_model")
-                        or (
-                            runtime_settings.get("qwen_asr_model")
-                            if route == "qwen3"
-                            else None
-                        )
+                        or (runtime_settings.get("qwen_asr_model") if route == "qwen3" else None)
                         or route
                     )
                     configuration_sha256 = self._configuration_fingerprint(
@@ -1715,6 +1880,7 @@ class SubtitleEvidenceService:
                             current_media_artifact_id=source_media_artifact_id,
                             current_media_path=source_path,
                             cancel_event=cancel_event,
+                            _execution=_execution,
                         )
                     )
                     if cached is not None:
@@ -1727,16 +1893,19 @@ class SubtitleEvidenceService:
                             route=route,
                             route_dir=route_dir,
                             cache_metadata=cache_metadata,
+                            _execution=_execution,
                         )
                         candidates.append(candidate)
                         self._persist_candidates(
-                            evidence_id, candidates, clip_artifact.id
+                            evidence_id, candidates, clip_artifact.id, _execution=_execution
                         )
                         progress(
                             (index + 1.0) / witness_count,
                             f"Reused {route} evidence from this session",
                         )
                         continue
+                    if _execution is not None:
+                        _execution.check()
                     transcription = transcribe_source_file_with_metadata(
                         route_dir,
                         clip_path,
@@ -1745,17 +1914,15 @@ class SubtitleEvidenceService:
                         cancel_event=cancel_event,
                         source_is_normalized=True,
                     )
+                    if _execution is not None:
+                        _execution.check()
                     transcript = load_transcript(transcription.word_timestamps_path)
                     rebased_segments, rebased_words = self._rebase_transcript(
                         transcript, clip_start_ms, clip_end_ms
                     )
                     if not rebased_segments:
-                        raise ValueError(
-                            "The route returned no timed transcript segments."
-                        )
-                    context_text = " ".join(
-                        item["text"] for item in rebased_segments
-                    ).strip()
+                        raise ValueError("The route returned no timed transcript segments.")
+                    context_text = " ".join(item["text"] for item in rebased_segments).strip()
                     cue_text, selection_method = self._cue_text(
                         rebased_segments,
                         rebased_words,
@@ -1763,12 +1930,8 @@ class SubtitleEvidenceService:
                         cue_end_ms,
                     )
                     if not cue_text:
-                        raise ValueError(
-                            "The route returned no speech overlapping this cue."
-                        )
-                    timing_method = self._timing_method(
-                        route, transcript, runtime_settings
-                    )
+                        raise ValueError("The route returned no speech overlapping this cue.")
+                    timing_method = self._timing_method(route, transcript, runtime_settings)
                     candidate = {
                         "id": self._candidate_id(route),
                         "route": route,
@@ -1788,9 +1951,7 @@ class SubtitleEvidenceService:
                             or route
                         ),
                         "engine": str(transcription.engine or route),
-                        "compute_backend": str(
-                            transcription.compute_backend or "unknown"
-                        ),
+                        "compute_backend": str(transcription.compute_backend or "unknown"),
                         "segments": rebased_segments,
                         "words": rebased_words,
                         "cost": self._safe_cost(
@@ -1799,8 +1960,9 @@ class SubtitleEvidenceService:
                         ),
                         "cache": cache_metadata,
                     }
-                    transcript_artifact = self.artifacts.register(
+                    transcript_artifact = self._register_execution_artifact(
                         Path(transcription.word_timestamps_path),
+                        _execution=_execution,
                         kind="json",
                         role="subtitle_evidence_transcript",
                         session_id=session_id,
@@ -1817,6 +1979,8 @@ class SubtitleEvidenceService:
                     )
                     candidate["transcript_artifact_id"] = transcript_artifact.id
                 except ProcessCancelled:
+                    if _execution is not None:
+                        raise
                     self._set_failure(
                         evidence_id,
                         "Evidence transcription was canceled.",
@@ -1832,22 +1996,36 @@ class SubtitleEvidenceService:
                 # A failed witness must not discard successful independent
                 # witnesses. Persist a bounded diagnostic and keep going.
                 except Exception as error:  # noqa: BLE001
+                    if _execution is not None:
+                        if isinstance(error, (AccessDenied, ActorAuthorizationDenied)):
+                            raise
+                        _execution.check()
                     candidates.append(
                         {
                             "id": self._candidate_id(route),
                             "route": route,
                             "status": "failed",
-                            "error": self._safe_error(error, self.jobs),
+                            "error": "Evidence route failed."
+                            if _execution is not None
+                            else self._safe_error(error, self.jobs),
                         }
                     )
-                    self._persist_candidates(evidence_id, candidates, clip_artifact.id)
+                    self._persist_candidates(
+                        evidence_id, candidates, clip_artifact.id, _execution=_execution
+                    )
                     continue
                 candidates.append(candidate)
-                self._persist_candidates(evidence_id, candidates, clip_artifact.id)
+                self._persist_candidates(
+                    evidence_id, candidates, clip_artifact.id, _execution=_execution
+                )
 
             for offset, model_record_id in enumerate(audio_model_ids):
                 index = len(stt_routes) + offset
+                if _execution is not None:
+                    _execution.check()
                 if cancel_event.is_set():
+                    if _execution is not None:
+                        raise ProcessCancelled("Evidence transcription was canceled.")
                     self._set_failure(
                         evidence_id,
                         "Evidence transcription was canceled.",
@@ -1862,13 +2040,11 @@ class SubtitleEvidenceService:
                     }
                 runtime: dict[str, Any] | None = None
                 try:
-                    runtime = self._audio_model_runtime(model_record_id)
-                    prompt = self._audio_prompt(
-                        cue_start_ms, cue_end_ms, clip_start_ms
-                    )
-                    prompt_sha256 = hashlib.sha256(
-                        prompt.encode("utf-8")
-                    ).hexdigest()
+                    if _execution is not None:
+                        _execution.check()
+                    runtime = self._audio_model_runtime(model_record_id, session_id=session_id)
+                    prompt = self._audio_prompt(cue_start_ms, cue_end_ms, clip_start_ms)
+                    prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
                     configuration_sha256 = self._configuration_fingerprint(
                         "audio_llm",
                         None,
@@ -1882,9 +2058,7 @@ class SubtitleEvidenceService:
                             "resolved_model": runtime.get("resolved_model"),
                         },
                     )
-                    model_id = str(
-                        runtime.get("model_id") or runtime.get("resolved_model")
-                    )
+                    model_id = str(runtime.get("model_id") or runtime.get("resolved_model"))
                     key_sha256 = self._cache_key(
                         session_id=session_id,
                         media_sha256=media_sha256,
@@ -1923,6 +2097,7 @@ class SubtitleEvidenceService:
                             current_media_artifact_id=source_media_artifact_id,
                             current_media_path=source_path,
                             cancel_event=cancel_event,
+                            _execution=_execution,
                         )
                     )
                     if cached is not None:
@@ -1935,10 +2110,11 @@ class SubtitleEvidenceService:
                             route="audio_llm",
                             route_dir=root / "audio_llm" / model_record_id,
                             cache_metadata=cache_metadata,
+                            _execution=_execution,
                         )
                         candidates.append(candidate)
                         self._persist_candidates(
-                            evidence_id, candidates, clip_artifact.id
+                            evidence_id, candidates, clip_artifact.id, _execution=_execution
                         )
                         progress(
                             (index + 1.0) / witness_count,
@@ -1963,6 +2139,8 @@ class SubtitleEvidenceService:
                             f"Audio model retry {attempt}/{maximum} in {delay:.1f}s",
                         )
 
+                    if _execution is not None:
+                        _execution.check()
                     audio_result = transcribe_audio_evidence(
                         clip_path,
                         prompt,
@@ -1973,6 +2151,8 @@ class SubtitleEvidenceService:
                         cancel_event=cancel_event,
                         retry_callback=retry_audio,
                     )
+                    if _execution is not None:
+                        _execution.check()
                     if cancel_event.is_set():
                         raise ProcessCancelled("Audio evidence was canceled.")
                     if audio_result.transcript.strip().upper() == "[UNCERTAIN]":
@@ -2025,8 +2205,9 @@ class SubtitleEvidenceService:
                         ),
                         encoding="utf-8",
                     )
-                    transcript_artifact = self.artifacts.register(
+                    transcript_artifact = self._register_execution_artifact(
                         transcript_path,
+                        _execution=_execution,
                         kind="json",
                         role="subtitle_evidence_transcript",
                         session_id=session_id,
@@ -2047,6 +2228,8 @@ class SubtitleEvidenceService:
                         f"Audio evidence returned by {runtime['model_id']}",
                     )
                 except ProcessCancelled:
+                    if _execution is not None:
+                        raise
                     self._set_failure(
                         evidence_id,
                         "Evidence transcription was canceled.",
@@ -2060,28 +2243,34 @@ class SubtitleEvidenceService:
                         "clip_artifact_id": clip_artifact.id,
                     }
                 except Exception as error:  # noqa: BLE001
+                    if _execution is not None:
+                        if isinstance(error, (AccessDenied, ActorAuthorizationDenied)):
+                            raise
+                        _execution.check()
                     candidates.append(
                         {
                             "id": self._candidate_id("audio_llm"),
                             "route": "audio_llm",
                             "status": "failed",
                             "model": (
-                                str(runtime["model_id"])
-                                if runtime is not None
-                                else model_record_id
+                                str(runtime["model_id"]) if runtime is not None else model_record_id
                             ),
                             "provider": (
-                                str(runtime["provider_label"])
-                                if runtime is not None
-                                else None
+                                str(runtime["provider_label"]) if runtime is not None else None
                             ),
-                            "error": self._safe_error(error, self.jobs),
+                            "error": "Evidence route failed."
+                            if _execution is not None
+                            else self._safe_error(error, self.jobs),
                         }
                     )
-                    self._persist_candidates(evidence_id, candidates, clip_artifact.id)
+                    self._persist_candidates(
+                        evidence_id, candidates, clip_artifact.id, _execution=_execution
+                    )
                     continue
                 candidates.append(candidate)
-                self._persist_candidates(evidence_id, candidates, clip_artifact.id)
+                self._persist_candidates(
+                    evidence_id, candidates, clip_artifact.id, _execution=_execution
+                )
 
             status = (
                 "completed"
@@ -2092,6 +2281,8 @@ class SubtitleEvidenceService:
             if status == "failed":
                 error_message = "All selected transcription routes failed."
             with self.database.immediate_session() as session:
+                if _execution is not None:
+                    _execution.check_in_session(session)
                 evidence = session.get(SubtitleEvidence, evidence_id)
                 if evidence is None:
                     raise KeyError(evidence_id)
@@ -2099,6 +2290,16 @@ class SubtitleEvidenceService:
                 evidence.candidates_json = candidates
                 evidence.error_message = error_message
                 evidence.updated_at = utcnow()
+                if _execution is not None:
+                    return _execution.complete_in_session(
+                        session,
+                        {
+                            "evidence_id": evidence_id,
+                            "status": status,
+                            "candidates": candidates,
+                            "clip_artifact_id": clip_artifact.id,
+                        },
+                    )
             progress(1.0, "Subtitle evidence complete")
             return {
                 "evidence_id": evidence_id,
@@ -2107,6 +2308,8 @@ class SubtitleEvidenceService:
                 "clip_artifact_id": clip_artifact.id,
             }
         except Exception as error:
+            if _execution is not None:
+                raise
             message = (
                 "Evidence transcription was canceled."
                 if isinstance(error, ProcessCancelled)

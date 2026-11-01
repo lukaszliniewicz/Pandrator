@@ -50,6 +50,7 @@ def transcribe_media_edit_with_ctc(
     from pandrator.logic.dubbing.caption_alignment import (
         CaptionAlignmentError,
         align_caption_cues,
+        build_source_timing_offsets,
         normalize_alignment_settings,
         parse_vad_export,
         validate_normalized_wav,
@@ -380,6 +381,9 @@ def transcribe_media_edit_with_ctc(
             1, diagnostics.eligible_token_count
         )
 
+    diagnostics.source_timing_offsets = build_source_timing_offsets(
+        cues, aligned_cues
+    )
     diagnostics.cue_count = len(aligned_cues)
     diagnostics.word_count = sum(len(cue.words) for cue in aligned_cues)
     final_failed_ids = {cue.id for cue in aligned_cues if not cue.words}

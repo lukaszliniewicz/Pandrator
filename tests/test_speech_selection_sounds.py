@@ -30,12 +30,16 @@ def _setup(case):
         segment = session.get(m.GenerationSegment, segment_id)
         segment.text = text
         segment.speech_plan_json = {"speech_xml": f'<segment id="{segment_id}">{text}</segment>'}
+        from pandrator.web.accounts.identity import initial_personal_workspace
+
         artifact = m.Artifact(
+            workspace_id=initial_personal_workspace(session).id,
             kind="audio", role="sound.original", relative_path="bell.wav", content_hash="bell"
         )
         session.add(artifact)
         session.flush()
         variant = m.SoundVariant(
+            workspace_id=artifact.workspace_id,
             artifact_id=artifact.id, state="ready", duration_seconds=1.0,
             provenance_json={"display_name": "Bell"},
         )

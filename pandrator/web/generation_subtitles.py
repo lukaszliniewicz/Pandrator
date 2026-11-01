@@ -23,7 +23,11 @@ from .models import (
     new_id,
 )
 from .settings_policy import validate_subtitle_text_source
-from .workflow_output_context import OutputWorkflowContext
+from .workflow_output_context import (
+    OutputWorkflowContext,
+    check_output_io,
+    publish_output,
+)
 
 
 def capture_display_subtitle_snapshot(
@@ -33,6 +37,8 @@ def capture_display_subtitle_snapshot(
     text_source = validate_subtitle_text_source(
         settings.get("subtitle_text_source", "current")
     )
+    if text_source == "selected_artifact":
+        return None
     run_id = str(settings.get("generation_run_id") or "").strip()
     run = None
     if run_id:
@@ -296,6 +302,11 @@ def derive_display_subtitle_artifact(
     display_id = str(snapshot.get("display_artifact_id") or "")
     matched = [item for item in selected if item.id == display_id]
     if not matched:
+        if selected and snapshot.get("subtitle_text_source") == "generation_run":
+            raise ValueError(
+                "The selected historical text belongs to a different subtitle source. "
+                "Choose its matching subtitle revision, or use current display text."
+            )
         return selected
     original, source_path = context._resolve_input(display_id)
     if original.session_id != session_id or source_path.suffix.lower() != ".srt":
@@ -309,6 +320,7 @@ def derive_display_subtitle_artifact(
         if not isinstance(source_srt, str) or not source_srt.strip():
             raise ValueError("The queued logical subtitle timing is missing; submit the export again.")
     elif namespace == "subtitle_ordinal":
+        check_output_io(context)
         source_srt = source_path.read_text(encoding="utf-8-sig")
     else:
         raise ValueError("The queued subtitle reference namespace is unsupported; submit the export again.")
@@ -316,6 +328,7 @@ def derive_display_subtitle_artifact(
     directory = context._session_dir(session_id) / "intermediates" / "subtitles"
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / f".generation-display-{new_id()}.srt"
+    check_output_io(context)
     destination.write_text(projected, encoding="utf-8")
     metadata = {
         "source_role": snapshot.get("display_source_role") or original.role,
@@ -325,7 +338,7 @@ def derive_display_subtitle_artifact(
         "source_reference_namespace": namespace,
     }
     try:
-        derived = context.artifacts.register(
+        derived = publish_output(context,
             destination, kind="srt", role="generation_display_subtitles",
             session_id=session_id, parent_ids=[original.id], metadata=metadata,
         )

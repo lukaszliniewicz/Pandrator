@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { projectLinkUrl } from '$lib/project-link-context';
+  import WorkspacePane from '$lib/WorkspacePane.svelte';
+  let transcriptOpen = $state(false);
   import { page } from '$app/state';
   import {
     Bot,
@@ -909,6 +912,9 @@
     detailRequest?.abort();
     if (captionTrackUrl) URL.revokeObjectURL(captionTrackUrl);
   });
+  onMount(() => {
+    transcriptOpen = window.matchMedia('(min-width: 901px)').matches;
+  });
 </script>
 
 <div class="min-w-0 max-w-full space-y-5 overflow-x-hidden">
@@ -1094,372 +1100,388 @@
         </div>
       </div>
     </section>
-  {:else}<div
-      class="grid min-w-0 max-w-full gap-5 2xl:grid-cols-[minmax(0,1.55fr)_minmax(23rem,.65fr)]"
-    >
-      <div class="min-w-0 space-y-5">
-        <section class="surface overflow-hidden rounded-2xl">
-          <video
-            bind:this={video}
-            src={plan.source_media_artifact.content_url}
-            controls
-            preload="metadata"
-            class="aspect-video max-h-[68vh] w-full bg-black object-contain"
-            ontimeupdate={updatePlayback}
-            onseeked={updatePlayback}
-            onplay={trackPlayback}
-            onpause={stopPlaybackTracking}
-            onended={stopPlaybackTracking}
-          >
-            <track
-              kind="captions"
-              src={captionTrackUrl}
-              srclang="und"
-              label="Project transcript"
-              default
-            />
-          </video>
-          <div class="space-y-4 p-4 sm:p-5">
-            <div
-              class="flex flex-wrap items-center justify-between gap-3 text-xs"
-            >
-              <span class="font-semibold tabular-nums"
-                >{formatTime(currentMs)}</span
-              >
-              <span class="muted"
-                >Keep {formatTime(keptDurationMs)} of {formatTime(
-                  plan.duration_ms
-                )} · remove {cuts.length} range{cuts.length === 1
-                  ? ''
-                  : 's'}</span
-              >
-            </div>
-            <MediaTimeline
-              durationMs={plan.duration_ms}
-              {currentMs}
-              keepRanges={keepFromCuts(cuts, plan.duration_ms)}
-              cutRanges={cuts}
-              {peaks}
-              {detailPeaks}
-              {detailPeaksStartMs}
-              {detailPeaksEndMs}
-              detailLoading={Boolean(pendingDetailKey)}
-              onseek={seek}
-              onboundaryinput={(rangeId, edge, timeMs) =>
-                setCutBoundary(rangeId, edge, timeMs)}
-              onboundarycommit={(rangeId, edge, timeMs) =>
-                setCutBoundary(rangeId, edge, timeMs, true)}
-            />
-            <div
-              class="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[var(--paper)] p-3"
-            >
-              <div class="flex flex-wrap items-center gap-2">
-                <button onclick={() => (cutStartMs = currentMs)} class="marker">
-                  Set cut start<br /><small
-                    >{cutStartMs == null
-                      ? 'at playhead'
-                      : formatTime(cutStartMs)}</small
-                  >
-                </button>
-                <button onclick={() => (cutEndMs = currentMs)} class="marker">
-                  Set cut end<br /><small
-                    >{cutEndMs == null
-                      ? 'at playhead'
-                      : formatTime(cutEndMs)}</small
-                  >
-                </button>
-                <button
-                  onclick={addCut}
-                  disabled={cutStartMs == null || cutEndMs == null}
-                  class="primary self-center disabled:opacity-40"
-                  ><Plus size={15} /> Add cut</button
-                >
-              </div>
-              <div
-                class="flex items-center gap-1"
-                role="group"
-                aria-label="Edit boundary navigation"
-              >
-                <button
-                  onclick={() => jumpToEditPoint(-1)}
-                  disabled={!editPoints.length}
-                  title="Go to the previous removal edge; wraps at the beginning."
-                  class="boundary-nav disabled:opacity-40"
-                  ><SkipBack size={14} /> Previous edge</button
-                >
-                <button
-                  onclick={() => jumpToEditPoint(1)}
-                  disabled={!editPoints.length}
-                  title="Go to the next removal edge; wraps at the end."
-                  class="boundary-nav disabled:opacity-40"
-                  >Next edge <SkipForward size={14} /></button
-                >
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="surface rounded-2xl p-5">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 class="mt-1 text-lg font-semibold">Exact cut boundaries</h3>
-            </div>
-            <span class="badge">revision {plan.revision}</span>
-          </div>
-          <div class="mt-4 space-y-3">
-            {#each cuts as cut, index (cut.id)}<article class="cut-card">
-                <div class="grid min-w-0 flex-1 gap-3 sm:grid-cols-2">
-                  <label
-                    >Start
-                    <input
-                      type="number"
-                      min="0"
-                      max={plan.duration_ms}
-                      step="20"
-                      value={cut.start_ms}
-                      onchange={(event) =>
-                        setCutBoundary(
-                          cut.id,
-                          'start_ms',
-                          Number(event.currentTarget.value),
-                          true
-                        )}
-                    />
-                    <small>{formatTime(cut.start_ms)}</small></label
-                  ><label
-                    >End
-                    <input
-                      type="number"
-                      min="0"
-                      max={plan.duration_ms}
-                      step="20"
-                      value={cut.end_ms}
-                      onchange={(event) =>
-                        setCutBoundary(
-                          cut.id,
-                          'end_ms',
-                          Number(event.currentTarget.value),
-                          true
-                        )}
-                    />
-                    <small>{formatTime(cut.end_ms)}</small></label
-                  >
-                  <input
-                    aria-label={`Label for cut ${index + 1}`}
-                    bind:value={cut.label}
-                    class="sm:col-span-2"
-                  />
-                  <div class="sm:col-span-2 grid gap-2">
-                    <div class="boundary-control-row">
-                      <span>Start</span>
-                      <button
-                        onclick={() => nudge(cut, 'start_ms', -100)}
-                        title="Move the start edge 100 milliseconds earlier."
-                        >−100 ms</button
-                      >
-                      <button
-                        onclick={() => nudge(cut, 'start_ms', 100)}
-                        title="Move the start edge 100 milliseconds later."
-                        >+100 ms</button
-                      >
-                      <button
-                        onclick={() => seek(cut.start_ms)}
-                        title="Move the playhead to this start edge without playing."
-                        ><LocateFixed size={12} /> Go to</button
-                      >
-                      <button
-                        onclick={() => audition(cut.start_ms)}
-                        title="Play 1.3 seconds before and after this start edge."
-                        ><Play size={12} /> Preview</button
-                      >
-                    </div>
-                    <div class="boundary-control-row">
-                      <span>End</span>
-                      <button
-                        onclick={() => nudge(cut, 'end_ms', -100)}
-                        title="Move the end edge 100 milliseconds earlier, retaining more silence before speech resumes."
-                        >−100 ms</button
-                      >
-                      <button
-                        onclick={() => nudge(cut, 'end_ms', 100)}
-                        title="Move the end edge 100 milliseconds later."
-                        >+100 ms</button
-                      >
-                      <button
-                        onclick={() => seek(cut.end_ms)}
-                        title="Move the playhead to this end edge without playing."
-                        ><LocateFixed size={12} /> Go to</button
-                      >
-                      <button
-                        onclick={() => audition(cut.end_ms)}
-                        title="Play 1.3 seconds before and after this end edge."
-                        ><Play size={12} /> Preview</button
-                      >
-                    </div>
-                  </div>
-                </div>
-                <button
-                  onclick={() =>
-                    (cuts = cuts.filter((_, value) => value !== index))}
-                  class="delete"
-                  aria-label={`Delete cut ${index + 1}`}
-                  ><Trash2 size={15} /></button
-                >
-              </article>{:else}<div
-                class="muted rounded-xl border border-dashed border-[var(--line)] p-6 text-center text-sm"
-              >
-                Nothing is removed. Set two playhead markers or ask the agent
-                for a proposal.
-              </div>{/each}
-          </div>
-        </section>
+  {:else}<div class="recording-workspace">
+      <div
+        class="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] px-3 py-2"
+      >
+        <span class="muted text-xs">Recording and cut timeline</span><button
+          class="secondary"
+          aria-expanded={transcriptOpen}
+          onclick={() => (transcriptOpen = !transcriptOpen)}
+          >{transcriptOpen ? 'Hide' : 'Show'} transcript & details</button
+        >
       </div>
-
-      <aside class="min-w-0 space-y-5">
-        {#if alignmentSummary}<details
-            class={alignmentSummary.reliable
-              ? 'alignment-card rounded-2xl border border-emerald-400/35 bg-emerald-500/10'
-              : 'alignment-card rounded-2xl border border-amber-400/40 bg-amber-500/10'}
-          >
-            <summary
-              class="flex cursor-pointer list-none items-center gap-2 p-4 text-sm"
-            >
-              {#if alignmentSummary.reliable}<Check
-                  size={17}
-                />{:else}<CircleAlert size={17} />{/if}
-              <span class="min-w-0 flex-1">
-                <strong class="block">
-                  {alignmentSummary.reliable
-                    ? 'Caption timing applied'
-                    : 'Caption timing needs attention'}
-                </strong>
-                <span class="muted mt-0.5 block text-xs font-normal">
-                  {alignmentSummary.methodLabel} · {Math.round(
-                    alignmentSummary.eligibleCoverage * 100
-                  )}% of in-media words · {Math.round(
-                    alignmentSummary.quality * 100
-                  )}% {alignmentSummary.qualityLabel}
-                </span>
-              </span>
-              <span class="alignment-chevron muted shrink-0"
-                ><ChevronDown size={16} /></span
-              >
-            </summary>
-            <div class="border-t border-[var(--line)] px-4 py-3">
-              <p class="text-xs font-semibold leading-relaxed">
-                {alignmentSummary.reliable
-                  ? 'No action is required here. Acoustic word times improve cut inspection while the Zoom wording and speakers remain authoritative.'
-                  : 'Rejected words retain their original caption timing and are not used for automatic boundary refinement.'}
-              </p>
-              {#if alignmentSummary.reliable}
-                <p class="muted mt-2 text-xs leading-relaxed">
-                  The render keeps a retimed word-timing artifact alongside the
-                  edited subtitles. Subtitle formatting and speech-block
-                  creation currently use the retimed SRT rather than that
-                  word-level artifact directly.
-                </p>
-              {/if}
-              <p class="muted mt-2 text-xs leading-relaxed">
-                {alignmentSummary.methodLabel} · {Math.round(
-                  alignmentSummary.coverage * 100
-                )}% of all words aligned · {Math.round(
-                  alignmentSummary.eligibleCoverage * 100
-                )}% of in-media words · {Math.round(
-                  alignmentSummary.quality * 100
-                )}% {alignmentSummary.qualityLabel}{alignmentSummary.wordCount
-                  ? ` · ${alignmentSummary.wordCount.toLocaleString()} timed words`
-                  : ''}{alignmentSummary.cueCount
-                  ? ` · ${alignmentSummary.acceptedCues.toLocaleString()}/${alignmentSummary.cueCount.toLocaleString()} cues accepted`
-                  : ''}{alignmentSummary.batchCount
-                  ? ` · ${alignmentSummary.batchCount.toLocaleString()} CTC batches`
-                  : ''}{alignmentSummary.retryCount
-                  ? ` · ${alignmentSummary.retryCount.toLocaleString()} isolated retries`
-                  : ''}{alignmentSummary.outsideMediaCount
-                  ? ` · ${alignmentSummary.outsideMediaCount.toLocaleString()} cues outside media`
-                  : ''}{alignmentSummary.oversizedCueCount
-                  ? ` · ${alignmentSummary.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
-                  : ''}{alignmentSummary.fallbackUsed
-                  ? ' · ASR fallback used'
-                  : ''}.
-              </p>
-              {#if plan.evidence.warnings?.length}<details
-                  class="mt-3 rounded-xl border border-[var(--line)] bg-[var(--paper)]"
+      <WorkspacePane bind:open={transcriptOpen} title="Transcript & details">
+        {#snippet tools()}{#if plan}<div class="space-y-5">
+              {#if alignmentSummary}<details
+                  class={alignmentSummary.reliable
+                    ? 'alignment-card rounded-2xl border border-emerald-400/35 bg-emerald-500/10'
+                    : 'alignment-card rounded-2xl border border-amber-400/40 bg-amber-500/10'}
                 >
                   <summary
-                    class="cursor-pointer px-3 py-2 text-xs font-semibold"
-                    >{plan.evidence.warnings.length} diagnostic warning{plan
-                      .evidence.warnings.length === 1
-                      ? ''
-                      : 's'}</summary
+                    class="flex cursor-pointer list-none items-center gap-2 p-4 text-sm"
                   >
-                  <ul class="muted list-disc space-y-1 px-7 pb-3 text-xs">
-                    {#each plan.evidence.warnings as warning}<li>
-                        {warning}
-                      </li>{/each}
-                  </ul>
+                    {#if alignmentSummary.reliable}<Check
+                        size={17}
+                      />{:else}<CircleAlert size={17} />{/if}
+                    <span class="min-w-0 flex-1">
+                      <strong class="block">
+                        {alignmentSummary.reliable
+                          ? 'Caption timing applied'
+                          : 'Caption timing needs attention'}
+                      </strong>
+                      <span class="muted mt-0.5 block text-xs font-normal">
+                        {alignmentSummary.methodLabel} · {Math.round(
+                          alignmentSummary.eligibleCoverage * 100
+                        )}% of in-media words · {Math.round(
+                          alignmentSummary.quality * 100
+                        )}% {alignmentSummary.qualityLabel}
+                      </span>
+                    </span>
+                    <span class="alignment-chevron muted shrink-0"
+                      ><ChevronDown size={16} /></span
+                    >
+                  </summary>
+                  <div class="border-t border-[var(--line)] px-4 py-3">
+                    <p class="text-xs font-semibold leading-relaxed">
+                      {alignmentSummary.reliable
+                        ? 'No action is required here. Acoustic word times improve cut inspection while the Zoom wording and speakers remain authoritative.'
+                        : 'Rejected words retain their original caption timing and are not used for automatic boundary refinement.'}
+                    </p>
+                    {#if alignmentSummary.reliable}
+                      <p class="muted mt-2 text-xs leading-relaxed">
+                        The render keeps a retimed word-timing artifact
+                        alongside the edited subtitles. Subtitle formatting and
+                        speech-block creation currently use the retimed SRT
+                        rather than that word-level artifact directly.
+                      </p>
+                    {/if}
+                    <p class="muted mt-2 text-xs leading-relaxed">
+                      {alignmentSummary.methodLabel} · {Math.round(
+                        alignmentSummary.coverage * 100
+                      )}% of all words aligned · {Math.round(
+                        alignmentSummary.eligibleCoverage * 100
+                      )}% of in-media words · {Math.round(
+                        alignmentSummary.quality * 100
+                      )}% {alignmentSummary.qualityLabel}{alignmentSummary.wordCount
+                        ? ` · ${alignmentSummary.wordCount.toLocaleString()} timed words`
+                        : ''}{alignmentSummary.cueCount
+                        ? ` · ${alignmentSummary.acceptedCues.toLocaleString()}/${alignmentSummary.cueCount.toLocaleString()} cues accepted`
+                        : ''}{alignmentSummary.batchCount
+                        ? ` · ${alignmentSummary.batchCount.toLocaleString()} CTC batches`
+                        : ''}{alignmentSummary.retryCount
+                        ? ` · ${alignmentSummary.retryCount.toLocaleString()} isolated retries`
+                        : ''}{alignmentSummary.outsideMediaCount
+                        ? ` · ${alignmentSummary.outsideMediaCount.toLocaleString()} cues outside media`
+                        : ''}{alignmentSummary.oversizedCueCount
+                        ? ` · ${alignmentSummary.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
+                        : ''}{alignmentSummary.fallbackUsed
+                        ? ' · ASR fallback used'
+                        : ''}.
+                    </p>
+                    {#if plan.evidence.warnings?.length}<details
+                        class="mt-3 rounded-xl border border-[var(--line)] bg-[var(--paper)]"
+                      >
+                        <summary
+                          class="cursor-pointer px-3 py-2 text-xs font-semibold"
+                          >{plan.evidence.warnings.length} diagnostic warning{plan
+                            .evidence.warnings.length === 1
+                            ? ''
+                            : 's'}</summary
+                        >
+                        <ul class="muted list-disc space-y-1 px-7 pb-3 text-xs">
+                          {#each plan.evidence.warnings as warning}<li>
+                              {warning}
+                            </li>{/each}
+                        </ul>
+                      </details>{/if}
+                  </div>
                 </details>{/if}
-            </div>
-          </details>{/if}
 
-        <section class="surface rounded-2xl p-5">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <h3 class="mt-1 font-semibold">
-                {plan.cues.length} timed cues
-              </h3>
-            </div>
-            <Clock3 class="muted" size={17} />
-          </div>
-          <label
-            class="mt-4 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3"
-            ><Search class="muted" size={15} /><span class="sr-only"
-              >Search transcript</span
-            ><input
-              bind:value={search}
-              placeholder="Search words or speakers"
-              class="w-full bg-transparent py-2.5 text-sm outline-none"
-            /></label
-          >
-          <div class="transcript mt-3 space-y-1">
-            {#each displayedCues as cue (cue.id)}<button
-                onclick={() => seek(cue.start_ms)}
-                class:active={cue.id === activeCue?.id}
-                class="cue"
+              <section class="surface rounded-2xl p-5">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 class="mt-1 font-semibold">
+                      {plan.cues.length} timed cues
+                    </h3>
+                  </div>
+                  <Clock3 class="muted" size={17} />
+                </div>
+                <label
+                  class="mt-4 flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3"
+                  ><Search class="muted" size={15} /><span class="sr-only"
+                    >Search transcript</span
+                  ><input
+                    bind:value={search}
+                    placeholder="Search words or speakers"
+                    class="w-full bg-transparent py-2.5 text-sm outline-none"
+                  /></label
+                >
+                <div class="transcript mt-3 space-y-1">
+                  {#each displayedCues as cue (cue.id)}<button
+                      onclick={() => {
+                        seek(cue.start_ms);
+                        if (window.matchMedia('(max-width: 900px)').matches)
+                          transcriptOpen = false;
+                      }}
+                      class:active={cue.id === activeCue?.id}
+                      class="cue"
+                    >
+                      <span class="time">{formatTime(cue.start_ms)}</span>
+                      <span class="min-w-0">
+                        {#if cue.speaker}<strong>{cue.speaker}</strong>{/if}
+                        <span>{cue.text}</span>
+                        <small
+                          >{cue.timing_source.replaceAll(
+                            '_',
+                            ' '
+                          )}{cue.timing_confidence != null
+                            ? ` · ${Math.round(cue.timing_confidence * 100)}% timing quality`
+                            : ''}</small
+                        >
+                      </span>
+                    </button>{/each}
+                </div>
+              </section>
+
+              {#if activeJob?.status === 'succeeded' && activeJob.result_json?.media_artifact_id}<section
+                  class="surface rounded-2xl p-5"
+                >
+                  <h3 class="font-semibold">Latest rendered edit</h3>
+                  <div class="mt-3 flex flex-wrap gap-2">
+                    <a
+                      class="secondary"
+                      href={projectLinkUrl(`/api/v1/artifacts/${activeJob.result_json.media_artifact_id}/content`)}
+                      download><Download size={15} /> Media</a
+                    ><a
+                      class="secondary"
+                      href={projectLinkUrl(`/api/v1/artifacts/${activeJob.result_json.subtitle_artifact_id}/content`)}
+                      download><Download size={15} /> Subtitles</a
+                    >
+                  </div>
+                </section>{/if}
+            </div>{/if}{/snippet}
+        <div class="min-h-0 min-w-0 flex-1 space-y-5 overflow-auto p-1">
+          <section class="surface overflow-hidden rounded-2xl">
+            <video
+              bind:this={video}
+              src={projectLinkUrl(plan.source_media_artifact.content_url)}
+              controls
+              preload="metadata"
+              class="aspect-video max-h-[36dvh] w-full bg-black object-contain"
+              ontimeupdate={updatePlayback}
+              onseeked={updatePlayback}
+              onplay={trackPlayback}
+              onpause={stopPlaybackTracking}
+              onended={stopPlaybackTracking}
+            >
+              <track
+                kind="captions"
+                src={projectLinkUrl(captionTrackUrl)}
+                srclang="und"
+                label="Project transcript"
+                default
+              />
+            </video>
+            <div class="space-y-4 p-4 sm:p-5">
+              <div
+                class="flex flex-wrap items-center justify-between gap-3 text-xs"
               >
-                <span class="time">{formatTime(cue.start_ms)}</span>
-                <span class="min-w-0">
-                  {#if cue.speaker}<strong>{cue.speaker}</strong>{/if}
-                  <span>{cue.text}</span>
-                  <small
-                    >{cue.timing_source.replaceAll(
-                      '_',
-                      ' '
-                    )}{cue.timing_confidence != null
-                      ? ` · ${Math.round(cue.timing_confidence * 100)}% timing quality`
-                      : ''}</small
+                <span class="font-semibold tabular-nums"
+                  >{formatTime(currentMs)}</span
+                >
+                <span class="muted"
+                  >Keep {formatTime(keptDurationMs)} of {formatTime(
+                    plan.duration_ms
+                  )} · remove {cuts.length} range{cuts.length === 1
+                    ? ''
+                    : 's'}</span
+                >
+              </div>
+              <MediaTimeline
+                durationMs={plan.duration_ms}
+                {currentMs}
+                keepRanges={keepFromCuts(cuts, plan.duration_ms)}
+                cutRanges={cuts}
+                {peaks}
+                {detailPeaks}
+                {detailPeaksStartMs}
+                {detailPeaksEndMs}
+                detailLoading={Boolean(pendingDetailKey)}
+                onseek={seek}
+                onboundaryinput={(rangeId, edge, timeMs) =>
+                  setCutBoundary(rangeId, edge, timeMs)}
+                onboundarycommit={(rangeId, edge, timeMs) =>
+                  setCutBoundary(rangeId, edge, timeMs, true)}
+              />
+              <div
+                class="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[var(--paper)] p-3"
+              >
+                <div class="flex flex-wrap items-center gap-2">
+                  <button
+                    onclick={() => (cutStartMs = currentMs)}
+                    class="marker"
                   >
-                </span>
-              </button>{/each}
-          </div>
-        </section>
-
-        {#if activeJob?.status === 'succeeded' && activeJob.result_json?.media_artifact_id}<section
-            class="surface rounded-2xl p-5"
-          >
-            <h3 class="font-semibold">Latest rendered edit</h3>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <a
-                class="secondary"
-                href={`/api/v1/artifacts/${activeJob.result_json.media_artifact_id}/content`}
-                download><Download size={15} /> Media</a
-              ><a
-                class="secondary"
-                href={`/api/v1/artifacts/${activeJob.result_json.subtitle_artifact_id}/content`}
-                download><Download size={15} /> Subtitles</a
-              >
+                    Set cut start<br /><small
+                      >{cutStartMs == null
+                        ? 'at playhead'
+                        : formatTime(cutStartMs)}</small
+                    >
+                  </button>
+                  <button onclick={() => (cutEndMs = currentMs)} class="marker">
+                    Set cut end<br /><small
+                      >{cutEndMs == null
+                        ? 'at playhead'
+                        : formatTime(cutEndMs)}</small
+                    >
+                  </button>
+                  <button
+                    onclick={addCut}
+                    disabled={cutStartMs == null || cutEndMs == null}
+                    class="primary self-center disabled:opacity-40"
+                    ><Plus size={15} /> Add cut</button
+                  >
+                </div>
+                <div
+                  class="flex items-center gap-1"
+                  role="group"
+                  aria-label="Edit boundary navigation"
+                >
+                  <button
+                    onclick={() => jumpToEditPoint(-1)}
+                    disabled={!editPoints.length}
+                    title="Go to the previous removal edge; wraps at the beginning."
+                    class="boundary-nav disabled:opacity-40"
+                    ><SkipBack size={14} /> Previous edge</button
+                  >
+                  <button
+                    onclick={() => jumpToEditPoint(1)}
+                    disabled={!editPoints.length}
+                    title="Go to the next removal edge; wraps at the end."
+                    class="boundary-nav disabled:opacity-40"
+                    >Next edge <SkipForward size={14} /></button
+                  >
+                </div>
+              </div>
             </div>
-          </section>{/if}
-      </aside>
+          </section>
+
+          <section class="surface rounded-2xl p-5">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 class="mt-1 text-lg font-semibold">Exact cut boundaries</h3>
+              </div>
+              <span class="badge">revision {plan.revision}</span>
+            </div>
+            <div class="mt-4 space-y-3">
+              {#each cuts as cut, index (cut.id)}<article class="cut-card">
+                  <div class="grid min-w-0 flex-1 gap-3 sm:grid-cols-2">
+                    <label
+                      >Start
+                      <input
+                        type="number"
+                        min="0"
+                        max={plan.duration_ms}
+                        step="20"
+                        value={cut.start_ms}
+                        onchange={(event) =>
+                          setCutBoundary(
+                            cut.id,
+                            'start_ms',
+                            Number(event.currentTarget.value),
+                            true
+                          )}
+                      />
+                      <small>{formatTime(cut.start_ms)}</small></label
+                    ><label
+                      >End
+                      <input
+                        type="number"
+                        min="0"
+                        max={plan.duration_ms}
+                        step="20"
+                        value={cut.end_ms}
+                        onchange={(event) =>
+                          setCutBoundary(
+                            cut.id,
+                            'end_ms',
+                            Number(event.currentTarget.value),
+                            true
+                          )}
+                      />
+                      <small>{formatTime(cut.end_ms)}</small></label
+                    >
+                    <input
+                      aria-label={`Label for cut ${index + 1}`}
+                      bind:value={cut.label}
+                      class="sm:col-span-2"
+                    />
+                    <div class="sm:col-span-2 grid gap-2">
+                      <div class="boundary-control-row">
+                        <span>Start</span>
+                        <button
+                          onclick={() => nudge(cut, 'start_ms', -100)}
+                          title="Move the start edge 100 milliseconds earlier."
+                          >−100 ms</button
+                        >
+                        <button
+                          onclick={() => nudge(cut, 'start_ms', 100)}
+                          title="Move the start edge 100 milliseconds later."
+                          >+100 ms</button
+                        >
+                        <button
+                          onclick={() => seek(cut.start_ms)}
+                          title="Move the playhead to this start edge without playing."
+                          ><LocateFixed size={12} /> Go to</button
+                        >
+                        <button
+                          onclick={() => audition(cut.start_ms)}
+                          title="Play 1.3 seconds before and after this start edge."
+                          ><Play size={12} /> Preview</button
+                        >
+                      </div>
+                      <div class="boundary-control-row">
+                        <span>End</span>
+                        <button
+                          onclick={() => nudge(cut, 'end_ms', -100)}
+                          title="Move the end edge 100 milliseconds earlier, retaining more silence before speech resumes."
+                          >−100 ms</button
+                        >
+                        <button
+                          onclick={() => nudge(cut, 'end_ms', 100)}
+                          title="Move the end edge 100 milliseconds later."
+                          >+100 ms</button
+                        >
+                        <button
+                          onclick={() => seek(cut.end_ms)}
+                          title="Move the playhead to this end edge without playing."
+                          ><LocateFixed size={12} /> Go to</button
+                        >
+                        <button
+                          onclick={() => audition(cut.end_ms)}
+                          title="Play 1.3 seconds before and after this end edge."
+                          ><Play size={12} /> Preview</button
+                        >
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onclick={() =>
+                      (cuts = cuts.filter((_, value) => value !== index))}
+                    class="delete"
+                    aria-label={`Delete cut ${index + 1}`}
+                    ><Trash2 size={15} /></button
+                  >
+                </article>{:else}<div
+                  class="muted rounded-xl border border-dashed border-[var(--line)] p-6 text-center text-sm"
+                >
+                  Nothing is removed. Set two playhead markers or ask the agent
+                  for a proposal.
+                </div>{/each}
+            </div>
+          </section>
+        </div>
+      </WorkspacePane>
     </div>{/if}
 </div>
 
@@ -1772,6 +1794,14 @@
 {/snippet}
 
 <style>
+  .recording-workspace {
+    display: flex;
+    flex-direction: column;
+    height: max(30rem, calc(100dvh - 13rem));
+    min-height: 0;
+    overflow: hidden;
+  }
+
   .primary,
   .secondary {
     display: flex;

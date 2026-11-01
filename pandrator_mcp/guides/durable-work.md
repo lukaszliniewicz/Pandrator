@@ -42,6 +42,30 @@ states. Cancellation is a request and may take time while a task reaches a safe
 boundary. Retrying or re-executing must use the idempotency key associated with
 the exact reviewed action.
 
+Managed installations use one worker by default. An operator can opt into two
+with `PANDRATOR_WORKER_COUNT=2` when launching Manager or the headless installer.
+The additional process uses more memory. Independent cloud/local/CPU-render work
+can overlap; a shared service, default GPU or session still serializes work.
+Resource-blocked jobs remain queued without spending attempts. Inspect the
+work and normal Manager runtime status before requesting more capacity; use
+managed lifecycle controls for both workers. Provider quotas remain unchanged,
+including quotas shared by separately configured endpoints.
+
+`storage_pressure` on queued work is a recoverable capacity wait, not a failed
+synthesis. Keep the returned work ID and pinned inputs. Progress detail reports
+estimated additional bytes, available space, other reservations and headroom.
+The same job checks again after 60 seconds without spending an attempt; compute
+resources are released while it waits. After space is freed, monitor that work
+instead of creating another generation, assembly or export. Never delete source
+or take files as automatic recovery. Storage admission currently covers assembly,
+soundtracks, project sound mixes and media/caption exports; book-video, PDF/bundle
+creation and model downloads are outside this admission check. Estimates do not preallocate OS
+storage or guarantee a quality-based encoder's eventual file size.
+
+Canceling queued work ends this automatic retry. Its current work record clears
+the wait deadline and retry guidance; the event history retains the earlier wait.
+Canceling running work still waits for the worker to acknowledge the request.
+
 `application_response_timeout` means the app did not reply within the transport
 deadline. A mutation may still have committed. Follow the returned recovery
 actions: inspect current state and replay the exact request with the same
@@ -91,6 +115,9 @@ legacy adapter path. Accepted batches advance to the next sequential claim. A
 rejected result remains repairable under its valid lease. The final accepted
 batch automatically finalizes the run. If transient materialization trouble
 leaves it `finalizing`, retry the same final submission and idempotency key.
+Accepted final batches are committed before expensive caption preparation.
+An accepted `finalizing` receipt retains that work across a process restart;
+exact replay resumes publication and returns the same winning output.
 
 PDF/EPUB source cleaning uses the same lease and idempotency principles but a
 separate run type. Creation first queues deterministic extraction and indexing;

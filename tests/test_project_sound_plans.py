@@ -13,16 +13,16 @@ from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError
 
 from pandrator.web.artifacts import ArtifactService
-from pandrator.web.database import Database
+from pandrator.web.database import Database, upgrade_database
 from pandrator.web.models import (
     Artifact,
-    Base,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationSegment,
     SessionRecord,
     SoundVariant,
 )
+from pandrator.web.projects.identity import create_session_project, initial_personal_workspace
 from pandrator.web.settings_policy import RevisionConflict
 from pandrator.web.sound_project_models import ProjectSoundCue, ProjectSoundPlan  # noqa: F401
 from pandrator.web.sound_project_schemas import SoundAnchor, SoundPlayback
@@ -33,14 +33,14 @@ from pandrator.web.sound_project_service import ProjectSoundService
 def sound_project():
     with tempfile.TemporaryDirectory() as temporary:
         database = Database(Path(temporary) / "project.sqlite")
-        Base.metadata.create_all(database.engine)
+        upgrade_database(database.path)
         paths = SimpleNamespace(managed_path=lambda relative: Path(temporary) / relative)
         service = ProjectSoundService(database, cast(ArtifactService, SimpleNamespace(paths=paths)))
         with database.immediate_session() as session:
             record = SessionRecord(name="Project", workflow_kind="audiobook")
             target = SessionRecord(name="Fork", workflow_kind="audiobook")
-            session.add_all([record, target])
-            session.flush()
+            create_session_project(session, record)
+            create_session_project(session, target)
             speech_plan = GenerationPlan(session_id=record.id)
             session.add(speech_plan)
             session.flush()
@@ -51,10 +51,14 @@ def sound_project():
             session.flush()
             speech_plan.active_revision_id = revision.id
             segment = GenerationSegment(plan_revision_id=revision.id, ordinal=0, text="Hello world")
-            artifact = Artifact(kind="audio", role="sound.original", relative_path="sound.wav", content_hash="sha256-test")
+            artifact = Artifact(
+                workspace_id=initial_personal_workspace(session).id,
+                kind="audio", role="sound.original", relative_path="sound.wav", content_hash="sha256-test"
+            )
             session.add_all([segment, artifact])
             session.flush()
             variant = SoundVariant(
+                workspace_id=artifact.workspace_id,
                 artifact_id=artifact.id,
                 state="ready",
                 provenance_json={"display_name": "Bell"},
@@ -184,11 +188,19 @@ def test_anchor_playback_and_global_variant_guards(sound_project):
         )
     assert pause["cue"]["placement_status"] == "needs_placement"
     with database.immediate_session() as session:
-        variant = session.get(SoundVariant, variant_id)
-        session.get(Artifact, variant.artifact_id).session_id = project_id
-    with database.immediate_session() as session:
-        with pytest.raises(ValueError, match="global audio artifact"):
-            service.add_in_session(session, project_id, _create(variant_id, segment_id, revision=2))
+        variant = session.get_one(SoundVariant, variant_id)
+        assert variant.artifact_id is not None
+        artifact = session.get_one(Artifact, variant.artifact_id)
+        # Ownership pointers are immutable in storage. Exercise the consumer's
+        # shape guard on transient ORM state without flushing invalid ownership.
+        with session.no_autoflush:
+            artifact.session_id = project_id
+            try:
+                with pytest.raises(ValueError, match="global audio artifact"):
+                    service.add_in_session(session, project_id, _create(variant_id, segment_id, revision=2))
+            finally:
+                artifact.session_id = None
+        assert not session.is_modified(artifact, include_collections=False)
     assert service.get_plan(project_id)["revision"] == 2
 
 

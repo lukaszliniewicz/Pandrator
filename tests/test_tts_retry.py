@@ -14,6 +14,7 @@ import pytest
 import requests
 
 from pandrator.logic import kobold_qwen_http, retry_utils, tts_handler
+from pandrator.logic.model_acquisition import host_model_acquisition_scope
 from pandrator.logic.tts_retry import (
     DEFAULT_TTS_MAX_ATTEMPTS,
     DEFAULT_TTS_RETRY_TIMEOUT_SECONDS,
@@ -317,7 +318,9 @@ def test_kobold_qwen_post_timeout_is_clamped_and_stops_expired_fallback():
         clock.advance(1.0)
         return response
 
+    # Exercise the legacy fallback under explicit host authority; all HTTP is mocked.
     with (
+        host_model_acquisition_scope(),
         patch.object(kobold_qwen_http, "_openai_audio_speech_urls", return_value=urls),
         patch.object(kobold_qwen_http.requests, "post", side_effect=post),
         retry_budget_scope(1, clock=clock),

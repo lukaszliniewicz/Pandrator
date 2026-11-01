@@ -5,12 +5,12 @@ from unittest.mock import Mock, patch
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 from pandrator.logic.speech_performance import compile_performance
 from pandrator.web import models, performance_plans
+from pandrator.web.database import Database, upgrade_database
 from pandrator.web.performance_schemas import PerformancePreviewRequest
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.speech_plan_workspace import semantic_context_window
 from pandrator_mcp.schemas.performance import PreviewPerformancePlanInput
 
@@ -24,16 +24,18 @@ def _vertex_settings(**overrides):
 
 
 @pytest.fixture
-def preview_session():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    models.Base.metadata.create_all(engine)
+def preview_session(tmp_path):
+    database_path = tmp_path / "preview.db"
+    upgrade_database(database_path)
+    database = Database(database_path)
     try:
-        with Session(engine) as session:
-            session.add(models.SessionRecord(id="session", name="Preview fixture"))
+        with database.session() as session:
+            record = models.SessionRecord(id="session", name="Preview fixture")
+            create_session_project(session, record)
             session.flush()
             yield session
     finally:
-        engine.dispose()
+        database.dispose()
 
 
 def test_preview_uses_effective_runtime_context_not_historical_plan_settings(

@@ -19,7 +19,9 @@ from pandrator.web.api import create_app
 from pandrator.web.application_services import ApplicationServices
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import Artifact, Job, SessionRecord
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -257,6 +259,9 @@ def test_delete_blocks_active_jobs_and_allows_terminal_jobs(
 ) -> None:
     with lifecycle.database.session() as session:
         job = Job(kind="lifecycle.fixture", session_id=lifecycle.session_id, status=status)
+        ownership = job_creation_ownership(session, session_id=job.session_id)
+        job.workspace_id = ownership.workspace_id
+        job.project_id = ownership.project_id
         session.add(job)
         session.flush()
         job_id = job.id
@@ -377,6 +382,9 @@ def test_reindex_reports_only_target_anomalies_without_mutations(
             relative_path="../outside.txt",
             size_bytes=len(outside_bytes),
         )
+        ownership = resolve_artifact_ownership(session, session_id=escaped.session_id)
+        escaped.workspace_id = ownership.workspace_id
+        escaped.project_id = ownership.project_id
         session.add(escaped)
         session.flush()
         escaped_id = escaped.id

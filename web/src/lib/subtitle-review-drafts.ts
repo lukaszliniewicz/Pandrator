@@ -1,4 +1,5 @@
 import type { SubtitleReviewPayload, SubtitleSegment } from './api-models';
+import { browserStorageKey, onBrowserIdentityReset } from './browser-identity';
 
 type Draft = {
   payload: SubtitleReviewPayload;
@@ -7,9 +8,10 @@ type Draft = {
 };
 const drafts = new Map<string, Draft>();
 const MAX_DRAFTS = 10;
+onBrowserIdentityReset(() => drafts.clear());
 
 export function reviewDraftKey(sessionId: string, artifactId: string) {
-  return `${sessionId}:${artifactId}`;
+  return browserStorageKey('subtitle-review', `${sessionId}:${artifactId}`);
 }
 
 export function reviewContent(payload: SubtitleReviewPayload | null) {

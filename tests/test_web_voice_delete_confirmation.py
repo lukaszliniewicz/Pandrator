@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import Table, select
 
 from pandrator.logic import tts_handler
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.models import Artifact, Voice, VoiceSample
@@ -79,6 +80,7 @@ def test_native_unpublish_requires_confirmation_and_retains_samples(
             voice = Voice(
                 name="Disposable deletion narrator",
                 language="en",
+                workspace_id=initial_personal_workspace(session).id,
                 description="Retain this voice and its sample.",
                 metadata_json={
                     "fixture": "retained metadata",
@@ -107,6 +109,7 @@ def test_native_unpublish_requires_confirmation_and_retains_samples(
             session.add(
                 VoiceSample(
                     voice_id=voice_id,
+                    workspace_id=session.get(Voice, voice_id).workspace_id,
                     artifact_id=artifact.id,
                     transcript="Reviewed disposable sample.",
                     transcript_language="en",

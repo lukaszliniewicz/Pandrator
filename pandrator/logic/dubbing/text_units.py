@@ -30,7 +30,7 @@ NO_LINE_START = frozenset(
 )
 NO_LINE_END = frozenset("([{（［｛「『【〈《〔〖〘〚")
 _CJK_PUNCTUATION = frozenset("、。，．！？：；（）［］｛｝「」『』【】〈〉《》〔〕")
-_NO_SPACE_BEFORE = frozenset(",.!?:;%)]}…、。，．！？：；％）］｝」』】〉》〕\"\u201d\u2019")
+_NO_SPACE_BEFORE = frozenset(",.!?:;%)]}…、。，．！？：；％）］｝」』】〉》〕\u201d\u2019")
 _NO_SPACE_AFTER = NO_LINE_END | frozenset("£€$")
 
 
@@ -57,6 +57,13 @@ def fragment_separator(left: str, right: str) -> str:
     if not left or not right or left[-1].isspace() or right[0].isspace():
         return ""
     a, b = left[-1], right[0]
+    # ASCII double quotes are symmetric: an odd count in the accumulated
+    # fragment means the next quote closes, and the last quote opens.
+    ascii_quote_open = left.count('"') % 2 == 1
+    if (a == '"' and ascii_quote_open) or (b == '"' and ascii_quote_open):
+        return ""
+    if a in {"„", "‘"}:
+        return ""
     # U+201C opens English quotes but closes German low/high quotes. Treat it
     # as opening only at an opening seam, not after the quoted word.
     if a == "“" and (len(left) == 1 or left[-2].isspace() or left[-2] in NO_LINE_END):

@@ -27,6 +27,46 @@ If the local application is unavailable, the Manager recovery interface still
 runs independently. Exact commands are in the
 [Manager guide](../../pandrator_manager/README.md).
 
+## Independent jobs wait behind a long generation
+
+Managed installations start one worker by default. To enable two independently
+supervised workers, set `PANDRATOR_WORKER_COUNT=2` in the environment used to
+launch Manager or the headless installer. Supported values are `1` and `2`.
+Let active work finish, stop the application through its normal controls, then
+restart with the chosen configuration. Setting `1` restores the default.
+
+Two workers can overlap cloud speech, local speech and CPU exports in different
+projects when their resource claims are independent. A shared model endpoint,
+the default GPU, or conflicting work in one session still causes a wait. A
+resource wait does not spend a job attempt. A second worker keeps an additional
+application process in memory; keep one worker on constrained machines.
+
+Worker count does not increase a provider's quota. Keep aliases for the same
+service under one configured identity, and account for shared remote quotas
+when configuring additional providers. Inspect existing work before retrying;
+starting another generation is not a remedy for resource contention.
+
+## Assembly or export is waiting for storage
+
+A job with `storage_pressure` stays queued with its original ID and pinned
+inputs. Its progress detail gives an estimate of additional working space,
+current free space, reservations held by other active work and safety headroom.
+Completed takes and source files are retained. Free space on the affected
+filesystem and observe that same job; it checks again after 60 seconds. You can
+cancel the queued job through the normal controls.
+
+Assembly, soundtrack, sound-mix and media-export checks use their actual working
+and destination filesystems, including the database filesystem. Concurrent jobs
+reserve estimated remaining bytes under their existing leases. Estimates include
+intermediate copies and a margin; quality-based video encoding has no exact size
+forecast. These checks are not operating-system preallocation and cannot prevent
+another application from consuming disk space during a render. Book-video,
+PDF/bundle creation and model downloads are outside this admission check.
+
+Do not start another generation or delete referenced source/take files to recover
+from a storage wait. Review expendable outputs through the normal project tools;
+removal refuses outputs still used by sources, takes or active work.
+
 ## Windows permission errors during Manager setup
 
 Manager 0.9.23 and earlier can select the wrong Windows account when shell tools

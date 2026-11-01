@@ -13,6 +13,7 @@ export type SessionContext = {
   readonly workflow: WorkflowStore;
   reload: () => Promise<void>;
   customize: () => void;
+  assignFolders?: () => void;
 };
 export const useSessionContext = () =>
   getContext<SessionContext>(SESSION_CONTEXT);

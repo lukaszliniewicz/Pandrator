@@ -10,8 +10,10 @@ from pandrator.logic import google_tts_audio, tts_handler
 from pandrator.logic.tts_provider_policy import DEFAULT_TTS_SERVICE_ID
 from pandrator.runtime import DataPaths
 
+from .credential_identity import credential_namespace
 from .credentials import resolve_provider_credential
 from .database import Database
+from .settings_identity import settings_workspace_id
 
 _MAX_SERVICE_LENGTH = 120
 _MAX_ROUTE_ID_LENGTH = 120
@@ -26,6 +28,7 @@ _VERTEX_INVALID_CREDENTIAL_WARNING = (
 _VERTEX_GLOBAL_LOCATION_WARNING = (
     "Gemini 3.8 TTS on Vertex requires the global location."
 )
+_WORKSPACE_CREDENTIAL_WARNING = "Choose a speech connection configured for this workspace."
 
 
 def _bounded_text(value: object, limit: int) -> str:
@@ -43,8 +46,32 @@ def _credential_origin(source: object) -> str:
     return "unavailable"
 
 
+def _credential_scope(
+    database: Database,
+    *,
+    session_id: str | None,
+    workspace_id: str | None,
+) -> tuple[str | None, bool]:
+    """Resolve supplied roots without granting authority from settings data."""
+
+    if session_id is None and workspace_id is None:
+        # Preserve the historical resolver default and support old callers that
+        # use an unseeded synthetic database for a personal-scope projection.
+        return None, True
+    with database.snapshot_session() as session:
+        resolved_workspace_id = settings_workspace_id(
+            session, session_id=session_id, workspace_id=workspace_id
+        )
+        namespace = credential_namespace(session, resolved_workspace_id)
+    return resolved_workspace_id, namespace.host_credentials_allowed
+
+
 def generation_provider_preflight(
-    database: Database, snapshot: dict[str, Any]
+    database: Database,
+    snapshot: dict[str, Any],
+    *,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Describe the selected TTS route without contacting its provider.
 
@@ -52,6 +79,10 @@ def generation_provider_preflight(
     can determine Vertex's configured project. The values and their references
     are never copied into the returned structure.
     """
+
+    credential_workspace_id, host_allowed = _credential_scope(
+        database, session_id=session_id, workspace_id=workspace_id
+    )
 
     raw_tts = snapshot.get("tts")
     tts_settings = raw_tts if isinstance(raw_tts, dict) else {}
@@ -101,27 +132,37 @@ def generation_provider_preflight(
     credential = None
     uses_application_default = False
     try:
-        credential = resolve_provider_credential(
-            database,
-            DataPaths(database.path.parent),
-            service_id,
-            secret_ref,
-            fallback_environment_variable=api_key_env,
-        )
+        fallback_environment_variable = api_key_env if host_allowed else ""
+        if credential_workspace_id is None:
+            credential = resolve_provider_credential(
+                database,
+                DataPaths(database.path.parent),
+                service_id,
+                secret_ref,
+                fallback_environment_variable=fallback_environment_variable,
+            )
+        else:
+            credential = resolve_provider_credential(
+                database,
+                DataPaths(database.path.parent),
+                service_id,
+                secret_ref,
+                fallback_environment_variable=fallback_environment_variable,
+                workspace_id=credential_workspace_id,
+            )
     except (OSError, RuntimeError, TypeError, ValueError):
         # Resolver errors can include local credential-store details. Keep the
         # public projection stable and free of paths, references, and values.
         projection["credential_origin"] = "unavailable"
         projection["credential_configured"] = False
 
+    configured = credential.configured if credential is not None else False
     if credential is not None:
-        configured = credential.configured
         source = _credential_origin(credential.source)
         uses_application_default = (
-            provider_id == tts_handler.VERTEX_PROVIDER
-            and not configured
+            provider_id == tts_handler.VERTEX_PROVIDER and not configured and host_allowed
         )
-        if provider_id == tts_handler.GEMINI_PROVIDER and not configured:
+        if not configured and not uses_application_default:
             projection["credential_origin"] = "unconfigured"
             projection["credential_configured"] = False
         elif uses_application_default:
@@ -131,7 +172,11 @@ def generation_provider_preflight(
             projection["credential_origin"] = source
             projection["credential_configured"] = configured
 
+    nonlegacy_credential_missing = not host_allowed and (credential is None or not configured)
+
     if provider_id != tts_handler.VERTEX_PROVIDER:
+        if nonlegacy_credential_missing:
+            projection["configuration_warning"] = _WORKSPACE_CREDENTIAL_WARNING
         return projection
 
     configured_project = _bounded_text(
@@ -143,6 +188,8 @@ def generation_provider_preflight(
         _MAX_LOCATION_LENGTH,
     )
     configuration_warnings: list[str] = []
+    if nonlegacy_credential_missing:
+        configuration_warnings.append(_WORKSPACE_CREDENTIAL_WARNING)
 
     credential_value = ""
     if credential is not None and credential.configured:
@@ -175,10 +222,14 @@ def generation_provider_preflight(
             _MAX_PROJECT_LENGTH,
         )
         project_resolution = "environment" if project else "runtime"
-    elif not configured_project and credential is None:
-        project_resolution = "unavailable"
-    elif not configured_project and credential is not None:
+    elif (
+        not configured_project
+        and credential is not None
+        and (credential.configured or host_allowed)
+    ):
         project_resolution = "credential"
+    elif not configured_project:
+        project_resolution = "unavailable"
 
     if (
         credential is not None

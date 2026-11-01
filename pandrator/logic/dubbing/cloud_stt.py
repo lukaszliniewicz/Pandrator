@@ -25,7 +25,7 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
-from .crispasr import CrispASRTranscriptionResult
+from .crispasr import CrispASRTranscriptionResult, _BeforeIoOptions
 from .languages import normalize_language_code
 from .stt_provider_profiles import (
     AZURE_MAI_TRANSCRIBE_1_5_LOCALES,
@@ -587,6 +587,10 @@ def _api_key(settings: Mapping[str, Any], profile: Mapping[str, Any]) -> str:
     ).strip()
     if direct:
         return direct
+    if settings.get("stt_allow_environment_credentials", True) is False:
+        raise CloudSTTConfigurationError(
+            "Configure a database credential for this workspace before transcription."
+        )
     builtin_profile = get_stt_provider_profile(str(profile.get("id") or "")) or {}
     env_name = str(builtin_profile.get("api_key_env") or "").strip()
     value = os.environ.get(env_name, "").strip() if env_name else ""
@@ -1045,9 +1049,13 @@ def _submit_azure(
     profile: Mapping[str, Any],
     request_func: RequestFunc | None,
     session: Any | None,
+    before_io: Callable[[], None] | None = None,
 ) -> NormalizedTranscript:
     """Submit one WAV stream and parse its response before returning."""
 
+    guard_error: Exception | None = None
+    if before_io is not None:
+        before_io()
     try:
         with audio_path.open("rb") as audio_stream:
             files = {
@@ -1058,6 +1066,12 @@ def _submit_azure(
                     "application/json",
                 ),
             }
+            if before_io is not None:
+                try:
+                    before_io()
+                except Exception as error:
+                    guard_error = error
+                    raise
             response = _request_function(request_func, session)(
                 url,
                 headers=dict(headers),
@@ -1065,11 +1079,17 @@ def _submit_azure(
                 timeout=timeout,
             )
     except (requests.RequestException, OSError) as error:
+        if guard_error is not None:
+            raise guard_error from None
         raise CloudSTTRequestError(f"Azure Speech request failed: {error}") from error
     except Exception as error:
+        if guard_error is not None:
+            raise guard_error from None
         # Injected request functions may use a custom transport exception type;
         # preserve a typed runtime error at this boundary.
         raise CloudSTTRequestError(f"Azure Speech request failed: {error}") from error
+    if before_io is not None:
+        before_io()
     return parse_azure_response(_response_json(response), profile)
 
 
@@ -1202,27 +1222,39 @@ def transcribe(
     settings: Mapping[str, Any],
     request_func: RequestFunc | None = None,
     session: Any | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> CrispASRTranscriptionResult:
     """Transcribe one normalized WAV file through Azure Speech."""
 
+    hook_options: _BeforeIoOptions = {"before_io": before_io} if before_io is not None else {}
+    if before_io is not None:
+        before_io()
     profile = _profile_for(settings)
     if not is_cloud_stt_engine(profile["id"]):
         raise CloudSTTConfigurationError(
             f"Unsupported cloud STT profile '{profile['id']}'."
         )
     audio = Path(audio_path)
+    if before_io is not None:
+        before_io()
     if not audio.is_file():
         raise CloudSTTConfigurationError(
             f"Normalized audio file does not exist: {audio}"
         )
     session_path = Path(session_dir)
+    if before_io is not None:
+        before_io()
     try:
         session_path.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise CloudSTTConfigurationError(
             f"Cloud STT session directory is not writable: {session_path}"
         ) from error
+    if before_io is not None:
+        before_io()
     info = _wav_info(audio)
+    if before_io is not None:
+        before_io()
     chunks = plan_cloud_stt_chunks(audio, settings)
     definition = build_azure_definition(settings, profile)
     url = urljoin(f"{_api_base(settings, profile)}/", str(profile["path"]).lstrip("/"))
@@ -1245,15 +1277,23 @@ def transcribe(
             "stt_request_timeout_seconds must be a positive number."
         )
     parsed_chunks: list[NormalizedTranscript] = []
+    if before_io is not None:
+        before_io()
     with tempfile.TemporaryDirectory(
         prefix="cloud-stt-", dir=str(session_path)
     ) as temp_dir:
         temporary_root = Path(temp_dir)
         for chunk in chunks:
+            if before_io is not None:
+                before_io()
             chunk_path = audio
             if len(chunks) > 1:
                 chunk_path = temporary_root / f"chunk-{chunk.index:04d}.wav"
+                if before_io is not None:
+                    before_io()
                 _write_wav_chunk(audio, chunk_path, info, chunk)
+            if before_io is not None:
+                before_io()
             parsed = _submit_azure(
                 chunk_path,
                 url=url,
@@ -1263,6 +1303,7 @@ def transcribe(
                 profile=profile,
                 request_func=request_func,
                 session=session,
+                **hook_options,
             )
             parsed_chunks.append(_rebase_transcript(parsed, chunk))
     transcript = _merge_chunk_transcripts(parsed_chunks, chunks, info)
@@ -1270,6 +1311,8 @@ def transcribe(
 
     words_path = session_path / f"{output_name}_words.json"
     srt_path = session_path / f"{output_name}.srt"
+    if before_io is not None:
+        before_io()
     words_path.write_text(
         json.dumps(transcript.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1277,6 +1320,8 @@ def transcribe(
     # The central transcription orchestrator composes readable SRT from this
     # canonical word file.  Keep a concrete placeholder for callers that use
     # the cloud runtime directly.
+    if before_io is not None:
+        before_io()
     srt_path.write_text("", encoding="utf-8")
     return CrispASRTranscriptionResult(
         srt_path=str(srt_path),

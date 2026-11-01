@@ -5,6 +5,9 @@ from typing import NotRequired, TypeAlias, TypedDict
 
 import requests
 
+from .model_acquisition import ModelAcquisitionDenied
+from .tts_io_policy import check_tts_io, current_tts_io_policy
+
 JsonValue: TypeAlias = (
     bool | int | float | str | None | Sequence["JsonValue"] | Mapping[str, "JsonValue"]
 )
@@ -13,6 +16,7 @@ JsonValue: TypeAlias = (
 class NativeSpeechPostOptions(TypedDict):
     headers: dict[str, str]
     timeout: float
+    allow_redirects: NotRequired[bool]
     data: NotRequired[str]
     json: NotRequired[Mapping[str, JsonValue]]
     params: NotRequired[Mapping[str, str | int]]
@@ -21,7 +25,23 @@ class NativeSpeechPostOptions(TypedDict):
 class SpeechCandidatePostOptions(TypedDict):
     json: Mapping[str, JsonValue]
     timeout: float
+    allow_redirects: NotRequired[bool]
     headers: NotRequired[dict[str, str]]
+
+
+def require_prepared_model_response(response: requests.Response) -> None:
+    """A known missing model needs preparation rather than transient retries."""
+    if response.status_code != 409:
+        return
+    try:
+        payload = response.json()
+    except ValueError:
+        return
+    if not isinstance(payload, dict):
+        return
+    error = payload.get("error", payload.get("detail"))
+    if isinstance(error, dict) and error.get("code") == "model_acquisition_required":
+        raise ModelAcquisitionDenied()
 
 
 def post_native_speech(
@@ -32,7 +52,12 @@ def post_native_speech(
 ) -> requests.Response:
     """Build attempt options inside the transport's exception boundary."""
     try:
-        return requests.post(url, **request_options())
+        post = requests.post
+        options: NativeSpeechPostOptions = request_options()
+        if current_tts_io_policy() is not None:
+            options = {**options, "allow_redirects": False}
+        check_tts_io()
+        return post(url, **options)
     except requests.exceptions.Timeout as error:
         raise RuntimeError(f"{request_label} request timed out.") from error
     except requests.exceptions.RequestException as error:
@@ -49,7 +74,12 @@ def post_speech_candidates(
     """Try compatibility candidates, preserving responses and transport exceptions."""
     last_response = None
     for url in urls:
-        response = requests.post(url, **request_options())
+        post = requests.post
+        options: SpeechCandidatePostOptions = request_options()
+        if current_tts_io_policy() is not None:
+            options = {**options, "allow_redirects": False}
+        check_tts_io()
+        response = post(url, **options)
         if should_try_next(response.status_code):
             last_response = response
             continue
@@ -69,4 +99,10 @@ def post_prepared_speech(
 ) -> requests.Response:
     """POST once, preserving transport errors and the caller's session ownership."""
     transport = request_session or requests
-    return transport.post(url(), **request_options())
+    post = transport.post
+    destination = url()
+    options: SpeechCandidatePostOptions = request_options()
+    if current_tts_io_policy() is not None:
+        options = {**options, "allow_redirects": False}
+    check_tts_io()
+    return post(destination, **options)

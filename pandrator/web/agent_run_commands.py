@@ -7,9 +7,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .access.agent_run_policy import require_current_agent_run_access
+from .access.contracts import ProjectAction
+from .access.source_preparation_policy import require_source_cleaning_access
+from .accounts.execution_actor import current_execution_actor
 from .agentic_runs import AgenticRunStore, stable_payload_hash
 from .artifacts import ArtifactService
 from .database import Database
+from .job_identity import job_ownership
 from .jobs import JobQueue
 from .models import AgentRun, Artifact, SessionRecord, SessionSource, SourceAsset, new_id, utcnow
 
@@ -56,13 +61,41 @@ class AgentRunCommands:
     def create(
         self, session_id: str, source_artifact_id: str, settings: dict[str, Any]
     ) -> dict[str, Any]:
-        with self.database.session() as session:
-            if session.get(SessionRecord, session_id) is None:
-                raise KeyError(session_id)
-        source, source_path = self.artifacts.resolve(source_artifact_id)
-        source_hash = str(source.content_hash or "")
-        with self.database.session() as session:
-            attachment_id = self._current_attachment(session, session_id, source.id)
+        if current_execution_actor.get() is None:
+            with self.database.session() as session:
+                if session.get(SessionRecord, session_id) is None:
+                    raise KeyError(session_id)
+            source, source_path = self.artifacts.resolve(source_artifact_id)
+            source_hash = str(source.content_hash or "")
+            with self.database.session() as session:
+                attachment_id = self._current_attachment(session, session_id, source.id)
+        else:
+            with self.database.snapshot_session() as session:
+                require_source_cleaning_access(session, session_id, source_artifact_id)
+                with session.no_autoflush:
+                    source_header = session.execute(
+                        select(
+                            Artifact.id,
+                            Artifact.relative_path,
+                            Artifact.content_hash,
+                        ).where(
+                            Artifact.id == source_artifact_id,
+                            Artifact.state != "deleted",
+                        )
+                    ).one_or_none()
+                if source_header is None:
+                    raise KeyError("Source artifact not found.")
+                source_id = source_header.id
+                source_hash = str(source_header.content_hash or "")
+                attachment_id = self._current_attachment(session, session_id, source_id)
+                if type(source_header.relative_path) is not str or not source_header.relative_path:
+                    raise KeyError("Source artifact not found.")
+                try:
+                    source_path = self.artifacts.paths.managed_path(
+                        source_header.relative_path
+                    )
+                except (AttributeError, KeyError, OSError, TypeError, ValueError):
+                    raise KeyError("Source artifact not found.") from None
         if source_path.suffix.lower() not in {".docx", ".epub", ".mobi", ".pdf", ".txt"}:
             raise AgentRunAdmissionError(
                 "unsupported_source",
@@ -71,15 +104,31 @@ class AgentRunCommands:
             )
         final_settings = {**settings, "agentic": True}
         with self.database.immediate_session() as session:
-            if session.get(SessionRecord, session_id) is None:
-                raise KeyError(session_id)
-            managed_source = session.get(Artifact, source_artifact_id)
-            if managed_source is None:
-                raise KeyError(source_artifact_id)
-            current_attachment = self._current_attachment(session, session_id, source_artifact_id)
+            if current_execution_actor.get() is None:
+                if session.get(SessionRecord, session_id) is None:
+                    raise KeyError(session_id)
+                managed_source = session.get(Artifact, source_artifact_id)
+                if managed_source is None:
+                    raise KeyError(source_artifact_id)
+                managed_source_hash = str(managed_source.content_hash or "")
+            else:
+                require_source_cleaning_access(session, session_id, source_artifact_id)
+                with session.no_autoflush:
+                    source_header = session.execute(
+                        select(Artifact.id, Artifact.content_hash).where(
+                            Artifact.id == source_artifact_id,
+                            Artifact.state != "deleted",
+                        )
+                    ).one_or_none()
+                if source_header is None:
+                    raise KeyError("Source artifact not found.")
+                managed_source_hash = str(source_header.content_hash or "")
+            current_attachment = self._current_attachment(
+                session, session_id, source_artifact_id
+            )
             if (
                 current_attachment != attachment_id
-                or str(managed_source.content_hash or "") != source_hash
+                or managed_source_hash != source_hash
             ):
                 raise AgentRunAdmissionError(
                     "invalid_source",
@@ -92,7 +141,7 @@ class AgentRunCommands:
                 session_id=session_id,
                 source_artifact_id=source_artifact_id,
                 status="queued",
-                source_content_hash=str(managed_source.content_hash or ""),
+                source_content_hash=managed_source_hash,
                 settings_hash=stable_payload_hash(final_settings),
                 settings_json=final_settings,
             )
@@ -118,12 +167,14 @@ class AgentRunCommands:
 
     def resume(self, run_id: str) -> dict[str, Any]:
         with self.database.immediate_session() as session:
+            require_current_agent_run_access(session, run_id, ProjectAction.RUN)
             try:
                 run, previous_job = AgenticRunStore(self.database).prepare_resume_in_session(
                     session, run_id
                 )
             except ValueError as error:
                 raise AgentRunStateError(str(error)) from error
+            owner = job_ownership(session, previous_job)
             payload = dict(previous_job.payload_json or {})
             run_ids = dict(payload.get("_agent_run_ids") or {})
             run_ids[run.kind] = run.id
@@ -136,6 +187,8 @@ class AgentRunCommands:
                 payload,
                 session_id=run.session_id,
                 workflow_run_id=previous_job.workflow_run_id,
+                workspace_id=owner.workspace_id,
+                project_id=owner.project_id,
                 max_attempts=previous_job.max_attempts,
                 resource_keys=list(previous_job.resource_keys_json or []),
             )
@@ -149,6 +202,7 @@ class AgentRunCommands:
 
     def accept(self, run_id: str) -> dict[str, Any]:
         with self.database.immediate_session() as session:
+            require_current_agent_run_access(session, run_id, ProjectAction.EDIT)
             run = session.get(AgentRun, run_id)
             if run is None:
                 raise KeyError(run_id)

@@ -15,15 +15,18 @@ Before planning generation:
 
 1. inspect capabilities;
 2. inspect provider status;
-3. call `pandrator_get_tts_catalog`, refreshing it when current readiness or a
-   dynamic catalog matters;
+3. call `pandrator_get_tts_catalog` for passive catalogue inspection; when a fresh
+   service observation is needed and authorized, use `pandrator_refresh_tts_catalog`;
 4. inspect the managed voice catalog and its ready provider registrations;
 5. verify language, model, and voice compatibility;
 6. inspect the session's current `tts` settings revision;
 7. call `pandrator_configure_tts` with exact advertised IDs; and
 8. review the generation plan's provider disclosures.
 
-Supply `service_id` to scope catalogue discovery and refreshes to that service.
+Supply the project's `session_id` on reads to resolve its workspace, or provide
+`workspace_id` explicitly. Refresh uses `workspace_id` and requires `app.write`;
+supply `service_id` to restrict it to one service. `pandrator_configure_tts`
+does not refresh automatically or install a missing model.
 Each service's `catalogue` observation identifies its source, service scope,
 discovery time, completeness, and any discovery error. This is separate from
 the service-health observation. Absence from an incomplete model list does not

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from .export_video_commands import check_video_cancelled
 from .models import Artifact, Job, utcnow
-from .workflow_output_context import OutputWorkflowContext
+from .workflow_output_context import OutputWorkflowContext, publish_output
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,12 @@ def publish_video_export(
     atomic rename, artifact and lineage writes share that transaction. A stale
     attempt must never overwrite or clean up another attempt's committed file.
     """
+    if getattr(context, "_publish_output", None) is not None:
+        return publish_output(
+            context, rendered, requested_destination=requested_destination,
+            kind="export", role="export", session_id=session_id,
+            parent_ids=parent_ids, settings=settings, metadata=metadata,
+        )
     prepared = context.artifacts.prepare_registration(rendered, settings=settings)
     destination: Path | None = None
     committed = False

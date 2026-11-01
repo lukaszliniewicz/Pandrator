@@ -319,12 +319,12 @@ def _run(case, *, event=None, progress=None, engine=None, research=False, resear
             patch.object(
                 case.handlers,
                 "_with_database_llm_settings",
-                side_effect=lambda raw, _stage: {**fixture_settings, **raw},
+                side_effect=lambda raw, _stage, *, session_id=None: {**fixture_settings, **raw},
             )
         )
         stack.enter_context(
             patch(
-                "pandrator.web.workflow_handlers.resolve_secret_reference", return_value=credential
+                "pandrator.web.workflow_handlers.resolve_auxiliary_credential", return_value=credential
             )
         )
         stack.enter_context(
@@ -713,9 +713,7 @@ def test_subtitle_facades_recapture_ports_and_preserve_result_and_error_identity
         "_stage_settings_fingerprint": "_stage_settings_fingerprint",
         "_scaled_progress_callback": "_scaled_progress_callback",
         "_normalize_correction_style": "normalize_correction_style",
-        "_resolve_secret_reference": "resolve_secret_reference",
-        "_database_reference": "database_reference",
-        "_auxiliary_credential_key": "auxiliary_credential_key",
+        "_resolve_auxiliary_credential": "resolve_auxiliary_credential",
     }
     payload, progress, event = {}, Mock(), threading.Event()
     result, failure, contexts = object(), RuntimeError("owner sentinel"), []
@@ -759,9 +757,7 @@ def test_research_facade_recaptures_ports_and_preserves_keyword_identity():
     handlers = WorkflowHandlers.__new__(WorkflowHandlers)
     instance_ports = ("database", "paths", "_subtitle_speaker_map")
     global_ports = {
-        "_resolve_secret_reference": "resolve_secret_reference",
-        "_database_reference": "database_reference",
-        "_auxiliary_credential_key": "auxiliary_credential_key",
+        "_resolve_auxiliary_credential": "resolve_auxiliary_credential",
         "_fraction_message_callback": "_fraction_message_callback",
     }
     arguments = {

@@ -9,6 +9,7 @@ from unittest import mock
 
 from sqlalchemy import event, func, select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import (
@@ -17,14 +18,16 @@ from pandrator.web.credentials import (
     resolve_provider_credentials,
     shared_provider_credential_key,
     tts_credential_key,
+    upsert_credential,
 )
 from pandrator.web.models import (
-    AppSetting,
-    AppSettingHistory,
     Job,
     SessionSetting,
     SessionSettingHistory,
     StoredCredential,
+    Workspace,
+    WorkspaceSetting,
+    WorkspaceSettingHistory,
 )
 from pandrator.web.tts_optimization import (
     DEFAULT_FIRST_PROMPT,
@@ -149,6 +152,82 @@ class SettingsApiTests(unittest.TestCase):
                         json={"value": value},
                     )
                     self.assertEqual(422, response.status_code, response.get_json())
+
+    def test_audiobook_sentence_packing_settings_defaults_validation_and_revisions(self):
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Sentence packing settings"},
+            headers=self.headers,
+        ).get_json()
+        session_id = created["id"]
+        path = f"/api/v1/sessions/{session_id}/settings/text"
+        defaults = self.client.get("/api/v1/defaults/text").get_json()
+        self.assertEqual("auto", defaults["builtin"]["audiobook_sentence_packing"])
+        self.assertEqual(300, defaults["builtin"]["audiobook_sentence_packing_threshold"])
+
+        current = self.client.get(path).get_json()
+        self.assertEqual("auto", current["effective"]["audiobook_sentence_packing"])
+        self.assertEqual(300, current["effective"]["audiobook_sentence_packing_threshold"])
+        saved = self.client.put(
+            path,
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+            json={
+                "value": {
+                    "audiobook_sentence_packing": "sentences",
+                    "audiobook_sentence_packing_threshold": 351,
+                }
+            },
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+        self.assertEqual("sentences", saved.get_json()["effective"]["audiobook_sentence_packing"])
+        self.assertEqual(351, saved.get_json()["effective"]["audiobook_sentence_packing_threshold"])
+
+        stale = self.client.put(
+            path,
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+            json={"value": {"audiobook_sentence_packing": "clauses"}},
+        )
+        self.assertEqual(409, stale.status_code, stale.get_json())
+
+        revision = saved.get_json()["revision"]
+        for invalid in (
+            {"audiobook_sentence_packing": "split"},
+            {"audiobook_sentence_packing_threshold": 1.5},
+        ):
+            response = self.client.put(
+                path,
+                headers={**self.headers, "If-Match": f'"{revision}"'},
+                json={"value": invalid},
+            )
+            self.assertEqual(422, response.status_code, response.get_json())
+        unchanged = self.client.get(path).get_json()
+        self.assertEqual(revision, unchanged["revision"])
+        self.assertEqual("sentences", unchanged["effective"]["audiobook_sentence_packing"])
+        self.assertEqual(351, unchanged["effective"]["audiobook_sentence_packing_threshold"])
+
+        global_current = self.client.get("/api/v1/defaults/text").get_json()
+        global_saved = self.client.put(
+            "/api/v1/settings/defaults.text",
+            headers={**self.headers, "If-Match": f'"{global_current["revision"]}"'},
+            json={
+                "value": {
+                    "audiobook_sentence_packing": "clauses",
+                    "audiobook_sentence_packing_threshold": 350,
+                }
+            },
+        )
+        self.assertEqual(200, global_saved.status_code, global_saved.get_json())
+        self.assertEqual(350, global_saved.get_json()["value"]["audiobook_sentence_packing_threshold"])
+        new_session = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Inherited sentence packing settings"},
+            headers=self.headers,
+        ).get_json()
+        inherited = self.client.get(
+            f'/api/v1/sessions/{new_session["id"]}/settings/text'
+        ).get_json()["effective"]
+        self.assertEqual("clauses", inherited["audiobook_sentence_packing"])
+        self.assertEqual(350, inherited["audiobook_sentence_packing_threshold"])
 
     def test_invalid_clean_source_mode_is_rejected_before_job_creation(self):
         created = self.client.post(
@@ -319,7 +398,16 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual(updated.get_json()["revision"], 2)
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
-            self.assertEqual(session.scalar(select(func.count()).select_from(AppSettingHistory)), 1)
+            workspace_id = initial_personal_workspace(session).id
+            history_count = session.scalar(
+                select(func.count())
+                .select_from(WorkspaceSettingHistory)
+                .where(
+                    WorkspaceSettingHistory.workspace_id == workspace_id,
+                    WorkspaceSettingHistory.key == "wizard",
+                )
+            )
+            self.assertEqual(history_count, 1)
 
     def test_session_settings_patch_preserves_override_fields_and_put_replaces(self):
         session_id = self.client.post(
@@ -579,11 +667,17 @@ class SettingsApiTests(unittest.TestCase):
     def test_global_legacy_stt_fields_migrate_without_losing_defaults(self):
         database = self.app.extensions["pandrator"]["database"]
         with database.immediate_session() as db:
-            row = db.get(AppSetting, "defaults.stt")
+            workspace_id = initial_personal_workspace(db).id
+            row = db.get(WorkspaceSetting, (workspace_id, "defaults.stt"))
             legacy = {"original_language": "uk-UA", "subtitle_max_chars_per_line": 37,
                       "subtitle_min_duration_ms": 900, "legacy_stt_hint": "retain"}
             if row is None:
-                db.add(AppSetting(key="defaults.stt", value_json=legacy, revision=1))
+                db.add(WorkspaceSetting(
+                    workspace_id=workspace_id,
+                    key="defaults.stt",
+                    value_json=legacy,
+                    revision=1,
+                ))
             else:
                 row.value_json = legacy
                 row.revision = 1
@@ -724,6 +818,7 @@ class SettingsApiTests(unittest.TestCase):
         with database.session() as session:
             session.add(
                 StoredCredential(
+                    workspace_id=initial_personal_workspace(session).id,
                     key=tts_credential_key("elevenlabs"),
                     label="ElevenLabs",
                     secret_value="direct-secret",
@@ -731,6 +826,7 @@ class SettingsApiTests(unittest.TestCase):
             )
             session.add(
                 StoredCredential(
+                    workspace_id=initial_personal_workspace(session).id,
                     key=shared_provider_credential_key("openai"),
                     label="Shared OpenAI",
                     secret_value="shared-secret",
@@ -738,6 +834,7 @@ class SettingsApiTests(unittest.TestCase):
             )
             session.add(
                 StoredCredential(
+                    workspace_id=initial_personal_workspace(session).id,
                     key=tts_credential_key("openai"),
                     label="Direct OpenAI",
                     secret_value="direct-openai-secret",
@@ -823,14 +920,43 @@ class SettingsApiTests(unittest.TestCase):
             event.remove(database.engine, "before_cursor_execute", count_selects)
 
         self.assertEqual(14, len(payload["services"]))
-        # Remembered native Google voices add one catalogue-wide read.
-        self.assertLessEqual(len(statements), 5)
+        # Keep five catalogue data reads and six fixed ownership reads bounded.
+        # The settings snapshot validates its workspace after catalogue admission.
+        # Credential batches separately prove that ownership reads do not grow per item.
+        ownership_statements = [
+            statement for statement in statements
+            if any(
+                f"from {table}" in statement.lower()
+                for table in ("users", "workspaces", "workspace_memberships")
+            )
+        ]
+        self.assertLessEqual(len(ownership_statements), 6)
+        self.assertLessEqual(len(statements) - len(ownership_statements), 5)
         self.assertEqual(
             1, sum("from voices" in statement.lower() for statement in statements)
         )
         self.assertEqual(
             1, sum("stored_credentials" in statement for statement in statements)
         )
+
+    def test_tts_catalogue_does_not_inherit_another_workspace_credential_status(self):
+        extension = self.app.extensions["pandrator"]
+        with extension["database"].session() as session:
+            workspace = Workspace(kind="team", name="Credential status fixture")
+            session.add(workspace)
+            upsert_credential(
+                session, shared_provider_credential_key("openai"),
+                "Synthetic solo fixture", "synthetic-solo-status",
+            )
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            extension["manager_bridge"], "inventory", return_value={"status": {}}
+        ):
+            solo, _ = extension["tts_catalogue"].snapshot()
+            team, _ = extension["tts_catalogue"].snapshot(workspace_id=workspace.id)
+        solo_openai = next(item for item in solo["services"] if item["id"] == "openai")
+        team_openai = next(item for item in team["services"] if item["id"] == "openai")
+        self.assertTrue(solo_openai["credential_configured"])
+        self.assertFalse(team_openai["credential_configured"])
 
     def test_tts_refresh_enriches_online_services_concurrently_with_aligned_keys(self):
         catalogue_service = self.app.extensions["pandrator"]["tts_catalogue"]
@@ -909,11 +1035,12 @@ class SettingsApiTests(unittest.TestCase):
 
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
-            setting = session.get(AppSetting, "services.tts")
+            workspace_id = initial_personal_workspace(session).id
+            setting = session.get(WorkspaceSetting, (workspace_id, "services.tts"))
             self.assertNotIn("api_key", json.dumps(setting.value_json))
             self.assertNotIn("credential_configured", json.dumps(setting.value_json))
             self.assertNotIn("credential_source", json.dumps(setting.value_json))
-            stored = session.get(StoredCredential, shared_provider_credential_key("openai"))
+            stored = session.get(StoredCredential, (initial_personal_workspace(session).id, shared_provider_credential_key("openai")))
             self.assertEqual(secret, stored.secret_value)
             stored_value = dict(setting.value_json)
         hydrated = hydrate_tts_settings(
@@ -935,7 +1062,7 @@ class SettingsApiTests(unittest.TestCase):
         )
         self.assertEqual(200, cleared.status_code, cleared.get_json())
         with database.session() as session:
-            self.assertIsNone(session.get(StoredCredential, shared_provider_credential_key("openai")))
+            self.assertIsNone(session.get(StoredCredential, (initial_personal_workspace(session).id, shared_provider_credential_key("openai"))))
 
     def test_openai_key_saved_for_llm_is_reused_by_tts(self):
         secret = "one-openai-key"

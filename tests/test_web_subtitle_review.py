@@ -1,9 +1,12 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 from sqlalchemy import delete, event, select
 
+from pandrator.web import subtitle_media
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.models import (
@@ -300,6 +303,101 @@ class SubtitleReviewTests(unittest.TestCase):
             [column["source_media_artifact_id"] for column in columns],
         )
         self.assertEqual([None, None], [column["source_media_error"] for column in columns])
+
+    def test_review_reuses_only_snapshot_fallback_and_refreshes_on_next_review(self):
+        explicit_media = self._media("explicit.wav")
+        cut = self._cut_subtitle(edit_revision="cached-edit", content_hash="cached-hash")
+        cut_media = self._media(
+            "cached-cut.mp4",
+            role="media_edit_media",
+            metadata={
+                "media_edit_revision_id": "cached-edit",
+                "content_hash": "cached-hash",
+            },
+        )
+        fallback_media = self._media("fallback.wav")
+        first_fallback = self._artifact(
+            "first-fallback.srt", "correction",
+            "1\n00:00:00,000 --> 00:00:02,000\nFirst fallback.\n",
+        )
+        second_fallback = self._artifact(
+            "second-fallback.srt", "correction",
+            "1\n00:00:00,000 --> 00:00:02,000\nSecond fallback.\n",
+        )
+        explicit_source = self._artifact(
+            "explicit-source.srt", "correction",
+            "1\n00:00:00,000 --> 00:00:02,000\nExplicit source.\n",
+            parent=explicit_media,
+        )
+        cut_source = self._artifact(
+            "cached-cut-source.srt", "correction",
+            "1\n00:00:00,000 --> 00:00:02,000\nCut source.\n",
+            parent=cut,
+        )
+        invalid_cut = self._cut_subtitle(
+            edit_revision="unavailable-edit",
+            content_hash="unavailable-hash",
+            name="unavailable-cut.srt",
+        )
+        invalid_cut_source = self._artifact(
+            "unavailable-cut-source.srt", "correction",
+            "1\n00:00:00,000 --> 00:00:02,000\nUnavailable cut.\n",
+            parent=invalid_cut,
+        )
+        with patch.object(
+            subtitle_media, "resolve_media_source", wraps=subtitle_media.resolve_media_source
+        ) as resolve_fallback:
+            columns = self.service.review(
+                self.session.id,
+                [
+                    first_fallback.id,
+                    second_fallback.id,
+                    explicit_source.id,
+                    cut_source.id,
+                ],
+            )["columns"]
+
+        self.assertEqual(1, resolve_fallback.call_count)
+        self.assertEqual(
+            [fallback_media.id, fallback_media.id, explicit_media.id, cut_media.id],
+            [column["source_media_artifact_id"] for column in columns],
+        )
+
+        with patch.object(
+            subtitle_media, "resolve_media_source", wraps=subtitle_media.resolve_media_source
+        ) as resolve_fallback:
+            provenance_columns = self.service.review(
+                self.session.id,
+                [first_fallback.id, second_fallback.id, invalid_cut_source.id],
+            )["columns"]
+
+        self.assertEqual(1, resolve_fallback.call_count)
+        self.assertEqual(
+            [fallback_media.id, fallback_media.id, None],
+            [column["source_media_artifact_id"] for column in provenance_columns],
+        )
+        self.assertIn(
+            "no available media matches",
+            provenance_columns[2]["source_media_error"],
+        )
+
+        replacement_media = self._media("replacement-fallback.wav")
+        with self.database.session() as session:
+            replacement = session.get(Artifact, replacement_media.id)
+            replacement.created_at = datetime(2099, 1, 1, tzinfo=timezone.utc)
+
+        with patch.object(
+            subtitle_media, "resolve_media_source", wraps=subtitle_media.resolve_media_source
+        ) as resolve_fallback:
+            refreshed = self.service.review(
+                self.session.id, [first_fallback.id, second_fallback.id]
+            )["columns"]
+
+        self.assertEqual(1, resolve_fallback.call_count)
+        self.assertEqual(
+            [replacement_media.id, replacement_media.id],
+            [column["source_media_artifact_id"] for column in refreshed],
+        )
 
     def test_saving_a_cut_descendant_preserves_its_media_resolution(self):
         cut = self._cut_subtitle(edit_revision="edit-1", content_hash="cut-hash")

@@ -64,6 +64,20 @@ class UpdateGenerationSegmentInput(GenerationSegmentChangesInput):
     segment_id: str = Field(min_length=1, max_length=80)
     expected_revision: int = Field(ge=0)
     idempotency_key: str = Field(min_length=1, max_length=120)
+    clear_voice_override: bool = Field(
+        default=False,
+        description="Set true to inherit the project voice. Leave voice and voice_id unset; null by itself keeps the existing value.",
+    )
+
+    @model_validator(mode="after")
+    def validate_voice_override_clear(self):
+        if self.clear_voice_override and (
+            self.voice is not None or self.voice_id is not None
+        ):
+            raise ValueError(
+                "clear_voice_override cannot be combined with voice or voice_id."
+            )
+        return self
 
 
 class GenerationSegmentBatchChangesInput(ToolInput):

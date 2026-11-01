@@ -24,9 +24,9 @@ def _payload(model: str, **settings: object) -> dict:
 
 def test_refreshed_inventory_counts_and_new_speech_families_are_projected():
     source = inventory()
-    assert source["runtime_version"] == "0.9.2"
-    assert len(source["families"]) == 122
-    assert len(source["packages"]) == 380
+    assert source["runtime_version"] == "0.9.2-drama3-base-small"
+    assert len(source["families"]) == 125
+    assert len(source["packages"]) == 392
 
     families = {row["id"] for row in source["families"]}
     assert {"kugelaudio", "kitten_tts2", "lfm2_audio"} <= families
@@ -37,7 +37,7 @@ def test_refreshed_inventory_counts_and_new_speech_families_are_projected():
         "lfm2_audio_1_5b_jp_f16",
     ):
         metadata = package_metadata(model_id)
-        assert metadata["verified_runtime"] == "0.9.2"
+        assert metadata["verified_runtime"] == "0.9.2-drama3-base-small"
         assert metadata["pandrator_features"]["acoustic_verification"] == "not_tested"
 
 

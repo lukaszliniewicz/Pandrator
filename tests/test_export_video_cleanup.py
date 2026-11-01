@@ -87,7 +87,7 @@ class VideoExportCleanupTests(unittest.TestCase):
         ))
 
     def probe(self, path):
-        is_video = Path(path) == self.source_path
+        is_video = Path(path).suffix == ".mp4"
         return {
             "duration": 1.0 if is_video else 2.0,
             "video_duration": 1.0 if is_video else None,

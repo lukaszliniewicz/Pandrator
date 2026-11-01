@@ -2,6 +2,7 @@
   import { errorMessage } from './errors';
   import { CheckCircle2, KeyRound, Trash2 } from '@lucide/svelte';
   import { credentialApi } from './admin-api';
+  import { onDestroy, onMount } from 'svelte';
   import CredentialStorageFields, {
     type CredentialBackendProfile
   } from './CredentialStorageFields.svelte';
@@ -18,6 +19,11 @@
     previous_credential_retained?: boolean;
   };
 
+  let { workspaceId }: { workspaceId?: string } = $props();
+  let active = true;
+  onDestroy(() => {
+    active = false;
+  });
   let items = $state<CredentialProfile[]>([]);
   let credentialBackends = $state<CredentialBackendProfile[]>([]);
   let values = $state<Record<string, string>>({});
@@ -29,11 +35,13 @@
   let notice = $state('');
 
   async function load() {
+    if (!active) return;
     try {
       const [credentialPayload, backendPayload] = await Promise.all([
-        credentialApi.list<CredentialProfile>(),
+        credentialApi.list<CredentialProfile>(workspaceId),
         credentialApi.backends<CredentialBackendProfile>()
       ]);
+      if (!active) return;
       const nextItems = credentialPayload.items;
       const nextValues = { ...values };
       const nextBackends = { ...selectedBackends };
@@ -52,7 +60,11 @@
       selectedBackends = nextBackends;
       references = nextReferences;
       deletePrevious = nextDeletePrevious;
-      credentialBackends = backendPayload.items;
+      credentialBackends = backendPayload.items.filter((item) =>
+        (credentialPayload.credential_backends ?? ['database']).includes(
+          item.id
+        )
+      );
       items = nextItems;
       error = '';
     } catch (caught) {
@@ -75,13 +87,18 @@
     error = '';
     notice = '';
     try {
-      const updated = await credentialApi.update<CredentialProfile>(item.id, {
-        credential_backend: backend as
-          'database' | 'environment' | 'keyring' | 'file',
-        credential_reference: String(references[item.id] ?? '').trim() || null,
-        delete_previous_credential: Boolean(deletePrevious[item.id]),
-        ...(apiKey ? { api_key: apiKey } : {})
-      });
+      const updated = await credentialApi.update<CredentialProfile>(
+        item.id,
+        {
+          credential_backend: backend as
+            'database' | 'environment' | 'keyring' | 'file',
+          credential_reference:
+            String(references[item.id] ?? '').trim() || null,
+          delete_previous_credential: Boolean(deletePrevious[item.id]),
+          ...(apiKey ? { api_key: apiKey } : {})
+        },
+        workspaceId
+      );
       values = { ...values, [item.id]: '' };
       deletePrevious = { ...deletePrevious, [item.id]: false };
       notice =
@@ -102,7 +119,11 @@
     error = '';
     notice = '';
     try {
-      await credentialApi.update<CredentialProfile>(item.id, { clear: true });
+      await credentialApi.update<CredentialProfile>(
+        item.id,
+        { clear: true },
+        workspaceId
+      );
       values = { ...values, [item.id]: '' };
       selectedBackends = { ...selectedBackends, [item.id]: 'database' };
       references = { ...references, [item.id]: '' };
@@ -116,7 +137,7 @@
     }
   }
 
-  load();
+  onMount(load);
 </script>
 
 <section>

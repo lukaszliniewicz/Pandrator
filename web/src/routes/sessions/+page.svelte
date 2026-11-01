@@ -27,6 +27,7 @@
   import { languageLabel } from '$lib/language-registry';
   import {
     folderPath,
+    folderMembershipSourceId,
     libraryProjects,
     projectActivity,
     projectActivityStatus,
@@ -43,7 +44,9 @@
   import ProjectFolderDialog from '$lib/ProjectFolderDialog.svelte';
   import ProjectFolderAssignment from '$lib/ProjectFolderAssignment.svelte';
 
-  const folders = new ProjectFoldersStore();
+  const folders = new ProjectFoldersStore(
+    appState.collaborationEnabled ? appState.activeWorkspaceId : undefined
+  );
   let items = $state<SessionRecord[]>([]);
   let search = $state('');
   let workflowKind = $state('');
@@ -88,9 +91,11 @@
     const positions = new Map(
       memberships
         .filter((member) => member.folder_id === selectedFolder)
-        .map((member) => [member.project_id, member.position])
+        .map((member) => [folderMembershipSourceId(member), member.position])
     );
-    const filed = new Set(memberships.map((member) => member.project_id));
+    const filed = new Set(
+      memberships.map((member) => folderMembershipSourceId(member))
+    );
     return allProjects
       .filter(
         (group) =>
@@ -127,7 +132,10 @@
     error = '';
     try {
       const [sessions, policy] = await Promise.all([
-        sessionApi.list(includeTrashed),
+        sessionApi.list(
+          includeTrashed,
+          appState.collaborationEnabled ? appState.activeWorkspaceId : undefined
+        ),
         apiJson<{ days: number | null }>('/session-trash-policy'),
         folders.load(true)
       ]);
@@ -182,7 +190,7 @@
     const ids = folders.value.memberships
       .filter((member) => member.folder_id === currentFolder.id)
       .sort((a, b) => a.position - b.position)
-      .map((member) => member.project_id);
+      .map((member) => folderMembershipSourceId(member));
     const here = ids.indexOf(group.id),
       there = ids.indexOf(neighbor.id);
     if (here < 0 || there < 0) return;
@@ -212,6 +220,8 @@
     void untrack(() => load(includeTrashed));
   });
 </script>
+
+<svelte:head><title>Projects — Pandrator</title></svelte:head>
 
 <div class="mx-auto max-w-7xl">
   <header class="flex flex-wrap items-end justify-between gap-5">
@@ -587,7 +597,10 @@
     artifact={preview}
     onclose={() => (preview = null)}
   />{/if}
-{#if wizard}<NewSessionWizard onclose={() => (wizard = false)} />{/if}
+{#if wizard}<NewSessionWizard
+    initialFolder={currentFolder}
+    onclose={() => (wizard = false)}
+  />{/if}
 {#if deleteTarget}<SessionDeleteDialog
     session={deleteTarget}
     onclose={() => (deleteTarget = null)}

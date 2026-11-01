@@ -5,8 +5,7 @@
     ChevronLeft,
     ChevronRight,
     LoaderCircle,
-    Save,
-    X
+    Save
   } from '@lucide/svelte';
   import { onMount, tick } from 'svelte';
   import { apiResponse } from './api';
@@ -14,8 +13,9 @@
   import TextDiff from './TextDiff.svelte';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
-  import { modalFocus } from './modal-focus';
-  import WorkspaceMaximizeButton from './WorkspaceMaximizeButton.svelte';
+  import ReviewWorkspace from './ReviewWorkspace.svelte';
+  import UnsavedChangesDialog from './UnsavedChangesDialog.svelte';
+  import { guardEditorNavigation } from './editor-navigation';
 
   const PAGE_SIZE = 50;
 
@@ -31,7 +31,34 @@
   let loading = $state(true);
   let saving = $state(false);
   let error = $state('');
-  let maximized = $state(false);
+  let toolsOpen = $state(false);
+  let baseline = $state<string[]>([]);
+  let pendingLeave = $state<(() => void) | null>(null);
+  const dirty = $derived(
+    rows.some((row, index) => row.optimized !== baseline[index])
+  );
+  function requestLeave(action = onclose) {
+    if (saving) return;
+    if (dirty) pendingLeave = action;
+    else action();
+  }
+  function discardAndLeave() {
+    const action = pendingLeave;
+    pendingLeave = null;
+    action?.();
+  }
+  async function saveAndLeave() {
+    const action = pendingLeave;
+    if (await save(false)) {
+      pendingLeave = null;
+      action?.();
+    }
+  }
+  guardEditorNavigation({
+    dirty: () => dirty,
+    pending: () => saving,
+    requestLeave
+  });
   let pageIndex = $state(0);
   let rowsViewport = $state<HTMLDivElement>();
   const visibleRows = $derived(
@@ -70,6 +97,7 @@
   }
 
   async function navigateSearchMatch(match: TextSearchMatch) {
+    toolsOpen = false;
     if (changedOnly) changedOnly = false;
     pageIndex = Math.floor(match.itemIndex / PAGE_SIZE);
     await tick();
@@ -105,6 +133,7 @@
           )
         };
       });
+      baseline = rows.map((row) => row.optimized);
       pageIndex = 0;
     } catch (caught) {
       error = errorMessage(caught);
@@ -113,7 +142,8 @@
     }
   });
 
-  async function save() {
+  async function save(closeAfter = true) {
+    if (saving || loading || !rows.length) return false;
     saving = true;
     error = '';
     try {
@@ -121,41 +151,47 @@
         artifactId,
         rows.map((row) => ({ index: row.index, text: row.optimized }))
       );
+      baseline = rows.map((row) => row.optimized);
       onsaved();
-      onclose();
+      if (closeAfter) onclose();
+      return true;
     } catch (caught) {
       error = errorMessage(caught);
+      return false;
     } finally {
       saving = false;
     }
   }
 </script>
 
-<div
-  class:maximized
-  class="optimization-overlay fixed inset-0 z-[90] grid place-items-center bg-black/55 p-3 backdrop-blur-sm"
-  role="presentation"
-  onclick={(event) => event.target === event.currentTarget && onclose()}
+<ReviewWorkspace
+  closeLabel="Close review"
+  titleId="optimization-review-title"
+  onclose={() => requestLeave()}
+  busy={saving}
+  bind:toolsOpen
+  toolsTitle="Find & compare"
+  toolsSummary={changedOnly ? 'Changed only' : diffView ? 'Diff view' : ''}
 >
-  <div
-    use:modalFocus={{ onclose }}
-    class="surface flex max-h-[96vh] w-full max-w-7xl flex-col overflow-hidden rounded-3xl"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="optimization-review-title"
-  >
-    <header
-      class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-5 py-4 sm:px-6"
+  {#snippet header()}
+    <div class="min-w-0 flex-1">
+      <h2 id="optimization-review-title" class="text-lg font-semibold">
+        Review narration optimization
+      </h2>
+      <p class="muted mt-1 text-xs">
+        {dirty ? 'Unsaved changes' : 'Saved text'} · Saves a new artifact; original
+        remains in history.
+      </p>
+    </div>
+    <button
+      onclick={() => void save()}
+      disabled={saving || loading || !rows.length}
+      class="btn btn-primary"
+      ><Save size={16} /> {saving ? 'Saving…' : 'Save revision'}</button
     >
-      <div class="min-w-0 flex-1">
-        <h2 id="optimization-review-title" class="mt-1 text-xl font-semibold">
-          Original and LLM-optimized narration
-        </h2>
-        <p class="muted mt-1 text-xs">
-          Edits create a new reviewed artifact; the original optimization
-          remains in history.
-        </p>
-      </div>
+  {/snippet}
+  {#snippet tools()}
+    <div class="space-y-4">
       <label
         class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"
         ><input
@@ -173,76 +209,26 @@
           class="accent-[var(--accent)]"
         /> Diff view</label
       >
-      <WorkspaceMaximizeButton
-        {maximized}
-        ontoggle={() => (maximized = !maximized)}
-      />
-      <button onclick={onclose} class="rounded-xl p-2" aria-label="Close review"
-        ><X size={20} /></button
-      >
-    </header>
-    {#if rows.length}<div
-        class="border-b border-[var(--line)] px-5 py-2 sm:px-6"
-      >
+      {#if rows.length}
         <SearchReplaceBar
           texts={editableTexts}
+          disabled={saving}
           onreplace={applySearchReplacements}
           onnavigate={navigateSearchMatch}
           label="optimized narration segments"
         />
-      </div>{/if}
-    <div
-      bind:this={rowsViewport}
-      class="min-h-0 flex-1 overflow-auto p-4 sm:p-6"
-    >
-      {#if loading}<div class="grid min-h-72 place-items-center">
-          <LoaderCircle class="animate-spin" size={26} />
-        </div>
-      {:else if error && !rows.length}<p
-          class="rounded-xl bg-red-500/10 p-4 text-sm text-red-600"
-        >
-          {error}
-        </p>
-      {:else}
-        <div
-          class="mb-3 hidden grid-cols-[4rem_1fr_1fr] gap-3 px-3 text-xs font-bold uppercase tracking-wider text-[var(--muted)] md:grid"
-        >
-          <span>Item</span><span>Original</span><span>Optimized · editable</span
-          >
-        </div>
-        <div class="space-y-3">
-          {#each pagedRows as row (row.index)}
-            <article
-              class:changed={row.source.trim() !== row.optimized.trim()}
-              class="grid gap-3 rounded-2xl border border-[var(--line)] p-3 md:grid-cols-[4rem_1fr_1fr]"
-            >
-              <div
-                class="flex items-center gap-2 text-xs font-bold text-[var(--muted)]"
-              >
-                <span>#{row.index + 1}</span
-                >{#if row.source.trim() === row.optimized.trim()}<Check
-                    size={13}
-                  />{/if}
-              </div>
-              {#if diffView}<TextDiff
-                  before={row.source}
-                  after={row.optimized}
-                />{:else}<div
-                  class="rounded-xl bg-[var(--paper)] p-3 text-sm leading-6"
-                >
-                  {row.source}
-                </div>{/if}
-              <textarea
-                bind:value={row.optimized}
-                data-optimization-search-index={row.index}
-                rows="3"
-                class="min-h-24 resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm leading-6"
-              ></textarea>
-            </article>
-          {/each}
-        </div>
       {/if}
     </div>
+  {/snippet}
+  {#snippet notices()}
+    {#if error && rows.length}<p
+        role="alert"
+        class="border-b border-red-500/30 px-4 py-2 text-sm text-red-600"
+      >
+        {error}
+      </p>{/if}
+  {/snippet}
+  {#snippet footer()}
     {#if !loading && visibleRows.length > PAGE_SIZE}<nav
         class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] px-5 py-3 text-xs sm:px-6"
         aria-label="Optimization review pages"
@@ -273,42 +259,71 @@
           >
         </div>
       </nav>{/if}
-    <footer
-      class="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--line)] px-5 py-4 sm:px-6"
-    >
-      {#if error && rows.length}<p class="mr-auto text-sm text-red-500">
-          {error}
-        </p>{/if}
-      <button
-        onclick={onclose}
-        class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
-        >Close</button
+  {/snippet}
+  <div
+    bind:this={rowsViewport}
+    inert={saving}
+    class="min-h-0 flex-1 overflow-auto p-4 sm:p-6"
+  >
+    {#if loading}<div class="grid min-h-72 place-items-center">
+        <LoaderCircle class="animate-spin" size={26} />
+      </div>
+    {:else if error && !rows.length}<p
+        class="rounded-xl bg-red-500/10 p-4 text-sm text-red-600"
       >
-      <button
-        onclick={save}
-        disabled={loading ||
-          saving ||
-          !rows.length ||
-          rows.some((row) => !row.optimized.trim())}
-        class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
-        >{#if saving}<LoaderCircle class="animate-spin" size={16} />{:else}<Save
-            size={16}
-          />{/if} Save reviewed revision</button
+        {error}
+      </p>
+    {:else}
+      <div
+        class="mb-3 hidden grid-cols-[4rem_1fr_1fr] gap-3 px-3 text-xs font-bold uppercase tracking-wider text-[var(--muted)] md:grid"
       >
-    </footer>
+        <span>Item</span><span>Original</span><span>Optimized · editable</span>
+      </div>
+      <div class="space-y-3">
+        {#each pagedRows as row (row.index)}
+          <article
+            class:changed={row.source.trim() !== row.optimized.trim()}
+            class="grid gap-3 rounded-2xl border border-[var(--line)] p-3 md:grid-cols-[4rem_1fr_1fr]"
+          >
+            <div
+              class="flex items-center gap-2 text-xs font-bold text-[var(--muted)]"
+            >
+              <span>#{row.index + 1}</span
+              >{#if row.source.trim() === row.optimized.trim()}<Check
+                  size={13}
+                />{/if}
+            </div>
+            {#if diffView}<TextDiff
+                before={row.source}
+                after={row.optimized}
+              />{:else}<div
+                class="rounded-xl bg-[var(--paper)] p-3 text-sm leading-6"
+              >
+                {row.source}
+              </div>{/if}
+            <textarea
+              bind:value={row.optimized}
+              aria-label={`Optimized narration item ${row.index + 1}`}
+              disabled={saving}
+              data-optimization-search-index={row.index}
+              rows="3"
+              class="min-h-24 resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3 text-sm leading-6"
+            ></textarea>
+          </article>
+        {/each}
+      </div>
+    {/if}
   </div>
-</div>
+</ReviewWorkspace>
+{#if pendingLeave}<UnsavedChangesDialog
+    onsave={() => void saveAndLeave()}
+    ondiscard={discardAndLeave}
+    oncancel={() => (pendingLeave = null)}
+    busy={saving}
+    {error}
+  />{/if}
 
 <style>
-  .optimization-overlay.maximized {
-    padding: 0;
-  }
-  .optimization-overlay.maximized > :global([role='dialog']) {
-    height: 100svh;
-    max-height: 100svh;
-    max-width: none;
-    border-radius: 0;
-  }
   article.changed {
     border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
     background: color-mix(in srgb, var(--accent-soft) 35%, transparent);

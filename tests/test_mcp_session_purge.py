@@ -179,4 +179,5 @@ def test_catalog_marks_deletion_destructive_and_policy_as_revision_guarded():
     assert policy_read.risk == RiskClass.READ
     assert policy_read.downstream_operation_id == "getSessionTrashPolicy"
     assert policy_write.risk == RiskClass.WRITE
+    assert policy_write.required_scope == "app.admin"
     assert policy_write.downstream_operation_id == "updateSessionTrashPolicy"

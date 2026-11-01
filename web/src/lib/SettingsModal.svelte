@@ -5,6 +5,7 @@
   import SettingsPanel from './SettingsPanel.svelte';
   import type { SettingsPayload } from './api-models';
   import { modalFocus } from './modal-focus';
+  import { appState } from './app-state.svelte';
   let {
     section,
     title,
@@ -41,7 +42,7 @@
     >
       <div>
         <div class="section-label">
-          {sessionId ? 'Project settings' : 'Application defaults'}
+          {sessionId ? 'Project settings' : 'Workspace defaults'}
         </div>
         <h2 id="settings-modal-title" class="mt-1 text-2xl font-semibold">
           {title}
@@ -65,7 +66,15 @@
           {title}
           {initialOverride}
           {onpersisted}
-        />{:else}<GlobalSettingsPanel {section} />{/if}
+        />{:else}{#key `${appState.contentKey}:${appState.activeWorkspace?.allowed_actions.join(',') ?? ''}`}<GlobalSettingsPanel
+            {section}
+            workspaceId={appState.collaborationEnabled
+              ? appState.activeWorkspaceId || undefined
+              : undefined}
+            workspaceName={appState.collaborationEnabled
+              ? (appState.activeWorkspace?.name ?? 'this workspace')
+              : 'your projects'}
+          />{/key}{/if}
     </div>
   </div>
 </div>

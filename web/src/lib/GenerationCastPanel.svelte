@@ -5,7 +5,8 @@
   import { apiJson } from './api';
   import {
     getTtsCompactCatalogue,
-    getVoiceLibrary
+    getVoiceLibrary,
+    speechCatalogueKey
   } from './tts-catalogue-cache';
   import { errorMessage } from './errors';
   import type { VoiceRecord, TtsService } from './api-models';
@@ -24,6 +25,8 @@
   import { previewRecast, type RecastPreview } from './generation-recast';
   import { invalidationBus, invalidates } from './invalidation';
   import { notifySessionFlowChange } from './session-flow';
+  import { useProjectInterface } from './project-interface.svelte';
+  const projectInterface = useProjectInterface();
   let {
     sessionId,
     service = '',
@@ -51,6 +54,9 @@
   let message = $state('');
   let open = $state(untrack(() => initialOpen));
   let revision = $state(0);
+  let retainedCast = $state<
+    Record<string, { binding: VoiceBinding; model: string }>
+  >({});
   let characters = $state<Character[]>([]);
   let cast = $state<Cast>({
     narrator: null,
@@ -119,9 +125,39 @@
   const inheritedSession = $derived(
     sessionVoice ? { voice: sessionVoice, service: rendererId, model } : null
   );
+  function castSlot(bucket: string, member: string): string {
+    return `cast:${JSON.stringify([bucket, member])}`;
+  }
+  function retainedAt(slot: string, binding?: VoiceBinding | null): boolean {
+    const proof = retainedCast[slot];
+    if (
+      !proof ||
+      !binding ||
+      rendererId !== 'audio_cpp' ||
+      proof.model !== model
+    )
+      return false;
+    return (
+      ['voice', 'voice_id', 'service', 'model', 'voice_description'] as const
+    ).every((key) => (proof.binding[key] ?? '') === (binding[key] ?? ''));
+  }
+  function retainedCharacter(character: Character): boolean {
+    if (cast.characters[character.id])
+      return retainedAt(
+        castSlot('characters', character.id),
+        cast.characters[character.id]
+      );
+    if (cast.categories[character.voice_category])
+      return retainedAt(
+        castSlot('categories', character.voice_category),
+        cast.categories[character.voice_category]
+      );
+    return retainedAt('cast:narrator', cast.narrator);
+  }
   onMount(() => {
     if (standalone) void load();
-    return invalidationBus.subscribe((batch) => {
+    const releaseGuard = projectInterface?.guard(async () => !dirty);
+    const disconnect = invalidationBus.subscribe((batch) => {
       if (
         !loaded ||
         !open ||
@@ -144,6 +180,10 @@
         void refreshImpact();
       }, 250);
     });
+    return () => {
+      disconnect();
+      releaseGuard?.();
+    };
   });
   beforeNavigate((event) => {
     if (!standalone || navigationManaged || allowLeave || !dirty) return;
@@ -219,16 +259,24 @@
     error = '';
     message = '';
   }
+  let loadRequest = 0;
   async function load(force = false) {
+    const scope = { sessionId };
+    const key = speechCatalogueKey(scope);
+    const request = ++loadRequest;
+    const current = () =>
+      alive &&
+      request === loadRequest &&
+      key === speechCatalogueKey({ sessionId });
     pending = true;
     error = '';
     try {
       const [result, library, catalogue] = await Promise.all([
-        apiJson<GenerationControls>(path),
-        getVoiceLibrary(force),
-        getTtsCompactCatalogue(false, force)
+        apiJson<GenerationControls>(`${path}?include_retained=true`),
+        getVoiceLibrary(force, scope),
+        getTtsCompactCatalogue(false, force, scope)
       ]);
-      if (!alive) return;
+      if (!current()) return;
       voices = library.items;
       services = catalogue.services;
       if (!dirty) {
@@ -240,6 +288,25 @@
           characters: result.cast.characters ?? {},
           source_speakers: result.cast.source_speakers ?? {}
         };
+        const saved = new Map<string, VoiceBinding>();
+        if (cast.narrator) saved.set('cast:narrator', cast.narrator);
+        for (const bucket of [
+          'categories',
+          'characters',
+          'source_speakers'
+        ] as const)
+          for (const [member, binding] of Object.entries(cast[bucket]))
+            saved.set(castSlot(bucket, member), binding);
+        retainedCast = Object.fromEntries(
+          Object.entries(result.retained_cast ?? {}).flatMap(
+            ([slot, proof]) => {
+              const binding = saved.get(slot);
+              return binding
+                ? [[slot, { binding: { ...binding }, model: proof.model }]]
+                : [];
+            }
+          )
+        );
         baseline = JSON.stringify({ characters, cast });
         unlockIds = [];
         loaded = true;
@@ -248,9 +315,9 @@
           'The saved cast changed elsewhere. Your draft is preserved; discard it to load the newer version.';
       onchanged?.(result.characters);
     } catch (caught) {
-      if (alive) error = errorMessage(caught);
+      if (current()) error = errorMessage(caught);
     } finally {
-      if (alive) pending = false;
+      if (current()) pending = false;
     }
   }
   function bindVoice(
@@ -395,8 +462,10 @@
       <div class="grid gap-4 sm:grid-cols-2">
         <div>
           <CastVoiceField
+            {sessionId}
             label="Narrator voice"
             value={cast.narrator}
+            retained={retainedAt('cast:narrator', cast.narrator)}
             inherited={inheritedSession}
             {voices}
             {suggestions}
@@ -489,8 +558,10 @@
             >
           </fieldset>
           <CastVoiceField
+            {sessionId}
             label={`Voice for ${character.display_name || 'this character'}`}
             value={cast.characters[character.id]}
+            retained={retainedCharacter(character)}
             inherited={cast.categories[character.voice_category] ??
               cast.narrator ??
               inheritedSession}
@@ -623,8 +694,15 @@
           {#each voiceCategories as category}
             <div>
               <CastVoiceField
+                {sessionId}
                 label={`${category === 'unspecified' ? 'Unknown speaker' : category[0].toUpperCase() + category.slice(1)} dialogue default`}
                 value={cast.categories[category]}
+                retained={cast.categories[category]
+                  ? retainedAt(
+                      castSlot('categories', category),
+                      cast.categories[category]
+                    )
+                  : retainedAt('cast:narrator', cast.narrator)}
                 inherited={cast.narrator ?? inheritedSession}
                 inheritedLabel={cast.narrator ? 'Narrator' : 'Project voice'}
                 {voices}
@@ -649,8 +727,13 @@
         <div class="mt-3 space-y-3">
           {#each Object.keys(cast.source_speakers) as speaker}<div>
               <CastVoiceField
+                {sessionId}
                 label={`Source speaker ${speaker}`}
                 value={cast.source_speakers[speaker]}
+                retained={retainedAt(
+                  castSlot('source_speakers', speaker),
+                  cast.source_speakers[speaker]
+                )}
                 {voices}
                 {suggestions}
                 service={rendererId}
@@ -673,6 +756,7 @@
             /></label
           >
           <CastVoiceField
+            {sessionId}
             label="Assign a voice to this source label"
             {voices}
             {suggestions}

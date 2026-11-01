@@ -1,15 +1,31 @@
 import type { TtsService } from './api-models';
 
-export function serviceMatches(service: TtsService, value: unknown): boolean {
-  const selected = String(value ?? '')
+function serviceIdentity(value: unknown) {
+  const normalized = String(value ?? '')
     .trim()
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/[-\s]/g, '_');
+  const aliases: Record<string, string> = {
+    qwen: 'kobold_qwen',
+    qwen3: 'kobold_qwen',
+    qwen3_tts: 'kobold_qwen',
+    kobold_qwen3: 'kobold_qwen',
+    'audio.cpp': 'audio_cpp',
+    audiocpp: 'audio_cpp'
+  };
+  return aliases[normalized] ?? normalized;
+}
+
+export function serviceMatches(service: TtsService, value: unknown): boolean {
+  const selected = serviceIdentity(value);
   return [service.id, service.name].some(
-    (item) =>
-      String(item ?? '')
-        .trim()
-        .toLowerCase() === selected
+    (item) => serviceIdentity(item) === selected
   );
+}
+
+/** Unchecked connections can be selected; execution validates them on the server. */
+export function ttsServiceUsable(service: TtsService | undefined): boolean {
+  return Boolean(service && service.available !== false);
 }
 
 export function selectableTtsServices(

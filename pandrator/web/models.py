@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -18,20 +18,41 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 
-
-def utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
-def new_id() -> str:
-    return str(uuid.uuid4())
-
-
-class Base(DeclarativeBase):
-    pass
+from .accounts.actor_models import AuditActorRecord as AuditActorRecord
+from .accounts.actor_models import JobActorRecord as JobActorRecord
+from .accounts.auth_models import BrowserAuthSession as BrowserAuthSession
+from .accounts.auth_models import PasswordResetGrant as PasswordResetGrant
+from .accounts.auth_models import UserCredential as UserCredential
+from .accounts.models import User as User
+from .accounts.models import Workspace as Workspace
+from .accounts.models import WorkspaceMembership as WorkspaceMembership
+from .accounts.private_work_models import QuickTranscriptionOwner as QuickTranscriptionOwner
+from .accounts.resource_grant_models import ApiTokenProjectGrant as ApiTokenProjectGrant
+from .accounts.resource_grant_models import ApiTokenWorkspaceGrant as ApiTokenWorkspaceGrant
+from .accounts.resource_grant_models import (
+    AutomationClientProjectGrant as AutomationClientProjectGrant,
+)
+from .accounts.resource_grant_models import (
+    AutomationClientWorkspaceGrant as AutomationClientWorkspaceGrant,
+)
+from .accounts.resource_grant_models import AutomationCodeProjectGrant as AutomationCodeProjectGrant
+from .accounts.resource_grant_models import (
+    AutomationCodeWorkspaceGrant as AutomationCodeWorkspaceGrant,
+)
+from .accounts.resource_grant_models import BrowserAuthProjectGrant as BrowserAuthProjectGrant
+from .accounts.resource_grant_models import BrowserAuthWorkspaceGrant as BrowserAuthWorkspaceGrant
+from .accounts.workspace_models import WorkspaceInvitation as WorkspaceInvitation
+from .model_base import Base, new_id, utcnow
+from .projects.models import Project as Project
+from .projects.models import ProjectMembership as ProjectMembership
+from .projects.speech_reference_models import ProjectSpeechReference as ProjectSpeechReference
+from .public_links.models import ProjectLink as ProjectLink
+from .public_links.models import ProjectLinkSession as ProjectLinkSession
+from .public_links.models import ProjectLinkSubmission as ProjectLinkSubmission
 
 
 class AppSetting(Base):
@@ -57,11 +78,64 @@ class AppSettingHistory(Base):
     )
 
 
+class WorkspaceSetting(Base):
+    __tablename__ = "workspace_settings"
+
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_workspace_settings_workspace_id_workspaces",
+        ),
+        primary_key=True,
+    )
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value_json: Mapped[Any] = mapped_column(JSON, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class WorkspaceSettingHistory(Base):
+    __tablename__ = "workspace_settings_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_workspace_settings_history_workspace_id_workspaces",
+        ),
+        nullable=False,
+    )
+    key: Mapped[str] = mapped_column(String(120), nullable=False)
+    value_json: Mapped[Any] = mapped_column(JSON, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_workspace_settings_history_workspace_key", "workspace_id", "key"
+        ),
+    )
+
+
 class StoredCredential(Base):
     """A write-only provider credential stored in the application database."""
 
     __tablename__ = "stored_credentials"
 
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_stored_credentials_workspace_id_workspaces",
+        ),
+        primary_key=True,
+    )
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
     label: Mapped[str] = mapped_column(String(160), nullable=False)
     secret_value: Mapped[str] = mapped_column(Text, nullable=False)
@@ -70,6 +144,9 @@ class StoredCredential(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
     )
 
 
@@ -93,9 +170,24 @@ class Provider(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_providers_workspace_id_workspaces",
+        ),
+        nullable=False,
+        index=True,
+    )
 
     __table_args__ = (
-        UniqueConstraint("kind", "provider_key", "label", name="uq_provider_identity"),
+        UniqueConstraint(
+            "workspace_id",
+            "kind",
+            "provider_key",
+            "label",
+            name="uq_provider_workspace_identity",
+        ),
     )
 
 
@@ -144,6 +236,13 @@ class SessionRecord(Base):
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "projects.id", ondelete="RESTRICT", name="fk_sessions_project_id_projects"
+        ),
+        index=True,
+        nullable=False,
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_key: Mapped[str] = mapped_column(
         String(36), nullable=False, unique=True, default=new_id
@@ -197,8 +296,21 @@ class SessionPurge(Base):
 
 class TranslationProject(Base):
     __tablename__ = "translation_projects"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_root_id", name="uq_translation_projects_project_root_id"
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_root_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "projects.id",
+            ondelete="RESTRICT",
+            name="fk_translation_projects_project_root_id_projects",
+        ),
+        nullable=False,
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     source_session_id: Mapped[str] = mapped_column(
         ForeignKey("sessions.id", ondelete="RESTRICT"), nullable=False, unique=True
@@ -242,6 +354,15 @@ class ProjectFolder(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_project_folders_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
     parent_id: Mapped[str | None] = mapped_column(
         ForeignKey("project_folders.id", ondelete="RESTRICT"), index=True
     )
@@ -259,6 +380,9 @@ class ProjectFolderMembership(Base):
     __table_args__ = (
         CheckConstraint("position >= 0", name="ck_project_folder_membership_position"),
         Index("ix_project_folder_memberships_project_session_id", "project_session_id"),
+        UniqueConstraint(
+            "folder_id", "project_id", name="uq_project_folder_memberships_folder_project"
+        ),
     )
 
     folder_id: Mapped[str] = mapped_column(
@@ -266,6 +390,14 @@ class ProjectFolderMembership(Base):
     )
     project_session_id: Mapped[str] = mapped_column(
         ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "projects.id",
+            ondelete="CASCADE",
+            name="fk_project_folder_memberships_project_id_projects",
+        ),
+        nullable=False,
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
 
@@ -386,6 +518,15 @@ class SourceAsset(Base):
     __tablename__ = "source_assets"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_source_assets_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
     artifact_id: Mapped[str | None] = mapped_column(
         ForeignKey("artifacts.id", ondelete="SET NULL"), index=True
     )
@@ -484,6 +625,23 @@ class Job(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     kind: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_jobs_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "projects.id",
+            ondelete="RESTRICT",
+            name="fk_jobs_project_id_projects",
+        ),
+        index=True,
+    )
     session_id: Mapped[str | None] = mapped_column(
         ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
@@ -500,6 +658,9 @@ class Job(Base):
         JSON, nullable=False, default=list
     )
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    external_effect_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     progress: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     progress_detail: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(String(120))
@@ -521,6 +682,30 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class StorageReservation(Base):
+    """Estimated remaining output bytes, fenced by the owning job lease."""
+
+    __tablename__ = "storage_reservations"
+
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    filesystem_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    lease_owner: Mapped[str] = mapped_column(String(120), nullable=False)
+    lease_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("reserved_bytes >= 0", name="ck_storage_reservations_bytes"),
     )
 
 
@@ -566,6 +751,23 @@ class Artifact(Base):
     __tablename__ = "artifacts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_artifacts_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "projects.id",
+            ondelete="SET NULL",
+            name="fk_artifacts_project_id_projects",
+        ),
+        index=True,
+    )
     session_id: Mapped[str | None] = mapped_column(
         ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
@@ -1227,6 +1429,26 @@ class UploadSessionRecord(Base):
     session_id: Mapped[str | None] = mapped_column(
         ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_upload_sessions_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "projects.id",
+            ondelete="RESTRICT",
+            name="fk_upload_sessions_project_id_projects",
+        ),
+        index=True,
+    )
+    attach_to_session: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     mime_type: Mapped[str | None] = mapped_column(String(160))
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1755,6 +1977,23 @@ class ResearchCacheEntry(Base):
     __tablename__ = "research_cache_entries"
 
     cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_research_cache_entries_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "projects.id",
+            ondelete="CASCADE",
+            name="fk_research_cache_entries_project_id_projects",
+        ),
+        index=True,
+    )
     provider: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     operation: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     request_json: Mapped[dict[str, Any]] = mapped_column(
@@ -1777,6 +2016,23 @@ class PronunciationEntry(Base):
     __tablename__ = "pronunciation_entries"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_pronunciation_entries_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "projects.id",
+            ondelete="CASCADE",
+            name="fk_pronunciation_entries_project_id_projects",
+        ),
+        index=True,
+    )
     scope: Mapped[str] = mapped_column(
         String(16), nullable=False, default="global", index=True
     )
@@ -1823,6 +2079,15 @@ class PronunciationEntry(Base):
             "backend",
             name="uq_pronunciation_entry_identity",
         ),
+        Index(
+            "uq_pronunciation_entries_workspace_global",
+            "workspace_id",
+            "normalized_form",
+            "language",
+            "backend",
+            unique=True,
+            sqlite_where=text("scope = 'global' AND session_id IS NULL"),
+        ),
     )
 
 
@@ -1830,7 +2095,16 @@ class Voice(Base):
     __tablename__ = "voices"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_voices_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     language: Mapped[str | None] = mapped_column(String(40))
     description: Mapped[str | None] = mapped_column(Text)
     rvc_model_ref: Mapped[str | None] = mapped_column(String(255))
@@ -1845,11 +2119,24 @@ class Voice(Base):
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_voices_workspace_name"),
+    )
+
 
 class VoiceSample(Base):
     __tablename__ = "voice_samples"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_voice_samples_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
     voice_id: Mapped[str] = mapped_column(
         ForeignKey("voices.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -1870,6 +2157,15 @@ class TrainingRun(Base):
     __tablename__ = "training_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_training_runs_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
     kind: Mapped[str] = mapped_column(String(48), nullable=False, default="xtts")
     voice_id: Mapped[str | None] = mapped_column(
         ForeignKey("voices.id", ondelete="SET NULL"), index=True
@@ -1901,11 +2197,37 @@ class TrainingRun(Base):
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
+    __table_args__ = (
+        Index(
+            "ix_training_runs_workspace_created_at_id",
+            "workspace_id",
+            "created_at",
+            "id",
+        ),
+    )
+
 
 class UsageEvent(Base):
     __tablename__ = "usage_events"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_usage_events_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "projects.id",
+            ondelete="RESTRICT",
+            name="fk_usage_events_project_id_projects",
+        ),
+        index=True,
+    )
     session_id: Mapped[str | None] = mapped_column(
         ForeignKey("sessions.id", ondelete="SET NULL"), index=True
     )
@@ -1986,6 +2308,15 @@ class OwnerAccount(Base):
 
 class AutomationClient(Base):
     __tablename__ = "automation_clients"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NULL AND user_auth_revision IS NULL) OR "
+            "(user_id IS NOT NULL AND user_auth_revision IS NOT NULL "
+            "AND user_auth_revision >= 1)",
+            name="ck_automation_clients_user_auth_pair",
+        ),
+        Index("ix_automation_clients_user_id", "user_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -1999,6 +2330,14 @@ class AutomationClient(Base):
     target_instance_id: Mapped[str] = mapped_column(String(36), nullable=False)
     canonical_origin: Mapped[str] = mapped_column(Text, nullable=False)
     created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "users.id",
+            ondelete="RESTRICT",
+            name="fk_automation_clients_user_id_users",
+        )
+    )
+    user_auth_revision: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -2039,6 +2378,15 @@ class AutomationEnrollmentGrant(Base):
 
 class ApiToken(Base):
     __tablename__ = "api_tokens"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NULL AND user_auth_revision IS NULL) OR "
+            "(user_id IS NOT NULL AND user_auth_revision IS NOT NULL "
+            "AND user_auth_revision >= 1)",
+            name="ck_api_tokens_user_auth_pair",
+        ),
+        Index("ix_api_tokens_user_id", "user_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     label: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -2053,6 +2401,14 @@ class ApiToken(Base):
         String(40), nullable=False, default="api_token"
     )
     created_by: Mapped[str | None] = mapped_column(String(200))
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "users.id",
+            ondelete="RESTRICT",
+            name="fk_api_tokens_user_id_users",
+        )
+    )
+    user_auth_revision: Mapped[int | None] = mapped_column(Integer)
     client_id: Mapped[str | None] = mapped_column(
         ForeignKey("automation_clients.id", ondelete="SET NULL"),
         index=True,
@@ -2203,7 +2559,16 @@ class VoiceCollection(Base):
     __tablename__ = "voice_collections"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_voice_collections_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(
@@ -2213,10 +2578,25 @@ class VoiceCollection(Base):
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "name", name="uq_voice_collections_workspace_name"
+        ),
+    )
+
 
 class VoiceCollectionMember(Base):
     __tablename__ = "voice_collection_members"
 
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_voice_collection_members_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
     collection_id: Mapped[str] = mapped_column(
         ForeignKey("voice_collections.id", ondelete="CASCADE"), primary_key=True
     )
@@ -2233,6 +2613,14 @@ class VoiceCollectionMember(Base):
 class VoiceCatalogOverride(Base):
     __tablename__ = "voice_catalog_overrides"
 
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_voice_catalog_overrides_workspace_id_workspaces",
+        ),
+        primary_key=True,
+    )
     voice_key: Mapped[str] = mapped_column(String(1024), primary_key=True)
     voice_ref_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     name: Mapped[str | None] = mapped_column(String(255))
@@ -2315,6 +2703,15 @@ class SoundItem(Base):
     __tablename__ = "sound_items"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_sound_items_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -2331,6 +2728,13 @@ class SoundItem(Base):
 
     __table_args__ = (
         Index("ix_sound_items_archived_created_at_id", "archived", "created_at", "id"),
+        Index(
+            "ix_sound_items_workspace_archived_created_at_id",
+            "workspace_id",
+            "archived",
+            "created_at",
+            "id",
+        ),
     )
 
 
@@ -2340,6 +2744,15 @@ class SoundVariant(Base):
     __tablename__ = "sound_variants"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "workspaces.id",
+            ondelete="RESTRICT",
+            name="fk_sound_variants_workspace_id_workspaces",
+        ),
+        index=True,
+        nullable=False,
+    )
     item_id: Mapped[str | None] = mapped_column(
         ForeignKey("sound_items.id", ondelete="RESTRICT")
     )
@@ -2365,4 +2778,16 @@ class SoundVariant(Base):
     __table_args__ = (
         Index("ix_sound_variants_item_created_at_id", "item_id", "created_at", "id"),
         Index("ix_sound_variants_fingerprint_state", "fingerprint", "state"),
+        Index(
+            "ix_sound_variants_workspace_fingerprint_state",
+            "workspace_id",
+            "fingerprint",
+            "state",
+        ),
+        Index(
+            "ix_sound_variants_workspace_created_at_id",
+            "workspace_id",
+            "created_at",
+            "id",
+        ),
     )

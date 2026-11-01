@@ -12,6 +12,23 @@ Streamable HTTP support, or when you need an explicitly named remote target.
 | Older MCP host | Stdio | Preserves the maintained initialization and process transport |
 | Headless Pandrator server | Stdio on the agent workstation to a fixed HTTPS target | Does not expose a second public automation listener |
 
+## Teams and named accounts
+
+Use a separate stdio sidecar and browser PKCE application enrollment for each
+teammate, even when they use the same Pandrator server. Sign in as the intended
+person, approve only their needed workspaces/projects, and request the complete
+scope set. Creating or joining a workspace needs `app.read`, `app.write` and
+`app.workspaces.enroll`. Editing existing approved content does not require the
+create/join scope. Re-enroll to seek additional approval; old tokens do not grow
+new scopes automatically.
+
+The shared installation's managed HTTP bearer represents its local Owner/service
+boundary. Do not distribute it to teammates or use it as a named-account login.
+Instance Administrator and workspace Manager are different roles. Read the
+[collaboration setup guide](../guides/collaboration.md) and the
+[MCP collaboration workflow](../../pandrator_mcp/guides/collaboration.md) before
+configuring team access.
+
 ## Managed HTTP on the same computer
 
 An application bundle with Pandrator's automation extra registers the optional

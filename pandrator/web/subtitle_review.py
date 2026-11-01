@@ -5,13 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import mimetypes
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
+from uuid import uuid4
 
 from sqlalchemy import func, select
 
@@ -23,7 +26,9 @@ from pandrator.logic.dubbing.subtitle_finalization import (
     finalize_segments,
 )
 
-from .artifacts import ArtifactService
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .artifacts import ArtifactService, PreparedArtifactRegistration, sha256_file
 from .database import Database
 from .document_roles import ARTIFACT_ROLE_TO_STAGE
 from .export_subtitles import subtitle_export_diagnostics
@@ -46,7 +51,9 @@ from .models import (
     SubtitleEvidence,
 )
 from .settings_policy import adapt_runtime_settings
+from .source_resolution import PrimarySourceResolution
 from .subtitle_media import resolve_subtitle_media
+from .temporal_overlap import overlap_indexes
 from .workspace_settings import WorkspaceSettingsService
 
 STAGE_ORDER = ("transcription", "correction", "translation", "tts_optimization")
@@ -64,6 +71,57 @@ def cleanup_review_publications(paths: Sequence[Path]) -> None:
                 "Could not remove subtitle publication %s", path, exc_info=True,
             )
 
+
+@dataclass(frozen=True, slots=True)
+class PreparedSubtitleReview:
+    """Detached review data; preparation owns no database writes.
+
+    Only the staged file belongs to this attempt. The publishing transaction's
+    owner must remove newly published paths if its commit fails.
+    """
+
+    session_id: str
+    stage: str
+    document: dict[str, Any]
+    previous: dict[str, Any] | None
+    next_revision_number: int
+    source: dict[str, Any] | None
+    parent: dict[str, Any] | None
+    source_stat: tuple[int, ...] | None
+    evidence: dict[str, dict[str, Any]]
+    settings_hash: str
+    composition_hash: str | None
+    revision_id: str
+    content_hash: str
+    children: list[dict[str, Any]]
+    metadata: dict[str, Any]
+    settings: dict[str, Any]
+    staged_path: Path
+    destination: Path
+    registration: PreparedArtifactRegistration
+
+    def cleanup(self) -> None:
+        cleanup_review_publications([self.staged_path])
+
+
+def _record_values(record, fields: Sequence[str]) -> dict[str, Any]:
+    return {field: deepcopy(getattr(record, field)) for field in fields}
+
+
+def _stat_witness(path: Path) -> tuple[int, ...]:
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+_SOURCE_FIELDS = (
+    "id", "session_id", "project_id", "workspace_id", "kind", "role", "state",
+    "relative_path", "content_hash", "size_bytes", "settings_hash", "metadata_json",
+)
+_REVISION_FIELDS = (
+    "id", "document_id", "parent_revision_id", "revision_number", "content_hash",
+    "reviewed", "settings_hash",
+)
+_EVIDENCE_FIELDS = ("id", "session_id", "status", "start_ms", "end_ms")
 
 class ReviewedSubtitleSegment(TypedDict):
     id: str | None
@@ -186,6 +244,20 @@ def _review_passage_rows(
     """Project reviewed display cues through explicit source identity and windows."""
     by_segment = {item.id: item for item in source_segments}
     by_passage = {row["id"]: row for row in source_rows}
+    exact_segments: dict[tuple[int | None, int | None], list[Segment]] = {}
+    source_owners: dict[str, list[Segment]] = {}
+    for item in source_segments:
+        exact_segments.setdefault((item.start_ms, item.end_ms), []).append(item)
+        source_owners.setdefault(item.id, []).append(item)
+    candidate_indexes = overlap_indexes(
+        [(row["start_ms"], row["end_ms"]) for row in source_rows],
+        [(row["start_ms"], row["end_ms"]) for row in reviewed],
+    )
+    source_segment_indexes = overlap_indexes(
+        [(item.start_ms or 0, item.end_ms or 0) for item in source_segments],
+        [(row["start_ms"], row["end_ms"]) for row in source_rows],
+    )
+    source_indexes_by_id = {row["id"]: index for index, row in enumerate(source_rows)}
     output: list[dict[str, Any]] = []
     used: set[str] = set()
     carried: dict[str, dict[str, Any]] = {}
@@ -213,11 +285,7 @@ def _review_passage_rows(
         ):
             raise ValueError("Reviewed segment identity does not overlap its selected source.")
         if segment is None:
-            exact = [
-                item for item in source_segments
-                if item.start_ms == cue["start_ms"]
-                and item.end_ms == cue["end_ms"]
-            ]
+            exact = exact_segments.get((cue["start_ms"], cue["end_ms"]), [])
             if len(exact) > 1 and cue["speaker"]:
                 exact = [
                     item for item in exact
@@ -225,10 +293,7 @@ def _review_passage_rows(
                 ]
             if len(exact) == 1:
                 segment = exact[0]
-        candidates = [
-            row for row in source_rows
-            if _overlaps(cue["start_ms"], cue["end_ms"], row)
-        ]
+        candidates = [source_rows[index] for index in candidate_indexes[ordinal]]
         owned = (
             [row for row in candidates if segment.id in row.get("source_cue_ids", [])]
             if segment is not None else []
@@ -246,7 +311,7 @@ def _review_passage_rows(
             if len(set(supplied)) != len(supplied) or any(value not in by_passage for value in supplied):
                 raise ValueError("Logical source references do not belong to the selected source.")
             selected = [by_passage[value] for value in supplied]
-            if any(row not in owned for row in selected) or any(row not in selected for row in owned):
+            if {row["id"] for row in selected} != {row["id"] for row in owned}:
                 raise ValueError("Logical source references conflate or omit selected source passages.")
             owned = selected
         if not owned:
@@ -366,15 +431,14 @@ def _review_passage_rows(
         stored.update(passage_review_metadata(reviews))
         if row_id not in fragments:
             continue
+        direct_ids = set(source.get("source_cue_ids", []))
         direct = [
-            segment for segment in source_segments
-            if segment.id in source.get("source_cue_ids", [])
+            segment for segment_id in direct_ids
+            for segment in source_owners.get(segment_id, [])
         ]
         expected = direct or [
-            segment for segment in source_segments
-            if segment.start_ms is not None
-            and segment.end_ms is not None
-            and _overlaps(segment.start_ms, segment.end_ms, source)
+            source_segments[index]
+            for index in source_segment_indexes[source_indexes_by_id[row_id]]
         ]
         actual = fragments[row_id]
         if (
@@ -501,14 +565,20 @@ class SubtitleReviewService:
             )
             return result
 
-    def _source_hash_matches(self, source: Artifact) -> bool:
+    def _source_file_witness(self, source: Artifact) -> tuple[int, ...] | None:
         if not source.content_hash:
-            return False
+            return None
         try:
             path = self.artifacts.paths.managed_path(source.relative_path)
-            return hashlib.sha256(path.read_bytes()).hexdigest() == source.content_hash
+            before = _stat_witness(path)
+            digest = sha256_file(path)
+            after = _stat_witness(path)
+            return after if before == after and digest == source.content_hash else None
         except (OSError, ValueError):
-            return False
+            return None
+
+    def _source_hash_matches(self, source: Artifact) -> bool:
+        return self._source_file_witness(source) is not None
 
     @staticmethod
     def _payload(segment: Segment) -> dict[str, Any]:
@@ -537,27 +607,28 @@ class SubtitleReviewService:
 
     @classmethod
     def _payload_with_passages(
-        cls, segment: Segment, passages: list[dict[str, Any]]
+        cls, segment: Segment, passages: list[dict[str, Any]], *,
+        passage_by_id: dict[str, dict[str, Any]] | None = None,
+        cue_owners: dict[str, list[dict[str, Any]]] | None = None,
+        fallback: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         payload = cls._payload(segment)
         segment_metadata = dict(segment.metadata_json or {})
         canonical_ids = segment_metadata.get("source_passage_ids") or []
-        passage_by_id = {str(row["id"]): row for row in passages}
+        if passage_by_id is None:
+            passage_by_id = {str(row["id"]): row for row in passages}
         owned = (
             [passage_by_id[str(row_id)] for row_id in canonical_ids]
             if segment_metadata.get("canonical_passage_review")
             and canonical_ids
             and all(str(row_id) in passage_by_id for row_id in canonical_ids)
-            else [
-                row for row in passages
-                if segment.id in row.get("source_cue_ids", [])
-            ]
+            else cue_owners.get(segment.id, []) if cue_owners is not None
+            else [row for row in passages if segment.id in row.get("source_cue_ids", [])]
         )
         if not owned:
-            owned = [
+            owned = fallback if fallback is not None else [
                 row for row in passages
-                if segment.start_ms is not None
-                and segment.end_ms is not None
+                if segment.start_ms is not None and segment.end_ms is not None
                 and _overlaps(segment.start_ms, segment.end_ms, row)
             ]
         payload["source_passage_ids"] = [row["id"] for row in owned]
@@ -629,8 +700,43 @@ class SubtitleReviewService:
         payload["edit_capabilities"] = capabilities
         return payload
 
+    @classmethod
+    def _payloads_with_passages(
+        cls, segments: list[Segment], passages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        passage_by_id = {str(row["id"]): row for row in passages}
+        cue_owners: dict[str, list[dict[str, Any]]] = {}
+        for row in passages:
+            # A repeated source cue id still owns this passage only once.
+            for cue_id in dict.fromkeys(row.get("source_cue_ids", [])):
+                cue_owners.setdefault(cue_id, []).append(row)
+        fallback_ordinals = []
+        for ordinal, item in enumerate(segments):
+            metadata = item.metadata_json or {}
+            canonical_ids = metadata.get("source_passage_ids") or []
+            has_canonical_ownership = (
+                metadata.get("canonical_passage_review") and canonical_ids
+                and all(str(row_id) in passage_by_id for row_id in canonical_ids)
+            )
+            if not has_canonical_ownership and not cue_owners.get(item.id):
+                fallback_ordinals.append(ordinal)
+        fallback_indexes = overlap_indexes(
+            [(row["start_ms"], row["end_ms"]) for row in passages],
+            [(segments[index].start_ms or 0, segments[index].end_ms or 0)
+             for index in fallback_ordinals],
+        ) if fallback_ordinals else []
+        fallbacks = {
+            ordinal: [passages[index] for index in matches]
+            for ordinal, matches in zip(fallback_ordinals, fallback_indexes, strict=True)
+        }
+        return [cls._payload_with_passages(
+            item, passages, passage_by_id=passage_by_id, cue_owners=cue_owners,
+            fallback=fallbacks.get(ordinal, []),
+        ) for ordinal, item in enumerate(segments)]
+
     def documents(self, session_id: str) -> dict[str, Any]:
         with self.database.session() as session:
+            require_current_session_access(session, session_id, ProjectAction.READ)
             documents = list(
                 session.scalars(
                     select(Document)
@@ -684,6 +790,7 @@ class SubtitleReviewService:
         """
 
         with self.database.session() as session:
+            require_current_session_access(session, session_id, ProjectAction.READ)
             artifacts = list(
                 session.scalars(
                     select(Artifact)
@@ -772,7 +879,12 @@ class SubtitleReviewService:
                 f"At most {MAX_REVIEW_ARTIFACTS} subtitle artifacts can be compared at once."
             )
 
-        with self.database.session() as session:
+        with self.database.snapshot_session() as session:
+            fallback_cache: dict[str, PrimarySourceResolution] = {}
+            resolved_settings, composition_hash = WorkspaceSettingsService(
+                self.database
+            ).resolve_in_session(session, session_id, sections=["subtitles"])
+            composition_settings = deepcopy(resolved_settings.get("subtitles") or {})
             artifacts_by_id = {
                 artifact.id: artifact
                 for artifact in session.scalars(
@@ -834,12 +946,6 @@ class SubtitleReviewService:
             for segment in segment_rows:
                 segments_by_revision[segment.revision_id].append(segment)
 
-            resolved_settings, composition_hash = WorkspaceSettingsService(
-                self.database
-            ).resolve_in_session(session, session_id, sections=["subtitles"])
-            composition_settings = deepcopy(
-                resolved_settings.get("subtitles") or {}
-            )
             columns: list[dict[str, Any]] = []
             segment_sets: dict[str, list[Segment]] = {}
             for artifact_id in ordered_ids:
@@ -862,7 +968,8 @@ class SubtitleReviewService:
                 source_media_kind: str | None = None
                 try:
                     media_artifact = resolve_subtitle_media(
-                        session, session_id, artifact
+                        session, session_id, artifact,
+                        fallback_cache=fallback_cache,
                     )
                     source_media_artifact_id = media_artifact.id
                     source_media_mime_type = media_artifact.mime_type
@@ -887,9 +994,7 @@ class SubtitleReviewService:
                         "source_media_kind": source_media_kind,
                         "source_media_error": source_media_error,
                         "logical_passages": deepcopy(passages),
-                        "segments": [
-                            self._payload_with_passages(item, passages) for item in records
-                        ],
+                        "segments": self._payloads_with_passages(records, passages),
                     }
                 )
             rows = self._comparison_rows_by_key(session, segment_sets, ordered_ids)
@@ -970,38 +1075,18 @@ class SubtitleReviewService:
         for left_stage, right_stage in pairwise(present):
             if (left_stage, right_stage) in lineage_pairs:
                 continue
-            # Legacy revisions do not always have lineage edges.  Both lists
-            # are ordinal/time ordered, so a two-pointer interval sweep aligns
-            # them in O(n + m), including one-to-many overlaps, instead of the
-            # former quadratic nested scan.
-            left_records = sorted(
-                (
-                    item
-                    for item in stage_segments[left_stage]
-                    if item.start_ms is not None and item.end_ms is not None
-                ),
-                key=lambda item: (item.start_ms, item.end_ms, item.ordinal),
+            # A full interval join handles nested/unsorted legacy windows.
+            left_records = [item for item in stage_segments[left_stage]
+                            if item.start_ms is not None and item.end_ms is not None]
+            right_records = [item for item in stage_segments[right_stage]
+                             if item.start_ms is not None and item.end_ms is not None]
+            indexes = overlap_indexes(
+                [(item.start_ms or 0, item.end_ms or 0) for item in left_records],
+                [(item.start_ms or 0, item.end_ms or 0) for item in right_records],
             )
-            right_records = sorted(
-                (
-                    item
-                    for item in stage_segments[right_stage]
-                    if item.start_ms is not None and item.end_ms is not None
-                ),
-                key=lambda item: (item.start_ms, item.end_ms, item.ordinal),
-            )
-            left_index = right_index = 0
-            while left_index < len(left_records) and right_index < len(right_records):
-                left = left_records[left_index]
-                right = right_records[right_index]
-                assert left.start_ms is not None and left.end_ms is not None
-                assert right.start_ms is not None and right.end_ms is not None
-                if min(left.end_ms, right.end_ms) > max(left.start_ms, right.start_ms):
-                    union((left_stage, left.id), (right_stage, right.id))
-                if left.end_ms <= right.end_ms:
-                    left_index += 1
-                else:
-                    right_index += 1
+            for right, matches in zip(right_records, indexes, strict=True):
+                for index in matches:
+                    union((left_stage, left_records[index].id), (right_stage, right.id))
 
         groups: dict[Any, list[tuple[str, str]]] = {}
         for node in nodes:
@@ -1029,7 +1114,7 @@ class SubtitleReviewService:
             result.append(row)
         return sorted(result, key=lambda item: (item["start_ms"], item["end_ms"]))
 
-    def save_review(
+    def prepare_review(
         self,
         session_id: str,
         stage: str,
@@ -1040,34 +1125,21 @@ class SubtitleReviewService:
         source_artifact_id: str | None = None,
         expected_source_hash: str | None = None,
         db_session=None,
-        published_paths: list[Path] | None = None,
         _prepared_canonical: list[dict[str, Any]] | None = None,
         _prepared_composition_settings: dict[str, Any] | None = None,
         _prepared_composition_hash: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> PreparedSubtitleReview | dict[str, Any]:
         if db_session is None:
-            owned_paths: list[Path] = []
-            try:
-                with self.database.session() as session:
-                    return self.save_review(
-                        session_id,
-                        stage,
-                        expected_revision,
-                        values,
-                        dry_run=dry_run,
-                        source_artifact_id=source_artifact_id,
-                        expected_source_hash=expected_source_hash,
-                        db_session=session,
-                        published_paths=owned_paths,
-                        _prepared_canonical=_prepared_canonical,
-                        _prepared_composition_settings=(
-                            _prepared_composition_settings
-                        ),
-                        _prepared_composition_hash=_prepared_composition_hash,
-                    )
-            except BaseException:
-                cleanup_review_publications(owned_paths)
-                raise
+            with self.database.snapshot_session() as session:
+                return self.prepare_review(
+                    session_id, stage, expected_revision, values,
+                    dry_run=dry_run, source_artifact_id=source_artifact_id,
+                    expected_source_hash=expected_source_hash, db_session=session,
+                    _prepared_canonical=_prepared_canonical,
+                    _prepared_composition_settings=_prepared_composition_settings,
+                    _prepared_composition_hash=_prepared_composition_hash,
+                )
+        require_current_session_access(db_session, session_id, ProjectAction.EDIT)
         if stage not in STAGE_ORDER:
             raise ValueError(f"Unsupported subtitle stage: {stage}")
         normalized: list[ReviewedSubtitleSegment] = []
@@ -1217,9 +1289,13 @@ class SubtitleReviewService:
                 or source_artifact.state == "deleted"
             ):
                 raise KeyError(source_artifact_id)
+            source_stat = (
+                self._source_file_witness(source_artifact)
+                if source_artifact is not None else None
+            )
             if source_artifact is not None and (
                 (expected_source_hash is not None and source_artifact.content_hash != expected_source_hash)
-                or not self._source_hash_matches(source_artifact)
+                or source_stat is None
             ):
                 raise RuntimeError("Subtitle source content hash changed.")
             source_metadata = (
@@ -1264,8 +1340,7 @@ class SubtitleReviewService:
                     language=(None if language == "auto" else language),
                 )
                 if not dry_run:
-                    session.add(document)
-                    session.flush()
+                    document.id = str(uuid4())
                 previous = None
                 previous_segments: list[Segment] = []
                 next_revision_number = 1
@@ -1301,11 +1376,14 @@ class SubtitleReviewService:
                     )
                     .order_by(Artifact.created_at.desc())
                 )
-                if source_artifact is not None and (
-                    (source_artifact.metadata_json or {}).get("revision_id") != previous.id
-                    or not self._source_hash_matches(source_artifact)
-                ):
-                    source_artifact = None
+                if source_artifact is not None:
+                    source_stat = self._source_file_witness(source_artifact)
+                    if (
+                        (source_artifact.metadata_json or {}).get("revision_id") != previous.id
+                        or source_stat is None
+                    ):
+                        source_artifact = None
+                        source_stat = None
             if expected_source_hash is not None and (
                 source_artifact is None
                 or source_artifact.content_hash != expected_source_hash
@@ -1318,37 +1396,37 @@ class SubtitleReviewService:
                 if (source_artifact.metadata_json or {}).get("revision_id") != (previous.id if previous else None):
                     raise RuntimeError("Subtitle source revision changed.")
                 for origin_id in {item["origin_segment_id"] for item in normalized if item["origin_segment_id"]}:
-                    children = [item for item in normalized if item["origin_segment_id"] == origin_id]
-                    if len(children) != 2 or not children[0]["split_boundary_id"] or children[0]["split_boundary_id"] != children[1]["split_boundary_id"]:
-                        raise ValueError("A review split requires two children with one shared verified boundary.")
-                    if any(item["id"] is not None and item["id"] != origin_id for item in children):
+                    split_children = [item for item in normalized if item["origin_segment_id"] == origin_id]
+                    if len(split_children) != 2 or not split_children[0]["split_boundary_id"] or split_children[0]["split_boundary_id"] != split_children[1]["split_boundary_id"]:
+                        raise ValueError("A review split requires two split_children with one shared verified boundary.")
+                    if any(item["id"] is not None and item["id"] != origin_id for item in split_children):
                         raise ValueError("Split child id must be absent or match origin_segment_id.")
                     inspection = self.inspect_review_split_boundaries(
                         session_id, source_artifact.id, origin_id, expected_revision,
                         offset=0, limit=100,
                     )
-                    boundary = next((row for row in inspection["boundaries"] if row["id"] == children[0]["split_boundary_id"]), None)
+                    boundary = next((row for row in inspection["boundaries"] if row["id"] == split_children[0]["split_boundary_id"]), None)
                     while boundary is None and inspection["next_offset"] is not None:
                         inspection = self.inspect_review_split_boundaries(
                             session_id, source_artifact.id, origin_id,
                             expected_revision, offset=inspection["next_offset"], limit=100,
                         )
-                        boundary = next((row for row in inspection["boundaries"] if row["id"] == children[0]["split_boundary_id"]), None)
+                        boundary = next((row for row in inspection["boundaries"] if row["id"] == split_children[0]["split_boundary_id"]), None)
                     if boundary is None:
                         raise ValueError("Split boundary is unavailable or stale; inspect source anchors.")
                     origin = next(item for item in previous_segments if item.id == origin_id)
-                    if (children[0]["start_ms"], children[0]["end_ms"]) != (origin.start_ms, boundary["left_end_ms"]) or (children[1]["start_ms"], children[1]["end_ms"]) != (boundary["right_start_ms"], origin.end_ms):
+                    if (split_children[0]["start_ms"], split_children[0]["end_ms"]) != (origin.start_ms, boundary["left_end_ms"]) or (split_children[1]["start_ms"], split_children[1]["end_ms"]) != (boundary["right_start_ms"], origin.end_ms):
                         raise ValueError("Review split timing must match verified source-word windows.")
                     source_row = next(row for row in source_rows if row["id"] == inspection["source_passage_id"])
                     if any(
                         item["source_passage_ids"]
                         and item["source_passage_ids"] != [source_row["id"]]
-                        for item in children
+                        for item in split_children
                     ):
                         raise ValueError("Split child logical source references must match the verified origin passage.")
                     split_at = boundary["after_word"]
-                    children[0]["_source_word_ids"] = list(source_row.get("source_word_ids") or [])[:split_at]
-                    children[1]["_source_word_ids"] = list(source_row.get("source_word_ids") or [])[split_at:]
+                    split_children[0]["_source_word_ids"] = list(source_row.get("source_word_ids") or [])[:split_at]
+                    split_children[1]["_source_word_ids"] = list(source_row.get("source_word_ids") or [])[split_at:]
                 if any(item["split_boundary_id"] and not item["origin_segment_id"] for item in normalized):
                     raise ValueError("Split boundary requires origin_segment_id.")
                 if _prepared_canonical is not None:
@@ -1401,6 +1479,19 @@ class SubtitleReviewService:
                         "evidence_ids": item["evidence_ids"],
                         "uncertain_source_cue_ids": item["uncertain_source_cue_ids"],
                     })
+            exact_speakers_by_timing: dict[tuple[int | None, int | None], dict[str, str]] = {}
+            previous_speakers: list[str] = []
+            for item in previous_segments:
+                speaker = _speaker_and_text(item)[0]
+                previous_speakers.append(speaker)
+                if speaker:
+                    exact_speakers_by_timing.setdefault(
+                        (item.start_ms, item.end_ms), {}
+                    ).setdefault(speaker.casefold(), speaker)
+            speaker_indexes = overlap_indexes(
+                [(item.start_ms or 0, item.end_ms or 0) for item in previous_segments],
+                [(item["start_ms"], item["end_ms"]) for item in normalized],
+            )
             for index, reviewed in enumerate(normalized, start=1):
                 if _prepared_canonical is not None:
                     continue
@@ -1408,16 +1499,9 @@ class SubtitleReviewService:
                 # Preserve that inherited overlap when the reviewed cue keeps the same
                 # timing, while still rejecting newly created cues whose timing spans
                 # multiple speakers. Exact-timing cues may also correct speaker labels.
-                exact_speakers: dict[str, str] = {}
-                for previous_segment in previous_segments:
-                    if (
-                        previous_segment.start_ms != reviewed["start_ms"]
-                        or previous_segment.end_ms != reviewed["end_ms"]
-                    ):
-                        continue
-                    speaker, _text = _speaker_and_text(previous_segment)
-                    if speaker:
-                        exact_speakers.setdefault(speaker.casefold(), speaker)
+                exact_speakers = exact_speakers_by_timing.get(
+                    (reviewed["start_ms"], reviewed["end_ms"]), {}
+                )
 
                 reviewed_speaker = str(reviewed["speaker"] or "").strip()
                 exact_timing_match = len(exact_speakers) == 1
@@ -1431,15 +1515,8 @@ class SubtitleReviewService:
                     continue
 
                 overlapping_speakers: dict[str, str] = {}
-                for previous_segment in previous_segments:
-                    if (
-                        previous_segment.start_ms is None
-                        or previous_segment.end_ms is None
-                        or min(reviewed["end_ms"], previous_segment.end_ms)
-                        <= max(reviewed["start_ms"], previous_segment.start_ms)
-                    ):
-                        continue
-                    speaker, _text = _speaker_and_text(previous_segment)
+                for parent_index in speaker_indexes[index - 1]:
+                    speaker = previous_speakers[parent_index]
                     if speaker:
                         overlapping_speakers.setdefault(speaker.casefold(), speaker)
                 if len(overlapping_speakers) > 1:
@@ -1483,29 +1560,25 @@ class SubtitleReviewService:
                 )
                 + 1
             )
-            revision = DocumentRevision(
-                document_id=document.id,
-                parent_revision_id=previous.id if previous else None,
-                revision_number=next_revision_number,
-                content_hash=_segments_hash(normalized),
-                reviewed=True,
-                settings_hash=composition_hash,
-            )
-            session.add(revision)
-            session.flush()
-            children = []
+            revision_id = str(uuid4())
+            children: list[dict[str, Any]] = []
             logical_rows_by_id = {
                 str(row["id"]): row for row in logical_rows
             }
+            linked_indexes = overlap_indexes(
+                [(row["start_ms"], row["end_ms"]) for row in logical_rows],
+                [(row["start_ms"], row["end_ms"]) for row in normalized],
+            )
+            parent_indexes = overlap_indexes(
+                [(row.start_ms or 0, row.end_ms or 0) for row in previous_segments],
+                [(row["start_ms"], row["end_ms"]) for row in normalized],
+            )
             for ordinal, reviewed in enumerate(normalized):
                 canonical_passage_id = reviewed.get("_canonical_passage_id")
                 linked = (
                     [logical_rows_by_id[str(canonical_passage_id)]]
                     if canonical_passage_id is not None
-                    else [
-                        row for row in logical_rows
-                        if _overlaps(reviewed["start_ms"], reviewed["end_ms"], row)
-                    ]
+                    else [logical_rows[index] for index in linked_indexes[ordinal]]
                 )
                 linked_turns = {str(row.get("turn_id") or "") for row in linked}
                 canonical_metadata = (
@@ -1513,8 +1586,7 @@ class SubtitleReviewService:
                     if canonical_passage_id is not None and linked
                     else None
                 )
-                child = Segment(
-                    revision_id=revision.id,
+                child: dict[str, Any] = dict(
                     ordinal=ordinal,
                     start_ms=reviewed["start_ms"],
                     end_ms=reviewed["end_ms"],
@@ -1563,153 +1635,289 @@ class SubtitleReviewService:
                         **({"turn_id": next(iter(linked_turns))} if len(linked_turns) == 1 and next(iter(linked_turns)) else {}),
                     },
                 )
-                session.add(child)
+                child["parent_ids"] = [
+                    previous_segments[index].id for index in parent_indexes[ordinal]
+                ]
                 children.append(child)
-            session.flush()
-            for child in children:
-                for sequence, parent_segment in enumerate(
-                    item
-                    for item in previous_segments
-                    if item.start_ms is not None
-                    and item.end_ms is not None
-                    and min(child.end_ms or 0, item.end_ms)
-                    > max(child.start_ms or 0, item.start_ms)
-                ):
-                    session.add(
-                        SegmentLineage(
-                            parent_segment_id=parent_segment.id,
-                            child_segment_id=child.id,
-                            relation="reviewed",
-                            sequence=sequence,
-                        )
-                    )
-            document.active_revision_id = revision.id
-            language = document.language
-            document_id = document.id
-            revision_id = revision.id
-            revision_number = revision.revision_number
+            document_values = {
+                "id": document.id, "session_id": session_id, "stage": stage,
+                "language": document.language,
+                "active_revision_id": document.active_revision_id,
+                "exists": previous is not None,
+            }
+            source_values = (
+                _record_values(source_artifact, _SOURCE_FIELDS)
+                if source_artifact is not None else None
+            )
+            parent_artifact = source_artifact or session.scalar(
+                select(Artifact).where(
+                    Artifact.session_id == session_id,
+                    Artifact.role == ("tts_optimized" if stage == "tts_optimization" else stage),
+                    Artifact.state == "current",
+                ).order_by(Artifact.created_at.desc())
+            )
+            parent_values = (
+                _record_values(parent_artifact, _SOURCE_FIELDS)
+                if parent_artifact is not None else None
+            )
+            previous_values = (
+                _record_values(previous, _REVISION_FIELDS)
+                if previous is not None else None
+            )
+            evidence_values = {
+                key: _record_values(value, _EVIDENCE_FIELDS)
+                for key, value in evidence_by_id.items()
+            }
+            resolved, settings_hash = WorkspaceSettingsService(self.database).resolve_in_session(
+                session, session_id, sections=["subtitles"]
+            )
+            diagnostic_settings = resolved.get("subtitles") or {}
+            if _prepared_canonical is not None and settings_hash != composition_hash:
+                raise RuntimeError("Subtitle composition settings changed; refresh the review.")
 
-        content = compose_srt(
-            [
-                SubtitleSegment(
-                    index=index,
-                    start_ms=item["start_ms"],
-                    end_ms=item["end_ms"],
-                    text=item["text"],
-                    speaker=str(item.get("speaker") or ""),
-                )
-                for index, item in enumerate(normalized, start=1)
-            ]
-        )
+        content = compose_srt([
+            SubtitleSegment(
+                index=index, start_ms=item["start_ms"], end_ms=item["end_ms"],
+                text=item["text"], speaker=str(item.get("speaker") or ""),
+            )
+            for index, item in enumerate(normalized, start=1)
+        ])
         speakers = {
             str(item.get("speaker") or "").strip().casefold()
-            for item in normalized
-            if str(item.get("speaker") or "").strip()
+            for item in normalized if str(item.get("speaker") or "").strip()
         }
-        destination: Path = (
-            self.session_dir_resolver(session_id)
-            / f"reviewed_{stage}_r{revision_number}.srt"
+        settings = {
+            "reviewed": True, "revision": next_revision_number,
+            **({"composition_hash": composition_hash,
+                "composition_settings": composition_settings}
+               if _prepared_canonical is not None else {}),
+        }
+        metadata = {
+            "document_id": document.id, "revision_id": revision_id, "stage": stage,
+            "language": document.language,
+            "subtitle_diagnostics": subtitle_export_diagnostics(
+                passage_srt(logical_rows), content,
+                adapt_runtime_settings("subtitles", diagnostic_settings), None,
+                language=document.language or "", language_origin="reviewed_document",
+            ),
+            "reviewed": True, "has_speaker_metadata": bool(speakers),
+            "speaker_count": len(speakers),
+            "uncertain_segment_count": sum(
+                item["review_state"] == "uncertain" for item in normalized
+            ),
+            **({"composition_hash": composition_hash,
+                "composition_settings": deepcopy(composition_settings)}
+               if _prepared_canonical is not None else {}),
+        }
+        # Precompute the logical packet on transient records, including its
+        # validation/hashes. Only self-source identity needs filling at publish.
+        output_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        detached = Artifact(content_hash=output_hash, metadata_json=metadata)
+        detached_source = (
+            Artifact(**source_values) if source_values is not None else detached
         )
-        newly_published = self._publish_reviewed_file(destination, content)
-        if newly_published and published_paths is not None:
-            published_paths.append(destination)
-        with (
-            self.database.session()
-            if db_session is None
-            else _SessionContext(db_session)
-        ) as session:
-            parent_artifact = source_artifact or session.scalar(
-                select(Artifact)
-                .where(
-                    Artifact.session_id == session_id,
-                    Artifact.role
-                    == ("tts_optimized" if stage == "tts_optimization" else stage),
-                    Artifact.state == "current",
-                )
-                .order_by(Artifact.created_at.desc())
+        source_packet = (
+            ((source_values["metadata_json"] or {}).get("logical_passages") or {})
+            if source_values is not None else {}
+        )
+        attach_passages(
+            detached, logical_rows, source=detached_source,
+            source_passage_settings=source_packet.get("source_passage_settings"),
+            source_passage_settings_revision=source_packet.get("source_passage_settings_revision"),
+            policy_version=source_packet.get("policy_version"),
+        )
+        directory = self.session_dir_resolver(session_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        destination = directory / f"reviewed_{stage}_r{next_revision_number}_{uuid4().hex}.srt"
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.", suffix=".tmp", dir=directory
+        )
+        staged = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            registration = self.artifacts.prepare_registration(staged, settings=settings)
+            registration = replace(
+                registration,
+                relative_path=self.artifacts.paths.relative_managed_path(destination),
+                mime_type=mimetypes.guess_type(destination.name)[0],
             )
-            parent_id = parent_artifact.id if parent_artifact else None
-            diagnostic_settings = composition_settings
-            if _prepared_canonical is None:
-                resolved, _ = WorkspaceSettingsService(self.database).resolve_in_session(
-                    session, session_id, sections=["subtitles"]
-                )
-                diagnostic_settings = resolved.get("subtitles") or {}
+            return PreparedSubtitleReview(
+                session_id=session_id, stage=stage, document=document_values,
+                previous=previous_values, next_revision_number=next_revision_number,
+                source=source_values, parent=parent_values, source_stat=source_stat, evidence=evidence_values,
+                settings_hash=settings_hash, composition_hash=composition_hash,
+                revision_id=revision_id, content_hash=_segments_hash(normalized),
+                children=children, metadata=deepcopy(detached.metadata_json),
+                settings=settings, staged_path=staged, destination=destination,
+                registration=registration,
+            )
+        except BaseException:
+            cleanup_review_publications([staged])
+            raise
+
+    def save_review(
+        self, session_id: str, stage: str, expected_revision: int,
+        values: list[dict[str, Any]], *, dry_run: bool = False,
+        source_artifact_id: str | None = None,
+        expected_source_hash: str | None = None, db_session=None,
+        published_paths: list[Path] | None = None,
+        _prepared_canonical: list[dict[str, Any]] | None = None,
+        _prepared_composition_settings: dict[str, Any] | None = None,
+        _prepared_composition_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Prepare outside our writer; a caller-owned transaction sets its limit.
+
+        Compatibility callers supplying db_session own transaction duration and
+        must retain published_paths for cleanup if their eventual commit fails.
+        """
+        prepared = self.prepare_review(
+            session_id, stage, expected_revision, values, dry_run=dry_run,
+            source_artifact_id=source_artifact_id, expected_source_hash=expected_source_hash,
+            db_session=db_session, _prepared_canonical=_prepared_canonical,
+            _prepared_composition_settings=_prepared_composition_settings,
+            _prepared_composition_hash=_prepared_composition_hash,
+        )
+        if isinstance(prepared, dict):
+            return prepared
+        owned_paths: list[Path] = []
+        try:
+            with (self.database.immediate_session() if db_session is None
+                  else _SessionContext(db_session)) as session:
+                result = self.publish_prepared_review_in_session(session, prepared, owned_paths)
+            if published_paths is not None:
+                published_paths.extend(owned_paths)
+            return result
+        except BaseException:
+            cleanup_review_publications(owned_paths)
+            raise
+        finally:
+            prepared.cleanup()
+
+    def publish_prepared_review_in_session(
+        self, session, prepared: PreparedSubtitleReview, published_paths: list[Path],
+    ) -> dict[str, Any]:
+        """Guard detached witnesses, then publish in the caller's short writer."""
+        require_current_session_access(session, prepared.session_id, ProjectAction.EDIT)
+        document_values = prepared.document
+        document = session.get(Document, document_values["id"], populate_existing=True)
+        if document_values["exists"]:
+            if prepared.previous is None:
+                raise RuntimeError("Subtitle source revision changed.")
+            if document is None or any(
+                getattr(document, field) != document_values[field]
+                for field in ("session_id", "stage", "language", "active_revision_id")
+            ):
+                raise RuntimeError("Subtitle document head changed; refresh the review.")
+            previous = session.get(DocumentRevision, prepared.previous["id"], populate_existing=True)
+            if previous is None or _record_values(previous, _REVISION_FIELDS) != prepared.previous:
+                raise RuntimeError("Subtitle source revision changed.")
+            maximum = int(session.scalar(select(func.max(DocumentRevision.revision_number)).where(
+                DocumentRevision.document_id == document.id
+            )) or 0)
+            if maximum + 1 != prepared.next_revision_number:
+                raise RuntimeError("Subtitle revision changed; refresh the review.")
+        else:
+            existing = session.scalar(select(Document.id).where(
+                Document.session_id == prepared.session_id, Document.stage == prepared.stage,
+            ).limit(1))
+            record = session.get(SessionRecord, prepared.session_id, populate_existing=True)
+            language = (
+                record.target_language if prepared.stage in {"translation", "tts_optimization"}
+                else record.source_language
+            ) if record is not None else None
+            if (existing is not None or record is None
+                    or (None if language == "auto" else language) != document_values["language"]):
+                raise RuntimeError("Subtitle document head changed; refresh the review.")
+        source = None
+        if prepared.source is not None:
+            source = session.get(Artifact, prepared.source["id"], populate_existing=True)
+            if source is None or _record_values(source, _SOURCE_FIELDS) != prepared.source:
+                raise RuntimeError("Subtitle source artifact changed; refresh the review.")
             try:
-                artifact = self.artifacts.register_in_session(
-                    session,
-                    destination,
-                    kind="srt",
-                    role="tts_optimized" if stage == "tts_optimization" else stage,
-                    session_id=session_id,
-                    parent_ids=[parent_id] if parent_id else [],
-                    settings={
-                        "reviewed": True,
-                        "revision": revision_number,
-                        **(
-                            {
-                                "composition_hash": composition_hash,
-                                "composition_settings": composition_settings,
-                            }
-                            if _prepared_canonical is not None
-                            else {}
-                        ),
-                    },
-                    metadata={
-                        "document_id": document_id,
-                        "revision_id": revision_id,
-                        "stage": stage,
-                        "language": language,
-                        "subtitle_diagnostics": subtitle_export_diagnostics(
-                            passage_srt(logical_rows), content,
-                            adapt_runtime_settings("subtitles", diagnostic_settings),
-                            None, language=language or "",
-                            language_origin="reviewed_document",
-                        ),
-                        "reviewed": True,
-                        "has_speaker_metadata": bool(speakers),
-                        "speaker_count": len(speakers),
-                        "uncertain_segment_count": sum(
-                            1
-                            for item in normalized
-                            if item["review_state"] == "uncertain"
-                        ),
-                        **(
-                            {
-                                "composition_hash": composition_hash,
-                                "composition_settings": deepcopy(
-                                    composition_settings
-                                ),
-                            }
-                            if _prepared_canonical is not None
-                            else {}
-                        ),
-                    },
-                )
-                source_packet = (
-                    ((source_artifact.metadata_json or {}).get("logical_passages") or {})
-                    if source_artifact is not None else {}
-                )
-                attach_passages(
-                    artifact,
-                    logical_rows,
-                    source=source_artifact or artifact,
-                    source_passage_settings=source_packet.get("source_passage_settings"),
-                    source_passage_settings_revision=source_packet.get("source_passage_settings_revision"),
-                    policy_version=source_packet.get("policy_version"),
-                )
-            except BaseException:
-                if newly_published:
-                    cleanup_review_publications([destination])
-                    if published_paths is not None:
-                        published_paths.remove(destination)
-                raise
-        return {
-            "artifact_id": artifact.id,
-            "document_id": document_id,
-            "revision_id": revision_id,
-            "revision": revision_number,
-        }
+                stat = _stat_witness(self.artifacts.paths.managed_path(source.relative_path))
+            except (OSError, ValueError):
+                raise RuntimeError("Subtitle source content hash changed.") from None
+            if stat != prepared.source_stat:
+                raise RuntimeError("Subtitle source content hash changed.")
+        if prepared.source is None and prepared.parent is not None:
+            parent_artifact = session.get(Artifact, prepared.parent["id"], populate_existing=True)
+            if parent_artifact is None or _record_values(parent_artifact, _SOURCE_FIELDS) != prepared.parent:
+                raise RuntimeError("Subtitle parent artifact changed; refresh the review.")
+        evidence = {
+            item.id: _record_values(item, _EVIDENCE_FIELDS)
+            for item in session.scalars(select(SubtitleEvidence).where(
+                SubtitleEvidence.id.in_(prepared.evidence)
+            ).execution_options(populate_existing=True)).all()
+        } if prepared.evidence else {}
+        if evidence != prepared.evidence:
+            raise RuntimeError("Subtitle evidence changed; refresh the review.")
+        _, settings_hash = WorkspaceSettingsService(self.database).resolve_in_session(
+            session, prepared.session_id, sections=["subtitles"]
+        )
+        if settings_hash != prepared.settings_hash:
+            raise RuntimeError("Subtitle composition settings changed; refresh the review.")
+        if prepared.destination.exists() or session.scalar(select(Artifact.id).where(
+            Artifact.relative_path == prepared.registration.relative_path
+        ).limit(1)) is not None:
+            raise RuntimeError("Subtitle publication path already exists.")
+        if document is None:
+            document = Document(**{key: value for key, value in document_values.items() if key != "exists"})
+            session.add(document)
+            session.flush()
+        revision = DocumentRevision(
+            id=prepared.revision_id, document_id=document.id,
+            parent_revision_id=prepared.previous["id"] if prepared.previous else None,
+            revision_number=prepared.next_revision_number, content_hash=prepared.content_hash,
+            reviewed=True, settings_hash=prepared.composition_hash,
+        )
+        session.add(revision)
+        session.flush()
+        children = [Segment(
+            revision_id=revision.id,
+            **{key: value for key, value in row.items() if key != "parent_ids"},
+        ) for row in prepared.children]
+        session.add_all(children)
+        session.flush()
+        session.add_all([
+            SegmentLineage(parent_segment_id=parent_id, child_segment_id=child.id,
+                           relation="reviewed", sequence=sequence)
+            for child, row in zip(children, prepared.children, strict=True)
+            for sequence, parent_id in enumerate(row["parent_ids"])
+        ])
+        document.active_revision_id = revision.id
+        # This UUID destination belongs only to this attempt; the explicit
+        # existence guard above prevents replacing an existing publication.
+        # Same-directory replacement also works on data roots without hard links.
+        os.replace(prepared.staged_path, prepared.destination)
+        published_paths.append(prepared.destination)
+        # File fsync during preparation does not persist the renamed directory
+        # entry. Keep the previous publication's best-effort crash durability.
+        try:
+            directory_fd = os.open(prepared.destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            # Directory fsync is not supported on every platform/filesystem.
+            pass
+        artifact = self.artifacts.register_in_session(
+            session, prepared.destination, kind="srt",
+            role="tts_optimized" if prepared.stage == "tts_optimization" else prepared.stage,
+            session_id=prepared.session_id,
+            parent_ids=[prepared.parent["id"]] if prepared.parent else [],
+            settings=prepared.settings, metadata=deepcopy(prepared.metadata),
+            _prepared=prepared.registration,
+        )
+        if source is None:
+            metadata = deepcopy(artifact.metadata_json)
+            metadata["logical_passages"]["source_artifact_id"] = artifact.id
+            artifact.metadata_json = metadata
+        return {"artifact_id": artifact.id, "document_id": document.id,
+                "revision_id": revision.id, "revision": revision.revision_number}
 
     def save_passage_review(
         self,
@@ -1723,28 +1931,46 @@ class SubtitleReviewService:
         expected_source_hash: str,
         expected_composition_hash: str,
     ) -> dict[str, Any]:
-        """Save or validate canonical passage edits in a database transaction."""
-        published_paths: list[Path] = []
+        """Prepare canonical edits before acquiring our publication writer."""
+        prepared = self.prepare_passage_review(
+            session_id, stage, expected_revision, values, dry_run=dry_run,
+            source_artifact_id=source_artifact_id,
+            expected_source_hash=expected_source_hash,
+            expected_composition_hash=expected_composition_hash,
+        )
+        if isinstance(prepared, dict):
+            return prepared
+        paths: list[Path] = []
         try:
-            transaction = (
-                self.database.session if dry_run else self.database.immediate_session
-            )
-            with transaction() as session:
-                return self.save_passage_review_in_session(
-                    session,
-                    session_id,
-                    stage,
-                    expected_revision,
-                    values,
-                    dry_run=dry_run,
-                    source_artifact_id=source_artifact_id,
-                    expected_source_hash=expected_source_hash,
-                    expected_composition_hash=expected_composition_hash,
-                    published_paths=published_paths,
-                )
+            with self.database.immediate_session() as session:
+                return self.publish_prepared_review_in_session(session, prepared, paths)
         except BaseException:
-            cleanup_review_publications(published_paths)
+            cleanup_review_publications(paths)
             raise
+        finally:
+            prepared.cleanup()
+
+    def prepare_passage_review(
+        self, session_id: str, stage: str, expected_revision: int,
+        values: list[dict[str, Any]], *, source_artifact_id: str,
+        expected_source_hash: str, expected_composition_hash: str,
+        dry_run: bool = False,
+    ) -> PreparedSubtitleReview | dict[str, Any]:
+        with self.database.snapshot_session() as session:
+            require_current_session_access(session, session_id, ProjectAction.EDIT)
+            rows, display_values, settings = self._prepare_passage_review(
+                session, session_id, stage, expected_revision, values,
+                source_artifact_id=source_artifact_id,
+                expected_source_hash=expected_source_hash,
+                expected_composition_hash=expected_composition_hash,
+            )
+            return self.prepare_review(
+                session_id, stage, expected_revision, display_values,
+                dry_run=dry_run, source_artifact_id=source_artifact_id,
+                expected_source_hash=expected_source_hash, db_session=session,
+                _prepared_canonical=rows, _prepared_composition_settings=settings,
+                _prepared_composition_hash=expected_composition_hash,
+            )
 
     def save_passage_review_in_session(
         self,
@@ -1800,6 +2026,7 @@ class SubtitleReviewService:
         expected_source_hash: str,
         expected_composition_hash: str,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        require_current_session_access(session, session_id, ProjectAction.EDIT)
         if stage not in STAGE_ORDER:
             raise ValueError(f"Unsupported subtitle stage: {stage}")
         source = session.get(Artifact, source_artifact_id)
@@ -2086,39 +2313,6 @@ class SubtitleReviewService:
             published_paths=published_paths,
         )
 
-    @staticmethod
-    def _publish_reviewed_file(destination: Path, content: str) -> bool:
-        """Durably replace a deterministic reviewed subtitle file.
-
-        SQLite cannot roll back the filesystem.  Callers receive whether this
-        attempt created the destination so a surrounding DB rollback can remove
-        only a file it safely owns; retries overwrite the same revision path.
-        """
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        newly_published = not destination.exists()
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
-        )
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, destination)
-            try:
-                directory_fd = os.open(destination.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            except OSError:
-                # The replacement itself is durable on common local filesystems;
-                # directory fsync is a best-effort portability enhancement.
-                pass
-            return newly_published
-        finally:
-            cleanup_review_publications([temporary])
 
 
 class _SessionContext:

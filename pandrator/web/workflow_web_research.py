@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .workflow_text_protocols import ResolveSecretReferenceProtocol
+from .workflow_text_protocols import ResolveAuxiliaryCredentialProtocol
 
 if TYPE_CHECKING:
     from pandrator.runtime import DataPaths
@@ -23,9 +23,7 @@ class WebResearchContext:
     database: Database
     paths: DataPaths
     _subtitle_speaker_map: Callable[[Artifact, Path], dict[int, str]]
-    _resolve_secret_reference: ResolveSecretReferenceProtocol
-    _database_reference: Callable[[str], str]
-    _auxiliary_credential_key: Callable[[object], str]
+    _resolve_auxiliary_credential: ResolveAuxiliaryCredentialProtocol
     _fraction_message_callback: Callable[[Progress, float, float], Callable[[str], None]]
 
 
@@ -74,15 +72,15 @@ def run_stage_web_research(
         run_web_research_agent,
     )
 
-    credential = context._resolve_secret_reference(
+    credential = context._resolve_auxiliary_credential(
         context.database,
         context.paths,
-        context._database_reference(context._auxiliary_credential_key("jina")),
-        fallback_environment_variable="JINA_API_KEY",
+        credential_id="jina",
+        session_id=session_id,
     )
     research_provider = JinaResearchProvider(
         api_key=credential.resolved_value(),
-        cache=PersistentResearchCache(context.database),
+        cache=PersistentResearchCache(context.database, session_id=session_id),
         timeout_seconds=int(settings.get("web_research_timeout_seconds") or 90),
     )
     model_key = "correction_model" if stage == "correction" else "translation_model"
@@ -97,6 +95,7 @@ def run_stage_web_research(
             or settings.get("request_timeout_seconds")
             or 600
         ),
+        session_id=session_id,
     )
     source_language = str(
         settings.get("original_language") or settings.get("source_language") or "auto"
@@ -162,6 +161,7 @@ def run_stage_web_research(
     )
     budget = ContextBudgetService(context.database).resolve(
         model_name,
+        session_id=session_id,
         fraction=context_fraction,
         fixed_prompt={
             "stage": stage,

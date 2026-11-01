@@ -5,14 +5,17 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.database import Database, sqlite_url, upgrade_database
 from pandrator.web.models import (
     AppSetting,
-    AppSettingHistory,
     OwnerAccount,
     SessionRecord,
     SessionSetting,
+    WorkspaceSetting,
+    WorkspaceSettingHistory,
 )
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.workspace import WorkspaceSettingsService
 
 
@@ -34,8 +37,7 @@ def test_fresh_workspace_prefers_audio_cpp(tmp_path):
     try:
         with database.session() as session:
             record = SessionRecord(name="Fresh")
-            session.add(record)
-            session.flush()
+            create_session_project(session, record)
             session_id = record.id
         assert (
             WorkspaceSettingsService(database).get(session_id, "tts")["effective"][
@@ -84,7 +86,10 @@ def test_upgrade_preserves_existing_defaults_and_session_overrides(tmp_path, def
                 )
         upgrade_database(path)
         with database.session() as session:
-            global_record = session.get(AppSetting, "defaults.tts")
+            workspace_id = initial_personal_workspace(session).id
+            global_record = session.get(
+                WorkspaceSetting, (workspace_id, "defaults.tts")
+            )
             assert global_record.value_json == {
                 **(defaults or {}),
                 "service": (defaults or {}).get("service", "XTTS"),
@@ -93,8 +98,9 @@ def test_upgrade_preserves_existing_defaults_and_session_overrides(tmp_path, def
             assert old.value_json == untouched and old.revision == 3
             if defaults is not None and "service" not in defaults:
                 prior = session.scalar(
-                    select(AppSettingHistory).where(
-                        AppSettingHistory.key == "defaults.tts"
+                    select(WorkspaceSettingHistory).where(
+                        WorkspaceSettingHistory.workspace_id == workspace_id,
+                        WorkspaceSettingHistory.key == "defaults.tts",
                     )
                 )
                 assert prior.value_json == defaults and prior.revision == 7

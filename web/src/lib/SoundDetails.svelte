@@ -14,12 +14,14 @@
     itemId,
     onclose,
     onchange,
-    onvariant
+    onvariant,
+    workspaceId
   }: {
     itemId: string;
     onclose: () => void;
     onchange: () => void;
     onvariant?: (itemId: string) => void;
+    workspaceId?: string;
   } = $props();
   let detail = $state<SoundDetail | null>(null);
   let name = $state('');
@@ -31,7 +33,7 @@
   async function load(cursor?: string) {
     const request = ++requestId;
     try {
-      const result = await soundDetail(itemId, cursor);
+      const result = await soundDetail(itemId, cursor, workspaceId);
       if (!alive || request !== requestId) return;
       detail = result;
       name = result.name;
@@ -45,7 +47,7 @@
     busy = true;
     error = '';
     try {
-      await updateSound(detail as SoundItem, changes);
+      await updateSound(detail as SoundItem, changes, workspaceId);
       await load();
       if (alive) onchange();
     } catch (caught) {

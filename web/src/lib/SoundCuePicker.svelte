@@ -26,6 +26,7 @@
   let {
     sessionId,
     workflowKind,
+    workspaceId,
     anchor,
     cue,
     itemId,
@@ -34,6 +35,7 @@
   }: {
     sessionId: string;
     workflowKind: string;
+    workspaceId?: string;
     anchor: SoundAnchor;
     cue?: ProjectSoundCue;
     itemId?: string;
@@ -104,7 +106,7 @@
     loading = true;
     error = '';
     try {
-      const result = await soundList(query);
+      const result = await soundList(query, undefined, false, workspaceId);
       if (alive && request === serial) {
         items = result.items;
         detail = null;
@@ -120,7 +122,7 @@
     loading = true;
     error = '';
     try {
-      const result = await soundDetail(id, cursor);
+      const result = await soundDetail(id, cursor, workspaceId);
       if (!alive || request !== serial) return;
       detail = result;
       if (!cursor) selectVariant(result.preferred_variant);

@@ -10,9 +10,33 @@ its Downloads directory into a remote Pandrator server and later download the
 server's immutable result. Both transfers stream outside model context and can
 resume after interruption.
 
+## Public hosting and optional review links
+
+The application's optional sharing controls do not expose a new MCP listener.
+Keep using the local stdio sidecar bound to its approved remote target. Permanent
+Manager endpoints and the managed HTTP MCP listener stay private.
+
+An administrative enrollment can inspect `pandrator_get_public_sharing_settings`
+for the effective application origin, secure-cookie state and trusted proxy
+configuration. Match public sharing to that existing HTTPS origin. Do not use a
+model-supplied capability URL as a target destination, enrollment credential or
+redirect override.
+
+Operators can opt into `PANDRATOR_SECURITY_LOG=stdout` or a protected absolute
+file path for fixed-field authentication events. The application's public-hosting
+guide supplies fail2ban/CrowdSec and reverse-proxy examples; installing a daemon,
+changing a firewall or enabling Cloudflare is a separate operator action.
+Behind a proxy, ban the verified visitor at a compatible enforcement point.
+Cloudflare Access remains an additional permission layer: a Pandrator link alone
+does not bypass it. Follow the collaboration guide for submission inspection and
+guarded acceptance tools.
+
 ## Local managed installation
 
-The profile contains the Pandrator Manager workspace. The sidecar validates the
+The profile's `workspace` is the absolute parent directory selected during
+Manager installation: `/srv` for `/srv/Pandrator`, for example. Supplying the
+inner application directory makes discovery look one level too deep.
+The sidecar validates the
 Manager descriptor and process identity, discovers the current loopback
 application endpoint, and then connects. Release paths and ports may change
 without changing the target identity.
@@ -63,8 +87,10 @@ TLS, firewall, proxy-hop, and volume decisions.
 
 ## Workstation enrollment sequence
 
-For an HTTPS server or pod, the recommended sequence on the workstation that
-runs the MCP host is:
+On the workstation that runs the MCP host, install the MCP package with its
+`credential-stores` extra and ensure the user's operating-system keychain is available and unlocked. The `--headless` approval
+flow still requires that keychain. Follow the README's installation section,
+then enroll the HTTPS target:
 
 1. add the fixed target and least-privilege application scopes;
 2. run `pandrator-mcp target login NAME`;
@@ -75,7 +101,8 @@ runs the MCP host is:
 6. generate the selected host fragment with
    `pandrator-mcp host-config HOST --target NAME`.
 
-Application and recovery enrollment use browser owner consent and S256 PKCE.
+Application enrollment uses the signed-in account's consent and S256 PKCE.
+Recovery enrollment separately requires an authorized Manager recovery browser.
 The CLI stores each result directly in the operating-system keyring.
 
 ## Rotation, revocation, and removal
@@ -114,3 +141,10 @@ it. None of these local commands deletes remote Pandrator data.
   path.
 - Local logout and profile removal do not claim server-side revocation; revoke
   as the target owner first, then clean up the workstation.
+
+## Team identities
+
+For collaboration, use a separate named account and per-person stdio enrollment.
+The managed local Owner bearer is not a teammate login. Approve the required
+workspaces/projects and complete scope set in the browser; changing a target's
+requested scopes does not expand an old token. Read the `collaboration` guide.

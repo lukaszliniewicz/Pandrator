@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from .cancellable_process import ProcessCancelled
+from .model_acquisition import require_model_acquisition
 
 logger = logging.getLogger(__name__)
 
@@ -571,6 +572,8 @@ def _ensure_trusted_file_locked(
         if _verified_cached(destination, spec, cancel_event):
             return destination.resolve()
         destination.unlink(missing_ok=True)
+
+    require_model_acquisition()
 
     try:
         free = shutil.disk_usage(destination.parent).free

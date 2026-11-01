@@ -16,6 +16,11 @@ const option = (value: string | number, label?: string): SettingOption => ({
 export { LANGUAGE_OPTIONS } from './language-registry';
 
 const CHOICES: Record<string, SettingOption[]> = {
+  audiobook_sentence_packing: [
+    option('auto', 'Automatic · use the threshold'),
+    option('sentences', 'Prefer whole sentences'),
+    option('clauses', 'Allow clause packing')
+  ],
   audiobook_dialogue_flow: [
     option('auto', 'Recognise short dialogue exchanges'),
     option('off', 'Keep every paragraph boundary')
@@ -291,6 +296,8 @@ const SETTING_ORDER: Record<string, string[]> = {
   text: [
     'enable_sentence_splitting',
     'max_sentence_length',
+    'audiobook_sentence_packing',
+    'audiobook_sentence_packing_threshold',
     'enable_sentence_appending',
     'audiobook_dialogue_flow',
     'disable_paragraph_detection',
@@ -826,6 +833,7 @@ export function isMultiline(key: string): boolean {
 
 export function numberPresentation(key: string): NumberPresentation {
   const meta: Record<string, NumberPresentation> = {
+    audiobook_sentence_packing_threshold: { min: 1, max: 8192, step: 1 },
     caption_alignment_padding_ms: { min: 250, max: 5000, step: 50 },
     caption_alignment_batch_seconds: { min: 5, max: 60, step: 1 },
     caption_alignment_min_confidence: {
@@ -933,6 +941,9 @@ const ACRONYMS: Record<string, string> = {
 
 export function settingLabel(key: string): string {
   const labels: Record<string, string> = {
+    audiobook_sentence_packing: 'Sentence packing',
+    audiobook_sentence_packing_threshold:
+      'Whole-sentence threshold (characters)',
     audiobook_dialogue_flow: 'Dialogue flow for new audiobooks',
     max_attempts: 'Maximum attempts per request',
     retry_timeout_seconds: 'Retry time limit (seconds)',

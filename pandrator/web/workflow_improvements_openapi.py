@@ -46,6 +46,7 @@ def workflow_improvements_paths():
         },
         "/api/v1/subtitle-evidence/routes": {
             "get": operation("listSubtitleEvidenceRoutes", "app.read", parameters=[
+                query("session_id", {"type": "string", "minLength": 1, "maxLength": 80}),
                 query("language", {"type": "string", "maxLength": 40}),
                 query("include_languages", {"type": "boolean", "default": False}),
             ]),

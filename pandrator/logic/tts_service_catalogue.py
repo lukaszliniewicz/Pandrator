@@ -726,7 +726,7 @@ def _parse_voice_list(raw_voices, provider: str) -> list[str]:
     return _dedupe_ordered(voices)
 
 
-def _default_service_configs() -> list[dict[str, object]]:
+def _default_service_config_templates() -> list[dict[str, object]]:
     local_services = [
         ("audio_cpp", AUDIO_CPP_API_BASE_URL),
         ("xtts", XTTS_API_BASE_URL),
@@ -955,9 +955,12 @@ def _default_service_configs() -> list[dict[str, object]]:
             },
         ]
     )
-    # Borrowed static metadata becomes owned together with the other fresh
-    # records. Callers may decorate or mutate any nested catalogue field.
-    return copy.deepcopy(configs)
+    return configs
+
+
+def _default_service_configs() -> list[dict[str, object]]:
+    """Return fresh, independently owned default service configurations."""
+    return copy.deepcopy(_default_service_config_templates())
 
 
 def _normalize_service_id(raw_value: str | None) -> str:
@@ -1156,30 +1159,47 @@ def _service_config_cache_key(tts_settings) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _shared_service_configs(tts_settings, _cache=None) -> list[dict[str, object]]:
+def _shared_service_configs(
+    tts_settings,
+    _cache=None,
+    *,
+    _selected_service_id: str | None = None,
+) -> list[dict[str, object]]:
+    selected_service_id = (
+        _normalize_service_id(_selected_service_id)
+        if _selected_service_id is not None
+        else None
+    )
     cache_key: tuple[str, str] | None = None
-    if _cache is not None:
+    if _cache is not None and selected_service_id is None:
         cache_key = ("service_configs", _service_config_cache_key(tts_settings))
         hit = _cache.get(cache_key)
         if hit is not None:
             return hit
-    services = {
-        str(item["id"]): item for item in _default_service_configs()
-    }
+    templates = _default_service_config_templates()
+    if selected_service_id is not None:
+        templates = [
+            item for item in templates
+            if str(item.get("id") or "") == selected_service_id
+        ]
+    services = {str(item["id"]): item for item in templates}
+    replaced_service_ids: set[str] = set()
 
     legacy_raw_json = str(
         _read_setting(tts_settings, "openai_audio_endpoints_json", "") or ""
     )
-    for legacy_record in _legacy_endpoints_to_provider_configs(legacy_raw_json):
-        service_id = _normalize_service_id(
-            str(legacy_record.get("id") or legacy_record.get("name") or "")
-        )
-        if service_id not in services:
-            continue
-        services[service_id] = _merge_service_config(
-            services[service_id],
-            legacy_record,
-        )
+    if services:
+        for legacy_record in _legacy_endpoints_to_provider_configs(legacy_raw_json):
+            service_id = _normalize_service_id(
+                str(legacy_record.get("id") or legacy_record.get("name") or "")
+            )
+            if service_id not in services:
+                continue
+            services[service_id] = _merge_service_config(
+                services[service_id],
+                legacy_record,
+            )
+            replaced_service_ids.add(service_id)
 
     raw_sources = [
         _read_setting(tts_settings, "provider_configs", []),
@@ -1200,13 +1220,26 @@ def _shared_service_configs(tts_settings, _cache=None) -> list[dict[str, object]
                 services[service_id],
                 raw_record,
             )
+            replaced_service_ids.add(service_id)
+
+    for service_id, service in tuple(services.items()):
+        if service_id not in replaced_service_ids:
+            services[service_id] = copy.deepcopy(service)
 
     first_class = [
         services[service_id]
         for service_id in FIRST_CLASS_SERVICE_ORDER
         if service_id in services
     ]
-    first_class.extend(get_provider_configs(tts_settings))
+    if selected_service_id is None:
+        first_class.extend(get_provider_configs(tts_settings))
+    else:
+        first_class.extend(
+            get_provider_configs(
+                tts_settings,
+                _selected_provider_id=selected_service_id,
+            )
+        )
     from .speech_capabilities import decorate_service_capabilities
 
     for service in first_class:
@@ -1219,19 +1252,62 @@ def _shared_service_configs(tts_settings, _cache=None) -> list[dict[str, object]
     return first_class
 
 
-def get_service_configs(tts_settings, _cache=None) -> list[dict[str, object]]:
+def get_service_configs(
+    tts_settings,
+    _cache=None,
+    *,
+    _fields: frozenset[str] | None = None,
+) -> list[dict[str, object]]:
     services = _shared_service_configs(tts_settings, _cache)
-    return copy.deepcopy(services) if _cache is not None else services
+    if _fields is None:
+        return copy.deepcopy(services) if _cache is not None else services
+    return copy.deepcopy(
+        [
+            {key: value for key, value in service.items() if key in _fields}
+            for service in services
+        ]
+    )
 
 
 def get_service_config(
-    tts_settings, service_name_or_id: str, _cache=None
+    tts_settings,
+    service_name_or_id: str,
+    _cache=None,
+    *,
+    _fields: frozenset[str] | None = None,
+    _model_catalog_id: str | None = None,
 ) -> dict[str, object] | None:
-    services = _shared_service_configs(tts_settings, _cache)
     service_id = _normalize_service_id(service_name_or_id)
+    if _cache is None:
+        services = _shared_service_configs(
+            tts_settings,
+            _selected_service_id=service_id,
+        )
+    else:
+        services = _shared_service_configs(tts_settings, _cache)
     for service in services:
         if str(service.get("id") or "") == service_id:
-            return copy.deepcopy(service) if _cache is not None else service
+            if _fields is None and _model_catalog_id is None:
+                return copy.deepcopy(service) if _cache is not None else service
+
+            projected = {
+                key: value
+                for key, value in service.items()
+                if _fields is None or key in _fields
+            }
+            model_catalog = projected.get("model_catalog")
+            if _model_catalog_id is not None and isinstance(model_catalog, list):
+                normalized_model_id = str(_model_catalog_id).strip().casefold()
+                projected["model_catalog"] = [
+                    record
+                    for record in model_catalog
+                    if isinstance(record, dict)
+                    and str(record.get("id") or "").strip().casefold()
+                    == normalized_model_id
+                ]
+            # Sparse private lookups own every nested value they return. The
+            # no-cache default path above retains its historical ownership.
+            return copy.deepcopy(projected)
     return None
 
 
@@ -1306,7 +1382,16 @@ def _legacy_endpoints_to_provider_configs(raw_json: str) -> list[dict[str, objec
     return providers
 
 
-def get_provider_configs(tts_settings) -> list[dict[str, object]]:
+def get_provider_configs(
+    tts_settings,
+    *,
+    _selected_provider_id: str | None = None,
+) -> list[dict[str, object]]:
+    selected_provider_id = (
+        _normalize_provider_id(_selected_provider_id)
+        if _selected_provider_id is not None
+        else None
+    )
     custom_configs: dict[str, dict[str, object]] = {}
 
     raw_provider_configs = _read_setting(tts_settings, "provider_configs", [])
@@ -1321,6 +1406,10 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
             provider_id = _normalize_provider_id(raw_id)
             if (
                 not provider_id
+                or (
+                    selected_provider_id is not None
+                    and provider_id != selected_provider_id
+                )
                 or _normalize_service_id(provider_id) in FIRST_CLASS_SERVICE_IDS
             ):
                 continue
@@ -1469,6 +1558,8 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
     for legacy_provider in _legacy_endpoints_to_provider_configs(legacy_raw_json):
         provider_id = str(legacy_provider.get("id") or "")
         if not provider_id:
+            continue
+        if selected_provider_id is not None and provider_id != selected_provider_id:
             continue
         if _normalize_service_id(provider_id) in FIRST_CLASS_SERVICE_IDS:
             continue

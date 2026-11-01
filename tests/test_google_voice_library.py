@@ -15,6 +15,7 @@ from pandrator.web.credentials import ResolvedCredential
 from pandrator.web.database import Database
 from pandrator.web.google_voice_design import google_voice_scope
 from pandrator.web.models import Voice
+from pandrator.web.projects.identity import initial_personal_workspace
 from pandrator.web.tts_catalogue_service import TtsCatalogueService
 from pandrator.web.tts_providers import TtsProviderRegistry
 from pandrator.web.voice_catalog import catalog_entries
@@ -59,10 +60,19 @@ def save_voice(database, config, credential, *, expiry=None):
         **({"expire_time": expiry} if expiry else {}),
     }
     with database.session() as session:
-        row = Voice(name="Warm narrator", language="pl-PL", description="Warm, clear and calm.", metadata_json={
-            "google_voice_design": {"preview_artifact_id": "saved-preview", "state": "created"},
-            "providers": {config["id"]: registration},
-        })
+        row = Voice(
+            workspace_id=initial_personal_workspace(session).id,
+            name="Warm narrator",
+            language="pl-PL",
+            description="Warm, clear and calm.",
+            metadata_json={
+                "google_voice_design": {
+                    "preview_artifact_id": "saved-preview",
+                    "state": "created",
+                },
+                "providers": {config["id"]: registration},
+            },
+        )
         session.add(row)
         session.flush()
         return row.id

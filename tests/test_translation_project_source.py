@@ -173,13 +173,14 @@ def test_checkpoint_rejects_invalid_identity(source_case, defect):
     services, source = source_case
     checkpoint = _text(services, source)
     foreign = services.sessions.create("Other", source_language="en")
+    foreign_checkpoint_id = (
+        _text(services, foreign).id if defect == "foreign_artifact" else None
+    )
     with services.database.session() as db:
         artifact = db.get(Artifact, checkpoint.id)
         revision = db.get(DocumentRevision, artifact.metadata_json["revision_id"])
         document = db.get(Document, revision.document_id)
-        if defect == "foreign_artifact":
-            artifact.session_id = foreign.id
-        elif defect == "hash":
+        if defect == "hash":
             artifact.content_hash = "changed"
         elif defect == "file":
             services.paths.managed_path(artifact.relative_path).write_text("changed")
@@ -197,7 +198,12 @@ def test_checkpoint_rejects_invalid_identity(source_case, defect):
             document.active_revision_id = None
     with services.database.session() as db:
         with pytest.raises((KeyError, TranslationProjectConflict)):
-            _checkpoint(db, services.paths, source.id, checkpoint.id)
+            _checkpoint(
+                db,
+                services.paths,
+                source.id,
+                foreign_checkpoint_id or checkpoint.id,
+            )
 
 
 def test_checkpoint_rejects_changed_pin_hash(source_case):

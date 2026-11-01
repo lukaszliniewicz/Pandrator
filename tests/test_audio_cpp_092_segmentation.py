@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from copy import deepcopy
 
+import pytest
+
 from pandrator.logic.audio_cpp_segmentation import (
     irodori_tokenizer_byte_bound,
     validate_segment_text_window,
@@ -13,6 +15,7 @@ from pandrator.logic.text_preprocessor import (
     _limit_segment_tokenizer_bytes,
     _limit_segment_words,
 )
+from pandrator.logic.tts_handler import _build_audio_cpp_audio_payload
 from tests import test_audiobook_chunking_integration as _integration_fixture
 
 
@@ -68,6 +71,28 @@ def _preparation_settings(model: str, *, mode: str = "model") -> dict:
         "normalize_all_caps": False,
         "_audiobook_tts_settings": {"service": "audio_cpp", "model": model},
     }
+
+
+@pytest.mark.parametrize("model", ["fish_drama3_small_iq3_xxs", "kitten_tts2_q8_v2"])
+def test_longer_narration_prepares_losslessly_and_reaches_runtime_as_whole_parts(model):
+    sentence = (
+        "The narrator carries the story through a quiet room while every careful "
+        "phrase settles gently around the listening reader."
+    )
+    text = " ".join([sentence] * 12)
+    result, _artifact, rows = _workflow_prepare(text, _preparation_settings(model))
+    texts = _segment_texts(rows)
+    assert result["segmentation_budget"]["target_chars"] == 540
+    assert any(len(part) > 380 for part in texts)
+    assert all(len(part) <= 540 for part in texts)
+    assert _tokens(" ".join(texts)) == _tokens(text)
+    assert rows[-1]["paragraph"] == "yes"
+    for part in texts:
+        payload = _build_audio_cpp_audio_payload(part, {"model": model}, {})
+        assert payload["input"] == part
+        assert payload["options"]["text_chunk_size"] >= len(payload["input"])
+        assert "max_tokens" not in payload["options"]
+        assert "max_tokens" not in payload
 
 
 def test_irodori_byte_bound_counts_metaspace_prefix_and_bos() -> None:

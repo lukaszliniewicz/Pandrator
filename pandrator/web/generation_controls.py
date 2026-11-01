@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -15,13 +15,27 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import models as m
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .access.generation_resource_policy import require_generation_content_write
+from .access.voice_policy import require_current_voice_library_read
 from .generation_control_schemas import (
     CastSettings,
     CharacterEntry,
     GenerationControlsUpdateRequest,
     VoiceBinding,
 )
+from .project_speech_references import (
+    StoredProjectSpeechReference,
+    list_project_speech_references,
+    speech_reference_selector,
+    speech_reference_selector_hash,
+)
+from .projects.identity import session_project
 from .settings_policy import RevisionConflict
+from .speech_input_contracts import SpeechInputOwner, canonical_json
+from .speech_inputs import check_speech_input
+from .voice_identity import voice_creation_workspace
 
 GENERATION_CONTROLS_KIND = "generation_controls"
 _CHARACTER_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._:-]{0,79}$")
@@ -115,15 +129,65 @@ def _cast_model(raw: object) -> CastSettings:
     return CastSettings.model_validate(dict(raw))
 
 
-def _validate_managed_voices(session: Session, cast: CastSettings) -> None:
-    bindings: list[VoiceBinding] = []
+def iter_cast_voice_bindings(cast: CastSettings) -> Iterator[tuple[str, VoiceBinding]]:
+    """Yield the same canonical slot identities used by cast resolution."""
     if cast.narrator is not None:
-        bindings.append(cast.narrator)
-    bindings.extend(cast.categories.values())
-    bindings.extend(cast.characters.values())
-    bindings.extend(cast.source_speakers.values())
-    for binding in bindings:
-        if binding.voice_id and session.get(m.Voice, binding.voice_id) is None:
+        yield "cast:narrator", cast.narrator
+    for bucket in ("categories", "characters", "source_speakers"):
+        for member, binding in getattr(cast, bucket).items():
+            yield "cast:" + canonical_json([bucket, member]), binding
+
+
+def _validate_managed_voices(
+    session: Session, cast: CastSettings, *, workspace_id: str,
+    session_id: str | None = None,
+    _retained_references: Mapping[str, StoredProjectSpeechReference] | None = None,
+) -> None:
+    bindings = list(iter_cast_voice_bindings(cast))
+    proved: set[str] = set()
+    if _retained_references:
+        if session_id is None:
+            raise ValueError("Retained cast proofs require a session root.")
+
+        def guard(current: Session) -> None:
+            require_current_session_access(current, session_id, ProjectAction.EDIT)
+
+        current = {row.slot_key: row for row in list_project_speech_references(
+            session, session_id, authorization_guard=guard
+        )}
+        root = session_project(session, session_id)
+        owner = SpeechInputOwner(root.workspace_id, root.id, session_id)
+        checked: set[str] = set()
+        for slot, binding in bindings:
+            proof = _retained_references.get(slot)
+            if proof is None:
+                continue
+            selector = speech_reference_selector(binding.model_dump(mode="json"))
+            if (
+                proof.owner != owner or current.get(slot) != proof
+                or proof.selector != selector
+                or proof.selector_hash != speech_reference_selector_hash(selector)
+            ):
+                raise RevisionConflict("The saved cast reference changed before publication.")
+            if proof.pin is not None:
+                key = canonical_json(proof.pin)
+                if key not in checked:
+                    check_speech_input(session, proof.pin, owner=owner)
+                    checked.add(key)
+            proved.add(slot)
+    voice_ids = {binding.voice_id for slot, binding in bindings if binding.voice_id and slot not in proved}
+    if not voice_ids:
+        return
+    require_current_voice_library_read(session, workspace_id)
+    available_ids = set(
+        session.scalars(
+            select(m.Voice.id).where(
+                m.Voice.id.in_(voice_ids), m.Voice.workspace_id == workspace_id
+            )
+        )
+    )
+    for slot, binding in bindings:
+        if slot not in proved and binding.voice_id and binding.voice_id not in available_ids:
             raise ValueError(f"Managed voice does not exist: {binding.voice_id}")
 
 
@@ -171,6 +235,10 @@ def _validate_update(
     characters: object | None,
     cast: object | None,
     unlock_ids: list[str] | None,
+    workspace_id: str,
+    _check_managed: bool = True,
+    session_id: str | None = None,
+    _retained_references: Mapping[str, StoredProjectSpeechReference] | None = None,
 ) -> dict[str, Any]:
     current_characters = _characters(payload.get("characters", []))
     candidate_characters = (
@@ -184,7 +252,11 @@ def _validate_update(
     existing_cast_raw = payload.get("cast", {})
     candidate_cast_model = _cast_model(existing_cast_raw if cast is None else cast)
     _validate_cast_references(candidate_cast_model, candidate_characters)
-    _validate_managed_voices(session, candidate_cast_model)
+    if _check_managed:
+        _validate_managed_voices(
+            session, candidate_cast_model, workspace_id=workspace_id, session_id=session_id,
+            _retained_references=_retained_references,
+        )
 
     if characters is not None and cast is None:
         old_ids = {str(item["id"]) for item in current_characters}
@@ -211,6 +283,7 @@ def _validate_update(
 def get_generation_controls(session: Session, session_id: str) -> dict[str, Any]:
     """Read session controls without creating a ledger row."""
 
+    require_current_session_access(session, session_id)
     _session_record(session, session_id)
     record = _ledger(session, session_id)
     return _public(session_id, record)
@@ -224,9 +297,11 @@ def save_generation_controls(
     characters: list[dict[str, Any]] | None = None,
     cast: dict[str, Any] | None = None,
     unlock_ids: list[str] | None = None,
+    _retained_references: Mapping[str, StoredProjectSpeechReference] | None = None,
 ) -> dict[str, Any]:
     """Replace supplied control sections inside the caller's transaction."""
 
+    require_current_session_access(session, session_id, ProjectAction.EDIT)
     _session_record(session, session_id)
     if not isinstance(expected_revision, int) or isinstance(expected_revision, bool):
         raise ValueError("expected_revision must be a nonnegative integer.")
@@ -241,6 +316,9 @@ def save_generation_controls(
     if record is None and expected_revision != 0:
         raise RevisionConflict(f"Expected revision {expected_revision}, found 0.")
 
+    workspace = voice_creation_workspace(
+        session, workspace_id=session_project(session, session_id).workspace_id
+    )
     current_payload = _payload(record)
     candidate = _validate_update(
         session,
@@ -248,6 +326,9 @@ def save_generation_controls(
         characters=characters,
         cast=cast,
         unlock_ids=unlock_ids,
+        workspace_id=workspace.id,
+        session_id=session_id,
+        _retained_references=_retained_references,
     )
 
     if record is None:
@@ -266,6 +347,27 @@ def save_generation_controls(
         record.updated_at = m.utcnow()
     session.flush()
     return _public(session_id, record, candidate)
+
+
+def prepare_generation_controls_update(
+    session: Session, session_id: str, *, expected_revision: int,
+    characters: list[dict[str, Any]] | None = None, cast: dict[str, Any] | None = None,
+    unlock_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Validate and freeze candidate IDs before source/file work, without writes."""
+    require_current_session_access(session, session_id, ProjectAction.EDIT)
+    _session_record(session, session_id)
+    if type(expected_revision) is not int or expected_revision < 0:
+        raise ValueError("expected_revision must be a nonnegative integer.")
+    record = _ledger(session, session_id)
+    current_revision = int(record.revision) if record is not None else 0
+    if current_revision != expected_revision:
+        raise RevisionConflict(f"Expected revision {expected_revision}, found {current_revision}.")
+    root = session_project(session, session_id)
+    return _validate_update(
+        session, _payload(record), characters=characters, cast=cast, unlock_ids=unlock_ids,
+        workspace_id=root.workspace_id, _check_managed=False,
+    )
 
 
 def _validate_proposal_id(raw_id: object) -> str:
@@ -301,6 +403,7 @@ def merge_character_proposals(
 ) -> dict[str, Any]:
     """Merge model identity proposals without touching cast settings."""
 
+    require_generation_content_write(session, "session", session_id)
     _session_record(session, session_id)
     if not isinstance(proposals, list):
         raise ValueError("Character proposals must be a list.")
@@ -409,6 +512,7 @@ def resolve_cast_voice(
     cast = _cast_model(controls.get("cast", {}))
     selected: VoiceBinding | None = None
     source = "inherited"
+    slot_key: str | None = None
     span = span_voice.strip() if isinstance(span_voice, str) else span_voice
     if span:
         selected = VoiceBinding(voice=span)
@@ -416,6 +520,7 @@ def resolve_cast_voice(
     elif normalized_speaker and normalized_speaker in cast.characters:
         selected = cast.characters[normalized_speaker]
         source = "character"
+        slot_key = "cast:" + canonical_json(["characters", normalized_speaker])
     else:
         normalized_source = (
             source_speaker.strip() if source_speaker is not None else None
@@ -423,17 +528,21 @@ def resolve_cast_voice(
         if normalized_source and normalized_source in cast.source_speakers:
             selected = cast.source_speakers[normalized_source]
             source = "source_speaker"
+            slot_key = "cast:" + canonical_json(["source_speakers", normalized_source])
         elif dialogue and category in cast.categories:
             selected = cast.categories[category]
             source = "category"
+            slot_key = "cast:" + canonical_json(["categories", category])
         elif cast.narrator is not None:
             selected = cast.narrator
             source = "narrator"
+            slot_key = "cast:narrator"
 
     return {
         "binding": deepcopy(selected.model_dump(mode="json")) if selected else None,
         "source": source,
         "fallback": dialogue and source in {"category", "narrator", "inherited"},
+        "slot_key": slot_key,
     }
 
 
@@ -442,7 +551,9 @@ __all__ = [
     "GenerationControlsUpdateRequest",
     "RevisionConflict",
     "get_generation_controls",
+    "iter_cast_voice_bindings",
     "merge_character_proposals",
+    "prepare_generation_controls_update",
     "resolve_cast_voice",
     "save_generation_controls",
 ]

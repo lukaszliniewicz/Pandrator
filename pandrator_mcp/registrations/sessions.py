@@ -176,6 +176,10 @@ def register_session_setup_tools(
             ...,
         ] = (),
         multilingual_setup: MultilingualSetup | None = None,
+        workspace_id: Annotated[
+            NativeNullableString,
+            Field(min_length=1, max_length=80),
+        ] = None,
     ) -> dict[str, Any]:
         """Create one session; retries with the same key replay the first result."""
 
@@ -190,6 +194,7 @@ def register_session_setup_tools(
                 workflow_preset=workflow_preset,
                 included_stages=included_stages,
                 multilingual_setup=multilingual_setup,
+                workspace_id=workspace_id,
                 idempotency_key=idempotency_key,
             ),
         )

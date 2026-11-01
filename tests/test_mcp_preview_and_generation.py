@@ -1,17 +1,22 @@
 import unittest
 from types import SimpleNamespace
+from typing import Any, Callable, cast
 
 from pydantic import ValidationError
 
+from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.errors import PandratorMcpError
+from pandrator_mcp.registrations.generation import register_generation_execution_tools
 from pandrator_mcp.schemas.generation import (
     AssembleGenerationRunInput,
     GenerateSpeechPlanInput,
+    GenerationSegmentBatchChangesInput,
     ListGenerationSegmentsInput,
     RegenerateSegmentsInput,
     ReviseSpeechBlockPlanBatchInput,
     ReviseSpeechBlockPlanInput,
     SelectTakeInput,
+    UpdateGenerationSegmentBatchItem,
     UpdateGenerationSegmentInput,
     UpdateGenerationSegmentsInput,
 )
@@ -48,6 +53,12 @@ class _FakeApplication:
         self.calls: list[tuple[str, dict]] = []
         self.topology_batch_error: PandratorMcpError | None = None
         self.generation_run_error: PandratorMcpError | None = None
+        self.retained_voice_response: dict | None = None
+
+    def _with_retained_voice(self, segment: dict) -> dict:
+        if self.retained_voice_response is not None:
+            segment["retained_voice"] = self.retained_voice_response
+        return segment
 
     def list_sessions(self, limit=50, query=None, include_trashed=False):
         self.calls.append(
@@ -212,7 +223,7 @@ class _FakeApplication:
         )
         return {
             "items": [
-                {
+                self._with_retained_voice({
                     "id": "segment-1",
                     "ordinal": 1,
                     "revision": 3,
@@ -263,7 +274,7 @@ class _FakeApplication:
                             "created_at": "2026-09-03T07:00:00Z",
                         }
                     ],
-                }
+                })
             ],
             "next_cursor": None,
             "total": 1,
@@ -342,7 +353,7 @@ class _FakeApplication:
                 },
             )
         )
-        return {
+        return self._with_retained_voice({
             "id": segment_id,
             "ordinal": 1,
             "revision": expected_revision + 1,
@@ -358,7 +369,7 @@ class _FakeApplication:
             "language": changes.get("language", "pl"),
             "selected_take_id": "take-1",
             "takes": [],
-        }
+        })
 
     def update_generation_segments(self, session_id, *, updates, idempotency_key):
         self.calls.append(
@@ -373,7 +384,7 @@ class _FakeApplication:
         )
         return {
             "items": [
-                {
+                self._with_retained_voice({
                     "id": item["id"],
                     "revision": item["revision"] + 1,
                     "ordinal": index,
@@ -388,7 +399,7 @@ class _FakeApplication:
                     "language": item["changes"].get("language", "pl"),
                     "speech_block_provenance": {"large": "private details"},
                     "takes": [{"id": "take-private", "artifact_id": "artifact"}],
-                }
+                })
                 for index, item in enumerate(updates, start=1)
             ]
         }
@@ -588,6 +599,124 @@ class PreviewAndGenerationTests(unittest.TestCase):
         )
         self.assertEqual({"optimized_text": "Better spoken text"}, single_call["changes"])
 
+    def test_retained_voice_is_sanitized_in_full_single_and_batch_projections(self):
+        runtime = cast(McpRuntime, self.runtime)
+        self.application.retained_voice_response = {
+            "binding": {
+                "voice_id": "voice-pl-1",
+                "voice": "Marek",
+                "voice_description": "Reviewed saved choice",
+                "service": "audio_cpp",
+                "model": "model-a",
+                "private_binding_key": "must-not-pass",
+                "pin": {"artifact_id": "private-artifact"},
+            },
+            "display_name": "Marek saved",
+            "adapter": "audio_cpp",
+            "model": "model-a",
+            "pin": {"artifact_id": "private-artifact"},
+            "source_fingerprint": "private-fingerprint",
+            "path": "/private/path.wav",
+            "credentials": {"token": "private-token"},
+        }
+        expected = {
+            "binding": {
+                "voice_id": "voice-pl-1",
+                "voice": "Marek",
+                "voice_description": "Reviewed saved choice",
+                "service": "audio_cpp",
+                "model": "model-a",
+            },
+            "display_name": "Marek saved",
+            "adapter": "audio_cpp",
+            "model": "model-a",
+        }
+
+        listed = list_generation_segments(
+            runtime,
+            ListGenerationSegmentsInput(session_id="session-1"),
+        )
+        updated = update_generation_segment(
+            runtime,
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=3,
+                idempotency_key="gen-update:retained-voice:1",
+                text="Reviewed cue",
+            ),
+        )
+        batched = update_generation_segments(
+            runtime,
+            UpdateGenerationSegmentsInput(
+                session_id="session-1",
+                idempotency_key="gen-batch:retained-voice:1",
+                updates=[
+                    UpdateGenerationSegmentBatchItem(
+                        id="segment-2",
+                        revision=2,
+                        changes=GenerationSegmentBatchChangesInput(
+                            text="Reviewed batch cue"
+                        ),
+                    )
+                ],
+            ),
+        )
+
+        self.assertEqual(expected, listed["items"][0]["retained_voice"])
+        self.assertEqual(expected, updated.result["retained_voice"])
+        self.assertEqual(expected, batched.result["items"][0]["retained_voice"])
+        self.assertNotIn("speech_block_provenance", batched.result["items"][0])
+        self.assertNotIn("takes", batched.result["items"][0])
+
+    def test_absent_or_invalid_retained_voice_stays_absent(self):
+        runtime = cast(McpRuntime, self.runtime)
+        absent = list_generation_segments(
+            runtime,
+            ListGenerationSegmentsInput(session_id="session-1"),
+        )
+        single = update_generation_segment(
+            runtime,
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=3,
+                idempotency_key="gen-update:no-retained:1",
+                text="Reviewed cue",
+            ),
+        )
+        batch = update_generation_segments(
+            runtime,
+            UpdateGenerationSegmentsInput(
+                session_id="session-1",
+                idempotency_key="gen-batch:no-retained:1",
+                updates=[
+                    UpdateGenerationSegmentBatchItem(
+                        id="segment-2",
+                        revision=2,
+                        changes=GenerationSegmentBatchChangesInput(
+                            text="Reviewed batch cue"
+                        ),
+                    )
+                ],
+            ),
+        )
+        self.assertNotIn("retained_voice", absent["items"][0])
+        self.assertNotIn("retained_voice", single.result)
+        self.assertNotIn("retained_voice", batch.result["items"][0])
+
+        self.application.retained_voice_response = {
+            "binding": {"voice_id": []},
+            "display_name": "Invalid",
+            "adapter": "audio_cpp",
+            "model": "model-a",
+        }
+        malformed = list_generation_segments(
+            runtime,
+            ListGenerationSegmentsInput(session_id="session-1"),
+        )
+        self.assertNotIn("retained_voice", malformed["items"][0])
+
     def test_generation_segment_text_and_removed_can_be_updated_and_restored(self):
         edited = update_generation_segment(
             self.runtime,
@@ -643,6 +772,8 @@ class PreviewAndGenerationTests(unittest.TestCase):
                 idempotency_key="gen-update:none:1",
                 text=None,
                 removed=None,
+                voice=None,
+                voice_id=None,
             ),
         )
         application_call = next(
@@ -651,6 +782,97 @@ class PreviewAndGenerationTests(unittest.TestCase):
             if name == "update_generation_segment"
         )
         self.assertEqual({}, application_call["changes"])
+
+    def test_clear_voice_override_sends_both_nulls_and_preserves_text(self):
+        runtime = cast(McpRuntime, self.runtime)
+        outcome = update_generation_segment(
+            runtime,
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=3,
+                idempotency_key="gen-update:clear-voice:1",
+                text="Reviewed source text",
+                clear_voice_override=True,
+            ),
+        )
+
+        self.assertEqual("Reviewed source text", outcome.result["text"])
+        call = next(
+            payload
+            for name, payload in self.application.calls
+            if name == "update_generation_segment"
+        )
+        self.assertEqual(
+            {"text": "Reviewed source text", "voice": None, "voice_id": None},
+            call["changes"],
+        )
+
+    def test_clear_voice_override_rejects_explicit_voice_values(self):
+        with self.subTest(field="voice"), self.assertRaises(ValidationError):
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=3,
+                idempotency_key="gen-update:conflict:1",
+                clear_voice_override=True,
+                voice="",
+            )
+        with self.subTest(field="voice_id"), self.assertRaises(ValidationError):
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=3,
+                idempotency_key="gen-update:conflict:1",
+                clear_voice_override=True,
+                voice_id="",
+            )
+
+    def test_registered_native_update_forwards_clear_voice_override(self):
+        class CaptureServer:
+            def __init__(self) -> None:
+                self.tools: dict[str, Callable[..., Any]] = {}
+
+            def tool(
+                self, *, name: str, **_metadata: object
+            ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+                def register(function: Callable[..., Any]) -> Callable[..., Any]:
+                    self.tools[name] = function
+                    return function
+
+                return register
+
+        server = CaptureServer()
+        captured: list[UpdateGenerationSegmentInput] = []
+
+        def capture(_tool: Any, _runtime: McpRuntime, arguments: Any) -> dict[str, Any]:
+            captured.append(arguments)
+            return {"accepted": True}
+
+        def unexpected_validated_call(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("The single update must use its single-input call.")
+
+        register_generation_execution_tools(
+            server,
+            cast(McpRuntime, self.runtime),
+            capture,
+            unexpected_validated_call,
+            write_action=None,
+            execute_action=None,
+        )
+        result = server.tools["pandrator_update_generation_segment"](
+            session_id="session-1",
+            segment_id="segment-1",
+            expected_revision=3,
+            idempotency_key="native-clear-voice:1",
+            text="Reviewed source text",
+            clear_voice_override=True,
+        )
+
+        self.assertEqual({"accepted": True}, result)
+        self.assertEqual(1, len(captured))
+        self.assertTrue(captured[0].clear_voice_override)
+        self.assertEqual("Reviewed source text", captured[0].text)
 
     def test_generation_segment_batch_validation_routing_and_compact_projection(self):
         arguments = UpdateGenerationSegmentsInput(

@@ -8,6 +8,8 @@ from unittest import mock
 from uuid import uuid4
 
 from pandrator.logic.dubbing.crispasr import CrispASRTranscriptionResult
+from pandrator.web.accounts.execution_actor import HostActor, execution_actor_scope
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import Artifact, Voice, VoiceSample
@@ -50,9 +52,11 @@ class VoiceTranscriptionDefaultTests(unittest.TestCase):
     def _sample(self, language: str | None = "de") -> tuple[Voice, VoiceSample]:
         extension = self.app.extensions["pandrator"]
         with extension["database"].session() as session:
+            voice_workspace_id = initial_personal_workspace(session).id
             voice = Voice(
                 name=f"Voice {language or 'auto'} {uuid4().hex}",
                 language=language,
+                workspace_id=voice_workspace_id,
             )
             session.add(voice)
             session.flush()
@@ -66,8 +70,10 @@ class VoiceTranscriptionDefaultTests(unittest.TestCase):
             role="voice_sample",
         )
         with extension["database"].session() as session:
+            voice_workspace_id = session.get(Voice, voice_id).workspace_id
             sample = VoiceSample(
                 voice_id=voice_id,
+                workspace_id=voice_workspace_id,
                 artifact_id=artifact.id,
                 transcript="Keep this transcript.",
             )
@@ -75,8 +81,18 @@ class VoiceTranscriptionDefaultTests(unittest.TestCase):
             session.flush()
             sample_id = sample.id
         return (
-            Voice(id=voice_id, name="", language=language),
-            VoiceSample(id=sample_id, voice_id=voice_id, artifact_id=artifact.id),
+            Voice(
+                id=voice_id,
+                name="",
+                language=language,
+                workspace_id=voice_workspace_id,
+            ),
+            VoiceSample(
+                id=sample_id,
+                voice_id=voice_id,
+                workspace_id=voice_workspace_id,
+                artifact_id=artifact.id,
+            ),
         )
 
     def _queue(self, language: str | None, settings=None):
@@ -194,6 +210,7 @@ class VoiceTranscriptionDefaultTests(unittest.TestCase):
         }), encoding="utf-8")
         return CrispASRTranscriptionResult(str(srt), str(words), "parakeet", "cpu", "pl", routing)
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_reference_artifacts_store_routing_without_accepting_or_relabeling_voice(self):
         voice, sample = self._sample("de")
         extension = self.app.extensions["pandrator"]

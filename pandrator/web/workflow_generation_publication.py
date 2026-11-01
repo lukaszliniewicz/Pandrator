@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from .artifacts import ArtifactService, PreparedArtifactRegistration
 from .models import AudioTake, GenerationRun, GenerationSegment, UsageEvent, utcnow
+from .usage_identity import bind_usage_ownership
 
 
 class MarkOutputAssembliesStaleProtocol(Protocol):
@@ -68,6 +69,7 @@ def publish_generation_take(
     if usage_event_factory is not None:
         usage_event = usage_event_factory(artifact.id)
         if usage_event is not None:
+            bind_usage_ownership(session, usage_event)
             session.add(usage_event)
     from .generation_edit_audio import selection_is_unchanged
 

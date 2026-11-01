@@ -5,9 +5,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import AppSetting
+from pandrator.web.models import WorkspaceSetting
 from pandrator.web.openapi import build_openapi_document
 from pandrator.web.tts_providers import TtsCatalogueModelNotFoundError, TtsHealth
 from pandrator.web.voice_catalog import VoiceCatalogQuery, catalog_entries, query_catalog
@@ -43,7 +44,8 @@ class TtsCataloguePass2Tests(unittest.TestCase):
             bootstrap_tokens=bootstrap,
         )
         self.client = self.app.test_client()
-        self.client.post("/api/v1/auth/bootstrap", json={"token": token})
+        signed_in = self.client.post("/api/v1/auth/bootstrap", json={"token": token})
+        self.csrf = {"X-CSRF-Token": signed_in.get_json()["csrf_token"]}
 
     def tearDown(self):
         self.app.extensions["pandrator"]["database"].dispose()
@@ -128,6 +130,8 @@ class TtsCataloguePass2Tests(unittest.TestCase):
 
     def test_voice_catalog_skips_profiles_and_preserves_provider_previews(self):
         catalogue_service = self.app.extensions["pandrator"]["tts_catalogue"]
+        with catalogue_service.database.session() as session:
+            workspace_id = initial_personal_workspace(session).id
         previews = [{
             "service_id": "openai",
             "model": "tts-1",
@@ -150,9 +154,9 @@ class TtsCataloguePass2Tests(unittest.TestCase):
                 "/api/v1/voice-catalog?kind=provider&service_id=openai&model=tts-1"
             ))
             profile_loader.assert_not_called()
-            preview_loader.assert_called_once_with()
+            preview_loader.assert_called_once_with(workspace_id=workspace_id)
             snapshot_loader.assert_called_once_with(
-                refresh=False, include_profiles=False
+                refresh=False, include_profiles=False, workspace_id=workspace_id
             )
         alloy = next(item for item in payload["items"] if item["id"] == "alloy")
         self.assertEqual("provider-preview", alloy["preview_artifact_id"])
@@ -296,8 +300,9 @@ class TtsCataloguePass2Tests(unittest.TestCase):
             ),
         ):
             payload = self._payload(
-                self.client.get(
-                    "/api/v1/services/tts?refresh=true&services=xtts,kobold_qwen"
+                self.client.post(
+                    "/api/v1/services/tts/refresh?services=xtts,kobold_qwen",
+                    headers=self.csrf,
                 )
             )
         self.assertEqual({"xtts", "kobold_qwen"}, set(seen))
@@ -313,7 +318,7 @@ class TtsCataloguePass2Tests(unittest.TestCase):
             return_value=TtsHealth(False, False, "Service is not running"),
         ):
             payload = self._payload(
-                self.client.get("/api/v1/services/tts?view=compact&refresh=true")
+                self.client.post("/api/v1/services/tts/refresh?view=compact", headers=self.csrf)
             )
         audio_cpp = next(
             item for item in payload["services"] if item["id"] == "audio_cpp"
@@ -396,7 +401,8 @@ class TtsCataloguePass2Tests(unittest.TestCase):
     def _configure_old_native_inventory(self):
         services = self.app.extensions["pandrator"]
         with services["database"].session() as session:
-            row = session.get(AppSetting, "services.tts")
+            workspace_id = initial_personal_workspace(session).id
+            row = session.get(WorkspaceSetting, (workspace_id, "services.tts"))
             value = {"provider_configs": [{
                 "id": "audio_cpp",
                 "adapter": "audio_cpp",
@@ -411,7 +417,12 @@ class TtsCataloguePass2Tests(unittest.TestCase):
                 "default_model": "old_model",
             }]}
             if row is None:
-                session.add(AppSetting(key="services.tts", value_json=value, revision=1))
+                session.add(WorkspaceSetting(
+                    workspace_id=workspace_id,
+                    key="services.tts",
+                    value_json=value,
+                    revision=1,
+                ))
             else:
                 row.value_json = value
         return services["tts_catalogue"]
@@ -482,7 +493,10 @@ class TtsCataloguePass2Tests(unittest.TestCase):
                             catalogue.service_detail(service_id, models=models, refresh=refresh)
                     else:
                         catalogue.service_detail(service_id, models=models, refresh=refresh)
-                    build.assert_called_once_with(refresh=refresh, selected=[service_id], compact=False)
+                    build.assert_called_once_with(
+                        refresh=refresh, selected=[service_id], compact=False, workspace_id=None,
+                        settings_snapshot=None, approved_only=False, allow_host_adc=True, before_io=None
+                    )
             build.reset_mock()
             with self.assertRaises(TtsCatalogueModelNotFoundError):
                 catalogue.service_detail("audio_cpp", models=["missing_model"])

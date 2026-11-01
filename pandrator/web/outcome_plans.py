@@ -7,6 +7,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
 from .database import Database
 from .models import OutcomePlan, OutcomePlanHistory, SessionRecord, utcnow
 from .settings_policy import RevisionConflict
@@ -128,7 +130,8 @@ class OutcomePlanService:
         self.database = database
 
     def get(self, session_id: str) -> dict[str, Any]:
-        with self.database.immediate_session() as session:
+        with self.database.snapshot_session() as session:
+            require_current_session_access(session, session_id, ProjectAction.READ)
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
@@ -144,13 +147,10 @@ class OutcomePlanService:
                     key: bool(effective.get(key))
                     for key in ("llm_tts_optimization", "llm_tts_document_optimization")
                 })
-                plan = OutcomePlan(
-                    session_id=session_id, value_json=value
-                )
-                session.add(plan)
-                session.flush()
-            value = deepcopy(plan.value_json)
-            revision = plan.revision
+                revision = 0
+            else:
+                value = deepcopy(plan.value_json)
+                revision = plan.revision
         return {
             "value": value,
             "revision": revision,
@@ -161,6 +161,7 @@ class OutcomePlanService:
         self, session_id: str, expected_revision: int, value: dict[str, Any]
     ) -> dict[str, Any]:
         with self.database.immediate_session() as session:
+            require_current_session_access(session, session_id, ProjectAction.EDIT)
             result = self.update_in_session(
                 session, session_id, expected_revision, value
             )
@@ -181,13 +182,19 @@ class OutcomePlanService:
         sync_session: bool = True,
         preserve_input_selections: bool = False,
     ) -> dict[str, Any]:
-        """Update an outcome plan inside a caller-owned transaction."""
+        """Persist in a caller-authorized transaction; public update guards EDIT.
+
+        Internal session/setup/workflow commands authorize their own effect
+        before calling this persistence leaf, including admitted job actors.
+        """
 
         record = session.get(SessionRecord, session_id)
         if record is None:
             raise KeyError(session_id)
         plan = session.get(OutcomePlan, session_id)
-        previous_value = deepcopy(plan.value_json) if plan is not None else {}
+        # First save compares with the same effective input defaults as get().
+        # An absent stored plan is not an implicit correction-source choice.
+        previous_value = deepcopy(plan.value_json) if plan is not None else derive_legacy_outcome(record)
         if plan is None:
             if expected_revision != 0:
                 raise RevisionConflict(

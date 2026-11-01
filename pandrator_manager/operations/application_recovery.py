@@ -9,7 +9,11 @@ from pathlib import Path
 
 from ..components.slots import component_container
 from ..models import ManagedProcessSpec, TaskSpec
-from ..runtime_specs import PANDRATOR_CORE_SERVICES, PANDRATOR_SERVICE_START_ORDER
+from ..runtime_specs import (
+    PANDRATOR_CORE_SERVICES,
+    PANDRATOR_SERVICE_START_ORDER,
+    PANDRATOR_WORKER_SERVICES,
+)
 from ..supervisor import ProcessSupervisor
 from .contracts import OperationTaskContext
 from .task_files import _atomic_json
@@ -75,11 +79,20 @@ def _parse_application_start_journal(
             raise ValueError
         raw_previous = payload["previous"]
         raw_target = payload["target"]
-        if set(raw_previous) != set(PANDRATOR_SERVICE_START_ORDER) or set(raw_target) not in (
-            set(PANDRATOR_CORE_SERVICES),
+        allowed = set(PANDRATOR_SERVICE_START_ORDER)
+        legacy = allowed - {PANDRATOR_WORKER_SERVICES[1]}
+        if set(raw_previous) not in (
+            legacy,
             set(PANDRATOR_SERVICE_START_ORDER),
-        ):
+        ) or not PANDRATOR_CORE_SERVICES.issubset(raw_target) or not set(raw_target).issubset(allowed):
             raise ValueError
+        if set(raw_previous) == legacy:
+            raw_previous = {
+                **raw_previous,
+                PANDRATOR_WORKER_SERVICES[1]: {
+                    "spec": None, "was_running": False, "desired_running": False,
+                },
+            }
         previous: dict[str, _ApplicationServiceState] = {}
         target: dict[str, ManagedProcessSpec] = {}
         for service_id in PANDRATOR_SERVICE_START_ORDER:

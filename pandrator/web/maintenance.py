@@ -10,7 +10,13 @@ from sqlalchemy import CursorResult, delete
 from pandrator.runtime import DataPaths
 
 from .database import Database
-from .models import AppSettingHistory, JobEvent, SessionSettingHistory, utcnow
+from .models import (
+    AppSettingHistory,
+    JobEvent,
+    SessionSettingHistory,
+    WorkspaceSettingHistory,
+    utcnow,
+)
 
 
 def apply_retention(database: Database, paths: DataPaths, days: int) -> dict[str, int]:
@@ -19,6 +25,7 @@ def apply_retention(database: Database, paths: DataPaths, days: int) -> dict[str
     with database.session() as session:
         events = cast(CursorResult[Any], session.execute(delete(JobEvent).where(JobEvent.created_at < cutoff))).rowcount or 0
         app_history = cast(CursorResult[Any], session.execute(delete(AppSettingHistory).where(AppSettingHistory.created_at < cutoff))).rowcount or 0
+        workspace_history = cast(CursorResult[Any], session.execute(delete(WorkspaceSettingHistory).where(WorkspaceSettingHistory.created_at < cutoff))).rowcount or 0
         session_history = cast(CursorResult[Any], session.execute(delete(SessionSettingHistory).where(SessionSettingHistory.created_at < cutoff))).rowcount or 0
     files = 0
     cutoff_timestamp = cutoff.timestamp()
@@ -33,4 +40,4 @@ def apply_retention(database: Database, paths: DataPaths, days: int) -> dict[str
                 files += 1
             except OSError:
                 continue
-    return {"job_events": events, "app_setting_history": app_history, "session_setting_history": session_history, "files": files}
+    return {"job_events": events, "app_setting_history": app_history, "workspace_setting_history": workspace_history, "session_setting_history": session_history, "files": files}

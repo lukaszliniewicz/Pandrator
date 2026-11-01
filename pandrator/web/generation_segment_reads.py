@@ -12,6 +12,8 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.orm import load_only
 from sqlalchemy.sql.elements import ColumnElement, TextClause
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
 from .database import Database
 from .generation_run_selection import resolve_generation_run_take_ids
 from .models import (
@@ -210,6 +212,7 @@ class GenerationSegmentReader:
         if text_field not in {"text", "spoken"}:
             raise ValueError("text_field must be 'text' or 'spoken'.")
         with self.database.session() as session:
+            require_current_session_access(session, session_id, ProjectAction.READ)
             session_record = session.get(SessionRecord, session_id)
             if session_record is None:
                 raise KeyError(session_id)
@@ -627,6 +630,40 @@ class GenerationSegmentReader:
                 session, plan_revision_id, rows, selected_run
             ) if view == "full" and fields is None else {}
 
+            from .generation_performance_snapshot import performance_runtime_settings
+            from .project_segment_speech import (
+                SegmentSpeechReferenceIndex,
+                retained_voice_projection,
+                uses_segment_speech_references,
+            )
+
+            identity_snapshot = selected_run.settings_snapshot_json if selected_run else audio_snapshot
+            segment_reference_index = SegmentSpeechReferenceIndex(session)
+            project_saved_voice = (view == "full" and fields is None) or (
+                fields is not None and "retained_voice" in fields
+            )
+            saved_voices = (
+                segment_reference_index.for_revision(session_id, plan_revision_id)
+                if project_saved_voice and uses_segment_speech_references(
+                    performance_runtime_settings(identity_snapshot)
+                ) else {}
+            )
+            if project_saved_voice and any(row.removed for row in rows) and uses_segment_speech_references(
+                performance_runtime_settings(identity_snapshot)
+            ):
+                from .generation_rendering import _canonical_segment_slot
+                from .project_speech_references import list_project_speech_references
+
+                removed_slots = [slot for row in rows if row.removed
+                    and (slot := _canonical_segment_slot(row.id)) is not None]
+                saved_voices.update({
+                    value.slot_key: value
+                    for value in list_project_speech_references(
+                        session, session_id, slot_keys=removed_slots,
+                        authorization_guard=lambda current: require_current_session_access(current, session_id),
+                    )
+                })
+
             items = [
                 {
                     "id": item.id,
@@ -650,6 +687,8 @@ class GenerationSegmentReader:
                     "optimization_model": item.optimization_model,
                     "voice_id": item.voice_id,
                     "voice": item.voice,
+                    **({"retained_voice": retained_voice_projection(saved_voices[f"segment:{item.id}"])}
+                       if f"segment:{item.id}" in saved_voices else {}),
                     "language": item.language,
                     "silence_after_ms": item.silence_after_ms,
                     **(
@@ -687,7 +726,9 @@ class GenerationSegmentReader:
                 take_reuse_reason,
             )
 
-            audio_identity = AudioIdentityContext(session, selected_run.settings_snapshot_json if selected_run else audio_snapshot)
+            audio_identity = AudioIdentityContext(
+                session, identity_snapshot, _segment_references=segment_reference_index,
+            )
             for row, item in zip(rows, items, strict=True):
                 active_take = next((take for take in takes_by_segment.get(row.id, [])
                                     if take.id == pinned.get(row.id)), None) if pinned is not None else next(

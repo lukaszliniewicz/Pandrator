@@ -14,6 +14,7 @@
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { managerApi } from './admin-api';
+  import { appState } from './app-state.svelte';
   import ManagerPlanDialog, {
     type ManagerPlan
   } from './ManagerPlanDialog.svelte';
@@ -648,6 +649,7 @@
     component: Component,
     kind: 'install' | 'update' | 'repair' | 'remove'
   ) {
+    if (!appState.isAdministrator) return;
     planning = component.definition.id;
     error = '';
     notice = '';
@@ -695,6 +697,7 @@
   }
 
   async function createBatchPlan() {
+    if (!appState.isAdministrator) return;
     if (!updateCandidates.length || operationBusy || planning) return;
     planning = 'batch';
     error = '';
@@ -731,6 +734,7 @@
   }
 
   async function executePlan() {
+    if (!appState.isAdministrator) return;
     if (!pendingPlan) return;
     const plan = pendingPlan;
     pendingPlan = null;
@@ -761,6 +765,7 @@
     component: Component,
     action: 'start' | 'stop' | 'restart'
   ) {
+    if (!appState.isAdministrator) return;
     const serviceId = component.definition.service_key;
     if (!serviceId) return;
     runtimeBusy = component.definition.id;
@@ -779,6 +784,7 @@
   }
 
   async function cancelOperation() {
+    if (!appState.isAdministrator) return;
     if (!operation) return;
     try {
       await managerOperationStore.cancel();
@@ -806,6 +812,7 @@
   }
 
   async function createReleasePlan() {
+    if (!appState.isAdministrator) return;
     if (!releaseManifest) {
       error = 'Choose a signed JSON release manifest first.';
       return;
@@ -854,6 +861,7 @@
   }
 
   async function importLegacy() {
+    if (!appState.isAdministrator) return;
     const reviewed = legacy?.report;
     if (!reviewed) return;
     const action = reviewed.valid ? 'import' : 'quarantine';
@@ -889,6 +897,7 @@
   }
 
   async function createUninstallPlan() {
+    if (!appState.isAdministrator) return;
     uninstallBusy = true;
     error = '';
     try {
@@ -905,6 +914,7 @@
   }
 
   function repairDiagnostic(check: DoctorCheck) {
+    if (!appState.isAdministrator) return;
     const target = String(check.repair_target ?? '');
     if (!target.startsWith('component:')) return;
     const componentId = target.slice('component:'.length);
@@ -956,7 +966,8 @@
       </button>
       <button
         class="btn btn-secondary"
-        disabled={loading ||
+        disabled={!appState.isAdministrator ||
+          loading ||
           Boolean(planning) ||
           Boolean(runtimeBusy) ||
           operationBusy ||
@@ -971,6 +982,16 @@
       </button>
     </div>
   </div>
+
+  {#if !appState.isAdministrator}
+    <p
+      class="muted mt-4 rounded-xl border border-[var(--line)] p-3 text-sm"
+      role="status"
+    >
+      An Administrator manages local services and installs or downloads models.
+      You can view the installed components here.
+    </p>
+  {/if}
 
   {#if error}
     <div
@@ -1028,8 +1049,10 @@
                 : ''}
             </div>
           </div>
-          <button class="btn btn-sm btn-secondary" onclick={cancelOperation}
-            >Cancel safely</button
+          <button
+            class="btn btn-sm btn-secondary"
+            disabled={!appState.isAdministrator}
+            onclick={cancelOperation}>Cancel safely</button
           >
         </div>
         <div class="mt-3 h-2 overflow-hidden rounded-full bg-black/10">
@@ -1078,6 +1101,7 @@
                   {@const installedRevision =
                     component.inspection.installed_revision?.trim() ?? ''}
                   {@const busy =
+                    !appState.isAdministrator ||
                     planning === component.definition.id ||
                     runtimeBusy === component.definition.id ||
                     Boolean(
@@ -1602,6 +1626,7 @@
                   {#if check.repairable && String(check.repair_target ?? '').startsWith('component:')}
                     <button
                       class="btn btn-sm btn-secondary"
+                      disabled={!appState.isAdministrator}
                       onclick={() => repairDiagnostic(check)}
                       >Review repair</button
                     >
@@ -1677,7 +1702,7 @@
                 {:else}
                   <button
                     class="btn btn-sm btn-secondary mt-3"
-                    disabled={legacyBusy}
+                    disabled={!appState.isAdministrator || legacyBusy}
                     onclick={importLegacy}
                   >
                     {legacy.report.valid
@@ -1725,7 +1750,7 @@
           </label>
           <button
             class="btn btn-primary mt-4"
-            disabled={releaseBusy}
+            disabled={!appState.isAdministrator || releaseBusy}
             onclick={createReleasePlan}
           >
             {#if releaseBusy}<LoaderCircle
@@ -1761,7 +1786,7 @@
           </label>
           <button
             class="btn btn-secondary mt-4 text-red-500"
-            disabled={uninstallBusy}
+            disabled={!appState.isAdministrator || uninstallBusy}
             onclick={createUninstallPlan}
           >
             {#if uninstallBusy}<LoaderCircle
@@ -1776,7 +1801,7 @@
   {/if}
 </section>
 
-{#if pendingPlan}
+{#if pendingPlan && appState.isAdministrator}
   <ManagerPlanDialog
     plan={pendingPlan}
     onclose={() => (pendingPlan = null)}

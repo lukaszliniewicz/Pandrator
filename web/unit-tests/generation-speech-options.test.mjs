@@ -38,7 +38,7 @@ const bundle = await build({
           (args) => ({
             contents: args.path.includes('domain-api')
               ? 'export const sessionApi = {settings: (...args) => globalThis.speechOptionsFixture.settings(...args), discoverTts: () => {throw new Error("Discovery must not run")} };'
-              : 'export const getTtsCompactCatalogue = (...args) => globalThis.speechOptionsFixture.catalogue(...args); export const getVoiceLibrary = (...args) => globalThis.speechOptionsFixture.voices(...args);',
+              : 'export const speechCatalogueKey = (scope = {}) => JSON.stringify([globalThis.speechOptionsFixture.identity ?? "account-a", scope]); export const getTtsCompactCatalogue = (...args) => globalThis.speechOptionsFixture.catalogue(...args); export const getVoiceLibrary = (...args) => globalThis.speechOptionsFixture.voices(...args);',
             loader: 'js'
           })
         );
@@ -80,10 +80,7 @@ function setup() {
   };
   let sessionId = 'project';
   return {
-    state: new GenerationSpeechOptionsState(
-      () => sessionId,
-      (id) => String(id)
-    ),
+    state: new GenerationSpeechOptionsState(() => sessionId),
     reads,
     counts: () => ({ catalogues, libraries }),
     changeScope: () => {
@@ -131,14 +128,14 @@ test('disposal and a changed project cannot receive a stale settings response', 
   }
 });
 
-test('simple preview loads settings and model support without the voice library or discovery', async () => {
+test('read-only preview loads project settings without workspace catalogue or library reads', async () => {
   const fixture = setup();
   const initial = fixture.state.load({ editing: false });
   fixture.reads[0].resolve({
     effective: { service: 'vertex_ai', casting_enabled: true }
   });
   await initial;
-  assert.deepEqual(fixture.counts(), { catalogues: 1, libraries: 0 });
+  assert.deepEqual(fixture.counts(), { catalogues: 0, libraries: 0 });
   assert.equal(fixture.state.settings.casting_enabled, true);
   assert.deepEqual(fixture.state.voices, []);
   const advanced = fixture.state.load({ editing: true });

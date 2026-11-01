@@ -17,6 +17,7 @@ from pandrator.runtime import DataPaths
 from pandrator.web import legacy_migration
 from pandrator.web.database import SCHEMA_HEAD, Database, upgrade_database
 from pandrator.web.models import SessionRecord
+from pandrator.web.projects.identity import create_session_project
 
 
 @dataclass
@@ -61,7 +62,9 @@ def promotion_paths(root: Path) -> DataPaths:
     database = Database(paths.database)
     try:
         with database.session() as session:
-            session.add(SessionRecord(name="Promotion fixture", legacy_path=str(legacy)))
+            create_session_project(
+                session, SessionRecord(name="Promotion fixture", legacy_path=str(legacy))
+            )
     finally:
         database.dispose()
     paths.migration_marker.write_text(

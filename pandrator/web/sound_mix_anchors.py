@@ -6,7 +6,7 @@ import hashlib
 import math
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pandrator.runtime import DataPaths
 
@@ -21,7 +21,6 @@ from .sound_mix_inputs import (
 from .sound_project_schemas import SoundPlayback
 
 _NEEDS_PLACEMENT = "Resolve this cue's placement before rendering sound."
-
 
 
 def _frame_bounds(
@@ -56,19 +55,24 @@ def _frame_bounds(
     return round(float(start_ms) * base_rate / 1000), round(float(end_ms) * base_rate / 1000)
 
 
-
 def _take_row_for_cue(
     cue: dict[str, Any], snapshot: dict[str, Any], manifest: list[dict[str, Any]]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     anchor = cue["anchor_json"]
     kind = str(anchor.get("kind") or "")
     resolution = anchor.get("resolution") if kind in {"after_word", "next_pause"} else None
-    requested_take = str((resolution or {}).get("take_id") or "") if isinstance(resolution, dict) else ""
+    requested_take = (
+        str((resolution or {}).get("take_id") or "") if isinstance(resolution, dict) else ""
+    )
     segment_id = str(anchor.get("segment_id") or "")
     matches = [
         row
         for row in manifest
-        if (row.get("take_id") == requested_take if requested_take else row.get("segment_id") == segment_id)
+        if (
+            row.get("take_id") == requested_take
+            if requested_take
+            else row.get("segment_id") == segment_id
+        )
         and (not segment_id or row.get("segment_id") == segment_id)
     ]
     if len(matches) != 1:
@@ -107,12 +111,18 @@ def _resolve_anchor(
     base_frames: int,
     paths: DataPaths,
     source_paths: dict[str, Path],
+    before_io: Callable[[], None] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     anchor = cue["anchor_json"]
     kind = str(anchor.get("kind") or "")
     if kind == "source_time":
         seconds = anchor.get("time_seconds")
-        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(float(seconds)) or seconds < 0:
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or not math.isfinite(float(seconds))
+            or seconds < 0
+        ):
             raise ValueError("Source-time anchor must contain finite non-negative seconds.")
         frame = round(float(seconds) * base_rate)
         if frame > base_frames:
@@ -129,7 +139,14 @@ def _resolve_anchor(
             or str(resolution.get("status") or "").lower() != "ready"
         ):
             raise ValueError(_NEEDS_PLACEMENT)
-        required = {"take_id", "artifact_id", "take_content_hash", "transcript_hash", "take_frame", "take_sample_rate"}
+        required = {
+            "take_id",
+            "artifact_id",
+            "take_content_hash",
+            "transcript_hash",
+            "take_frame",
+            "take_sample_rate",
+        }
         if not required <= resolution.keys():
             raise ValueError(_NEEDS_PLACEMENT)
     row, take = _take_row_for_cue(cue, snapshot, _manifest_rows(anchor_metadata))
@@ -169,7 +186,9 @@ def _resolve_anchor(
     ):
         raise ValueError(_NEEDS_PLACEMENT)
     path = take_path
-    take_frames, take_rate, _take_channels = _read_take_wav(path)
+    take_frames, take_rate, _take_channels = _read_take_wav(path, before_io=before_io)
+    if before_io is not None:
+        before_io()
     if sha256_file(path) != take_hash:
         raise ValueError(_NEEDS_PLACEMENT)
     sample_rate = _int(resolution.get("take_sample_rate"), "resolution.take_sample_rate", minimum=1)
@@ -201,6 +220,7 @@ def _cue_snapshots(
     rate: int,
     channels: int,
     base_frames: int,
+    before_io: Callable[[], None] | None = None,
 ) -> tuple[tuple[dict[str, Any], ...], dict[str, Path]]:
     workflow = snapshot["session"]["workflow_kind"]
     source_paths: dict[str, Path] = {}
@@ -223,7 +243,9 @@ def _cue_snapshots(
         playback = SoundPlayback.model_validate(cue["playback_json"] or {})
         mode = playback.mode or ("insert" if workflow == "audiobook" else "overlay")
         if mode == "insert" and workflow != "audiobook":
-            raise ValueError("Insert sound cues are unavailable on a fixed timeline; select overlay.")
+            raise ValueError(
+                "Insert sound cues are unavailable on a fixed timeline; select overlay."
+            )
         if playback.offset_ms < 0 and mode == "insert":
             raise ValueError("Insert offset must be nonnegative.")
         kind = str(cue["anchor_json"].get("kind") or "")
@@ -238,6 +260,7 @@ def _cue_snapshots(
             base_frames=base_frames,
             paths=paths,
             source_paths=source_paths,
+            before_io=before_io,
         )
         expected_source_frames = _variant_normalized_frames(variant, rate)
         if expected_source_frames is not None and playback.trim_end_seconds is not None:

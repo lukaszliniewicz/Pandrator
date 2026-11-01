@@ -122,8 +122,10 @@ for _metadata in speech_model_catalog():
         _model["family"] = "fish_audio_s2"
 
 for _audio_cpp_model in AUDIO_CPP_MODEL_CATALOG:
+    _family = str(_audio_cpp_model["family"])
+    _policy_limit = narration_character_policy(_family)[0]
     _audio_cpp_model["recommended_chunk_characters"] = (
-        narration_character_policy(str(_audio_cpp_model["family"]))[0] * 9 // 10
+        _policy_limit if _family == "qwen3_tts" else _policy_limit * 9 // 10
     )
     _audio_cpp_model["request_parameters"] = request_parameters_for_model(
         str(_audio_cpp_model.get("family") or ""), str(_audio_cpp_model["id"])
@@ -183,7 +185,7 @@ def _audio_cpp_model_preset(model: dict) -> list[str] | None:
             if "_jp_" in model_id
             else ["us_male", "us_female", "uk_male", "uk_female"]
         )
-    if family in {"kitten_tts2", "kugelaudio", "neutts", "voxtral_tts"}:
+    if family in {"kitten_tts2", "kugelaudio", "neutts", "plapre", "voxtral_tts"}:
         options = family_metadata(family).get("options", {}).get("request", [])
         return next(
             (

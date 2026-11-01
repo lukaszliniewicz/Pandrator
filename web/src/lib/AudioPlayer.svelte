@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectLinkUrl } from './project-link-context';
   import { Pause, Play, RotateCcw, Volume2, VolumeX } from '@lucide/svelte';
 
   let {
@@ -104,7 +105,7 @@
 <div class:compact class:failed class="audio-player" aria-label={label}>
   <audio
     bind:this={audio}
-    {src}
+    src={projectLinkUrl(src)}
     {preload}
     {autoplay}
     onemptied={sourceLoading}

@@ -66,7 +66,7 @@ test('an uncertain admission retry keeps the key across a reload and delivers th
     (await client()).admitGeneration('session-a', body),
     /lost acceptance response/
   );
-  const saved = values.get('pandrator:generation-admission:session-a');
+  const saved = [...values.values()][0];
   assert.ok(saved);
   assert.ok(!saved.includes('private-narrator-direction'));
   assert.equal(
@@ -107,10 +107,7 @@ test('an accepted work handle survives interrupted polling without another POST'
     (await client()).admitGeneration('session-b', body),
     /closed dialog/
   );
-  assert.equal(
-    JSON.parse(values.get('pandrator:generation-admission:session-b')).jobId,
-    'preparation-b'
-  );
+  assert.equal(JSON.parse([...values.values()][0]).jobId, 'preparation-b');
   const progress = [];
   await (
     await client()

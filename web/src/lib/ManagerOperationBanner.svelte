@@ -1,6 +1,7 @@
 <script lang="ts">
   import { CircleAlert, LoaderCircle, X } from '@lucide/svelte';
   import { onMount } from 'svelte';
+  import { appState } from './app-state.svelte';
   import {
     MANAGER_TERMINAL_STATES,
     managerOperationStore
@@ -15,7 +16,12 @@
   const error = $derived(managerOperationStore.error);
 
   async function cancel() {
-    if (!operation || MANAGER_TERMINAL_STATES.has(operation.state)) return;
+    if (
+      !appState.isAdministrator ||
+      !operation ||
+      MANAGER_TERMINAL_STATES.has(operation.state)
+    )
+      return;
     cancelling = true;
     try {
       await managerOperationStore.cancel();
@@ -66,7 +72,7 @@
       <a class="btn btn-sm btn-secondary" href="/providers?tab=local"
         >View details</a
       >
-      {#if !terminal}
+      {#if !terminal && appState.isAdministrator}
         <button
           class="btn btn-sm btn-secondary"
           disabled={cancelling}
@@ -74,7 +80,7 @@
         >
           Cancel safely
         </button>
-      {:else}
+      {:else if terminal}
         <button
           class="btn btn-icon btn-secondary"
           aria-label="Dismiss operation status"

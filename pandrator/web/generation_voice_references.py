@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,9 @@ from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
+from .access.voice_policy import require_current_voice_library_read
 from .models import Artifact, Voice, VoiceSample
+from .voice_identity import voice_creation_workspace
 from .voice_library import sample_file_status
 
 
@@ -35,17 +38,30 @@ def _hash(value: Any) -> str:
 def voice_reference_index(
     session: Session,
     paths: DataPaths | None = None,
+    *,
+    workspace_id: str | None = None,
+    _voice_ids: Collection[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Index each voice's latest usable sample and material provider aliases."""
     if paths is None:
         paths = DataPaths(Path(str(session.get_bind().engine.url.database)).parent)
+    workspace = voice_creation_workspace(session, workspace_id=workspace_id)
+    require_current_voice_library_read(session, workspace.id)
     voices: dict[str, list[dict[str, Any]]] = {}
     samples: dict[str, list[dict[str, Any]]] = {}
-    for sample, artifact in session.execute(
+    sample_query = (
         select(VoiceSample, Artifact)
         .join(Artifact, Artifact.id == VoiceSample.artifact_id)
-        .order_by(VoiceSample.created_at.desc(), VoiceSample.id)
-    ):
+        .join(Voice, Voice.id == VoiceSample.voice_id)
+        .where(Voice.workspace_id == workspace.id)
+        .order_by(VoiceSample.created_at.desc(), VoiceSample.id.desc())
+    )
+    voice_query = select(Voice).where(Voice.workspace_id == workspace.id)
+    if _voice_ids is not None:
+        selected_ids = tuple(sorted(set(_voice_ids)))
+        sample_query = sample_query.where(Voice.id.in_(selected_ids))
+        voice_query = voice_query.where(Voice.id.in_(selected_ids))
+    for sample, artifact in session.execute(sample_query):
         if sample.voice_id in samples or sample_file_status(session, paths, sample)[0] != "ready":
             continue
         samples.setdefault(sample.voice_id, []).append(
@@ -57,7 +73,7 @@ def voice_reference_index(
                 "transcript_hash": _hash(sample.transcript if sample.transcript_reviewed else ""),
             }
         )
-    for voice in session.scalars(select(Voice)):
+    for voice in session.scalars(voice_query):
         providers = dict((voice.metadata_json or {}).get("providers") or {})
         # Voice.revision also changes for descriptions and publication
         # status. Reference samples and provider content hashes carry the

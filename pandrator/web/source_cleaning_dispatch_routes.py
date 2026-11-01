@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from functools import wraps
+from typing import Any, Literal
 
 from flask import g, jsonify, request
 
+from .access.contracts import ProjectAction
+from .access.source_dispatch_policy import require_source_dispatch_access
 from .auth import Principal
 from .dispatch import DispatchError
 from .domain_blueprints import DomainBlueprints
@@ -104,8 +107,26 @@ def register_source_cleaning_dispatch_routes(
         response.headers["Idempotency-Replayed"] = "true"
         return response
 
+    def require_dispatch_action(resource: Literal["session", "run", "batch"]):
+        def decorate(view):
+            @wraps(view)
+            def guarded(**kwargs):
+                try:
+                    with database.snapshot_session() as unit:
+                        require_source_dispatch_access(
+                            unit, resource, kwargs[f"{resource}_id"], ProjectAction.RUN
+                        )
+                except DispatchError as error:
+                    return dispatch_error(error)
+                return view(**kwargs)
+
+            return guarded
+
+        return decorate
+
     @app.post("/api/v1/sessions/<session_id>/source-cleaning-dispatch-runs")
     @require_scope("app.run")
+    @require_dispatch_action("session")
     def create_source_cleaning_dispatch_run(session_id: str):
         payload = SourceCleaningDispatchRunCreateRequest.model_validate(
             request.get_json(silent=True) or {}
@@ -116,6 +137,7 @@ def register_source_cleaning_dispatch_routes(
         body = payload.model_dump(mode="json")
         try:
             with database.immediate_session() as db_session:
+                require_source_dispatch_access(db_session, "session", session_id, ProjectAction.RUN)
                 reservation = None
                 if key is not None:
                     try:
@@ -157,7 +179,10 @@ def register_source_cleaning_dispatch_routes(
     @require_scope("app.read")
     def list_source_cleaning_dispatch_runs(session_id: str):
         limit = request.args.get("limit", 50, type=int) or 50
-        return jsonify({"items": dispatch.list_runs(session_id, limit=limit)})
+        try:
+            return jsonify({"items": dispatch.list_runs(session_id, limit=limit)})
+        except DispatchError as error:
+            return dispatch_error(error)
 
     @app.get("/api/v1/source-cleaning-dispatch-runs/<run_id>")
     @require_scope("app.read")
@@ -169,10 +194,9 @@ def register_source_cleaning_dispatch_routes(
 
     @app.post("/api/v1/source-cleaning-dispatch-runs/<run_id>/claim")
     @require_scope("app.run")
+    @require_dispatch_action("run")
     def claim_source_cleaning_dispatch_batch(run_id: str):
-        payload = DispatchBatchClaimRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
+        payload = DispatchBatchClaimRequest.model_validate(request.get_json(silent=True) or {})
         key, key_error = request_key(required=True)
         if key_error is not None:
             return key_error
@@ -195,16 +219,16 @@ def register_source_cleaning_dispatch_routes(
 
     @app.post("/api/v1/source-cleaning-dispatch-batches/<batch_id>/renew")
     @require_scope("app.run")
+    @require_dispatch_action("batch")
     def renew_source_cleaning_dispatch_batch(batch_id: str):
-        payload = DispatchBatchRenewRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
+        payload = DispatchBatchRenewRequest.model_validate(request.get_json(silent=True) or {})
         key, key_error = request_key(required=False)
         if key_error is not None:
             return key_error
         body = payload.model_dump(mode="json")
         try:
             with database.immediate_session() as db_session:
+                require_source_dispatch_access(db_session, "batch", batch_id, ProjectAction.RUN)
                 reservation = None
                 if key is not None:
                     try:
@@ -244,16 +268,16 @@ def register_source_cleaning_dispatch_routes(
 
     @app.post("/api/v1/source-cleaning-dispatch-batches/<batch_id>/release")
     @require_scope("app.run")
+    @require_dispatch_action("batch")
     def release_source_cleaning_dispatch_batch(batch_id: str):
-        payload = DispatchBatchReleaseRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
+        payload = DispatchBatchReleaseRequest.model_validate(request.get_json(silent=True) or {})
         key, key_error = request_key(required=False)
         if key_error is not None:
             return key_error
         body = payload.model_dump(mode="json")
         try:
             with database.immediate_session() as db_session:
+                require_source_dispatch_access(db_session, "batch", batch_id, ProjectAction.RUN)
                 reservation = None
                 if key is not None:
                     try:
@@ -293,6 +317,7 @@ def register_source_cleaning_dispatch_routes(
 
     @app.post("/api/v1/source-cleaning-dispatch-batches/<batch_id>/submit")
     @require_scope("app.run")
+    @require_dispatch_action("batch")
     def submit_source_cleaning_dispatch_batch(batch_id: str):
         payload = SourceCleaningDispatchBatchSubmitRequest.model_validate(
             request.get_json(silent=True) or {}
@@ -304,6 +329,7 @@ def register_source_cleaning_dispatch_routes(
         body = payload.model_dump(mode="json")
         try:
             with database.immediate_session() as db_session:
+                require_source_dispatch_access(db_session, "batch", batch_id, ProjectAction.RUN)
                 try:
                     reservation = services.idempotency.begin(
                         db_session,
@@ -325,16 +351,11 @@ def register_source_cleaning_dispatch_routes(
                         replay_payload.get("run_id"), str
                     ):
                         try:
-                            result, retry_status = (
-                                dispatch.retry_finalization_in_session(
-                                    db_session,
-                                    run_id=replay_payload["run_id"],
-                                )
+                            result, retry_status = dispatch.retry_finalization_in_session(
+                                db_session,
+                                run_id=replay_payload["run_id"],
                             )
-                            if (
-                                retry_status != replay_status
-                                or result != replay_payload
-                            ):
+                            if retry_status != replay_status or result != replay_payload:
                                 services.idempotency.complete(
                                     db_session,
                                     reservation,
@@ -366,9 +387,7 @@ def register_source_cleaning_dispatch_routes(
                         **body,
                     )
                 except DispatchError as error:
-                    if isinstance(error.details, dict) and error.details.get(
-                        "batch_accepted"
-                    ):
+                    if isinstance(error.details, dict) and error.details.get("batch_accepted"):
                         services.idempotency.complete(
                             db_session,
                             reservation,
@@ -395,6 +414,7 @@ def register_source_cleaning_dispatch_routes(
 
     @app.post("/api/v1/source-cleaning-dispatch-batches/<batch_id>/inspect")
     @require_scope("app.run")
+    @require_dispatch_action("batch")
     def inspect_source_cleaning_dispatch_extraction(batch_id: str):
         payload = SourceCleaningDispatchInspectionRequest.model_validate(
             request.get_json(silent=True) or {}
@@ -406,6 +426,7 @@ def register_source_cleaning_dispatch_routes(
         body = payload.model_dump(mode="json")
         try:
             with database.immediate_session() as db_session:
+                require_source_dispatch_access(db_session, "batch", batch_id, ProjectAction.RUN)
                 try:
                     reservation = services.idempotency.begin(
                         db_session,

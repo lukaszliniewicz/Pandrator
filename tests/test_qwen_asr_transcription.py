@@ -232,7 +232,7 @@ def test_preflight_rejects_long_chunk_underfunded_tokens_and_invalid_timeout():
 
 
 @pytest.mark.parametrize("model_id", qwen_asr.QWEN3_ASR_MODELS)
-def test_qwen_command_native_flags_and_model_size(tmp_path, monkeypatch, model_id):
+def test_qwen_command_native_flags_and_model_size(tmp_path, monkeypatch, model_id, host_model_acquisition):
     fake = _fake_cli()
     result = _transcribe(tmp_path, monkeypatch, settings={"qwen_asr_model": model_id}, fake=fake)
     command = fake.commands[0]
@@ -258,7 +258,7 @@ def test_qwen_command_native_flags_and_model_size(tmp_path, monkeypatch, model_i
     ("mode", "shared_vad", "expected"),
     [("auto", True, True), ("auto", False, False), ("vad", False, True), ("fixed", True, False), ("none", True, False)],
 )
-def test_chunk_vad_compatibility(tmp_path, monkeypatch, mode, shared_vad, expected):
+def test_chunk_vad_compatibility(tmp_path, monkeypatch, mode, shared_vad, expected, host_model_acquisition):
     fake = _fake_cli()
     _transcribe(tmp_path, monkeypatch, settings={"qwen_asr_chunk_mode": mode, "crispasr_vad_enabled": shared_vad}, fake=fake)
     command = fake.commands[0]
@@ -267,7 +267,7 @@ def test_chunk_vad_compatibility(tmp_path, monkeypatch, mode, shared_vad, expect
     assert command[command.index("--chunk-overlap") + 1] == "3"
 
 
-def test_transcript_only_needs_no_aligner(tmp_path, monkeypatch):
+def test_transcript_only_needs_no_aligner(tmp_path, monkeypatch, host_model_acquisition):
     monkeypatch.setattr(qwen_asr, "ensure_aligner_model", lambda *_args: pytest.fail("aligner ran"))
     fake = _fake_cli(words=False)
     result = _transcribe(tmp_path, monkeypatch, settings={"stt_language": "auto"}, fake=fake, timed=False)
@@ -275,11 +275,11 @@ def test_transcript_only_needs_no_aligner(tmp_path, monkeypatch):
     assert "-am" not in command
     assert "--require-word-timestamps" not in command
     assert "--strict-pipeline" in command
-    assert "-l" not in command
+    assert command[command.index("-l") + 1] == "auto"
     assert json.loads(Path(result.word_timestamps_path).read_text())["transcription"][0]["words"] == []
 
 
-def test_explicit_vad_load_failure_is_not_silent(tmp_path, monkeypatch):
+def test_explicit_vad_load_failure_is_not_silent(tmp_path, monkeypatch, host_model_acquisition):
     def fail_vad(command, **_kwargs):
         assert "--vad" in command
         assert "--strict-pipeline" in command
@@ -297,13 +297,13 @@ def test_explicit_vad_load_failure_is_not_silent(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("invalid", ["missing", "outside", "nonfinite", "reversed"])
-def test_invalid_native_words_are_rejected_without_publishing(tmp_path, monkeypatch, invalid):
+def test_invalid_native_words_are_rejected_without_publishing(tmp_path, monkeypatch, invalid, host_model_acquisition):
     with pytest.raises(QwenASRError):
         _transcribe(tmp_path, monkeypatch, fake=_fake_cli(invalid=invalid))
     assert not (tmp_path / "result_words.json").exists()
 
 
-def test_zero_duration_native_word_is_preserved(tmp_path, monkeypatch):
+def test_zero_duration_native_word_is_preserved(tmp_path, monkeypatch, host_model_acquisition):
     def run(command, **_kwargs):
         base = Path(command[command.index("-of") + 1])
         Path(f"{base}.srt").write_text("1\n00:00:00,100 --> 00:00:01,000\nHello for world.\n")
@@ -347,7 +347,7 @@ def test_cjk_punctuation_lexical_coverage(tmp_path):
     crispasr._validate_qwen_json(path, audio, True)
 
 
-def test_no_speech_is_clear_failure_without_output(tmp_path, monkeypatch):
+def test_no_speech_is_clear_failure_without_output(tmp_path, monkeypatch, host_model_acquisition):
     def silent_run(_command, **_kwargs):
         return SimpleNamespace(stdout=b"", stderr=b"VAD: no speech detected\n" + b"noise\n" * 500)
 
@@ -376,7 +376,7 @@ def test_guard_uses_audio_cpp_identity_for_custom_server_port(monkeypatch):
     assert seen[0][0] == ["/opt/audio_cpp/audiocpp_cli", "--backend", "vulkan"]
 
 
-def test_canary_route_uses_existing_cache_or_explicit_download(tmp_path, monkeypatch):
+def test_canary_route_uses_existing_cache_or_explicit_download(tmp_path, monkeypatch, host_model_acquisition):
     fake = _fake_cli()
     _transcribe(tmp_path, monkeypatch, settings={"stt_language": "pl", "crispasr_cache_dir": str(tmp_path)}, fake=fake)
     command = fake.commands[0]
@@ -400,7 +400,7 @@ def test_cancel_and_timeout():
         qwen_asr._run_tool(["sleep", "30"], run_func=subprocess.run, cancel_event=None, timeout=1, backend="cpu")
 
 
-def test_pinned_assets_verified_atomic_reuse_and_cancel(tmp_path, monkeypatch):
+def test_pinned_assets_verified_atomic_reuse_and_cancel(tmp_path, monkeypatch, host_model_acquisition):
     content = b"verified GGUF"
     pin = crispasr_qwen_assets.PinnedAsset("example/model", "abc123", "model.gguf", len(content), hashlib.sha256(content).hexdigest())
     monkeypatch.setitem(crispasr_qwen_assets.ASSETS, "test", pin)

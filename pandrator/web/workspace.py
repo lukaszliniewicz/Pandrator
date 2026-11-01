@@ -12,6 +12,13 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .access.generation_resource_policy import (
+    require_generation_content_write,
+    require_generation_resource_access,
+)
+from .access.voice_policy import require_current_voice_library_read
 from .database import Database
 from .generation_history_reads import GenerationHistoryReader
 from .generation_scheduling import (
@@ -36,6 +43,7 @@ from .models import (
     OutputAssembly,
     SessionRecord,
     SpeechPlanReview,
+    Voice,
     utcnow,
 )
 from .outcome_plans import OutcomePlanService as OutcomePlanService
@@ -44,6 +52,15 @@ from .outcome_plans import resolve_pipeline as resolve_pipeline
 
 # Compatibility exports; new callers import from the domain owners.
 from .output_assembly_lifecycle import mark_output_assemblies_stale as mark_output_assemblies_stale
+from .project_segment_settings import PreparedSegmentSpeechWrite
+from .project_segment_speech import retained_voice_projection
+from .project_settings_policy import validate_project_speech_preferences
+from .project_speech_references import (
+    clear_project_speech_reference,
+    get_project_speech_reference,
+    normalize_speech_reference_slot,
+)
+from .projects.identity import session_project
 from .settings_policy import BUILTIN_DEFAULTS as BUILTIN_DEFAULTS
 from .settings_policy import RUNTIME_SETTING_ALIASES as RUNTIME_SETTING_ALIASES
 from .settings_policy import SECRET_KEYS as SECRET_KEYS
@@ -583,6 +600,7 @@ class GenerationService(GenerationHistoryReader):
         *,
         completed_takes: list[AudioTake] | None = None,
         mark_assemblies: bool = True,
+        _speech_reference_managed: bool = False,
     ) -> dict[str, Any]:
         allowed = {
             "text",
@@ -596,15 +614,47 @@ class GenerationService(GenerationHistoryReader):
             "marked",
             "removed",
         }
+        if {"voice_id", "voice"}.intersection(changes) and not _speech_reference_managed:
+            session_id = require_generation_content_write(session, "segment", segment.id)
+            if changes.get("voice_id"):
+                workspace_id = session_project(session, session_id).workspace_id
+                require_current_voice_library_read(session, workspace_id)
+                with session.no_autoflush:
+                    available = session.scalar(
+                        select(Voice.id).where(
+                            Voice.id == changes["voice_id"],
+                            Voice.workspace_id == workspace_id,
+                        )
+                    )
+                if available is None:
+                    raise ValueError("Managed voice is unavailable in this project.")
+            try:
+                slot = normalize_speech_reference_slot("segment:" + segment.id)
+            except ValueError:
+                slot = None
+            if slot is not None:
+
+                def guard(unit: Session) -> None:
+                    require_generation_content_write(unit, "session", session_id)
+
+                saved = get_project_speech_reference(
+                    session, session_id, slot, authorization_guard=guard
+                )
+                if saved is not None:
+                    clear_project_speech_reference(
+                        session,
+                        session_id,
+                        slot,
+                        expected_revision=saved.revision,
+                        authorization_guard=guard,
+                    )
         session.add(
             GenerationSegmentRevision(
                 generation_segment_id=segment.id,
                 revision=segment.revision,
                 ordinal=segment.ordinal,
                 source_segment_ids_json=list(segment.source_segment_ids_json or []),
-                speech_block_provenance_json=dict(
-                    segment.speech_block_provenance_json or {}
-                ),
+                speech_block_provenance_json=dict(segment.speech_block_provenance_json or {}),
                 alignment_group=segment.alignment_group,
                 node_kind=segment.node_kind,
                 paragraph_break_after=segment.paragraph_break_after,
@@ -623,7 +673,8 @@ class GenerationService(GenerationHistoryReader):
             )
         )
         pause_metadata = {
-            key: value for key, value in (segment.speech_plan_json or {}).items()
+            key: value
+            for key, value in (segment.speech_plan_json or {}).items()
             if key in {"silence_override_ms", "pause_kind"}
         }
         if "silence_after_ms" in changes:
@@ -631,13 +682,10 @@ class GenerationService(GenerationHistoryReader):
         old_effective_speech = segment.optimized_text or segment.text
         old_speech_xml = (segment.speech_plan_json or {}).get("speech_xml")
         explicit_optimized = "optimized_text" in changes
-        text_changed = (
-            "text" in changes and str(changes["text"]).strip() != segment.text
-        )
+        text_changed = "text" in changes and str(changes["text"]).strip() != segment.text
         optimized_changed = (
             "optimized_text" in changes
-            and (str(changes["optimized_text"] or "").strip() or None)
-            != segment.optimized_text
+            and (str(changes["optimized_text"] or "").strip() or None) != segment.optimized_text
         )
         for key, value in changes.items():
             if key not in allowed:
@@ -645,9 +693,7 @@ class GenerationService(GenerationHistoryReader):
             if key == "text":
                 value = str(value).strip()
                 if not value:
-                    raise ValueError(
-                        "Generation text cannot be blank; remove the segment instead."
-                    )
+                    raise ValueError("Generation text cannot be blank; remove the segment instead.")
             elif key == "optimized_text":
                 value = str(value or "").strip() or None
             elif key == "silence_after_ms":
@@ -672,9 +718,7 @@ class GenerationService(GenerationHistoryReader):
             if text_changed or optimized_changed:
                 if text_changed:
                     segment.optimization_model = None
-                segment.optimization_status = (
-                    "reviewed" if segment.optimized_text else "pending"
-                )
+                segment.optimization_status = "reviewed" if segment.optimized_text else "pending"
                 segment.optimization_source_hash = hashlib.sha256(
                     segment.text.encode("utf-8")
                 ).hexdigest()
@@ -698,9 +742,7 @@ class GenerationService(GenerationHistoryReader):
             segment.optimization_reviewed = False
             segment.optimization_model = None
         elif optimized_changed:
-            segment.optimization_status = (
-                "reviewed" if segment.optimized_text else "pending"
-            )
+            segment.optimization_status = "reviewed" if segment.optimized_text else "pending"
             segment.optimization_source_hash = hashlib.sha256(
                 segment.text.encode("utf-8")
             ).hexdigest()
@@ -763,9 +805,8 @@ class GenerationService(GenerationHistoryReader):
                     characters=characters,
                 ).xml
                 segment.speech_plan_json = speech_plan
-        audio_stale = (
-            new_effective_speech != old_effective_speech
-            or any(key in changes for key in ("voice_id", "voice", "language"))
+        audio_stale = new_effective_speech != old_effective_speech or any(
+            key in changes for key in ("voice_id", "voice", "language")
         )
         if audio_stale:
             segment.status = "stale"
@@ -795,14 +836,8 @@ class GenerationService(GenerationHistoryReader):
             )
         )
         if mark_assemblies and assembly_changed:
-            plan_revision = session.get(
-                GenerationPlanRevision, segment.plan_revision_id
-            )
-            plan = (
-                session.get(GenerationPlan, plan_revision.plan_id)
-                if plan_revision
-                else None
-            )
+            plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
+            plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
             if plan is not None:
                 mark_output_assemblies_stale(session, plan.session_id)
         segment.revision += 1
@@ -824,9 +859,20 @@ class GenerationService(GenerationHistoryReader):
         segment_id: str,
         expected_revision: int,
         changes: dict[str, Any],
+        *,
+        _speech_write: PreparedSegmentSpeechWrite | None = None,
     ) -> dict[str, Any]:
         """Update one segment without committing a caller-owned transaction."""
-        segment = session.get(GenerationSegment, segment_id)
+        session_id = require_generation_content_write(session, "segment", segment_id)
+        segment = session.scalar(
+            select(GenerationSegment)
+            .join(
+                GenerationPlanRevision,
+                GenerationPlanRevision.id == GenerationSegment.plan_revision_id,
+            )
+            .join(GenerationPlan, GenerationPlan.id == GenerationPlanRevision.plan_id)
+            .where(GenerationSegment.id == segment_id, GenerationPlan.session_id == session_id)
+        )
         if segment is None:
             raise KeyError(segment_id)
         if segment.revision != expected_revision:
@@ -834,8 +880,26 @@ class GenerationService(GenerationHistoryReader):
         from .speech_plan_workspace import prepare_segment_edit_targets
 
         original_id = segment.id
-        targets = prepare_segment_edit_targets(self, session, {original_id: segment}, [{"id": original_id, "changes": changes}])
-        result = self._apply_segment_changes(session, targets[original_id], changes)
+        if _speech_write is not None:
+            _speech_write.validate_updates(
+                session, [{"id": original_id, "revision": expected_revision, "changes": changes}]
+            )
+        targets = prepare_segment_edit_targets(
+            self, session, {original_id: segment}, [{"id": original_id, "changes": changes}]
+        )
+        references = (
+            _speech_write.publish_for_targets(session, targets) if _speech_write is not None else {}
+        )
+        result = self._apply_segment_changes(
+            session,
+            targets[original_id],
+            changes,
+            _speech_reference_managed=_speech_write is not None
+            and original_id in _speech_write.handled_ids,
+        )
+        retained = references.get(original_id)
+        if retained is not None:
+            result["retained_voice"] = retained_voice_projection(retained)
         if result["id"] != original_id:
             result["previous_segment_id"] = original_id
         return result
@@ -851,46 +915,45 @@ class GenerationService(GenerationHistoryReader):
         session: Session,
         session_id: str,
         updates: list[dict[str, Any]],
+        *,
+        _speech_write: PreparedSegmentSpeechWrite | None = None,
     ) -> dict[str, Any]:
+        require_generation_content_write(session, "session", session_id)
         if not updates:
             raise ValueError("At least one generation segment update is required.")
         segment_ids = [str(item.get("id") or "").strip() for item in updates]
         if any(not segment_id for segment_id in segment_ids):
             raise ValueError("Every generation segment update requires an ID.")
         if len(set(segment_ids)) != len(segment_ids):
-            raise ValueError(
-                "A generation segment can only be updated once per request."
-            )
+            raise ValueError("A generation segment can only be updated once per request.")
         if any(not dict(item.get("changes") or {}) for item in updates):
-            raise ValueError(
-                "Every generation segment update requires at least one change."
-            )
+            raise ValueError("Every generation segment update requires at least one change.")
 
         if session.get(SessionRecord, session_id) is None:
             raise KeyError(session_id)
         segments = {
             segment.id: segment
             for segment in session.scalars(
-                select(GenerationSegment).where(
-                    GenerationSegment.id.in_(segment_ids)
+                select(GenerationSegment)
+                .join(
+                    GenerationPlanRevision,
+                    GenerationPlanRevision.id == GenerationSegment.plan_revision_id,
+                )
+                .join(GenerationPlan, GenerationPlan.id == GenerationPlanRevision.plan_id)
+                .where(
+                    GenerationSegment.id.in_(segment_ids), GenerationPlan.session_id == session_id
                 )
             ).all()
         }
         if len(segments) != len(segment_ids):
-            missing = next(
-                segment_id
-                for segment_id in segment_ids
-                if segment_id not in segments
-            )
+            missing = next(segment_id for segment_id in segment_ids if segment_id not in segments)
             raise KeyError(missing)
 
         revision_ids = {segment.plan_revision_id for segment in segments.values()}
         plan_revisions = {
             revision.id: revision
             for revision in session.scalars(
-                select(GenerationPlanRevision).where(
-                    GenerationPlanRevision.id.in_(revision_ids)
-                )
+                select(GenerationPlanRevision).where(GenerationPlanRevision.id.in_(revision_ids))
             ).all()
         }
         plan_ids = {revision.plan_id for revision in plan_revisions.values()}
@@ -916,7 +979,14 @@ class GenerationService(GenerationHistoryReader):
 
         from .speech_plan_workspace import prepare_segment_edit_targets
 
+        if _speech_write is not None:
+            _speech_write.validate_updates(session, updates)
         segments = prepare_segment_edit_targets(self, session, segments, updates)
+        references = (
+            _speech_write.publish_for_targets(session, segments)
+            if _speech_write is not None
+            else {}
+        )
         segment_ids = [segment.id for segment in segments.values()]
         completed_takes_by_segment: dict[str, list[AudioTake]] = {}
         for take in session.scalars(
@@ -925,9 +995,7 @@ class GenerationService(GenerationHistoryReader):
                 AudioTake.status == "completed",
             )
         ).all():
-            completed_takes_by_segment.setdefault(
-                take.generation_segment_id, []
-            ).append(take)
+            completed_takes_by_segment.setdefault(take.generation_segment_id, []).append(take)
 
         assembly_keys = {
             "text",
@@ -946,9 +1014,7 @@ class GenerationService(GenerationHistoryReader):
         for item in updates:
             segment = segments[str(item["id"])]
             changes = dict(item["changes"])
-            assembly_changed = assembly_changed or bool(
-                assembly_keys.intersection(changes)
-            )
+            assembly_changed = assembly_changed or bool(assembly_keys.intersection(changes))
             results.append(
                 self._apply_segment_changes(
                     session,
@@ -956,9 +1022,14 @@ class GenerationService(GenerationHistoryReader):
                     changes,
                     completed_takes=completed_takes_by_segment.get(segment.id, []),
                     mark_assemblies=False,
+                    _speech_reference_managed=_speech_write is not None
+                    and str(item["id"]) in _speech_write.handled_ids,
                 )
             )
         for request_item, result in zip(updates, results, strict=True):
+            retained = references.get(str(request_item["id"]))
+            if retained is not None:
+                result["retained_voice"] = retained_voice_projection(retained)
             if result["id"] != str(request_item["id"]):
                 result["previous_segment_id"] = str(request_item["id"])
         if assembly_changed:
@@ -1015,6 +1086,7 @@ class GenerationService(GenerationHistoryReader):
         self, session: Session, segment_id: str, take_id: str | None, expected_revision: int
     ) -> dict[str, Any]:
         """Select a take without committing a caller-owned transaction."""
+        require_generation_content_write(session, "segment", segment_id)
         segment = session.get(GenerationSegment, segment_id)
         take = session.get(AudioTake, take_id) if take_id else None
         if segment is None or (take_id is not None and (take is None or take.generation_segment_id != segment_id)):
@@ -1087,6 +1159,8 @@ class GenerationService(GenerationHistoryReader):
         stale_only: bool = False,
         missing_only: bool = False,
         expected_selection_hash: str | None = None,
+        before_io: Callable[[], None] | None = None,
+        retain_speech_inputs: bool = True,
     ) -> dict[str, Any]:
         """Resolve delivery settings and bind one immutable plan before queuing.
 
@@ -1094,6 +1168,13 @@ class GenerationService(GenerationHistoryReader):
         an untouched automatic plan, but reviewed topology is always preserved.
         The final write transaction rechecks the captured revision.
         """
+        with self.database.snapshot_session() as session:
+            require_current_session_access(session, session_id, ProjectAction.RUN)
+            validate_project_speech_preferences(
+                session, session_id,
+                (run_override or {}).get("tts"),
+                (selected_segment_override or {}).get("tts"),
+            )
         requested_segment_ids = list(dict.fromkeys(str(value) for value in (segment_ids or []) if str(value)))
         explicit_segment_ids = list(requested_segment_ids)
         run_override = dict(run_override or {})
@@ -1132,6 +1213,7 @@ class GenerationService(GenerationHistoryReader):
         }
         settings_source_run = None
         with self.database.session() as session:
+            require_current_session_access(session, session_id, ProjectAction.RUN)
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             current_id = plan.active_revision_id if plan else None
             current = session.get(GenerationPlanRevision, current_id) if current_id else None
@@ -1253,6 +1335,7 @@ class GenerationService(GenerationHistoryReader):
         selection_state: dict[str, Any] | None = None
         selection_settings_hash: str | None = None
         with self.database.session() as session:
+            require_current_session_access(session, session_id, ProjectAction.RUN)
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             bound_revision_id = plan.active_revision_id if plan else None
             if speech_plan_revision_id and speech_plan_revision_id != bound_revision_id:
@@ -1317,37 +1400,124 @@ class GenerationService(GenerationHistoryReader):
             "reusable_take_ids": reusable_take_ids,
             "preserved_take_ids": preserved_take_ids,
         }
-        from .generation_audio_identity import plan_audio_identities
+        from pandrator.runtime import DataPaths
+
+        from .generation_audio_identity import (
+            _hash as speech_reference_item_hash,
+        )
+        from .generation_audio_identity import (
+            audio_cpp_reference_identity,
+            plan_audio_identities,
+        )
+        from .generation_speech_preparation import (
+            GenerationSpeechPreparation,
+            PreparedNarratorSelection,
+        )
         from .generation_start_preparation import snapshot_guard
+        from .project_speech_reference_capture import _current_owner
         from .speech_plan_workspace import freeze_speech_snapshot
 
-        with self.database.session() as session:
-            revision_id, source_run = self._start_source(session, session_id, prepared)
-            snapshot = self._start_snapshot(prepared, source_run)
-            prepared["snapshot_source_run_id"] = source_run.id if source_run else None
-            prepared["snapshot_input_hash"] = stable_hash(snapshot)
-            prepared["snapshot_guard"] = snapshot_guard(session, session_id, revision_id)
-            snapshot["speech_plan_revision_id"] = revision_id
-            freeze_speech_snapshot(
-                session,
-                revision_id,
-                snapshot,
-                explicit=bool(speech_plan_revision_id),
-                segment_ids=requested_segment_ids or None,
-            )
-            snapshot["generation_audio_identities"] = plan_audio_identities(session, revision_id, snapshot)
-            prepared["frozen_snapshot"] = snapshot
-        from .generation_provider_preflight import generation_provider_preflight
+        speech_preparation = None
+        try:
+            with self.database.session() as session:
+                revision_id, source_run = self._start_source(session, session_id, prepared)
+                snapshot = self._start_snapshot(prepared, source_run)
+                prepared["snapshot_source_run_id"] = source_run.id if source_run else None
+                prepared["snapshot_input_hash"] = stable_hash(snapshot)
+                prepared["snapshot_guard"] = snapshot_guard(session, session_id, revision_id)
+                snapshot["speech_plan_revision_id"] = revision_id
+                def carrier(current: Session) -> GenerationSpeechPreparation:
+                    nonlocal speech_preparation
+                    if speech_preparation is None:
+                        speech_preparation = GenerationSpeechPreparation(
+                            self.database,
+                            self.artifacts.paths if self.artifacts else DataPaths(self.database.path.parent),
+                            _current_owner(current, session_id), revision_id,
+                            operation=operation, selected_override=selected_segment_override or {},
+                            before_io=before_io, reference_identity=audio_cpp_reference_identity,
+                            reference_item_hash=speech_reference_item_hash,
+                        )
+                        prepared["_speech_preparation"] = speech_preparation
+                    return speech_preparation
 
-        prepared["provider_preflight"] = generation_provider_preflight(
-            self.database, prepared["frozen_snapshot"]
-        )
-        configuration_warning = prepared["provider_preflight"].get(
-            "configuration_warning"
-        )
-        if configuration_warning:
-            raise ValueError(str(configuration_warning))
-        return prepared
+                def missing_narrator_selection(
+                    current: Session, selector: dict[str, Any], selected: dict[str, Any],
+                ) -> PreparedNarratorSelection | None:
+                    if "audio_cpp_voice_ref" in selected or operation == "rvc":
+                        return None
+                    return carrier(current).missing_selection(current, selector, selected)
+
+                def missing_audible_selection(
+                    current: Session, selector: dict[str, Any], selected: dict[str, Any],
+                ) -> PreparedNarratorSelection | None:
+                    if "audio_cpp_voice_ref" in selected or operation == "rvc":
+                        return None
+                    return carrier(current).missing_audible_selection(current, selector, selected)
+
+                carried_cast = None
+                if prepared.get("settings_source_mode") in {"run", "matching_run", "legacy_run"}:
+                    candidate = (snapshot.get("generation_control_snapshot") or {})
+                    if candidate.get("schema_version") == 2 and candidate.get("plan_revision_id") == revision_id:
+                        from .project_segment_speech import has_selected_voice_override
+                        from .speech_input_contracts import PROJECT_SPEECH_BINDING_KEY
+
+                        entries = list((candidate.get("segments") or {}).values())
+                        resolutions = list((candidate.get("resolved_bindings") or {}).values())
+                        for entry in entries:
+                            resolutions.extend((entry.get("resolved_bindings") or {}).values())
+                        retained = any(PROJECT_SPEECH_BINDING_KEY in item for item in resolutions)
+                        retained = retained or any(
+                            PROJECT_SPEECH_BINDING_KEY in (
+                                (entry.get("controls") or {}).get("_base_voice_settings") or {}
+                            ) for entry in entries
+                        )
+                        if retained and not has_selected_voice_override(snapshot):
+                            carried_cast = candidate
+
+                freeze_speech_snapshot(
+                    session,
+                    revision_id,
+                    snapshot,
+                    explicit=bool(speech_plan_revision_id),
+                    segment_ids=requested_segment_ids or None,
+                    cast_segment_ids=(requested_segment_ids or None) if retain_speech_inputs else None,
+                    _missing_audible_selection=(missing_audible_selection if retain_speech_inputs else None),
+                    _carried_cast_snapshot=carried_cast,
+                    _missing_narrator_selection=(missing_narrator_selection if retain_speech_inputs else None),
+                )
+                snapshot["generation_audio_identities"] = plan_audio_identities(
+                    session, revision_id, snapshot,
+                    _pending_proof=speech_preparation.pending_proof if speech_preparation is not None else None,
+                )
+                prepared["frozen_snapshot"] = snapshot
+                if speech_preparation is not None:
+                    speech_preparation.seal(snapshot)
+            from .generation_provider_preflight import generation_provider_preflight
+
+            prepared["provider_preflight"] = (
+                generation_provider_preflight(
+                    self.database, prepared["frozen_snapshot"], session_id=session_id
+                ) if operation != "rvc" else {}
+            )
+            configuration_warning = prepared["provider_preflight"].get(
+                "configuration_warning"
+            )
+            if configuration_warning:
+                raise ValueError(str(configuration_warning))
+            return prepared
+
+        except BaseException:
+            if speech_preparation is not None:
+                speech_preparation.cleanup()
+            raise
+
+    def cleanup_prepared_start(self, prepared: dict[str, Any]) -> None:
+        """Release unpublished private stages after the caller transaction exits."""
+        from .generation_speech_preparation import GenerationSpeechPreparation
+
+        carrier = prepared.get("_speech_preparation")
+        if isinstance(carrier, GenerationSpeechPreparation):
+            carrier.cleanup()
 
     def start(
         self,
@@ -1379,8 +1549,11 @@ class GenerationService(GenerationHistoryReader):
             missing_only=missing_only,
             expected_selection_hash=expected_selection_hash,
         )
-        with self.database.immediate_session() as session:
-            return self.start_in_session(session, session_id, prepared=prepared)
+        try:
+            with self.database.immediate_session() as session:
+                return self.start_in_session(session, session_id, prepared=prepared)
+        finally:
+            self.cleanup_prepared_start(prepared)
 
     def preview_selection(
         self,
@@ -1427,6 +1600,10 @@ class GenerationService(GenerationHistoryReader):
             "settings_source_identity": None,
         }
         with self.database.session() as session:
+            require_current_session_access(session, session_id, ProjectAction.RUN)
+            validate_project_speech_preferences(
+                session, session_id, run_override.get("tts"), selected_override.get("tts")
+            )
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             bound_revision_id = plan.active_revision_id if plan else None
             if bound_revision_id is None:
@@ -1501,7 +1678,7 @@ class GenerationService(GenerationHistoryReader):
         from .generation_provider_preflight import generation_provider_preflight
 
         public["provider_preflight"] = generation_provider_preflight(
-            self.database, resolved
+            self.database, resolved, session_id=session_id
         )
         return public
 
@@ -1731,6 +1908,7 @@ class GenerationService(GenerationHistoryReader):
         include_history: bool = True,
     ) -> dict[str, Any]:
         """Create the durable run and its queued job in one caller transaction."""
+        require_current_session_access(session, session_id, ProjectAction.RUN)
         requested_segment_ids = list(prepared["requested_segment_ids"])
         generation_run_id = prepared["generation_run_id"]
         operation = prepared["operation"]
@@ -1766,6 +1944,13 @@ class GenerationService(GenerationHistoryReader):
             if prepared.get("expected_selection_hash") and prepared["expected_selection_hash"] != prepared["selection_hash"]:
                 raise RevisionConflict("The speech plan, audio selection, or settings changed since the preview. Refresh the preview before generating.")
         snapshot = deepcopy(prepared["frozen_snapshot"])
+        from .generation_speech_preparation import GenerationSpeechPreparation
+
+        carrier = prepared.get("_speech_preparation")
+        if carrier is not None:
+            if not isinstance(carrier, GenerationSpeechPreparation):
+                raise ValueError("Invalid generation speech preparation.")
+            carrier.publish(session, snapshot, session_id=session_id, revision_id=plan_revision_id)
         auto_resume_source_id = None
         scheduling_run = source_run
         if requested_segment_ids and operation == "regenerate" and not generation_run_id:
@@ -1901,6 +2086,9 @@ class GenerationService(GenerationHistoryReader):
 
     def request_pause(self, run_id: str) -> dict[str, Any]:
         with self.database.immediate_session() as session:
+            require_generation_resource_access(
+                session, "run", run_id, ProjectAction.CANCEL_ANY
+            )
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
@@ -1918,6 +2106,7 @@ class GenerationService(GenerationHistoryReader):
 
     def resume(self, run_id: str) -> dict[str, Any]:
         with self.database.immediate_session() as session:
+            require_generation_resource_access(session, "run", run_id, ProjectAction.RUN)
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
@@ -1932,6 +2121,9 @@ class GenerationService(GenerationHistoryReader):
 
     def cancel_in_session(self, session: Session, run_id: str) -> dict[str, Any]:
         """Request cancellation inside a caller's existing write transaction."""
+        require_generation_resource_access(
+            session, "run", run_id, ProjectAction.CANCEL_ANY
+        )
         run = session.get(GenerationRun, run_id)
         if run is None:
             raise KeyError(run_id)
@@ -1955,6 +2147,7 @@ class GenerationService(GenerationHistoryReader):
     def delete_run(self, run_id: str) -> dict[str, Any]:
         paths_to_remove: list[Path] = []
         with self.database.immediate_session() as session:
+            require_generation_resource_access(session, "run", run_id, ProjectAction.EDIT)
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
@@ -2130,6 +2323,7 @@ class GenerationService(GenerationHistoryReader):
         from .generation_audio_version_assembly import audio_version_assembly_selection
 
         with self.database.snapshot_session() as session:
+            require_current_session_access(session, session_id, ProjectAction.RUN)
             if session.get(SessionRecord, session_id) is None:
                 raise KeyError(session_id)
             run = session.get(GenerationRun, generation_run_id) if generation_run_id else None
@@ -2188,6 +2382,7 @@ class GenerationService(GenerationHistoryReader):
         prepared: dict[str, Any],
     ) -> dict[str, Any]:
         """Create the durable output assembly and queued job atomically."""
+        require_current_session_access(session, session_id, ProjectAction.RUN)
         snapshot = deepcopy(prepared["snapshot"])
         settings_hash = str(prepared["settings_hash"])
         if session.get(SessionRecord, session_id) is None:
@@ -2259,6 +2454,7 @@ class GenerationService(GenerationHistoryReader):
 
     def latest_assembly(self, session_id: str) -> dict[str, Any] | None:
         with self.database.session() as session:
+            require_current_session_access(session, session_id)
             record = session.scalar(
                 select(OutputAssembly)
                 .where(OutputAssembly.session_id == session_id)

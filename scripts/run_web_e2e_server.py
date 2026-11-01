@@ -34,6 +34,8 @@ gpu_probe = patch(
 gpu_probe.start()
 atexit.register(gpu_probe.stop)
 app = create_app(data_root=root, testing=False)
+# Cookies share a host across ports; never replace the running owner's session.
+app.config["SESSION_COOKIE_NAME"] = "pandrator_e2e_session"
 AuthService(app.extensions["pandrator"]["database"]).initialize_owner("pandrator-e2e")
 database = app.extensions["pandrator"]["database"]
 paths = app.extensions["pandrator"]["paths"]

@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from threading import Event
 
     from pandrator.runtime import DataPaths
@@ -98,15 +97,15 @@ class RecordUsageProtocol(Protocol):
     ) -> None: ...
 
 
-class ResolveSecretReferenceProtocol(Protocol):
+class ResolveAuxiliaryCredentialProtocol(Protocol):
     def __call__(
         self,
         database: Database,
         paths: DataPaths,
-        reference: object,
+        credential_id: str,
         *,
-        fallback_environment_variable: str = "",
-        preloaded_database_credentials: Mapping[str, str] | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> ResolvedCredential: ...
 
 

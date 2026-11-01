@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
@@ -17,10 +18,18 @@ from typing import Any, Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 from pandrator.runtime import DataPaths
 
+from .access.artifact_policy import require_artifact_access, visible_artifact_ids_statement
+from .access.contracts import AccessContext
+from .access.job_policy import job_visibility_clause
+from .access.media_execution_policy import MediaSourceSnapshot, require_media_execution_artifact
+from .accounts.execution_actor import execution_actor_scope
+from .artifact_commands import can_run_artifact, require_artifact_run_access
 from .artifacts import ArtifactService
 from .database import Database
+from .job_inputs import artifact_job_ownership
 from .jobs import JobQueue
 from .media_process import (
     MediaProcessCancelled,
@@ -110,7 +119,8 @@ def probe_video(path: Path, cancel_event: threading.Event | None = None) -> Vide
         result = run_media_process(
             [resolve_ffprobe_executable(), "-v", "error", "-show_entries",
              "stream=codec_type,codec_name,pix_fmt,width,height,duration,avg_frame_rate,r_frame_rate:"
-             "stream_disposition=attached_pic:format=duration", "-of", "json", str(path)],
+             "stream_disposition=attached_pic:format=duration", "-of", "json",
+             *LOCAL_MEDIA_INPUT_OPTIONS, str(path)],
             capture_stdout=True, cancel_event=cancel_event, timeout_seconds=PROBE_TIMEOUT_SECONDS,
         )
         payload = json.loads(result.stdout)
@@ -143,11 +153,18 @@ class VideoPreviewService:
         self.artifacts = artifacts
         self.jobs = jobs
 
-    def _source(self, artifact_id: str) -> tuple[Artifact, Path]:
-        with self.database.session() as session:
-            source = session.get(Artifact, artifact_id)
+    def _source(
+        self, artifact_id: str, *, access: AccessContext | None = None
+    ) -> tuple[Artifact, Path]:
+        with self.database.snapshot_session() as session:
+            source = (
+                require_artifact_access(session, access, artifact_id)
+                if access is not None
+                else session.get(Artifact, artifact_id)
+            )
             if source is None or source.state == "deleted":
                 raise KeyError(artifact_id)
+            artifact_job_ownership(session, [source.id])
             path = _managed_file(self.paths, source.relative_path)
             session.expunge(source)
             return source, path
@@ -158,6 +175,7 @@ class VideoPreviewService:
         if current is None or current.state == "deleted":
             raise KeyError(initial.id)
         if (current.relative_path != initial.relative_path or current.session_id != initial.session_id
+                or current.workspace_id != initial.workspace_id or current.project_id != initial.project_id
                 or (current.content_hash is not None and current.content_hash != source_hash)):
             raise ValueError("The video source changed; request its preview again.")
         if current.session_id:
@@ -166,12 +184,23 @@ class VideoPreviewService:
                 raise ValueError("Restore the session before preparing its video preview.")
         return current
 
-    def _cached(self, session: Session, source: Artifact, source_hash: str) -> Artifact | None:
-        for preview in session.scalars(select(Artifact).join(
+    def _cached(
+        self, session: Session, source: Artifact, source_hash: str,
+        *, access: AccessContext | None = None,
+    ) -> Artifact | None:
+        statement = select(Artifact).join(
             ArtifactEdge, ArtifactEdge.child_artifact_id == Artifact.id).where(
                 ArtifactEdge.parent_artifact_id == source.id, Artifact.role == PREVIEW_ROLE,
-                Artifact.state == "current").order_by(Artifact.created_at.desc(), Artifact.id.desc())).all():
-            metadata = preview.metadata_json or {}
+                Artifact.workspace_id == source.workspace_id,
+                Artifact.project_id == source.project_id,
+                Artifact.session_id == source.session_id,
+                Artifact.state == "current").order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        if access is not None:
+            statement = statement.where(Artifact.id.in_(
+                visible_artifact_ids_statement(session, access).correlate(None)
+            ))
+        for preview in session.scalars(statement).all():
+            metadata = preview.metadata_json if isinstance(preview.metadata_json, dict) else {}
             if (metadata.get("source_artifact_id") != source.id
                     or metadata.get("source_content_hash") != source_hash
                     or metadata.get("preview_version") != PREVIEW_VERSION):
@@ -190,39 +219,79 @@ class VideoPreviewService:
                 "content_url": f"/api/v1/artifacts/{preview.id}/content", "mime_type": "video/mp4"}
 
     def request(self, artifact_id: str) -> tuple[dict[str, Any], int]:
-        source, path = self._source(artifact_id)
+        """Trusted local service entry point; HTTP uses request_for_actor."""
+        return self._request(artifact_id, prepare=True)
+
+    def request_for_actor(
+        self, artifact_id: str, access: AccessContext, *, prepare: bool = False,
+    ) -> tuple[dict[str, Any], int]:
+        if type(access) is not AccessContext:
+            raise TypeError("An access context is required.")
+        if type(prepare) is not bool:
+            raise TypeError("Preparation must be explicitly selected.")
+        return self._request(artifact_id, access=access, prepare=prepare)
+
+    def _request(
+        self, artifact_id: str, *, access: AccessContext | None = None, prepare: bool = True,
+    ) -> tuple[dict[str, Any], int]:
+        if access is not None and prepare:
+            with self.database.snapshot_session() as session:
+                require_artifact_run_access(session, access, artifact_id)
+        source, path = self._source(artifact_id, access=access)
         source_hash = source.content_hash or _source_hash(path)
-        probe_video(path)
+        if prepare:
+            probe_video(path)
         with self.database.immediate_session() as session:
+            if access is not None:
+                require_artifact_access(session, access, source.id)
             current = self._writable_source(session, source, source_hash)
-            preview = self._cached(session, current, source_hash)
+            owner = artifact_job_ownership(session, [current.id])
+            preview = self._cached(session, current, source_hash, access=access)
             if preview is not None:
                 return self._ready(preview), 200
-            for job in session.scalars(select(Job).where(
-                Job.kind == "video.preview", Job.status.in_(("queued", "running", "cancel_requested")))
-                .order_by(Job.created_at.asc(), Job.id.asc())).all():
-                payload = job.payload_json or {}
+            pending = select(Job).where(
+                Job.kind == "video.preview", Job.status.in_(("queued", "running", "cancel_requested")),
+                Job.workspace_id == owner.workspace_id, Job.project_id == owner.project_id)
+            if access is not None:
+                pending = pending.where(job_visibility_clause(session, access))
+            for job in session.scalars(pending.order_by(Job.created_at.asc(), Job.id.asc())).all():
+                payload = job.payload_json if isinstance(job.payload_json, dict) else {}
                 if (payload.get("source_artifact_id") == source.id
                         and payload.get("source_content_hash") == source_hash
                         and payload.get("preview_version") == PREVIEW_VERSION):
                     return {"status": job.status, "job_id": job.id}, 202
-            job = self.jobs.enqueue_in_session(
-                session, "video.preview",
-                {"source_artifact_id": source.id, "source_content_hash": source_hash,
-                 "preview_version": PREVIEW_VERSION},
-                session_id=source.session_id, resource_keys=[f"artifact:video-preview:{source.id}"],
-            )
+            if not prepare:
+                return {"can_prepare": (
+                    can_run_artifact(session, access, current.id) if access is not None else False
+                )}, 409
+            if access is not None:
+                require_artifact_run_access(session, access, current.id)
+            with execution_actor_scope(access.actor) if access is not None else nullcontext():
+                job = self.jobs.enqueue_in_session(
+                    session, "video.preview",
+                    {"source_artifact_id": source.id, "source_content_hash": source_hash,
+                     "preview_version": PREVIEW_VERSION},
+                    session_id=source.session_id, resource_keys=[f"artifact:video-preview:{source.id}"],
+                    workspace_id=owner.workspace_id, project_id=owner.project_id,
+                )
             return {"status": job.status, "job_id": job.id}, 202
 
     def generate(self, payload: dict[str, Any], progress: Callable[[float, str | None], None], cancel_event: threading.Event) -> dict[str, str]:
         _check_cancel(cancel_event)
-        source, source_path = self._source(str(payload.get("source_artifact_id") or ""))
+        with self.database.snapshot_session() as session:
+            source = require_media_execution_artifact(session, payload, "video.preview")
+            snapshot = MediaSourceSnapshot.from_artifact(source)
+            source_path = _managed_file(self.paths, source.relative_path)
+            session.expunge(source)
         source_hash = source.content_hash or _source_hash(source_path, cancel_event)
         if (payload.get("source_content_hash", source_hash) != source_hash
                 or payload.get("preview_version", PREVIEW_VERSION) != PREVIEW_VERSION):
             raise ValueError("The video preview request no longer matches its source or preview version.")
         info = probe_video(source_path, cancel_event)
-        with self.database.session() as session:
+        with self.database.snapshot_session() as session:
+            require_media_execution_artifact(
+                session, payload, "video.preview", expected_source=snapshot,
+            )
             current = self._writable_source(session, source, source_hash)
             cached = self._cached(session, current, source_hash)
             if cached is not None:
@@ -242,10 +311,11 @@ class VideoPreviewService:
         directory.mkdir(parents=True, exist_ok=True)
         destination = directory / f"video-preview-{new_id()}.mp4"
         temporary = directory / f".video-preview-{new_id()}.mp4"
+        temporary_created = False
         published = False
         try:
             command = [resolve_ffmpeg_executable(), "-hide_banner", "-loglevel", "error", "-y",
-                       "-i", str(source_path), "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
+                       *LOCAL_MEDIA_INPUT_OPTIONS, "-i", str(source_path), "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
                        "-map_metadata", "-1", "-map_chapters", "-1", "-vf",
                        "scale=w='max(2,trunc(iw*sar*min(1,720/ih)/2)*2)':"
                        "h='max(2,trunc(ih*min(1,720/ih)/2)*2)',setsar=1",
@@ -259,6 +329,8 @@ class VideoPreviewService:
                 elapsed = _finite_positive(record.get("out_time_us")) / 1_000_000
                 progress(min(0.85, 0.05 + 0.8 * elapsed / info.duration_seconds), "Transcoding video preview")
 
+            with temporary.open("xb"):
+                temporary_created = True
             run_media_process(command, cancel_event=cancel_event, progress_callback=report,
                               timeout_seconds=PROCESS_TIMEOUT_SECONDS)
             _check_cancel(cancel_event)
@@ -278,15 +350,20 @@ class VideoPreviewService:
             progress(0.9, "Registering compatible video preview")
             _check_cancel(cancel_event)
             with self.database.immediate_session() as session:
+                require_media_execution_artifact(
+                    session, payload, "video.preview", expected_source=snapshot,
+                )
                 current = self._writable_source(session, source, source_hash)
                 _check_cancel(cancel_event)
                 cached = self._cached(session, current, source_hash)
                 if cached is not None:
                     return {"artifact_id": cached.id, "source_artifact_id": source.id}
+                with destination.open("xb"):
+                    published = True
                 os.replace(temporary, destination)
-                published = True
                 preview = self.artifacts.register_in_session(
                     session, destination, kind="video", role=PREVIEW_ROLE,
+                    workspace_id=current.workspace_id, project_id=current.project_id,
                     session_id=current.session_id, parent_ids=[current.id], _prepared=prepared,
                     metadata={"source_artifact_id": current.id, "source_content_hash": source_hash,
                               "source_artifact_hash": source_hash, "preview_version": PREVIEW_VERSION,
@@ -296,6 +373,12 @@ class VideoPreviewService:
             published = False
             return result
         finally:
-            temporary.unlink(missing_ok=True)
-            if published:
-                destination.unlink(missing_ok=True)
+            cleanup_failed = False
+            for path, owned in ((temporary, temporary_created), (destination, published)):
+                if owned:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        cleanup_failed = True
+            if cleanup_failed:
+                raise RuntimeError("The video preview could not be cleaned up.") from None

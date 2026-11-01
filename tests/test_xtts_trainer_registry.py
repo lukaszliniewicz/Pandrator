@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from pandrator.logic import xtts_trainer_handler
 
 
@@ -32,6 +34,7 @@ class XttsTrainerRegistryTests(unittest.TestCase):
     def _paths(self):
         return {"trainer_dir": str(self.trainer), "xtts_models_dir": str(self.models)}
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_trained_bundle_promotes_atomically_into_manager_shared_wrapper_registry_root(self):
         self._write_training_bundle()
         with mock.patch.dict(
@@ -55,6 +58,7 @@ class XttsTrainerRegistryTests(unittest.TestCase):
         self.assertEqual(published.resolve(), target)
         self.assertFalse(any((self.models / ".downloads").iterdir()))
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_promotion_copies_only_exact_wrapper_bundle(self):
         source = self._write_training_bundle()
         (source / "run").mkdir()
@@ -72,6 +76,7 @@ class XttsTrainerRegistryTests(unittest.TestCase):
             {path.name for path in published.iterdir()},
         )
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_existing_bundle_is_preserved_without_overwrite(self):
         self._write_training_bundle()
         existing = self.models / "custom" / "narrator"
@@ -86,6 +91,7 @@ class XttsTrainerRegistryTests(unittest.TestCase):
         self.assertIn("never overwritten", message)
         self.assertEqual("keep", (existing / "sentinel.txt").read_text(encoding="utf-8"))
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_rejects_incomplete_bundle_and_traversal_model_id(self):
         self._write_training_bundle(
             files={"config.json": b"{}", "model.pth": b"weights"}
@@ -103,6 +109,7 @@ class XttsTrainerRegistryTests(unittest.TestCase):
         self.assertFalse(copied)
         self.assertIn("unsafe", message)
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_rejects_wrapper_ignored_model_path_parts(self):
         for model_id in ("__pycache__", "team/__pycache__/voice"):
             with self.subTest(model_id=model_id):

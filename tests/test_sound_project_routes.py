@@ -75,8 +75,9 @@ def _seed_project(case, workflow_kind: str):
     services = case["services"]
     with services["database"].immediate_session() as session:
         project = SessionRecord(name=f"Sound {workflow_kind}", workflow_kind=workflow_kind)
-        session.add(project)
-        session.flush()
+        from pandrator.web.projects.identity import create_session_project
+
+        create_session_project(session, project)
         plan = GenerationPlan(session_id=project.id)
         session.add(plan)
         session.flush()
@@ -127,6 +128,7 @@ def _register_global_variant(case, filename: str, *, role: str = "sound.original
     artifact = services["artifacts"].register(path, kind="audio", role=role)
     with services["database"].immediate_session() as session:
         variant = SoundVariant(
+            workspace_id=artifact.workspace_id,
             artifact_id=artifact.id,
             state="ready",
             sample_rate=8000,

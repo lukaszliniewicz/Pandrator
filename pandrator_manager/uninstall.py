@@ -57,6 +57,7 @@ from .processes.identity import (
 from .releases.slots import _atomic_json
 from .releases.trust import canonical_json
 from .state import ManagerStore
+from .tray_autostart import configure_tray_autostart
 
 _CONTROL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
@@ -1174,6 +1175,7 @@ def run_uninstall_handoff(
                 raise RuntimeError(
                     "The uninstall commit marker does not match the handoff."
                 )
+            configure_tray_autostart(layout, enabled=False)
             cleanup_error = None
             try:
                 if quarantine.exists():
@@ -1251,6 +1253,7 @@ def run_uninstall_handoff(
             },
             secret,
         )
+        configure_tray_autostart(layout, enabled=False)
         cleanup_error = None
         try:
             if quarantine.exists():

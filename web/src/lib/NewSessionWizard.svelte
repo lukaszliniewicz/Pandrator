@@ -27,16 +27,32 @@
   import { modalFocus } from './modal-focus';
   import LanguagePicker from './LanguagePicker.svelte';
   import { translationLanguageName } from './translation-project-display';
-
   let {
     initialKind = 'audiobook',
     startAtSource = false,
+    initialFolder,
     onclose
   }: {
     initialKind?: 'audiobook' | 'subtitles' | 'voiceover' | 'media_edit';
     startAtSource?: boolean;
+    initialFolder?: {
+      id: string;
+      revision: number;
+      name: string;
+      workspace_id?: string;
+    };
     onclose: () => void;
   } = $props();
+  // Keep the creation destination stable for the lifetime of this dialog.
+  const workspaceId = untrack(() =>
+    appState.collaborationEnabled ? appState.activeWorkspaceId : undefined
+  );
+  const folder = untrack(() =>
+    initialFolder ? { ...initialFolder } : undefined
+  );
+  const destinationWorkspace = untrack(() =>
+    appState.activeWorkspace ? { ...appState.activeWorkspace } : undefined
+  );
   let step = $state(untrack(() => (startAtSource ? 2 : 1)));
   let kind = $state<'audiobook' | 'subtitles' | 'voiceover' | 'media_edit'>(
     untrack(() => initialKind)
@@ -52,6 +68,9 @@
   let sourceUrl = $state('');
   let sourceAssetId = $state('');
   let reusableSources = $state<SourceAsset[]>([]);
+  let sourcesBusy = $state(false);
+  let sourcesError = $state('');
+  let sourcesRequested = false;
   let name = $state('');
   let sourceLanguage = $state('auto');
   let generateVoiceover = $state(false);
@@ -154,7 +173,7 @@
     ...(multilingual
       ? [
           'Review source',
-          `Create ${targetLanguages.length} language workspaces`,
+          `Create ${targetLanguages.length} language versions`,
           'Translate each language'
         ]
       : []),
@@ -176,17 +195,26 @@
   ]);
 
   async function loadSources() {
+    sourcesRequested = true;
+    sourcesBusy = true;
+    sourcesError = '';
     try {
-      reusableSources = (await sourceApi.list()).items;
+      reusableSources = (await sourceApi.list(false, true, workspaceId)).items;
       sourceAssetId ||=
         (kind === 'media_edit'
           ? reusableSources.find(isReusableMedia)?.id
           : reusableSources[0]?.id) ?? '';
-    } catch {
+    } catch (caught) {
       reusableSources = [];
+      sourceAssetId = '';
+      sourcesError = errorMessage(caught);
+    } finally {
+      sourcesBusy = false;
     }
   }
-  loadSources();
+  $effect(() => {
+    if (sourceMode === 'reuse' && !sourcesRequested) void loadSources();
+  });
 
   function chooseKind(value: typeof kind, full = false) {
     kind = value;
@@ -241,7 +269,7 @@
     creating = true;
     error = '';
     progress = 0.05;
-    progressDetail = 'Creating workspace';
+    progressDetail = 'Creating project';
     try {
       const unique = name.trim();
       const included = custom
@@ -257,6 +285,10 @@
           ];
       const createBody: Parameters<typeof sessionApi.create>[0] = {
         name: unique,
+        ...(workspaceId ? { workspace_id: workspaceId } : {}),
+        ...(folder
+          ? { folder_id: folder.id, folder_revision: folder.revision }
+          : {}),
         interface_mode: interfaceMode,
         workflow_kind: kind,
         source_language: sourceLanguage,
@@ -273,7 +305,12 @@
               }
             }
           : {}),
-        ...(overwrite && existing ? { overwrite_session_id: existing.id } : {})
+        ...(overwrite && existing
+          ? {
+              overwrite_session_id: existing.id,
+              overwrite_revision: existing.revision
+            }
+          : {})
       };
       const signature = JSON.stringify(createBody);
       if (creationRequest?.signature !== signature)
@@ -342,7 +379,7 @@
       };
       await sessionApi.updateOutcome(session.id, current.revision, value);
       progress = 0.3;
-      progressDetail = 'Saving workspace settings';
+      progressDetail = 'Saving project settings';
       let completedSettings = 0;
       const updateSettings = async (
         section: string,
@@ -355,7 +392,7 @@
         });
         completedSettings += 1;
         progress = 0.3 + 0.35 * (completedSettings / 4);
-        progressDetail = `Saved workspace setting ${completedSettings} of 4`;
+        progressDetail = `Saved project setting ${completedSettings} of 4`;
       };
       const speechLanguage = translate
         ? targetLanguage
@@ -446,7 +483,12 @@
       if (kind === 'media_edit' && captionFile) {
         progress = 0.955;
         progressDetail = 'Uploading captions';
-        const uploaded = await uploadManagedFile(captionFile, undefined);
+        const uploaded = await uploadManagedFile(
+          captionFile,
+          undefined,
+          undefined,
+          workspaceId
+        );
         const captionSourceId = String(uploaded.source_asset_id ?? '');
         if (!captionSourceId)
           throw new Error(
@@ -461,7 +503,7 @@
         sessionRevision = attachment.session_revision;
       }
       progress = 0.97;
-      progressDetail = 'Opening workspace';
+      progressDetail = 'Opening project';
       progress = 1;
       location.href = `/sessions/${session.id}`;
     } catch (caught) {
@@ -470,7 +512,19 @@
           (caught.details as { existing_session?: SessionRecord } | null)
             ?.existing_session ?? null;
         error = '';
-      } else error = errorMessage(caught);
+      } else {
+        error = errorMessage(caught);
+        if (
+          overwrite &&
+          !createdSessionId &&
+          caught instanceof ApiError &&
+          caught.code === 'revision_conflict'
+        ) {
+          error =
+            'This project changed before it could be replaced. Review the updated project before trying again.';
+          await appState.refreshSessions().catch(() => undefined);
+        }
+      }
     } finally {
       creating = false;
     }
@@ -499,8 +553,14 @@
               ? 'Choose the source'
               : step === 3
                 ? 'Choose the result'
-                : 'Review your workspace'}
+                : 'Review your project'}
         </h1>
+        {#if destinationWorkspace}<p class="muted mt-2 text-sm">
+            Create in {destinationWorkspace.kind === 'personal'
+              ? 'My workspace (private)'
+              : `${destinationWorkspace.name} (shared)`}
+          </p>{/if}
+        {#if folder}<p class="muted mt-1 text-sm">Folder: {folder.name}</p>{/if}
       </div>
       <button onclick={onclose} class="rounded-xl p-2" aria-label="Close"
         ><X size={20} /></button
@@ -537,6 +597,7 @@
       </p>
     </fieldset>
     {#if error}<div
+        role="alert"
         class="mt-5 rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-sm"
       >
         {error}
@@ -564,7 +625,7 @@
       <button
         onclick={() => chooseKind(kind, true)}
         class="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--line)] px-4 py-3 text-sm font-semibold"
-        ><Gauge size={17} /> Skip guidance and open a fully customizable workspace</button
+        ><Gauge size={17} /> Skip guidance and open a fully customizable project</button
       >
     {:else if step === 2}
       <div class="mt-7 grid gap-3 sm:grid-cols-5">
@@ -626,12 +687,25 @@
           <label class="text-sm font-semibold"
             >Source library<select
               bind:value={sourceAssetId}
+              disabled={sourcesBusy}
               class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"
               >{#each reusableCandidates as source}<option value={source.id}
                   >{source.display_name} · {source.kind}</option
                 >{/each}</select
             ></label
           >
+          {#if sourcesBusy}<p role="status" class="muted mt-3 text-sm">
+              Loading sources…
+            </p>{/if}
+          {#if sourcesError}<p
+              role="alert"
+              class="mt-3 text-sm text-[var(--danger)]"
+            >
+              {sourcesError}
+              <button class="underline" onclick={() => loadSources()}
+                >Retry</button
+              >
+            </p>{/if}
           {#if kind === 'media_edit' && !reusableCandidates.length}<p
               class="muted mt-3 text-xs"
             >
@@ -774,7 +848,7 @@
                 /><span
                   ><strong>Include voiceovers in each language</strong><small
                     >Choose a voice and review the speech plan inside each
-                    language workspace before generation.</small
+                    language version before generation.</small
                   ></span
                 ></label
               >
@@ -841,8 +915,8 @@
                 ><option value="text">Concatenated plain text (.txt)</option
                 ></select
               ><small class="muted mt-2 block font-normal"
-                >This workspace exports subtitle documents, not rendered video.
-                You can convert it to a voiceover workspace later.</small
+                >This project exports subtitle documents, not rendered video.
+                You can convert it to a voiceover project later.</small
               ></label
             >{:else}<label class="text-sm font-semibold"
               >Video subtitles<select
@@ -865,7 +939,7 @@
             /></label
           >
           <p class="muted mt-3 text-sm">
-            This only controls the display name; storage uses a stable UUID.
+            Choose a name that makes this project easy to find.
           </p>
         </div>
         <div
@@ -891,7 +965,7 @@
                 : 'Subtitles only'}
             </p>
             <p class="muted mt-2 text-sm">
-              The first workspace prepares the source. Languages will guide you
+              The source version prepares the source. Languages will guide you
               through review and creating the selected versions.
             </p>{/if}
           <p class="muted mt-4 text-xs">
@@ -915,7 +989,7 @@
                 It was last updated {new Date(
                   duplicateSession.updated_at
                 ).toLocaleString()}. Replacing it moves the older project to
-                recoverable Trash before creating this workspace.
+                recoverable Trash before creating this project.
               </p>
             </div>
           </div>
@@ -937,13 +1011,13 @@
         </div>
       {/if}
       {#if createdSessionId && error}<p class="mt-4 text-sm">
-          Your workspace and saved plan are available. Continue there to finish
+          Your project and saved plan are available. Continue there to finish
           source setup.
         </p>
         <a
           href={`/sessions/${createdSessionId}`}
           class="mt-3 inline-block text-sm font-semibold text-[var(--accent)]"
-          >Open saved workspace</a
+          >Open saved project</a
         >{/if}
       {#if creating}<div class="mt-5">
           <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
@@ -955,7 +1029,7 @@
           <div
             class="h-2 overflow-hidden rounded-full bg-[var(--line)]"
             role="progressbar"
-            aria-label="Workspace creation progress"
+            aria-label="Project creation progress"
             aria-valuemin="0"
             aria-valuemax="100"
             aria-valuenow={Math.round(progress * 100)}
@@ -996,7 +1070,7 @@
               ? 'Creating…'
               : duplicateSession
                 ? 'Choose an option above'
-                : 'Create workspace'}
+                : 'Create project'}
             <ArrowRight size={16} /></button
           >{/if}
       </footer>{/if}

@@ -7,6 +7,7 @@ import socket
 import struct
 import sys
 from collections.abc import Callable, Iterator
+from contextvars import copy_context
 from ctypes import wintypes
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -257,7 +258,16 @@ def iter_read_ahead_batch(
             if not stop_event.is_set():
                 put_message(("done", None))
 
-    reader = thread_factory(target=read, name="qwen-batch-reader", daemon=True)
+    producer_context = copy_context()
+
+    def read_in_context() -> None:
+        producer_context.run(read)
+
+    reader = thread_factory(
+        target=read_in_context,
+        name="qwen-batch-reader",
+        daemon=True,
+    )
     started = False
     try:
         reader.start()

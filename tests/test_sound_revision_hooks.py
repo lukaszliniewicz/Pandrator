@@ -13,19 +13,19 @@ from sqlalchemy import func, select
 
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
-from pandrator.web.database import Database
+from pandrator.web.database import Database, upgrade_database
 from pandrator.web.generation_topology import GenerationTopologyService
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
     Artifact,
     AudioTake,
-    Base,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationSegment,
     SessionRecord,
     SoundVariant,
 )
+from pandrator.web.projects.identity import create_session_project, initial_personal_workspace
 from pandrator.web.sound_project_models import ProjectSoundCue, ProjectSoundPlan
 from pandrator.web.sound_project_revisions import clone_sound_plan, rebase_sound_plan
 from pandrator.web.sound_project_service import ProjectSoundService
@@ -34,13 +34,18 @@ from pandrator.web.sound_project_service import ProjectSoundService
 @pytest.fixture
 def topology_case(tmp_path: Path):
     database = Database(tmp_path / "sound.sqlite")
-    Base.metadata.create_all(database.engine)
+    upgrade_database(database.path)
     with database.immediate_session() as session:
         record = SessionRecord(name="Topology sound plan", workflow_kind="voiceover")
-        artifact = Artifact(kind="audio", role="sound.original", relative_path="sound.wav", content_hash="test-sound")
-        session.add_all([record, artifact])
+        create_session_project(session, record)
+        artifact = Artifact(
+            workspace_id=initial_personal_workspace(session).id,
+            kind="audio", role="sound.original", relative_path="sound.wav", content_hash="test-sound"
+        )
+        session.add(artifact)
         session.flush()
         variant = SoundVariant(
+            workspace_id=artifact.workspace_id,
             artifact_id=artifact.id,
             state="ready",
             provenance_json={"display_name": "Bell"},
@@ -103,8 +108,7 @@ def test_missing_or_empty_plans_do_not_create_rebase_versions(topology_case):
     )
     with database.immediate_session() as session:
         target = SessionRecord(name="Empty sound fork", workflow_kind="voiceover")
-        session.add(target)
-        session.flush()
+        create_session_project(session, target)
         target_id = target.id
         assert rebase_sound_plan(session, session_id, created["active_revision_id"], {}) is None
         clone = clone_sound_plan(session, session_id, target_id, {})
@@ -478,6 +482,7 @@ def _fork_source(services):
     )
     with services["database"].immediate_session() as session:
         variant = SoundVariant(
+            workspace_id=sound_artifact.workspace_id,
             artifact_id=sound_artifact.id,
             state="ready",
             provenance_json={"display_name": "Bell"},

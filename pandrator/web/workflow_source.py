@@ -6,68 +6,318 @@ import json
 import shutil
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
-from pandrator.runtime import DataPaths
+from sqlalchemy import select
+from sqlalchemy.orm import load_only
 
-from .artifacts import ArtifactService
-from .database import Database
+from .access.contracts import AccessDenied
+from .access.session_policy import SessionNotFound
+from .access.source_ingress_policy import require_source_ingress_access
+from .access.source_preparation_policy import require_text_preparation_access
+from .accounts.execution_actor import current_execution_actor
 from .models import (
-    AgentRun,
-    AgentStep,
     Artifact,
-    SessionRecord,
     SourceRecord,
-    UsageEvent,
     new_id,
-    utcnow,
 )
-
-Progress = Callable[[float, str | None], None]
-
-
-class GenerationPlanStoreProtocol(Protocol):
-    def __call__(
-        self,
-        session_id: str,
-        records: list[dict[str, Any]],
-        *,
-        settings: dict[str, Any],
-        source_revision_id: str | None = None,
-        source_artifact_id: str | None = None,
-    ) -> tuple[str, list[str]]: ...
+from .projects.identity import session_project
+from .projects.source_identity import source_creation_workspace
+from .workflow_source_context import GenerationPlanStoreProtocol as GenerationPlanStoreProtocol
+from .workflow_source_context import Progress as Progress
+from .workflow_source_context import (
+    SourceCleaningProgressFactoryProtocol as SourceCleaningProgressFactoryProtocol,
+)
+from .workflow_source_context import SourceWorkflowContext as SourceWorkflowContext
 
 
-class SourceCleaningProgressFactoryProtocol(Protocol):
-    def __call__(
-        self,
-        progress: Progress,
-        start: float,
-        end: float,
-        *,
-        phase_names: list[str],
-        phase_budgets: dict[str, int],
-    ) -> Callable[[str], None]: ...
+def _check_source_ingress(
+    context: SourceWorkflowContext,
+    session_id: str,
+    job_kind: str,
+    *,
+    artifact_id: str | None = None,
+) -> None:
+    if current_execution_actor.get() is None:
+        return
+    with context.database.snapshot_session() as unit:
+        require_source_ingress_access(
+            unit,
+            session_id,
+            job_kind,
+            artifact_id=artifact_id,
+        )
 
 
-@dataclass(frozen=True, slots=True)
-class SourceWorkflowContext:
-    database: Database
-    paths: DataPaths
-    artifacts: ArtifactService
-    _resolve_input: Callable[[str], tuple[Artifact, Path]]
-    _session_dir: Callable[[str], Path]
-    _operation_dir: Callable[[str, str], Path]
-    _session_record: Callable[[str], SessionRecord]
-    _store_generation_plan: GenerationPlanStoreProtocol
-    _validate_download_url: Callable[[str], str]
-    _scaled_progress_callback: Callable[[Progress, float, float], Progress]
-    _fraction_message_callback: Callable[[Progress, float, float], Callable[[str], None]]
-    _source_cleaning_progress_callback: SourceCleaningProgressFactoryProtocol
+def _forward_source_progress(
+    context: SourceWorkflowContext,
+    session_id: str,
+    job_kind: str,
+    progress: Progress,
+    value: float,
+    detail: str | None,
+    *,
+    artifact_id: str | None = None,
+) -> None:
+    _check_source_ingress(
+        context,
+        session_id,
+        job_kind,
+        artifact_id=artifact_id,
+    )
+    progress(value, detail)
+    _check_source_ingress(
+        context,
+        session_id,
+        job_kind,
+        artifact_id=artifact_id,
+    )
+
+
+def _load_reusable_source(
+    context: SourceWorkflowContext,
+    session_id: str,
+    artifact_id: str,
+) -> tuple[Artifact, Path]:
+    if current_execution_actor.get() is None:
+        source, source_path = context._resolve_input(artifact_id)
+        with context.database.session() as unit:
+            source_creation_workspace(
+                unit,
+                source,
+                workspace_id=session_project(unit, session_id).workspace_id,
+            )
+        return source, source_path
+
+    with context.database.snapshot_session() as unit:
+        require_source_ingress_access(
+            unit,
+            session_id,
+            "source.reuse",
+            artifact_id=artifact_id,
+        )
+        source = unit.scalar(
+            select(Artifact)
+            .where(
+                Artifact.id == artifact_id,
+                Artifact.state != "deleted",
+            )
+            .options(
+                load_only(
+                    Artifact.id,
+                    Artifact.workspace_id,
+                    Artifact.project_id,
+                    Artifact.session_id,
+                    Artifact.relative_path,
+                    Artifact.state,
+                    raiseload=True,
+                )
+            )
+        )
+        if source is None:
+            raise KeyError("Source artifact not found.")
+
+        source_creation_workspace(
+            unit,
+            source,
+            workspace_id=session_project(unit, session_id).workspace_id,
+        )
+        try:
+            source_path = context.paths.managed_path(source.relative_path)
+        except (OSError, ValueError):
+            raise KeyError("Source artifact not found.") from None
+        if not source_path.is_file():
+            raise KeyError("Source artifact not found.")
+        unit.expunge(source)
+    return source, source_path
+
+
+def _publish_ingressed_source(
+    context: SourceWorkflowContext,
+    session_id: str,
+    job_kind: str,
+    path: Path,
+    *,
+    kind: str,
+    display_name: str,
+    artifact_metadata: dict[str, Any],
+    source_metadata: dict[str, Any],
+    parent_ids: list[str] | None = None,
+    artifact_id: str | None = None,
+) -> dict[str, str]:
+    _check_source_ingress(
+        context,
+        session_id,
+        job_kind,
+        artifact_id=artifact_id,
+    )
+    prepared = context.artifacts.prepare_registration(path)
+
+    from .source_library import SourceLibraryService
+
+    with context.database.immediate_session() as unit:
+        require_source_ingress_access(
+            unit,
+            session_id,
+            job_kind,
+            artifact_id=artifact_id,
+        )
+        artifact = context.artifacts.register_in_session(
+            unit,
+            path,
+            kind="source",
+            role="upload",
+            session_id=session_id,
+            parent_ids=parent_ids,
+            metadata=artifact_metadata,
+            _prepared=prepared,
+        )
+        published_artifact_id = artifact.id
+        content_hash = artifact.content_hash
+        unit.add(
+            SourceRecord(
+                session_id=session_id,
+                kind=kind,
+                display_name=display_name,
+                artifact_id=published_artifact_id,
+                content_hash=content_hash,
+                metadata_json=source_metadata,
+            )
+        )
+        library = SourceLibraryService(context.database, context.artifacts)
+        asset = library.ensure_for_artifact_in_session(
+            unit,
+            published_artifact_id,
+            display_name=display_name,
+            kind=kind,
+        )
+        library.attach_in_session(unit, session_id, asset.id)
+        result = {"artifact_id": published_artifact_id, "filename": display_name}
+    return result
+
+
+def _check_text_preparation_access(
+    context: SourceWorkflowContext,
+    session_id: str,
+    source_artifact_id: str,
+    *,
+    require_metadata: bool = False,
+) -> bool:
+    if current_execution_actor.get() is None:
+        return True
+    with context.database.snapshot_session() as unit:
+        return require_text_preparation_access(
+            unit,
+            session_id,
+            source_artifact_id,
+            require_metadata=require_metadata,
+        )
+
+
+def _load_text_preparation_source(
+    context: SourceWorkflowContext,
+    session_id: str,
+    source_artifact_id: str,
+) -> tuple[str, Path, dict[str, Any]]:
+    if current_execution_actor.get() is None:
+        source, source_path = context._resolve_input(source_artifact_id)
+        return str(source.id), source_path, source.metadata_json or {}
+
+    with context.database.snapshot_session() as unit:
+        ordinary_visibility = require_text_preparation_access(
+            unit,
+            session_id,
+            source_artifact_id,
+        )
+        if ordinary_visibility:
+            row = unit.execute(
+                select(Artifact.id, Artifact.relative_path, Artifact.metadata_json).where(
+                    Artifact.id == source_artifact_id,
+                    Artifact.state != "deleted",
+                )
+            ).one_or_none()
+            if row is None:
+                raise KeyError("Source artifact not found.")
+            source_id, relative_path, metadata_value = row
+            if isinstance(metadata_value, Mapping):
+                metadata = deepcopy(dict(metadata_value))
+            else:
+                metadata = {}
+        else:
+            row = unit.execute(
+                select(Artifact.id, Artifact.relative_path).where(
+                    Artifact.id == source_artifact_id,
+                    Artifact.state != "deleted",
+                )
+            ).one_or_none()
+            if row is None:
+                raise KeyError("Source artifact not found.")
+            source_id, relative_path = row
+            metadata = {}
+
+        try:
+            source_path = context.paths.managed_path(relative_path)
+        except (OSError, ValueError):
+            raise KeyError("Source artifact not found.") from None
+        if not source_path.is_file():
+            raise KeyError("Source artifact not found.")
+    return str(source_id), source_path, metadata
+
+
+def _forward_text_preparation_progress(
+    context: SourceWorkflowContext,
+    session_id: str,
+    source_artifact_id: str,
+    progress: Progress,
+    value: float,
+    detail: str | None,
+    *,
+    require_metadata: bool = False,
+) -> None:
+    if current_execution_actor.get() is None:
+        progress(value, detail)
+        return
+    _check_text_preparation_access(
+        context,
+        session_id,
+        source_artifact_id,
+        require_metadata=require_metadata,
+    )
+    progress(value, detail)
+    _check_text_preparation_access(
+        context,
+        session_id,
+        source_artifact_id,
+        require_metadata=require_metadata,
+    )
+
+
+def _text_preparation_progress_callback(
+    context: SourceWorkflowContext,
+    session_id: str,
+    source_artifact_id: str,
+    progress: Progress,
+    *,
+    require_metadata: bool = False,
+) -> Progress:
+    if current_execution_actor.get() is None:
+        return progress
+
+    def guarded(value: float, detail: str | None = None) -> None:
+        _forward_text_preparation_progress(
+            context,
+            session_id,
+            source_artifact_id,
+            progress,
+            value,
+            detail,
+            require_metadata=require_metadata,
+        )
+
+    return guarded
 
 
 def download_source_url(
@@ -76,108 +326,142 @@ def download_source_url(
     progress: Progress,
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
+    session_id = str(payload.get("session_id") or "")
+    _check_source_ingress(context, session_id, "source.download_url")
+
     import yt_dlp
     from yt_dlp.utils import DownloadError
 
-    from .source_library import SourceLibraryService
-
-    session_id = str(payload.get("session_id") or "")
     url = context._validate_download_url(str(payload.get("url") or ""))
-    destination_dir = context._session_dir(session_id) / "sources"
+    destination_dir = context._session_dir(session_id) / "sources" / new_id()
+    _check_source_ingress(context, session_id, "source.download_url")
     destination_dir.mkdir(parents=True, exist_ok=True)
-    progress(0.03, "Inspecting source URL")
+    _forward_source_progress(
+        context,
+        session_id,
+        "source.download_url",
+        progress,
+        0.03,
+        "Inspecting source URL",
+    )
     download_fraction = 0.0
     last_reported_fraction = -1.0
     last_reported_bytes = 0
     last_reported_at = 0.0
+    ingress_error: AccessDenied | SessionNotFound | None = None
 
     def download_progress(status: Mapping[str, Any]) -> None:
-        nonlocal download_fraction, last_reported_fraction, last_reported_bytes, last_reported_at
-        if cancel_event.is_set():
-            raise DownloadError("Source download was canceled.")
-        state = str(status.get("status") or "")
-        if state == "downloading":
-            downloaded = max(0, int(status.get("downloaded_bytes") or 0))
-            total = max(
-                0,
-                int(status.get("total_bytes") or status.get("total_bytes_estimate") or 0),
-            )
-            if total:
-                download_fraction = max(
-                    download_fraction,
-                    min(1.0, downloaded / total),
+        nonlocal download_fraction, ingress_error, last_reported_fraction
+        nonlocal last_reported_bytes, last_reported_at
+        try:
+            if ingress_error is not None:
+                raise ingress_error
+            if cancel_event.is_set():
+                raise DownloadError("Source download was canceled.")
+            state = str(status.get("status") or "")
+            if state == "downloading":
+                downloaded = max(0, int(status.get("downloaded_bytes") or 0))
+                total = max(
+                    0,
+                    int(status.get("total_bytes") or status.get("total_bytes_estimate") or 0),
                 )
-            now = time.monotonic()
-            should_report = (
-                last_reported_fraction < 0
-                or (total and download_fraction - last_reported_fraction >= 0.005)
-                or (not total and downloaded - last_reported_bytes >= 4 * 1024 * 1024)
-                or now - last_reported_at >= 1.0
-            )
-            if not should_report:
-                return
-            detail = (
-                f"Downloading source — {round(download_fraction * 100)}%"
-                if total
-                else f"Downloading source — {downloaded / (1024 * 1024):.1f} MiB received"
-            )
-            progress(0.05 + download_fraction * 0.8, detail)
-            last_reported_fraction = download_fraction
-            last_reported_bytes = downloaded
-            last_reported_at = now
-        elif state == "finished":
-            download_fraction = 1.0
-            progress(0.88, "Source download complete; processing media")
+                if total:
+                    download_fraction = max(
+                        download_fraction,
+                        min(1.0, downloaded / total),
+                    )
+                now = time.monotonic()
+                should_report = (
+                    last_reported_fraction < 0
+                    or (total and download_fraction - last_reported_fraction >= 0.005)
+                    or (not total and downloaded - last_reported_bytes >= 4 * 1024 * 1024)
+                    or now - last_reported_at >= 1.0
+                )
+                if not should_report:
+                    return
+                detail = (
+                    f"Downloading source — {round(download_fraction * 100)}%"
+                    if total
+                    else f"Downloading source — {downloaded / (1024 * 1024):.1f} MiB received"
+                )
+                _forward_source_progress(
+                    context,
+                    session_id,
+                    "source.download_url",
+                    progress,
+                    0.05 + download_fraction * 0.8,
+                    detail,
+                )
+                last_reported_fraction = download_fraction
+                last_reported_bytes = downloaded
+                last_reported_at = now
+            elif state == "finished":
+                download_fraction = 1.0
+                _forward_source_progress(
+                    context,
+                    session_id,
+                    "source.download_url",
+                    progress,
+                    0.88,
+                    "Source download complete; processing media",
+                )
+        except (AccessDenied, SessionNotFound) as error:
+            ingress_error = error
+            raise
 
-    with yt_dlp.YoutubeDL(
-        {
-            "outtmpl": str(destination_dir / "%(title).160B-%(id)s.%(ext)s"),
-            "restrictfilenames": True,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "progress_hooks": [download_progress],
-        }
-    ) as downloader:
-        information = downloader.extract_info(url, download=True)
-        output = Path(downloader.prepare_filename(information)).resolve()
+    try:
+        with yt_dlp.YoutubeDL(
+            {
+                "outtmpl": str(destination_dir / "%(title).160B-%(id)s.%(ext)s"),
+                "restrictfilenames": True,
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+                "progress_hooks": [download_progress],
+            }
+        ) as downloader:
+            _check_source_ingress(context, session_id, "source.download_url")
+            information = downloader.extract_info(url, download=True)
+            output_candidate = Path(downloader.prepare_filename(information))
+    except Exception as error:
+        if ingress_error is not None:
+            raise ingress_error from error
+        raise
+    if ingress_error is not None:
+        raise ingress_error
     if cancel_event.is_set():
         return {}
-    if destination_dir.resolve() not in output.parents or not output.is_file():
+    _check_source_ingress(context, session_id, "source.download_url")
+    output = output_candidate.resolve()
+    resolved_destination_dir = destination_dir.resolve()
+    _check_source_ingress(context, session_id, "source.download_url")
+    if resolved_destination_dir not in output.parents or not output.is_file():
         raise RuntimeError("Downloaded source was not created in the managed session directory.")
-    progress(0.93, "Registering downloaded source")
+    _forward_source_progress(
+        context,
+        session_id,
+        "source.download_url",
+        progress,
+        0.93,
+        "Registering downloaded source",
+    )
     source_metadata = {
         "original_filename": output.name,
         "source_url": url,
         "downloader": "yt-dlp",
     }
-    artifact = context.artifacts.register(
+    result = _publish_ingressed_source(
+        context,
+        session_id,
+        "source.download_url",
         output,
-        kind="source",
-        role="upload",
-        session_id=session_id,
-        metadata=source_metadata,
-    )
-    with context.database.session() as session:
-        session.add(
-            SourceRecord(
-                session_id=session_id,
-                kind=output.suffix.lower().lstrip(".") or "url",
-                display_name=output.name,
-                artifact_id=artifact.id,
-                content_hash=artifact.content_hash,
-                metadata_json={"url": url, "downloader": "yt-dlp"},
-            )
-        )
-    library = SourceLibraryService(context.database, context.artifacts)
-    asset = library.ensure_for_artifact(
-        artifact.id,
-        display_name=output.name,
         kind=output.suffix.lower().lstrip(".") or "url",
+        display_name=output.name,
+        artifact_metadata=source_metadata,
+        source_metadata={"url": url, "downloader": "yt-dlp"},
     )
-    library.attach(session_id, asset.id)
     progress(1.0, "Source download ready")
-    return {"artifact_id": artifact.id, "filename": output.name}
+    return result
 
 
 def reuse_source(
@@ -186,46 +470,51 @@ def reuse_source(
     progress: Progress,
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
-    from .source_library import SourceLibraryService
-
     session_id = str(payload.get("session_id") or "")
-    source, source_path = context._resolve_input(str(payload.get("artifact_id") or ""))
-    destination_dir = context._session_dir(session_id) / "sources"
+    artifact_id = str(payload.get("artifact_id") or "")
+    source, source_path = _load_reusable_source(context, session_id, artifact_id)
+    destination_dir = context._session_dir(session_id) / "sources" / new_id()
+    _check_source_ingress(
+        context,
+        session_id,
+        "source.reuse",
+        artifact_id=source.id,
+    )
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination = destination_dir / f"{source.id}-{source_path.name}"
-    progress(0.2, "Copying reusable source")
+    _forward_source_progress(
+        context,
+        session_id,
+        "source.reuse",
+        progress,
+        0.2,
+        "Copying reusable source",
+        artifact_id=source.id,
+    )
+    _check_source_ingress(
+        context,
+        session_id,
+        "source.reuse",
+        artifact_id=source.id,
+    )
     shutil.copy2(source_path, destination)
     if cancel_event.is_set():
         destination.unlink(missing_ok=True)
         return {}
-    artifact = context.artifacts.register(
+    result = _publish_ingressed_source(
+        context,
+        session_id,
+        "source.reuse",
         destination,
-        kind="source",
-        role="upload",
-        session_id=session_id,
-        parent_ids=[source.id],
-        metadata={"original_filename": source_path.name, "reused_from": source.id},
-    )
-    with context.database.session() as session:
-        session.add(
-            SourceRecord(
-                session_id=session_id,
-                kind=destination.suffix.lower().lstrip(".") or "file",
-                display_name=source_path.name,
-                artifact_id=artifact.id,
-                content_hash=artifact.content_hash,
-                metadata_json={"reused_from": source.id},
-            )
-        )
-    library = SourceLibraryService(context.database, context.artifacts)
-    asset = library.ensure_for_artifact(
-        artifact.id,
-        display_name=source_path.name,
         kind=destination.suffix.lower().lstrip(".") or "file",
+        display_name=source_path.name,
+        artifact_metadata={"original_filename": source_path.name, "reused_from": source.id},
+        source_metadata={"reused_from": source.id},
+        parent_ids=[source.id],
+        artifact_id=source.id,
     )
-    library.attach(session_id, asset.id)
     progress(1.0, "Reusable source ready")
-    return {"artifact_id": artifact.id, "filename": source_path.name}
+    return result
 
 
 def clean_source(
@@ -234,274 +523,10 @@ def clean_source(
     progress: Progress,
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
-    """Run deterministic extraction and the optional auditable agentic pipeline."""
-    from pandrator.logic import file_handler, source_cleaning
+    """Delegate native cleaning through the captured source workflow ports."""
+    from .workflow_source_cleaning import clean_source as clean_source_job
 
-    session_id = str(payload.get("session_id") or "")
-    agent_run_id = str(payload.get("agent_run_id") or "")
-    if agent_run_id:
-        with context.database.session() as session:
-            run = session.get(AgentRun, agent_run_id)
-            if run is not None:
-                run.status = "running"
-                run.updated_at = utcnow()
-    source_artifact, source_path = context._resolve_input(
-        str(payload.get("source_artifact_id") or "")
-    )
-    settings = dict(payload.get("settings") or {})
-    pdf_config = source_cleaning.PDFIngestionConfig(
-        ocr_mode=str(settings.get("pdf_ocr_mode") or "auto"),
-        ocr_language=str(settings.get("pdf_ocr_language") or "auto"),
-        ocr_dpi=int(settings.get("pdf_ocr_dpi") or 200),
-    )
-    deterministic_operations: list[dict[str, Any]] = []
-    baseline_text = ""
-    progress(0.05, "Extracting source text")
-    extension = source_path.suffix.lower()
-    if extension == ".txt":
-        cleaned_text = source_path.read_text(encoding="utf-8-sig")
-        baseline_text = cleaned_text
-    elif extension == ".epub":
-        cleaned_text = file_handler.extract_text_from_epub(
-            str(source_path),
-            remove_footnotes=bool(settings.get("remove_footnotes", False)),
-            filter_citations=bool(settings.get("filter_citations", True)),
-            epub_table_mode=settings.get("epub_table_mode", "rows"),
-            epub_image_mode=settings.get("epub_image_mode", "skip"),
-        )
-        baseline_text = cleaned_text
-    elif extension == ".pdf":
-        document = source_cleaning.build_source_document(
-            str(source_path),
-            pdf_config=pdf_config,
-            artifact_dir=str(context._session_dir(session_id) / "source_ingestion"),
-            progress_callback=context._fraction_message_callback(
-                progress,
-                0.05,
-                0.35,
-            ),
-        )
-        deterministic_operations = source_cleaning.propose_deterministic_operations(
-            document,
-            remove_footnotes=bool(settings.get("remove_footnotes", False)),
-            remove_toc=bool(settings.get("pdf_remove_toc", True)),
-            remove_repeated_marginals=bool(settings.get("pdf_remove_repeated_marginals", True)),
-        )
-        baseline_text = document.plain_text()
-        cleaned_text = source_cleaning.apply_cleaning_operations(
-            document, deterministic_operations
-        ).cleaned_text
-    elif extension in {".docx", ".mobi"}:
-        extracted = context._session_dir(session_id) / f"{source_path.stem}_extracted.txt"
-        if not file_handler.convert_doc_to_text(str(source_path), str(extracted)):
-            raise RuntimeError(f"Could not extract text from {source_path.name}.")
-        cleaned_text = extracted.read_text(encoding="utf-8-sig")
-        baseline_text = cleaned_text
-    else:
-        raise ValueError(f"Unsupported document type: {extension or 'unknown'}")
-    if cancel_event.is_set():
-        return {}
-    progress(0.38, "Source extraction complete")
-    extraction = "deterministic"
-    report: dict[str, Any] = {}
-    if bool(settings.get("agentic", False)):
-        from .provider_settings import build_llm_settings
-
-        progress(0.4, "Building source-cleaning index")
-        if extension == ".epub":
-            document = source_cleaning.build_cleaned_epub_source_document(
-                str(source_path),
-                cleaned_text,
-            )
-            deterministic_operations = source_cleaning.propose_embedded_chapter_operations(document)
-        elif extension == ".pdf":
-            document = source_cleaning.build_source_document(
-                str(source_path),
-                pdf_config=pdf_config,
-                artifact_dir=str(context._session_dir(session_id) / "source_ingestion"),
-                progress_callback=context._fraction_message_callback(
-                    progress,
-                    0.4,
-                    0.45,
-                ),
-            )
-        else:
-            from pandrator.logic.source_cleaning.pdf_text_adapter import (
-                build_source_document_from_text,
-            )
-
-            document = build_source_document_from_text(
-                cleaned_text,
-                source_path=str(source_path),
-                filename=source_path.name,
-            )
-        llm_settings, model_name = build_llm_settings(
-            context.database,
-            context.paths,
-            requested_model=str(settings.get("model_name") or settings.get("default_model") or ""),
-            request_timeout_seconds=int(settings.get("request_timeout_seconds") or 600),
-        )
-        total_iterations = max(1, int(settings.get("max_iterations") or 53))
-        phase_iterations = settings.get("phase_max_iterations")
-        requested_phase_names = (
-            settings.get("phase_names") if isinstance(settings.get("phase_names"), list) else None
-        )
-        phase_names = list(requested_phase_names or source_cleaning.PHASE_ORDER)
-        phase_budgets = source_cleaning.resolve_phase_max_iterations(
-            phase_iterations if isinstance(phase_iterations, dict) else None,
-            total=total_iterations,
-            phase_names=phase_names,
-        )
-        pipeline = source_cleaning.run_cleaning_pipeline(
-            document,
-            llm_settings=llm_settings,
-            config=source_cleaning.SourceCleaningPipelineConfig(
-                model_name=model_name,
-                remove_footnotes=bool(settings.get("remove_footnotes", False)),
-                filter_citations=bool(settings.get("filter_citations", True)),
-                total_max_iterations=total_iterations,
-                phase_max_iterations=phase_iterations
-                if isinstance(phase_iterations, dict)
-                else None,
-                phase_names=requested_phase_names,
-                baseline_operations=deterministic_operations,
-            ),
-            progress_callback=context._source_cleaning_progress_callback(
-                progress,
-                0.45,
-                0.9,
-                phase_names=phase_names,
-                phase_budgets=phase_budgets,
-            ),
-            stop_event=cancel_event,
-        )
-        if cancel_event.is_set():
-            return {}
-        progress(0.9, "Source-cleaning analysis complete")
-        all_operations = [*deterministic_operations, *pipeline.all_operations]
-        cleaning_result = source_cleaning.apply_cleaning_operations(document, all_operations)
-        validation = source_cleaning.validate_cleaning_result(
-            document,
-            cleaning_result,
-            remove_footnotes=bool(settings.get("remove_footnotes", False)),
-        )
-        cleaned_text = cleaning_result.cleaned_text
-        report = {
-            **cleaning_result.report,
-            "pipeline": pipeline.to_dict(),
-            "validation": validation.to_dict(),
-            "warnings": pipeline.warnings + validation.warnings + cleaning_result.warnings,
-        }
-        audit_dir = context._session_dir(session_id) / "source_cleaning"
-        source_cleaning.write_cleaning_artifacts(
-            document,
-            all_operations,
-            cleaning_result,
-            str(audit_dir),
-        )
-        usage = pipeline.llm_usage
-        models = list(usage.get("models") or [])
-        details_raw = usage.get("token_details")
-        details = details_raw if isinstance(details_raw, dict) else {}
-        with context.database.session() as session:
-            session.add(
-                UsageEvent(
-                    session_id=session_id,
-                    stage="source_cleaning",
-                    provider_key=(
-                        models[0].split("/", 1)[0] if models else model_name.split("/", 1)[0]
-                    ),
-                    model_id=(models[0] if models else model_name),
-                    input_tokens=int(usage.get("prompt_tokens") or 0),
-                    cached_input_tokens=int(details.get("cached_tokens") or 0),
-                    output_tokens=int(usage.get("completion_tokens") or 0),
-                    cost_usd=float(usage["cost_usd"])
-                    if usage.get("cost_usd") is not None
-                    else None,
-                    cost_source=",".join(usage.get("cost_sources") or []) or None,
-                    raw_usage_json=usage,
-                )
-            )
-        extraction = "agentic"
-    progress(0.93, "Saving source-cleaning artifacts")
-    comparison_dir = context._session_dir(session_id) / "source_cleaning"
-    comparison_dir.mkdir(parents=True, exist_ok=True)
-    baseline_path = comparison_dir / f"extracted-{new_id()}.txt"
-    baseline_path.write_text(baseline_text, encoding="utf-8", newline="\n")
-    baseline_artifact = context.artifacts.register(
-        baseline_path,
-        kind="text",
-        role="extracted_text",
-        session_id=session_id,
-        parent_ids=[source_artifact.id],
-        metadata={"comparison_source": True, "source_filename": source_path.name},
-    )
-    destination = (
-        context._operation_dir(session_id, "clean-source") / f"{source_path.stem}_cleaned.txt"
-    )
-    destination.write_text(cleaned_text, encoding="utf-8", newline="\n")
-    artifact = context.artifacts.register(
-        destination,
-        kind="text",
-        role="clean_text",
-        session_id=session_id,
-        parent_ids=[source_artifact.id, baseline_artifact.id],
-        settings=settings,
-        metadata={"extraction": extraction, "report": report},
-    )
-    if agent_run_id:
-        pipeline_report_raw = report.get("pipeline")
-        pipeline_report = pipeline_report_raw if isinstance(pipeline_report_raw, dict) else {}
-        phases_raw = pipeline_report.get("phases")
-        phases = phases_raw if isinstance(phases_raw, list) else []
-        with context.database.session() as session:
-            run = session.get(AgentRun, agent_run_id)
-            if run is not None:
-                run.status = "completed"
-                run.result_artifact_id = artifact.id
-                run.updated_at = utcnow()
-                for ordinal, phase in enumerate(phases):
-                    safe_phase = phase if isinstance(phase, dict) else {"name": str(phase)}
-                    operations_raw = safe_phase.get("operations")
-                    operations = operations_raw if isinstance(operations_raw, list) else []
-                    warnings_raw = safe_phase.get("warnings")
-                    warnings = warnings_raw if isinstance(warnings_raw, list) else []
-                    operation_types = sorted(
-                        {
-                            str(item.get("type") or item.get("operation") or "edit")
-                            for item in operations
-                            if isinstance(item, dict)
-                        }
-                    )
-                    session.add(
-                        AgentStep(
-                            agent_run_id=agent_run_id,
-                            ordinal=ordinal,
-                            phase=str(
-                                safe_phase.get("name")
-                                or safe_phase.get("phase")
-                                or f"Phase {ordinal + 1}"
-                            ),
-                            status=str(safe_phase.get("status") or "completed"),
-                            summary=str(
-                                safe_phase.get("summary")
-                                or f"{len(operations)} proposed operation(s), {len(warnings)} warning(s)."
-                            ),
-                            input_json={"operation_count": len(operations)},
-                            output_json={
-                                "warnings": warnings,
-                                "operation_types": operation_types,
-                            },
-                        )
-                    )
-    progress(0.98, "Cleaned source artifacts registered")
-    progress(1.0, "Source text ready")
-    return {
-        "artifact_id": artifact.id,
-        "path": artifact.relative_path,
-        "characters": len(cleaned_text),
-        "report": report,
-    }
+    return clean_source_job(context, payload, progress, cancel_event)
 
 
 def prepare_source_cleaning_dispatch(
@@ -529,19 +554,46 @@ def prepare_text(
     progress: Progress,
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
+    session_id = str(payload.get("session_id") or "")
+    requested_source_id = str(payload.get("source_artifact_id") or "")
+    source_artifact_id, source_path, source_metadata = _load_text_preparation_source(
+        context,
+        session_id,
+        requested_source_id,
+    )
+    supplied_markup = source_metadata.get("speech_markup") or {}
+    source_revision_id = str(source_metadata.get("revision_id") or "") or None
+    requires_source_metadata = bool(supplied_markup or source_revision_id)
+
+    _check_text_preparation_access(
+        context,
+        session_id,
+        source_artifact_id,
+        require_metadata=requires_source_metadata,
+    )
+
     from pandrator.logic.audiobook_chunking import audiobook_chunk_budget
     from pandrator.logic.text_preprocessor import preprocess_text
 
     from .settings_policy import BUILTIN_DEFAULTS
 
-    session_id = str(payload.get("session_id") or "")
-    source_artifact, source_path = context._resolve_input(
-        str(payload.get("source_artifact_id") or "")
-    )
     settings = dict(payload.get("settings") or {})
     if source_path.suffix.lower() not in {".txt", ".md"}:
         raise ValueError("Prepare narration requires a cleaned text artifact.")
+
+    _check_text_preparation_access(
+        context,
+        session_id,
+        source_artifact_id,
+        require_metadata=requires_source_metadata,
+    )
     text = source_path.read_text(encoding="utf-8-sig")
+    _check_text_preparation_access(
+        context,
+        session_id,
+        source_artifact_id,
+        require_metadata=requires_source_metadata,
+    )
     record = context._session_record(session_id)
     source_language = str(record.source_language or "auto")
     text_defaults = BUILTIN_DEFAULTS["text"]
@@ -554,14 +606,30 @@ def prepare_text(
             else {"service": "XTTS"}
         )
     budget = audiobook_chunk_budget(settings, captured_tts, source_language)
-    progress(0.1, "Segmenting narration")
-    supplied_markup = (source_artifact.metadata_json or {}).get("speech_markup") or {}
+    _forward_text_preparation_progress(
+        context,
+        session_id,
+        source_artifact_id,
+        progress,
+        0.1,
+        "Segmenting narration",
+        require_metadata=requires_source_metadata,
+    )
+    if cancel_event.is_set():
+        return {}
+
     if supplied_markup:
         from pandrator.logic.speech_markup import parse_speech_markup
 
         from .generation_controls import get_generation_controls
 
         with context.database.session() as db:
+            require_text_preparation_access(
+                db,
+                session_id,
+                source_artifact_id,
+                require_metadata=requires_source_metadata,
+            )
             characters = get_generation_controls(db, session_id)["characters"]
         structures = [
             parse_speech_markup(xml, expected_segment_id=str(key), characters=characters)
@@ -581,6 +649,32 @@ def prepare_text(
             for item in structures
         ]
     else:
+        preprocessor_progress = _text_preparation_progress_callback(
+            context,
+            session_id,
+            source_artifact_id,
+            progress,
+            require_metadata=requires_source_metadata,
+        )
+        if current_execution_actor.get() is not None:
+            _check_text_preparation_access(
+                context,
+                session_id,
+                source_artifact_id,
+                require_metadata=requires_source_metadata,
+            )
+        scaled_progress = context._scaled_progress_callback(
+            preprocessor_progress,
+            0.1,
+            0.85,
+        )
+        if current_execution_actor.get() is not None:
+            _check_text_preparation_access(
+                context,
+                session_id,
+                source_artifact_id,
+                require_metadata=requires_source_metadata,
+            )
         prepared = preprocess_text(
             text,
             {
@@ -592,6 +686,14 @@ def prepare_text(
                 "audiobook_preparation": record.workflow_kind == "audiobook",
                 "audiobook_dialogue_flow": settings.get(
                     "audiobook_dialogue_flow", text_defaults["audiobook_dialogue_flow"]
+                ),
+                "audiobook_sentence_packing": settings.get(
+                    "audiobook_sentence_packing",
+                    text_defaults["audiobook_sentence_packing"],
+                ),
+                "audiobook_sentence_packing_threshold": settings.get(
+                    "audiobook_sentence_packing_threshold",
+                    text_defaults["audiobook_sentence_packing_threshold"],
                 ),
                 "audiobook_dialogue_merge_allowed": not bool((captured_tts or {}).get("casting_enabled")),
                 # XTTS remains the tokenizer choice for language-aware
@@ -631,7 +733,7 @@ def prepare_text(
                     settings.get("normalize_all_caps", text_defaults["normalize_all_caps"])
                 ),
             },
-            progress_callback=context._scaled_progress_callback(progress, 0.1, 0.85),
+            progress_callback=scaled_progress,
         )
     if cancel_event.is_set():
         return {}
@@ -672,34 +774,86 @@ def prepare_text(
     }
     artifact_settings = dict(settings)
     artifact_settings["_audiobook_chunk_budget"] = deepcopy(budget)
-    progress(0.9, "Saving narration segments")
+    _forward_text_preparation_progress(
+        context,
+        session_id,
+        source_artifact_id,
+        progress,
+        0.9,
+        "Saving narration segments",
+        require_metadata=requires_source_metadata,
+    )
+    if cancel_event.is_set():
+        return {}
+    _check_text_preparation_access(
+        context,
+        session_id,
+        source_artifact_id,
+        require_metadata=requires_source_metadata,
+    )
     destination = context._operation_dir(session_id, "prepare-text") / "prepared_narration.json"
+    _check_text_preparation_access(
+        context,
+        session_id,
+        source_artifact_id,
+        require_metadata=requires_source_metadata,
+    )
+    if cancel_event.is_set():
+        return {}
     destination.write_text(
         json.dumps(prepared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    artifact = context.artifacts.register(
-        destination,
-        kind="json",
-        role="prepared_text",
-        session_id=session_id,
-        parent_ids=[source_artifact.id],
-        settings=artifact_settings,
-        metadata={"segment_count": len(prepared), "segmentation": segmentation},
-    )
-    generation_revision_id, _segment_ids = context._store_generation_plan(
+    if cancel_event.is_set():
+        return {}
+    _check_text_preparation_access(
+        context,
         session_id,
-        prepared,
-        settings=artifact_settings,
-        source_revision_id=str((source_artifact.metadata_json or {}).get("revision_id") or "")
-        or None,
-        source_artifact_id=artifact.id,
+        source_artifact_id,
+        require_metadata=requires_source_metadata,
     )
+    prepared_registration = context.artifacts.prepare_registration(
+        destination,
+        settings=artifact_settings,
+    )
+    if cancel_event.is_set():
+        return {}
+
+    with context.database.immediate_session() as unit:
+        require_text_preparation_access(
+            unit,
+            session_id,
+            source_artifact_id,
+            require_metadata=requires_source_metadata,
+        )
+        artifact = context.artifacts.register_in_session(
+            unit,
+            destination,
+            kind="json",
+            role="prepared_text",
+            session_id=session_id,
+            parent_ids=[source_artifact_id],
+            settings=artifact_settings,
+            metadata={"segment_count": len(prepared), "segmentation": segmentation},
+            _prepared=prepared_registration,
+        )
+        artifact_id = str(artifact.id)
+        relative_path = str(artifact.relative_path)
+        generation_revision_id, _segment_ids = context._store_generation_plan(
+            session_id,
+            prepared,
+            settings=artifact_settings,
+            source_revision_id=source_revision_id,
+            source_artifact_id=artifact_id,
+            db_session=unit,
+        )
+        result = {
+            "artifact_id": artifact_id,
+            "path": relative_path,
+            "segments": len(prepared),
+            "generation_plan_revision_id": generation_revision_id,
+            "segmentation": segmentation,
+            "segmentation_budget": budget,
+        }
+
     progress(1.0, "Narration segments ready")
-    return {
-        "artifact_id": artifact.id,
-        "path": artifact.relative_path,
-        "segments": len(prepared),
-        "generation_plan_revision_id": generation_revision_id,
-        "segmentation": segmentation,
-        "segmentation_budget": budget,
-    }
+    return result

@@ -20,6 +20,7 @@ from pandrator.web import sound_book_audio_export as export_module
 from pandrator.web.artifacts import ArtifactService, sha256_file
 from pandrator.web.database import Database
 from pandrator.web.job_execution import current_job_lease
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.media_process import MediaProcessCancelled
 from pandrator.web.models import Artifact, ArtifactEdge, Job, utcnow
 from pandrator.web.sessions import SessionService
@@ -327,6 +328,9 @@ def test_active_lease_identity_is_checked_before_publishing(
             lease_generation=4,
             lease_expires_at=utcnow() + timedelta(minutes=5),
         )
+        ownership = job_creation_ownership(session, session_id=job.session_id)
+        job.workspace_id = ownership.workspace_id
+        job.project_id = ownership.project_id
         session.add(job)
         session.flush()
         job_id = job.id
@@ -357,6 +361,9 @@ def test_publication_helper_rechecks_job_claim_after_preflight(
             lease_generation=5,
             lease_expires_at=utcnow() + timedelta(minutes=5),
         )
+        ownership = job_creation_ownership(session, session_id=job.session_id)
+        job.workspace_id = ownership.workspace_id
+        job.project_id = ownership.project_id
         session.add(job)
         session.flush()
         job_id = job.id

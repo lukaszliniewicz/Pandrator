@@ -133,3 +133,85 @@ test('creating a folder in an open assignment retains the original membership fe
   });
   assert.deepEqual(assignment.expected_revisions, { old: 2, new: 1 });
 });
+
+test('a selected workspace scopes existing reads and writes without extra successful requests', async () => {
+  const calls = [];
+  globalThis.folderFixture = async (path, options) => {
+    calls.push({ path, options });
+    return { ...empty, workspace_id: 'team / id', folder: folder('new') };
+  };
+  const store = new ProjectFoldersStore('team / id');
+  await store.load();
+  await store.create('new', null);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].path, '/project-folders?workspace_id=team%20%2F%20id');
+  assert.equal(calls[1].path, calls[0].path);
+  assert.equal(calls[1].options.method, 'POST');
+  assert.equal(store.value.workspace_id, 'team / id');
+});
+
+test('a scoped store rejects foreign or unscoped responses before replacing content', async () => {
+  const store = new ProjectFoldersStore('team');
+  globalThis.folderFixture = async () => ({ ...empty, workspace_id: 'team' });
+  await store.load();
+  for (const bad of ['personal', undefined]) {
+    let writes = 0;
+    globalThis.folderFixture = async (_path, options) => {
+      if (options) writes += 1;
+      return {
+        workspace_id: bad,
+        items: [folder('private sentinel')],
+        memberships: []
+      };
+    };
+    await assert.rejects(store.load(true), /different workspace/);
+    assert.deepEqual(store.value.items, []);
+    await assert.rejects(store.create('new', null), /different workspace/);
+    assert.equal(writes, 1);
+    assert.deepEqual(store.value.items, []);
+  }
+});
+
+test('an assignment from another workspace is rejected before sending a write', async () => {
+  let calls = 0;
+  globalThis.folderFixture = async () => {
+    calls += 1;
+    return { ...empty, workspace_id: 'team' };
+  };
+  const store = new ProjectFoldersStore('team');
+  await store.load();
+  assert.throws(
+    () => store.assign('source', [], { ...empty, workspace_id: 'personal' }),
+    /current workspace/
+  );
+  assert.equal(calls, 1);
+});
+
+test('folder assignment uses the explicit source identity while retaining legacy write URLs', async () => {
+  let path;
+  let body;
+  globalThis.folderFixture = async (requested, options) => {
+    if (!options)
+      return {
+        workspace_id: 'team',
+        items: [folder('old', 2)],
+        memberships: [
+          {
+            folder_id: 'old',
+            project_id: 'legacy alias',
+            source_session_id: 'source',
+            project_root_id: 'root',
+            position: 0
+          }
+        ]
+      };
+    path = requested;
+    body = JSON.parse(options.body);
+    return { ...empty, workspace_id: 'team' };
+  };
+  const store = new ProjectFoldersStore('team');
+  await store.load();
+  await store.assign('source', []);
+  assert.equal(path, '/sessions/source/project-folders?workspace_id=team');
+  assert.deepEqual(body.expected_revisions, { old: 2 });
+});

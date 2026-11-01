@@ -50,7 +50,7 @@ def test_identity_and_source_are_pinned_exactly():
     )
 
 
-def test_download_verifies_then_reuses_without_network(tmp_path, monkeypatch):
+def test_download_verifies_then_reuses_without_network(tmp_path, monkeypatch, host_model_acquisition):
     payload = b"verified adapter"
     _use_test_payload(monkeypatch, payload)
     settings = {"audio_cpp_cache_dir": str(tmp_path / "cache")}
@@ -77,7 +77,7 @@ def test_download_verifies_then_reuses_without_network(tmp_path, monkeypatch):
 
 
 def test_same_size_wrong_digest_leaves_no_installed_or_partial_file(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, host_model_acquisition
 ):
     payload = b"same-size wrong digest"
     _use_test_payload(monkeypatch, payload, sha256="0" * 64)

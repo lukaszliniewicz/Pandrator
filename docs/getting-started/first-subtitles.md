@@ -68,8 +68,7 @@ chooses the column you edit; adding a comparison or changing that column leaves
 the project's output selection unchanged. Choose the intended result in the
 workflow's version selector before exporting.
 
-Selecting
-an older upstream revision may invalidate downstream selections because those
+Selecting an older source revision may invalidate downstream selections because those
 results were derived from another source. Treat the reported impact as a real
 lineage change rather than assuming a later translation is still current.
 

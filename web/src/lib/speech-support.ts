@@ -155,6 +155,13 @@ export function deliverySupport(
       description:
         'This route accepts a direction for the whole request. It cannot receive a direction for only these words.'
     };
+  if (scope !== 'segment' && phraseTransport === 'scoped_inline')
+    return {
+      status: 'hint',
+      label: 'Paired phrase tags',
+      description:
+        'Sent inside paired Drama 3 tags around the selected words. The model interprets delivery; exact timing and acoustic boundaries are not guaranteed.'
+    };
   if (scope !== 'segment')
     return {
       status: 'hint',

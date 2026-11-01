@@ -25,6 +25,7 @@ from ..schemas.e2e import (
     ListGenerationRunsInput,
     PlanExportVariantInput,
     TtsCatalogInput,
+    TtsCatalogRefreshInput,
 )
 from ..workflow_results import workflow_plan_outcome
 
@@ -258,10 +259,30 @@ def _derived_upload_key(arguments: ImportLocalSourceInput, digest: str) -> str:
     return "mcp-upload:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def _source_workspace_arguments(
+    application: Any, session_id: str, workspace_id: str | None,
+) -> dict[str, str]:
+    if workspace_id is None:
+        return {}
+    target = application.get_session(session_id)
+    if target.get("workspace_id") != workspace_id:
+        raise PandratorMcpError(
+            "validation_error", "The source workspace must match the target project."
+        )
+    return {"workspace_id": workspace_id}
+
+
 def import_local_source(
     runtime: McpRuntime,
     arguments: ImportLocalSourceInput,
 ) -> ToolOutcome:
+    application = None
+    workspace_arguments = {}
+    if arguments.workspace_id is not None:
+        application = runtime.require_application()
+        workspace_arguments = _source_workspace_arguments(
+            application, arguments.session_id, arguments.workspace_id
+        )
     root_name, root = _named_source_root(runtime, arguments.root)
     parts = _relative_parts(arguments.relative_path, allow_empty=False)
     source_name = parts[-1]
@@ -278,8 +299,12 @@ def import_local_source(
             while chunk := handle.read(1024 * 1024):
                 digest.update(chunk)
             content_hash = digest.hexdigest()
-            application = runtime.require_application()
-            current_sources = application.list_sources().get("items")
+            if application is None:
+                application = runtime.require_application()
+            current_sources = (
+                application.list_sources(workspace_id=arguments.workspace_id)
+                if arguments.workspace_id is not None else application.list_sources()
+            ).get("items")
             existing = next(
                 (
                     item
@@ -302,6 +327,7 @@ def import_local_source(
                     mime_type=mimetypes.guess_type(source_name)[0],
                     sha256=content_hash,
                     idempotency_key=_derived_upload_key(arguments, content_hash),
+                    **workspace_arguments,
                 )
                 result = upload.get("result") if upload.get("state") == "completed" else None
                 if not isinstance(result, dict):
@@ -367,6 +393,7 @@ def import_local_source(
         result={
             "schema_version": "1",
             "root": root_name,
+            **workspace_arguments,
             "relative_path": PurePosixPath(*parts).as_posix(),
             "artifact_id": artifact_id,
             "source_asset_id": source_asset_id,
@@ -411,7 +438,13 @@ def create_text_source(
         )
     content_hash = hashlib.sha256(content).hexdigest()
     application = runtime.require_application()
-    current_sources = application.list_sources().get("items")
+    workspace_arguments = _source_workspace_arguments(
+        application, arguments.session_id, arguments.workspace_id
+    )
+    current_sources = (
+        application.list_sources(workspace_id=arguments.workspace_id)
+        if arguments.workspace_id is not None else application.list_sources()
+    ).get("items")
     existing = next(
         (
             item
@@ -439,6 +472,7 @@ def create_text_source(
                     f"{arguments.idempotency_key}\0{content_hash}".encode("utf-8")
                 ).hexdigest()
             ),
+            **workspace_arguments,
         )
         result = upload.get("result") if upload.get("state") == "completed" else None
         if not isinstance(result, dict):
@@ -481,6 +515,7 @@ def create_text_source(
         result={
             "schema_version": "1",
             "filename": filename,
+            **workspace_arguments,
             "artifact_id": artifact_id,
             "source_asset_id": source_asset_id,
             "content_hash": content_hash,
@@ -570,7 +605,8 @@ def _safe_tts_service(
         result["catalogue_role"] = "external"
     raw_voices = service.get("voices")
     voices: list[Any] = raw_voices if isinstance(raw_voices, list) else []
-    result["voice_count"] = len(voices)
+    voice_count = service.get("voice_count")
+    result["voice_count"] = voice_count if type(voice_count) is int and voice_count >= len(voices) else len(voices)
     if detail == "full":
         for key in (
             "model_catalog",
@@ -639,12 +675,14 @@ def _safe_tts_service(
     return result
 
 
-def tts_catalog(
-    runtime: McpRuntime, arguments: TtsCatalogInput, *, _for_configuration: bool = False,
+def _project_tts_catalog(
+    payload: dict[str, Any],
+    arguments: TtsCatalogInput,
+    *,
+    _for_configuration: bool = False,
+    managed_voices: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    application = runtime.require_application()
     requested_service = _normalized_id(arguments.service_id) if arguments.service_id else None
-    payload = application.tts_catalog(refresh=arguments.refresh, service_id=requested_service)
     requested_model = str(arguments.model or "").casefold().strip()
     query = str(arguments.query or "").casefold().strip()
     services: list[dict[str, Any]] = []
@@ -703,39 +741,116 @@ def tts_catalog(
             # requested model is absent; only heavy model detail is restricted.
             projected["models"] = models
         services.append(projected)
-    voices = []
-    if arguments.include_managed_voices:
-        raw_voices = application.list_voices().get("items")
-        for item in raw_voices or []:
-            if not isinstance(item, dict):
-                continue
-            registrations = {}
-            providers = (item.get("metadata_json") or {}).get("providers")
-            if isinstance(providers, dict):
-                for service_id, registration in list(providers.items())[:40]:
-                    if isinstance(registration, dict):
-                        registrations[str(service_id)] = {
-                            key: registration.get(key)
-                            for key in ("status", "voice_id", "stale_reason")
-                            if key in registration
-                        }
-            voices.append(
-                {
-                    "id": item.get("id"),
-                    "name": item.get("name"),
-                    "language": item.get("language"),
-                    "registrations": registrations,
-                    "revision": item.get("revision"),
-                }
-            )
-    return {
+    result = {
         "schema_version": "1",
         "default_service": payload.get("default_service"),
         "recommended_service": payload.get("recommended_service", "audio_cpp"),
         "revision": payload.get("revision"),
         "services": services,
-        "managed_voices": voices,
+        "managed_voices": managed_voices or [],
     }
+    for key in ("workspace_id", "can_manage", "can_refresh"):
+        if key in payload:
+            result[key] = payload[key]
+    return result
+
+
+def _project_managed_voices(items: Any) -> list[dict[str, Any]]:
+    voices: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        registrations = {}
+        providers = (item.get("metadata_json") or {}).get("providers")
+        if isinstance(providers, dict):
+            for service_id, registration in list(providers.items())[:40]:
+                if isinstance(registration, dict):
+                    registrations[str(service_id)] = {
+                        key: registration.get(key)
+                        for key in ("status", "voice_id", "stale_reason")
+                        if key in registration
+                    }
+        voices.append(
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "language": item.get("language"),
+                "registrations": registrations,
+                "revision": item.get("revision"),
+            }
+        )
+    return voices
+
+
+def tts_catalog(
+    runtime: McpRuntime, arguments: TtsCatalogInput, *, _for_configuration: bool = False,
+) -> dict[str, Any]:
+    if arguments.refresh:
+        raise PandratorMcpError(
+            "validation_error",
+            "The TTS catalogue read is passive; use "
+            "pandrator_refresh_tts_catalog to refresh TTS connections.",
+        )
+    application = runtime.require_application()
+    requested_service = _normalized_id(arguments.service_id) if arguments.service_id else None
+    catalog_arguments: dict[str, Any] = {
+        "refresh": False,
+        "service_id": requested_service,
+    }
+    for key in ("workspace_id", "session_id"):
+        value = getattr(arguments, key)
+        if value is not None:
+            catalog_arguments[key] = value
+    if arguments.detail == "full":
+        catalog_arguments["view"] = "full"
+    if requested_service and arguments.model and arguments.detail == "full":
+        # Selected model capabilities come from the server's approved detail,
+        # including Member reads. Ordinary collection reads stay compact.
+        catalog_arguments["model"] = arguments.model
+    payload = application.tts_catalog(**catalog_arguments)
+    voices: list[dict[str, Any]] = []
+    if arguments.include_managed_voices:
+        authoritative_workspace = payload.get("workspace_id")
+        if isinstance(authoritative_workspace, str) and authoritative_workspace.strip():
+            voice_scope = {"workspace_id": authoritative_workspace}
+        else:
+            voice_scope = {
+                key: getattr(arguments, key)
+                for key in ("workspace_id", "session_id")
+                if getattr(arguments, key) is not None
+            }
+        if voice_scope:
+            raw_voices = application.list_voices(**voice_scope).get("items")
+        else:
+            raw_voices = application.list_voices().get("items")
+        voices = _project_managed_voices(raw_voices)
+    return _project_tts_catalog(
+        payload,
+        arguments,
+        _for_configuration=_for_configuration,
+        managed_voices=voices,
+    )
+
+
+def refresh_tts_catalog(
+    runtime: McpRuntime,
+    arguments: TtsCatalogRefreshInput,
+) -> dict[str, Any]:
+    application = runtime.require_application()
+    refresh_arguments = {
+        key: getattr(arguments, key)
+        for key in ("workspace_id", "service_id")
+        if getattr(arguments, key) is not None
+    }
+    payload = application.refresh_tts_catalog(**refresh_arguments)
+    projection_arguments = TtsCatalogInput(
+        service_id=arguments.service_id,
+        include_managed_voices=False,
+    )
+    result = _project_tts_catalog(payload, projection_arguments, managed_voices=[])
+    for service in result["services"]:
+        service.pop("voices_preview", None)
+    return result
 
 
 def audio_cpp_catalogue(
@@ -766,51 +881,21 @@ def _catalog_value(values: Any, requested: str) -> str | None:
     )
 
 
-def _audio_cpp_catalog_model(service: dict[str, Any], requested: str) -> str | None:
-    models = service.get("models")
-    model = _catalog_value(models, requested)
-    if model:
-        return model
-    default_model = str(service.get("default_model") or "")
-    return (
-        requested
-        if default_model and default_model.casefold() == requested.casefold()
-        else None
-    )
-
-
 def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutcome:
     catalog = tts_catalog(
         runtime,
-        TtsCatalogInput(service_id=arguments.service_id, model=arguments.model, detail="full"),
+        TtsCatalogInput(
+            service_id=arguments.service_id,
+            model=arguments.model,
+            detail="full",
+            session_id=arguments.session_id,
+        ),
         _for_configuration=True,
     )
     if not catalog["services"]:
         raise PandratorMcpError("not_found", "The requested TTS service is not configured.")
     service = catalog["services"][0]
     service_id = str(service.get("id") or arguments.service_id)
-    is_audio_cpp = _normalized_id(service.get("adapter") or service_id) == "audio_cpp"
-    if (
-        arguments.model
-        and is_audio_cpp
-        and _audio_cpp_catalog_model(service, arguments.model) is None
-    ):
-        catalog = tts_catalog(
-            runtime,
-            TtsCatalogInput(
-                service_id=arguments.service_id,
-                model=arguments.model,
-                detail="full",
-                refresh=True,
-            ),
-            _for_configuration=True,
-        )
-        if not catalog["services"]:
-            raise PandratorMcpError(
-                "not_found", "The requested TTS service is not configured."
-            )
-        service = catalog["services"][0]
-        service_id = str(service.get("id") or arguments.service_id)
     if service.get("available") is False:
         raise PandratorMcpError(
             "source_unavailable",
@@ -1073,9 +1158,10 @@ def plan_export_variant(
         "audio_mode": arguments.audio_mode,
         "subtitle_mode": arguments.subtitle_mode,
         "subtitle_text_source": arguments.subtitle_text_source,
-        "subtitle_selection": arguments.subtitle_selection,
         "subtitle_format": arguments.subtitle_format,
     }
+    if arguments.subtitle_selection is not None:
+        output["subtitle_selection"] = arguments.subtitle_selection
     if arguments.generation_run_id:
         output["generation_run_id"] = arguments.generation_run_id
     plan = runtime.require_application().create_workflow_plan(

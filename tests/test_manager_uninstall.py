@@ -1,14 +1,17 @@
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
 import pandrator_manager.operations.handlers as handlers_module
 import pandrator_manager.operations.uninstall_tasks as uninstall_tasks_module
 import pandrator_manager.uninstall as uninstall_module
+from pandrator_manager import tray_autostart as tray_autostart_module
 from pandrator_manager.api import create_api
 from pandrator_manager.application import create_application
 from pandrator_manager.client import ManagerClient, ProductUninstalled
@@ -91,6 +94,15 @@ class ManagerUninstallTests(unittest.TestCase):
             ignore_cleanup_errors=True
         )
         self.addCleanup(self.temporary.cleanup)
+        self.environment_patch = mock.patch.dict(
+            os.environ,
+            {
+                "APPDATA": str(Path(self.temporary.name) / "appdata"),
+                "XDG_CONFIG_HOME": str(Path(self.temporary.name) / "xdg-config"),
+            },
+        )
+        self.environment_patch.start()
+        self.addCleanup(self.environment_patch.stop)
         self.application = create_application(self.temporary.name)
         self.layout = self.application.context.layout
         self.supervisor = _UninstallSupervisor(self.application.store)
@@ -103,6 +115,35 @@ class ManagerUninstallTests(unittest.TestCase):
             "preserve me",
             encoding="utf-8",
         )
+        self.tray_configurator = self._linux_tray_autostart_configurator()
+        self.tray_autostart_patch = mock.patch.object(
+            uninstall_module,
+            "configure_tray_autostart",
+            new=self.tray_configurator,
+        )
+        self.tray_autostart_patch.start()
+        self.addCleanup(self.tray_autostart_patch.stop)
+
+    @staticmethod
+    def _linux_tray_autostart_configurator() -> Callable[..., Path | str]:
+        configure = uninstall_module.configure_tray_autostart
+
+        def isolated_configure(
+            layout: WorkspaceLayout,
+            *,
+            enabled: bool,
+        ) -> Path | str:
+            with (
+                mock.patch.object(tray_autostart_module.sys, "platform", "linux"),
+                mock.patch.object(
+                    tray_autostart_module,
+                    "_tray_command",
+                    return_value=("python", "-m", "pandrator_manager.tray"),
+                ),
+            ):
+                return configure(layout, enabled=enabled)
+
+        return isolated_configure
 
     def _plan(
         self,
@@ -1071,11 +1112,94 @@ class ManagerUninstallTests(unittest.TestCase):
         self.assertTrue(export.is_file())
         clear_uninstall_status(self.layout, operation.id)
 
+    def test_tray_cleanup_failure_is_journaled_and_resume_retries(self):
+        operation = self._pending_operation(self._plan())
+        configure_tray = self.tray_configurator
+        registration = configure_tray(self.layout, enabled=True)
+        assert isinstance(registration, Path)
+        self.assertTrue(registration.is_file())
+        data_before = (self.layout.data / "user.txt").read_bytes()
+        attempts = 0
+
+        def fail_once(
+            layout: WorkspaceLayout,
+            *,
+            enabled: bool,
+        ) -> Path | str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("fixture tray registration is busy")
+            return configure_tray(layout, enabled=enabled)
+
+        with (
+            mock.patch.object(
+                uninstall_module,
+                "_wait_for_old_manager",
+            ),
+            mock.patch.object(
+                uninstall_module,
+                "configure_tray_autostart",
+                side_effect=fail_once,
+            ),
+        ):
+            interrupted = uninstall_module.run_uninstall_handoff(
+                self.layout.workspace,
+                operation.id,
+            )
+
+        self.assertEqual(interrupted, 3)
+        self.assertEqual(attempts, 1)
+        self.assertTrue(registration.is_file())
+        self.assertEqual(pending_uninstalls(self.layout), (operation.id,))
+        read_uninstall_handoff(self.layout, operation.id)
+        self.assertTrue(uninstall_module._commit_path(self.layout, operation.id).is_file())
+        status = read_uninstall_status(self.layout, operation.id)
+        assert status is not None
+        self.assertEqual(status["status"], "cleanup_interrupted")
+        self.assertEqual(
+            (self.layout.data / "user.txt").read_bytes(),
+            data_before,
+        )
+
+        with (
+            mock.patch.object(
+                uninstall_module,
+                "_wait_for_old_manager",
+            ),
+            mock.patch.object(
+                uninstall_module,
+                "configure_tray_autostart",
+                side_effect=fail_once,
+            ),
+        ):
+            resumed = uninstall_module.run_uninstall_handoff(
+                self.layout.workspace,
+                operation.id,
+            )
+
+        self.assertEqual(resumed, 0)
+        self.assertEqual(attempts, 2)
+        self.assertFalse(registration.exists())
+        self.assertEqual(pending_uninstalls(self.layout), ())
+        completed = read_uninstall_status(self.layout, operation.id)
+        assert completed is not None
+        self.assertEqual(completed["status"], "succeeded")
+        self.assertEqual(
+            (self.layout.data / "user.txt").read_bytes(),
+            data_before,
+        )
+        clear_uninstall_status(self.layout, operation.id)
+
     def test_precommit_failure_restores_files_state_and_service_desires(self):
         export = Path(self.temporary.name) / "rollback-export.zip"
         operation = self._pending_operation(
             self._plan(export_data=export)
         )
+        configure_tray = self.tray_configurator
+        registration = configure_tray(self.layout, enabled=True)
+        assert isinstance(registration, Path)
+        self.assertTrue(registration.is_file())
         restart = mock.Mock()
         with (
             mock.patch.object(
@@ -1092,12 +1216,18 @@ class ManagerUninstallTests(unittest.TestCase):
                 "_restart_previous_manager",
                 restart,
             ),
+            mock.patch.object(
+                uninstall_module,
+                "configure_tray_autostart",
+                side_effect=configure_tray,
+            ),
         ):
             result = uninstall_module.run_uninstall_handoff(
                 self.layout.workspace,
                 operation.id,
             )
         self.assertEqual(result, 2)
+        self.assertTrue(registration.is_file())
         self.assertTrue((self.layout.root / "app" / "software.txt").is_file())
         self.assertTrue((self.layout.data / "user.txt").is_file())
         self.assertTrue(self.layout.database.is_file())

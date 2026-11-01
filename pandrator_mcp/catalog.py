@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .performance_actions import PERFORMANCE_ACTIONS, performance_api_path
+from .project_copy_actions import PROJECT_COPY_OPERATIONS
+from .project_sharing_actions import PROJECT_SHARING_OPERATIONS
+from .public_link_actions import PUBLIC_LINK_OPERATIONS
+from .workspace_actions import WORKSPACE_OPERATIONS
 
 
 class RiskClass(StrEnum):
@@ -30,6 +34,15 @@ class ActionSpec:
     enabled: bool
     requires_idempotency: bool = False
     requires_confirmation: bool = False
+    additional_required_scopes: tuple[str, ...] = ()
+
+    @property
+    def required_scopes(self) -> tuple[str, ...]:
+        """Include additive prerequisites without changing the primary scope API."""
+        return tuple(sorted({
+            *self.additional_required_scopes,
+            *((self.required_scope,) if self.required_scope else ()),
+        }))
 
     @property
     def mutating(self) -> bool:
@@ -51,6 +64,43 @@ class ActionCatalog:
 
 ACTION_CATALOG = ActionCatalog(
     (
+        *(ActionSpec(operation.name, operation.title, operation.model.__name__, RiskClass.READ if operation.method == "GET" else RiskClass.WRITE, operation.scope, operation.operation_id, operation.method, operation.path.replace("{workspace_id}", "{workspaceId}").replace("{user_id}", "{userId}").replace("{invitation_id}", "{invitationId}"), True, requires_idempotency=operation.idempotency, additional_required_scopes=tuple(scope for scope in operation.required_scopes if scope != operation.scope)) for operation in WORKSPACE_OPERATIONS),
+        *(ActionSpec(operation.name, operation.title, operation.model.__name__, RiskClass.READ if operation.method == "GET" else RiskClass.WRITE, operation.scope, operation.operation_id, operation.method, operation.path.replace("{project_id}", "{projectId}").replace("{user_id}", "{userId}"), True) for operation in PROJECT_SHARING_OPERATIONS),
+        *(
+            ActionSpec(
+                operation.name,
+                operation.title,
+                operation.model.__name__,
+                RiskClass.READ if operation.method == "GET" else RiskClass.WRITE,
+                operation.scope,
+                None,
+                None,
+                None,
+                True,
+                requires_idempotency=any(
+                    field in operation.model.model_fields
+                    for field in ("request_key", "idempotency_key")
+                ),
+            )
+            for operation in PUBLIC_LINK_OPERATIONS
+        ),
+        *(
+            ActionSpec(
+                operation.name,
+                operation.title,
+                operation.model_name,
+                RiskClass(operation.risk),
+                operation.scope,
+                operation.operation_id,
+                operation.method,
+                operation.path.replace("{project_id}", "{projectId}").replace(
+                    "{copy_id}", "{copyId}"
+                ),
+                True,
+                requires_idempotency=operation.idempotency,
+            )
+            for operation in PROJECT_COPY_OPERATIONS
+        ),
         ActionSpec(
             "pandrator_sound_catalogue", "Sound and music catalogue",
             "SoundCatalogueInput", RiskClass.READ, "app.read",
@@ -66,7 +116,7 @@ ACTION_CATALOG = ActionCatalog(
         # require an idempotency key; their read actions do not.
         ActionSpec(
             "pandrator_sound_library", "Sound and music library",
-            "SoundLibraryInput", RiskClass.WRITE, "app.write",
+            "SoundLibraryInput", RiskClass.WRITE, "app.read",
             None, None, None, True, requires_idempotency=True,
         ),
         ActionSpec(
@@ -85,10 +135,14 @@ ACTION_CATALOG = ActionCatalog(
         ActionSpec("pandrator_create_pronunciation", "Create a pronunciation entry", "CreatePronunciationInput", RiskClass.WRITE, "app.write", "createPronunciation", "POST", "/api/v1/pronunciations", True),
         ActionSpec("pandrator_update_pronunciation", "Update a pronunciation entry", "UpdatePronunciationInput", RiskClass.WRITE, "app.write", "updatePronunciation", "PATCH", "/api/v1/pronunciations/{entryId}", True),
         ActionSpec("pandrator_delete_pronunciation", "Delete a pronunciation entry", "DeletePronunciationInput", RiskClass.WRITE, "app.write", "deletePronunciation", "DELETE", "/api/v1/pronunciations/{entryId}", True),
+        ActionSpec("pandrator_list_users", "List users", "ListUsersInput", RiskClass.READ, "app.admin", "listUsers", "GET", "/api/v1/admin/users", True),
+        ActionSpec("pandrator_create_user", "Create user", "CreateUserInput", RiskClass.WRITE, "app.admin", "createUser", "POST", "/api/v1/admin/users", True, requires_idempotency=True),
+        ActionSpec("pandrator_update_user", "Update user", "UpdateUserInput", RiskClass.WRITE, "app.admin", "updateUser", "PATCH", "/api/v1/admin/users/{userId}", True, requires_idempotency=True),
+        ActionSpec("pandrator_issue_user_password_reset", "Create password setup link", "IssueUserPasswordResetInput", RiskClass.WRITE, "app.admin", "issueUserPasswordReset", "POST", "/api/v1/admin/users/{userId}/password-reset", True),
         ActionSpec("pandrator_preview_speech_selection_batch", "Preview an atomic speech edit batch", "PreviewSpeechSelectionBatchInput", RiskClass.READ, "app.read", "previewSpeechSelectionBatch", "POST", "/api/v1/sessions/{sessionId}/speech-plan/selection-batch-preview", True),
         ActionSpec("pandrator_apply_speech_selection_batch", "Apply an atomic speech edit batch", "ApplySpeechSelectionBatchInput", RiskClass.WRITE, "app.write", "applySpeechSelectionBatch", "POST", "/api/v1/sessions/{sessionId}/speech-plan/selection-batch", True, requires_idempotency=True),
         ActionSpec("pandrator_create_comparison_export", "Export selected speech takes for comparison", "ComparisonExportInput", RiskClass.RUN, "app.run", "createComparisonExport", "POST", "/api/v1/sessions/{sessionId}/comparison-exports", True, requires_idempotency=True),
-        ActionSpec("pandrator_get_session_purge_inspection", "Read a completed purge inspection", "GetSessionPurgeInspectionInput", RiskClass.READ, "app.read", "getSessionPurgeInspection", "GET", "/api/v1/purge-inspections/{jobId}", True),
+        ActionSpec("pandrator_get_session_purge_inspection", "Read a completed purge inspection", "GetSessionPurgeInspectionInput", RiskClass.READ, "app.read", "getPurgeInspection", "GET", "/api/v1/purge-inspections/{jobId}", True),
         ActionSpec("pandrator_fork_session", "Fork a reviewed session", "ForkSessionInput", RiskClass.WRITE, "app.write", "forkSession", "POST", "/api/v1/sessions/{sessionId}/forks", True, requires_idempotency=True),
         ActionSpec("pandrator_get_translation_project", "Inspect a multilingual project", "GetTranslationProjectInput", RiskClass.READ, "app.read", "getSessionTranslationProject", "GET", "/api/v1/sessions/{sessionId}/translation-project", True),
         ActionSpec("pandrator_create_translation_project", "Create a multilingual project", "CreateTranslationProjectInput", RiskClass.WRITE, "app.write", "createSessionTranslationProject", "POST", "/api/v1/sessions/{sessionId}/translation-project", True, requires_idempotency=True),
@@ -97,8 +151,8 @@ ACTION_CATALOG = ActionCatalog(
             "pandrator_preview_translation_project_operation",
             "Preview a translation-project operation",
             "PreviewTranslationProjectOperationInput",
-            RiskClass.READ,
-            "app.read",
+            RiskClass.WRITE,
+            "app.run",
             "previewTranslationProjectOperation",
             "POST",
             "/api/v1/translation-projects/{projectId}/operations/preview",
@@ -121,7 +175,7 @@ ACTION_CATALOG = ActionCatalog(
             "Execute a reviewed translation-project preview",
             "ExecuteTranslationProjectOperationInput",
             RiskClass.RUN,
-            "app.write",
+            "app.run",
             "executeTranslationProjectOperation",
             "POST",
             "/api/v1/translation-project-operations/{operationId}/execute",
@@ -134,7 +188,7 @@ ACTION_CATALOG = ActionCatalog(
             "Cancel pending translation-project work",
             "CancelTranslationProjectOperationInput",
             RiskClass.CANCEL,
-            "app.write",
+            "app.cancel",
             "cancelTranslationProjectOperation",
             "POST",
             "/api/v1/translation-project-operations/{operationId}/cancel",
@@ -145,8 +199,8 @@ ACTION_CATALOG = ActionCatalog(
             "pandrator_retry_translation_project_operation_preview",
             "Preview retries for a translation-project operation",
             "RetryTranslationProjectOperationPreviewInput",
-            RiskClass.READ,
-            "app.read",
+            RiskClass.WRITE,
+            "app.run",
             "retryTranslationProjectOperationPreview",
             "POST",
             "/api/v1/translation-project-operations/{operationId}/retry-preview",
@@ -168,8 +222,8 @@ ACTION_CATALOG = ActionCatalog(
             "pandrator_request_translation_project_export_bundle",
             "Request a translation-project export bundle",
             "RequestTranslationProjectExportBundleInput",
-            RiskClass.WRITE,
-            "app.write",
+            RiskClass.RUN,
+            "app.run",
             "requestTranslationProjectExportBundle",
             "POST",
             "/api/v1/translation-project-operations/{operationId}/exports/bundle",
@@ -435,7 +489,7 @@ ACTION_CATALOG = ActionCatalog(
             "PreviewSubtitlesInput",
             RiskClass.READ,
             "app.read",
-            "getSubtitleDocuments",
+            "getSubtitleComparison",
             "GET",
             "/api/v1/sessions/{sessionId}/subtitles",
             True,
@@ -646,6 +700,17 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_refresh_tts_catalog",
+            "Refresh TTS connections",
+            "TtsCatalogRefreshInput",
+            RiskClass.RUN,
+            "app.run",
+            "refreshTtsServices",
+            "POST",
+            "/api/v1/services/tts/refresh",
+            True,
+        ),
+        ActionSpec(
             "pandrator_get_audio_cpp_catalogue",
             "Browse the audio.cpp catalogue",
             "AudioCppCatalogueInput",
@@ -754,7 +819,7 @@ ACTION_CATALOG = ActionCatalog(
             "ImportVoiceReferenceInput",
             RiskClass.WRITE,
             "app.write",
-            "importVoiceReference",
+            "createVoiceSampleFromArtifact",
             "POST",
             "/api/v1/voices/{voiceId}/samples/from-artifact",
             True,
@@ -792,6 +857,18 @@ ACTION_CATALOG = ActionCatalog(
             "app.write",
             "publishVoiceToProvider",
             "POST",
+            "/api/v1/voices/{voiceId}/providers/{serviceId}",
+            True,
+            True,
+        ),
+        ActionSpec(
+            "pandrator_unpublish_voice",
+            "Remove one managed provider voice copy",
+            "UnpublishVoiceInput",
+            RiskClass.WRITE,
+            "app.write",
+            "removeVoiceFromProvider",
+            "DELETE",
             "/api/v1/voices/{voiceId}/providers/{serviceId}",
             True,
             True,
@@ -1060,8 +1137,8 @@ ACTION_CATALOG = ActionCatalog(
             "pandrator_resolve_subtitle_evidence",
             "Resolve subtitle audio evidence",
             "ResolveSubtitleEvidenceInput",
-            RiskClass.RUN,
-            "app.run",
+            RiskClass.WRITE,
+            "app.write",
             "resolveSubtitleEvidence",
             "POST",
             "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve",
@@ -1479,10 +1556,10 @@ ACTION_CATALOG = ActionCatalog(
         ),
         ActionSpec(
             "pandrator_update_session_trash_policy",
-            "Set session trash retention",
+            "Set session trash retention as an Administrator",
             "UpdateSessionTrashPolicyInput",
             RiskClass.WRITE,
-            "app.write",
+            "app.admin",
             "updateSessionTrashPolicy",
             "PATCH",
             "/api/v1/session-trash-policy",
@@ -1540,7 +1617,7 @@ ACTION_CATALOG = ActionCatalog(
             "Create an immutable workflow execution plan",
             "PlanWorkflowInput",
             RiskClass.WRITE,
-            "app.read",
+            "app.run",
             "createWorkflowPlan",
             "POST",
             "/api/v1/sessions/{sessionId}/workflow-plans",
@@ -1562,7 +1639,7 @@ ACTION_CATALOG = ActionCatalog(
             "Create an export-only plan from existing audio",
             "PlanExportVariantInput",
             RiskClass.WRITE,
-            "app.read",
+            "app.run",
             "createWorkflowPlan",
             "POST",
             "/api/v1/sessions/{sessionId}/workflow-plans",

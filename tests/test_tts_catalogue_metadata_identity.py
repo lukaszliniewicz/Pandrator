@@ -5,9 +5,10 @@ from copy import deepcopy
 import pytest
 
 from pandrator.logic.tts_model_lifecycle import model_lifecycle
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import AppSetting
+from pandrator.web.models import WorkspaceSetting
 from pandrator.web.tts_catalogue_projection import (
     TtsCatalogueModelNotFoundError,
     _decorate_model_language_support,
@@ -180,8 +181,10 @@ def test_native_model_detail_preserves_persisted_metadata(tmp_path, voice):
     metadata = {key: {"id": voice, "language": "en"}, "shared:voice": {"language": "fr"}}
     try:
         with services["database"].session() as session:
+            workspace_id = initial_personal_workspace(session).id
             session.merge(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=workspace_id,
                     key="services.tts",
                     revision=1,
                     value_json={

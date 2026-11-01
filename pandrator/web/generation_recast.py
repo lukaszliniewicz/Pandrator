@@ -14,22 +14,36 @@ from sqlalchemy import select
 from pandrator.logic.speech_markup import parse_speech_markup
 
 from . import models as m
+from .access.contracts import AccessDenied, WorkspaceNotFound
 from .generation_audio_identity import IDENTITY_KEY, AudioIdentityContext, plan_audio_identities
 from .generation_cast_runtime import (
     _VOICE_IDENTITY_KEYS,
     _binding_key,
     apply_resolved_binding,
+    cast_resolution_key,
+    cast_snapshot_version,
     freeze_cast_snapshot,
+    lookup_cast_resolution,
     resolve_binding,
+    resolve_project_cast_binding,
+    segment_cast_snapshot,
     segment_voice_binding,
+    validate_retained_cast_resolution,
 )
+from .generation_control_schemas import VoiceBinding
 from .generation_controls import get_generation_controls, resolve_cast_voice
 from .generation_performance_snapshot import performance_runtime_settings
 from .generation_rendering import is_strict_single_voice
 from .generation_selection import _resolve_takes, collect_row_state
+from .generation_speech_inputs import retained_generation_input
 from .generation_start_preparation import snapshot_guard
 from .jobs import JobQueue
 from .settings_policy import RevisionConflict, stable_hash
+from .speech_input_contracts import (
+    PROJECT_SPEECH_BINDING_KEY,
+    PROJECT_SPEECH_INPUT_KEY,
+    PROJECT_SPEECH_SELECTOR_KEY,
+)
 from .speech_plan_workspace import freeze_speech_snapshot
 
 _BASE_KEYS = ("voice", "speaker", *_VOICE_IDENTITY_KEYS)
@@ -97,6 +111,25 @@ def _recorded_snapshots(session, session_id, recorded):
             _load(session, m.GenerationRun, [value for value in parents if value]).values()
         )
         runs.update({run.id: run for run in frontier})
+    copied_candidates = [take for take in takes.values()
+        if take.generation_run_id is None and take.artifact_id in artifacts
+        and isinstance(artifacts[take.artifact_id].metadata_json, dict)
+        and "copied_speech_provenance" in artifacts[take.artifact_id].metadata_json]
+    copied_segments = {}
+    copied_wrappers = {}
+    owner = None
+    if copied_candidates:
+        owner = session.execute(select(m.Project.workspace_id, m.Project.id, m.SessionRecord.id)
+            .join(m.SessionRecord, m.SessionRecord.project_id == m.Project.id)
+            .where(m.SessionRecord.id == session_id)).one_or_none()
+        identifiers = sorted({take.generation_segment_id for take in copied_candidates})
+        for offset in range(0, len(identifiers), 500):
+            for segment in session.scalars(select(m.GenerationSegment)
+                .join(m.GenerationPlanRevision, m.GenerationPlanRevision.id == m.GenerationSegment.plan_revision_id)
+                .join(m.GenerationPlan, m.GenerationPlan.id == m.GenerationPlanRevision.plan_id)
+                .where(m.GenerationSegment.id.in_(identifiers[offset:offset + 500]),
+                       m.GenerationPlan.session_id == session_id)):
+                copied_segments[segment.id] = segment
     result = {}
     for segment_id, selected in recorded.items():
         take = takes.get(selected["id"])
@@ -112,7 +145,7 @@ def _recorded_snapshots(session, session_id, recorded):
                 entries = frozen.get("segments") or {}
                 entry_id = segment_id if segment_id in entries else take.generation_segment_id
                 entry = entries.get(entry_id)
-                if entry and frozen.get("schema_version") == 1:
+                if entry and cast_snapshot_version(frozen) in {1, 2}:
                     artifact = artifacts.get(take.artifact_id)
                     identity = (
                         (artifact.metadata_json or {}).get(IDENTITY_KEY) if artifact else None
@@ -122,8 +155,63 @@ def _recorded_snapshots(session, session_id, recorded):
                 run = runs.get(run.source_generation_run_id)
             if segment_id in result:
                 break
+            artifact = artifacts.get(take.artifact_id)
+            if (take.generation_run_id is None and artifact is not None
+                    and isinstance(artifact.metadata_json, dict)
+                    and "copied_speech_provenance" in artifact.metadata_json):
+                copied = _copied_recording(take, artifact, owner, copied_segments.get(take.generation_segment_id), copied_wrappers)
+                if copied is not None:
+                    result[segment_id] = copied
+                    break
             take = takes.get(take.parent_take_id)
     return result
+
+
+
+def _copied_recording(take, artifact, owner, segment, wrappers):
+    """Use owned finite jobless evidence only; it never replaces an actual executor."""
+    if (artifact is None or take.generation_run_id is not None or artifact.kind != "audio"
+            or artifact.role != "generation_take" or artifact.state != "current"):
+        return None
+    from .recorded_speech_contracts import (
+        PROVENANCE_KEY,
+        validate_recorded_snapshot,
+        validate_speech_provenance,
+    )
+    metadata = artifact.metadata_json
+    if not isinstance(metadata, dict) or PROVENANCE_KEY not in metadata:
+        return None
+    if owner is None or (artifact.workspace_id, artifact.project_id, artifact.session_id) != tuple(owner):
+        return None
+    try:
+        if artifact.id not in wrappers:
+            try:
+                provenance = metadata[PROVENANCE_KEY]
+                if type(provenance) is dict and provenance.get("version") == 2:
+                    wrappers[artifact.id] = validate_speech_provenance(
+                        provenance, allow_saved_selections=True
+                    )
+                else:
+                    wrappers[artifact.id] = validate_speech_provenance(provenance)
+            except (ValueError, TypeError, KeyError):
+                wrappers[artifact.id] = None
+        wrapper = wrappers[artifact.id]
+        if wrapper is None:
+            return None
+        identifier = take.generation_segment_id
+        snapshot = wrapper["segments"].get(identifier)
+        if segment is None:
+            return None
+        snapshot = validate_recorded_snapshot(snapshot, segment_id=identifier,
+            revision_id=segment.plan_revision_id, text=segment.optimized_text or segment.text,
+            allow_saved_selections=wrapper["version"] == 2)
+        frozen = snapshot["generation_control_snapshot"]
+        if frozen is None:
+            return None
+        token = "copied-speech:" + stable_hash([artifact.id, identifier])
+        return (snapshot, frozen["segments"][identifier], token, identifier, metadata.get(IDENTITY_KEY))
+    except (ValueError, TypeError, KeyError):
+        return None
 
 
 def _selectors(controls, segments):
@@ -215,29 +303,56 @@ def _scopes(segment, entry, controls):
                 "dialogue": dialogue,
                 "category": raw_category,
                 "binding": resolution["binding"],
+                "slot_key": resolution["slot_key"],
                 "overridden": overridden,
             }
         )
     return result
 
 
-def _effective(session, context, binding, base, resolutions=None):
+def _effective(session, context, binding, base, *, frozen=None, slot_key=None, session_id=None):
     resolved = None
     if binding:
-        key = _binding_key(binding)
-        resolved = (resolutions or {}).get(key)
+        version = cast_snapshot_version(frozen) if frozen is not None else 2
+        resolved = lookup_cast_resolution(frozen, binding, slot_key) if frozen is not None else None
         if resolved is None:
-            resolved = resolve_binding(
-                session, binding, base, context._service_config_cache, context._registry
+            if frozen is not None and version == 2:
+                raise ValueError("The recorded cast assignment is absent from its run snapshot.")
+            if frozen is None and session_id is not None:
+                resolved = resolve_project_cast_binding(
+                    session, session_id, binding, base, slot_key, context._service_config_cache,
+                )
+            if resolved is None:
+                resolved = resolve_binding(
+                    session, binding, base, context._service_config_cache, context._registry,
+                    workspace_id=context.workspace_id,
+                )
+        if PROJECT_SPEECH_INPUT_KEY in resolved or PROJECT_SPEECH_BINDING_KEY in resolved:
+            if session_id is None:
+                raise ValueError("The recorded cast reference has no project owner.")
+            resolved = validate_retained_cast_resolution(
+                session, session_id, binding, base, resolved, context._service_config_cache,
             )
-        settings = apply_resolved_binding(binding, base, {key: resolved})
+        key = cast_resolution_key(binding, slot_key, schema_version=version)
+        settings = apply_resolved_binding(
+            binding, base, {key: resolved}, slot_key=slot_key, schema_version=version,
+        )
     else:
         settings = base
     voice = str(settings.get("voice") or settings.get("speaker") or "")
-    refs = list(context.voices.get(voice.strip().casefold().removesuffix(".wav"), []))
-    managed = settings.get("_cast_voice_id")
-    if managed:
-        refs.extend(context.voices.get(str(managed).casefold(), []))
+    retained = retained_generation_input(settings)
+    if retained is not None:
+        references = [retained.pin["content_hash"]] if retained.pin else []
+    elif resolved is not None and "_recast_reference_fingerprint" in resolved:
+        references = resolved["_recast_reference_fingerprint"]
+    else:
+        # The inventory is request-lazy; legacy recast must explicitly load it.
+        context._ensure_voice_references()
+        refs = list(context.voices.get(voice.strip().casefold().removesuffix(".wav"), []))
+        managed = settings.get("_cast_voice_id")
+        if managed:
+            refs.extend(context.voices.get(str(managed).casefold(), []))
+        references = sorted({stable_hash(ref) for ref in refs})
     # Provider/model/delivery changes are deliberately excluded from cast impact.
     return stable_hash(
         {
@@ -252,23 +367,19 @@ def _effective(session, context, binding, base, resolutions=None):
                     "audio_cpp_reference_text",
                 )
             ],
-            "references": resolved.get(
-                "_recast_reference_fingerprint", sorted({stable_hash(ref) for ref in refs})
-            )
-            if resolved
-            else sorted({stable_hash(ref) for ref in refs}),
+            "references": references,
         }
     )
 
 
-def _binding_for_scope(controls, scope):
+def _assignment_for_scope(controls, scope):
     return resolve_cast_voice(
         controls,
         speaker_id=scope["speaker"],
         source_speaker=scope["source"],
         dialogue=scope["dialogue"],
         voice_category=scope["category"],
-    )["binding"]
+    )
 
 
 def _base_binding(base):
@@ -293,6 +404,21 @@ def _patch_scope(controls, scope, binding):
             prefix
         ]
         cast.setdefault(field, {})[identifier] = deepcopy(binding)
+
+
+def _retained_fallback_resolution(base, binding):
+    """Represent an owned recorded narrator as an explicit scoped fallback."""
+    retained = retained_generation_input(base)
+    if retained is None:
+        return None
+    return {
+        **VoiceBinding.model_validate(binding).model_dump(mode="json"),
+        "voice": retained.binding["voice"],
+        PROJECT_SPEECH_INPUT_KEY: retained.pin,
+        PROJECT_SPEECH_BINDING_KEY: retained.binding,
+        PROJECT_SPEECH_SELECTOR_KEY: _binding_key(binding),
+        "_recast_reference_fingerprint": [retained.pin["content_hash"]] if retained.pin else [],
+    }
 
 
 def prepare_recast(
@@ -362,6 +488,7 @@ def prepare_recast(
                 freeze_speech_snapshot(
                     session, revision_id, snapshot, explicit=True, cast_segment_ids=[]
                 )
+                current_settings = performance_runtime_settings(snapshot)
             except ValueError as error:
                 freeze_error = str(error)
                 blocked = freeze_error
@@ -389,6 +516,7 @@ def prepare_recast(
         historical_contexts = {}
         historical_snapshot_hashes = {}
         for segment in segments:
+            context._ensure_segment_workspace(segment)
             entry = entries.get(segment.id) or {
                 "speech_xml": (segment.speech_plan_json or {}).get("speech_xml"),
                 "voice_binding": segment_voice_binding(segment),
@@ -399,6 +527,7 @@ def prepare_recast(
                 baseline if baseline else ({}, {}, None, None, None)
             )
             old_frozen = old_snapshot.get("generation_control_snapshot") or {}
+            old_segment_frozen = segment_cast_snapshot(old_frozen, recorded_segment_id or segment.id)
             old_controls = old_entry.get("controls", old_frozen.get("controls"))
             old_base = performance_runtime_settings(old_snapshot)
             for key, value in ((old_controls or {}).get("_base_voice_settings") or {}).items():
@@ -437,16 +566,19 @@ def prepare_recast(
                         context,
                         scope["binding"],
                         current_settings,
-                        frozen.get("resolved_bindings"),
+                        slot_key=scope["slot_key"],
+                        session_id=session_id,
                     )
                     if missing:
                         continue
                     if not old_controls:
                         unknown.update(keys)
                         continue
-                    old_binding = _binding_for_scope(old_controls, scope)
+                    old_assignment = _assignment_for_scope(old_controls, scope)
+                    old_binding = old_assignment["binding"]
                     old_fp = _effective(
-                        session, context, old_binding, old_base, old_frozen.get("resolved_bindings")
+                        session, context, old_binding, old_base, frozen=old_segment_frozen,
+                        slot_key=old_assignment["slot_key"], session_id=session_id,
                     )
                     if old_fp != new_fp:
                         changed.update(keys)
@@ -469,7 +601,7 @@ def prepare_recast(
                             actual_identity,
                         ]
                     )
-                except ValueError as error:
+                except (ValueError, AccessDenied, WorkspaceNotFound) as error:
                     unknown.update(keys)
                     if "Unknown character ID" not in str(error):
                         scope["error"] = str(error)
@@ -521,10 +653,12 @@ def prepare_recast(
             if missing:
                 scoped_controls = deepcopy(controls)
             elif baseline:
-                old_snapshot, old_entry, _, _, _ = baseline
+                old_snapshot, old_entry, _, old_entry_id, _ = baseline
                 old_frozen = old_snapshot["generation_control_snapshot"]
+                old_segment_frozen = segment_cast_snapshot(old_frozen, old_entry_id)
                 scoped_controls = deepcopy(old_entry.get("controls", old_frozen["controls"]))
                 recorded_controls = deepcopy(scoped_controls)
+                scoped_controls.pop("_retained_cast_resolutions", None)
                 old_base = performance_runtime_settings(old_snapshot)
                 for key, value in (scoped_controls.get("_base_voice_settings") or {}).items():
                     if value is None:
@@ -537,34 +671,59 @@ def prepare_recast(
                 # Explicitly pin each unselected identity's recorded effective
                 # fallback, so a selected narrator/category cannot spill over.
                 try:
+                    preserved = []
                     for scope in active_scopes:
                         is_selected = bool(scope["keys"] & selected)
                         source_controls = controls if is_selected else recorded_controls
-                        binding = _binding_for_scope(source_controls, scope)
+                        assignment = _assignment_for_scope(source_controls, scope)
+                        binding = assignment["binding"]
                         historical_binding = binding or (
                             {"voice_id": old_base["_cast_voice_id"]}
                             if old_base.get("_cast_voice_id")
                             else None
                         )
+                        recorded_resolution = (
+                            lookup_cast_resolution(old_segment_frozen, historical_binding, assignment["slot_key"])
+                            if not is_selected and historical_binding is not None
+                            else None
+                        ) or {}
+                        retained_resolution = None
+                        if not is_selected and (
+                            PROJECT_SPEECH_INPUT_KEY in recorded_resolution
+                            or PROJECT_SPEECH_BINDING_KEY in recorded_resolution
+                        ):
+                            assert historical_binding is not None
+                            retained_resolution = validate_retained_cast_resolution(
+                                session, session_id, historical_binding, old_base, recorded_resolution,
+                                context._service_config_cache,
+                            )
+                        elif not is_selected and binding is None and retained_generation_input(old_base) is not None:
+                            fallback = _base_binding(old_base)
+                            retained_resolution = _retained_fallback_resolution(old_base, fallback)
+                            assert retained_resolution is not None
+                            retained_resolution = validate_retained_cast_resolution(
+                                session, session_id, fallback, old_base, retained_resolution,
+                                context._service_config_cache,
+                            )
                         if (
                             not is_selected
+                            and retained_resolution is None
                             and historical_binding is not None
                             and historical_binding.get("voice_id")
                         ):
-                            recorded_resolution = (old_frozen.get("resolved_bindings") or {}).get(
-                                _binding_key(historical_binding)
-                            ) or {}
                             recorded_references = recorded_resolution.get(
                                 "_recast_reference_fingerprint"
                             )
                             preserved_reference = reference_verified
                             if recorded_references is not None:
+                                context._ensure_voice_references()
                                 current_resolution = resolve_binding(
                                     session,
                                     historical_binding,
                                     current_settings,
                                     context._service_config_cache,
                                     context._registry,
+                                    workspace_id=context.workspace_id,
                                 )
                                 current_references = sorted(
                                     {
@@ -588,7 +747,26 @@ def prepare_recast(
                             binding = binding or _base_binding(
                                 current_settings if is_selected else old_base
                             )
+                        if not is_selected and binding is not None:
+                            if retained_resolution is not None:
+                                preserved.append((scope, retained_resolution))
                         _patch_scope(scoped_controls, scope, binding)
+                    carried = {}
+                    for scope, retained_resolution in preserved:
+                        assignment = _assignment_for_scope(scoped_controls, scope)
+                        binding = assignment["binding"]
+                        if binding is None:
+                            raise ValueError("The preserved speaker reference has no explicit cast assignment.")
+                        resolution = {
+                            **deepcopy(retained_resolution),
+                            PROJECT_SPEECH_SELECTOR_KEY: _binding_key(binding),
+                        }
+                        key = cast_resolution_key(binding, assignment["slot_key"], schema_version=2)
+                        if key in carried and carried[key] != resolution:
+                            raise ValueError("The preserved cast scope has conflicting recorded references.")
+                        carried[key] = resolution
+                    if carried:
+                        scoped_controls["_retained_cast_resolutions"] = carried
                     if any(
                         scope["scope"] == "narrator" and scope["keys"] & selected
                         for scope in active_scopes
@@ -596,7 +774,7 @@ def prepare_recast(
                         scoped_controls["_base_voice_settings"] = {
                             key: deepcopy(current_settings.get(key)) for key in _BASE_KEYS
                         }
-                except ValueError as error:
+                except (ValueError, AccessDenied, WorkspaceNotFound) as error:
                     blocked = blocked or str(error)
             elif len(selected_scopes) == len(active_scopes):
                 scoped_controls = deepcopy(controls)

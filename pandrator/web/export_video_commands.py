@@ -29,9 +29,19 @@ def check_video_cancelled(cancel_event: threading.Event) -> None:
         raise InterruptedError("Video export canceled.")
 
 
-def run_video_command(command: list[str], cancel_event: threading.Event) -> None:
-    """Stop owned processes on cancellation and retain FFmpeg failure details."""
+def _check_video_command_start(
+    cancel_event: threading.Event,
+    before_io: Callable[[], None] | None,
+) -> None:
     check_video_cancelled(cancel_event)
+    if before_io is not None:
+        before_io()
+        check_video_cancelled(cancel_event)
+
+
+def _run_video_command_after_start(
+    command: list[str], cancel_event: threading.Event
+) -> None:
     try:
         run_cancellable(
             command, cancel_event=cancel_event, check=True, capture_output=True, text=True
@@ -43,6 +53,17 @@ def run_video_command(command: list[str], cancel_event: threading.Event) -> None
         check_video_cancelled(cancel_event)
         raise
     check_video_cancelled(cancel_event)
+
+
+def run_video_command(
+    command: list[str],
+    cancel_event: threading.Event,
+    *,
+    before_io: Callable[[], None] | None = None,
+) -> None:
+    """Stop owned processes on cancellation and retain FFmpeg failure details."""
+    _check_video_command_start(cancel_event, before_io)
+    _run_video_command_after_start(command, cancel_event)
 
 
 def _failure_reason(error: subprocess.CalledProcessError, default: str) -> str:
@@ -76,10 +97,17 @@ def _encoding_kwargs(options: VideoEncodingOptions, *, fallback: bool = False) -
 
 
 def _run_labeled_command(
-    command: list[str], label: str, cancel_event: threading.Event
+    command: list[str],
+    label: str,
+    cancel_event: threading.Event,
+    *,
+    before_io: Callable[[], None] | None = None,
 ) -> None:
+    # Keep the authority callback outside this command-failure handler so a
+    # callback error cannot be translated into a rendering/codec failure.
+    _check_video_command_start(cancel_event, before_io)
     try:
-        run_video_command(command, cancel_event)
+        _run_video_command_after_start(command, cancel_event)
     except subprocess.CalledProcessError as error:
         reason = _failure_reason(error, "FFmpeg returned a non-zero exit status.")
         raise RuntimeError(f"{label} failed: {reason}") from error
@@ -95,10 +123,14 @@ def _run_with_fallback(
     progress_detail: str,
     progress: Progress,
     cancel_event: threading.Event,
+    before_io: Callable[[], None] | None = None,
 ) -> bool:
     """Try stream copy once; return whether the compatibility transcode ran."""
+    # The callback remains outside the remux-failure handler. Even a callback
+    # that raises CalledProcessError must propagate unchanged without fallback.
+    _check_video_command_start(cancel_event, before_io)
     try:
-        run_video_command(command, cancel_event)
+        _run_video_command_after_start(command, cancel_event)
     except subprocess.CalledProcessError as remux_error:
         if not _encoder_available(options):
             reason = _failure_reason(
@@ -111,7 +143,10 @@ def _run_with_fallback(
         progress(0.68, progress_detail)
         check_video_cancelled(cancel_event)
         _run_labeled_command(
-            fallback_command(), f"{fallback_error_label} with {options.encoder}", cancel_event
+            fallback_command(),
+            f"{fallback_error_label} with {options.encoder}",
+            cancel_event,
+            before_io=before_io,
         )
         return True
     return False
@@ -127,6 +162,7 @@ def render_soft_subtitle_video(
     tail_extension_seconds: float = 0.0,
     progress: Progress,
     cancel_event: threading.Event,
+    before_io: Callable[[], None] | None = None,
 ) -> bool:
     from pandrator.logic.dubbing.video_muxing import build_multi_soft_subtitle_command
 
@@ -135,7 +171,7 @@ def render_soft_subtitle_video(
     command = build_multi_soft_subtitle_command(
         str(source), tracks, str(destination), transcode_video=transcode_video,
         tail_extension_seconds=tail_extension_seconds if transcode_video else 0.0,
-        **_encoding_kwargs(options),
+        drop_chapters=True, **_encoding_kwargs(options),
     )
     progress(
         0.65,
@@ -143,7 +179,7 @@ def render_soft_subtitle_video(
         if transcode_video else "Rendering web-optimized media with selectable subtitles",
     )
     if transcode_video:
-        run_video_command(command, cancel_event)
+        run_video_command(command, cancel_event, before_io=before_io)
         return True
     return _run_with_fallback(
         command,
@@ -153,7 +189,7 @@ def render_soft_subtitle_video(
             # full transcode); the fallback compatibility transcode must not
             # extend a second time.
             tail_extension_seconds=0.0,
-            **_encoding_kwargs(options, fallback=True),
+            drop_chapters=True, **_encoding_kwargs(options, fallback=True),
         ),
         options,
         remux_error_label="Selectable-subtitle MP4 remuxing failed",
@@ -161,6 +197,7 @@ def render_soft_subtitle_video(
         progress_detail="Stream-copy subtitle mux was unavailable; transcoding a web-compatible MP4",
         progress=progress,
         cancel_event=cancel_event,
+        before_io=before_io,
     )
 
 
@@ -174,6 +211,7 @@ def render_burned_subtitle_video(
     tail_extension_seconds: float = 0.0,
     progress: Progress,
     cancel_event: threading.Event,
+    before_io: Callable[[], None] | None = None,
 ) -> None:
     from pandrator.logic.dubbing.video_muxing import build_add_subtitles_command
     from pandrator.logic.dubbing_handler import resolve_ffmpeg_for_burned_subtitles
@@ -188,11 +226,14 @@ def render_burned_subtitle_video(
     command = build_add_subtitles_command(
         str(source), str(subtitle), str(destination), subtitle_mode="burned",
         subtitle_language=language, tail_extension_seconds=tail_extension_seconds,
-        **_encoding_kwargs(burn_options),
+        drop_chapters=True, **_encoding_kwargs(burn_options),
     )
     progress(0.65, "Rendering burned subtitles into video")
     _run_labeled_command(
-        command, f"Burned-subtitle transcoding with {options.encoder}", cancel_event
+        command,
+        f"Burned-subtitle transcoding with {options.encoder}",
+        cancel_event,
+        before_io=before_io,
     )
 
 
@@ -200,6 +241,7 @@ def render_transcoded_video(
     source: Path, destination: Path, options: VideoEncodingOptions,
     *, tail_extension_seconds: float = 0.0,
     progress: Progress, cancel_event: threading.Event,
+    before_io: Callable[[], None] | None = None,
 ) -> None:
     from pandrator.logic.dubbing.video_muxing import build_video_transcode_command
 
@@ -207,15 +249,21 @@ def render_transcoded_video(
     command = build_video_transcode_command(
         str(source), str(destination),
         tail_extension_seconds=tail_extension_seconds,
-        **_encoding_kwargs(options),
+        drop_chapters=True, **_encoding_kwargs(options),
     )
     progress(0.65, "Transcoding video output")
-    _run_labeled_command(command, f"Video transcoding with {options.encoder}", cancel_event)
+    _run_labeled_command(
+        command,
+        f"Video transcoding with {options.encoder}",
+        cancel_event,
+        before_io=before_io,
+    )
 
 
 def render_web_video(
     source: Path, destination: Path, options: VideoEncodingOptions,
     *, tail_extension_ms: int, progress: Progress, cancel_event: threading.Event,
+    before_io: Callable[[], None] | None = None,
 ) -> bool:
     from pandrator.logic.dubbing.video_muxing import (
         build_video_transcode_command,
@@ -231,11 +279,13 @@ def render_web_video(
     command = build_web_optimized_remux_command(
         str(source), str(destination), ffmpeg_executable=options.ffmpeg_executable,
         audio_codec=options.audio_codec, audio_bitrate=options.audio_bitrate,
+        drop_chapters=True,
     )
     return _run_with_fallback(
         command,
         lambda: build_video_transcode_command(
-            str(source), str(destination), **_encoding_kwargs(options, fallback=True)
+            str(source), str(destination), drop_chapters=True,
+            **_encoding_kwargs(options, fallback=True)
         ),
         options,
         remux_error_label="Web-optimized MP4 remuxing failed",
@@ -243,4 +293,5 @@ def render_web_video(
         progress_detail="Stream-copy remux was unavailable; transcoding a web-compatible MP4",
         progress=progress,
         cancel_event=cancel_event,
+        before_io=before_io,
     )

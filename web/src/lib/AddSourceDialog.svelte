@@ -14,6 +14,9 @@
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextSearchMatch } from './search-replace';
   import { modalFocus } from './modal-focus';
+  import { untrack } from 'svelte';
+  import { appState } from './app-state.svelte';
+  import { useSessionContext } from './session-context';
 
   const radioGroupId = $props.id();
   let {
@@ -31,6 +34,15 @@
     onclose: () => void;
     onadded: (message: string) => void | Promise<void>;
   } = $props();
+  const sessionContext = useSessionContext();
+  const workspaceId = untrack(() =>
+    appState.collaborationEnabled && !appState.projectLink
+      ? ((sessionContext?.session?.id === sessionId
+          ? sessionContext.session.workspace_id
+          : appState.sessions.find((item) => item.id === sessionId)
+              ?.workspace_id) ?? appState.activeWorkspaceId)
+      : undefined
+  );
 
   type SourceMode = 'upload' | 'paste' | 'url' | 'reuse';
   let mode = $state<SourceMode>('upload');
@@ -44,6 +56,9 @@
   let sourceUrl = $state('');
   let sourceAssetId = $state('');
   let sources = $state<SourceAsset[]>([]);
+  let sourcesBusy = $state(false);
+  let sourcesError = $state('');
+  let sourcesRequested = false;
   let busy = $state(false);
   let progress = $state(0);
   let progressDetail = $state('');
@@ -128,11 +143,18 @@
   ] as const;
 
   async function loadSources() {
+    sourcesRequested = true;
+    sourcesBusy = true;
+    sourcesError = '';
     try {
-      sources = (await sourceApi.list()).items;
+      sources = (await sourceApi.list(false, true, workspaceId)).items;
       sourceAssetId ||= sources[0]?.id ?? '';
-    } catch {
+    } catch (caught) {
       sources = [];
+      sourceAssetId = '';
+      sourcesError = errorMessage(caught);
+    } finally {
+      sourcesBusy = false;
     }
   }
 
@@ -167,10 +189,17 @@
           ? 'Captions attached as the current editorial transcript.'
           : 'Source added and selected as the current input.';
       if (mode === 'upload' && file) {
+        const projectStaging = Boolean(
+          appState.projectLink && (onpick || role !== 'primary')
+        );
         const uploaded = await uploadManagedFile(
           file,
-          role === 'primary' && !onpick ? sessionId : undefined,
-          (value) => (progress = value)
+          (role === 'primary' && !onpick) || appState.projectLink
+            ? sessionId
+            : undefined,
+          (value) => (progress = value),
+          workspaceId,
+          { attachToSession: !projectStaging }
         );
         if (role !== 'primary' || onpick) {
           const sourceId = String(uploaded.source_asset_id ?? '');
@@ -190,7 +219,8 @@
         const uploaded = await uploadManagedFile(
           textFile,
           role === 'primary' && !onpick ? sessionId : undefined,
-          (value) => (progress = value)
+          (value) => (progress = value),
+          workspaceId
         );
         if (role !== 'primary' || onpick) {
           const sourceId = String(uploaded.source_asset_id ?? '');
@@ -218,7 +248,9 @@
     }
   }
 
-  loadSources();
+  $effect(() => {
+    if (mode === 'reuse' && !sourcesRequested) void loadSources();
+  });
 </script>
 
 <div
@@ -288,7 +320,7 @@
         </div>
       </fieldset>{/if}
     <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      {#each choices.filter((choice) => (!onpick || choice.id !== 'url') && (role !== 'media' || ['upload', 'reuse'].includes(choice.id)) && (role === 'transcript' ? choice.id !== 'url' : !allowTranscriptRole || choice.id !== 'paste')) as choice}{@const Icon =
+      {#each choices.filter((choice) => (!appState.projectLink || choice.id === 'upload') && (!onpick || choice.id !== 'url') && (role !== 'media' || ['upload', 'reuse'].includes(choice.id)) && (role === 'transcript' ? choice.id !== 'url' : !allowTranscriptRole || choice.id !== 'paste')) as choice}{@const Icon =
           choice.icon}<button
           onclick={() => (mode = choice.id)}
           class:active={mode === choice.id}
@@ -362,6 +394,7 @@
         <label class="text-sm font-semibold"
           >Reusable source<select
             bind:value={sourceAssetId}
+            disabled={sourcesBusy}
             class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
             ><option value="">No source-library items available</option
             >{#each compatibleSources as source}<option value={source.id}
@@ -369,6 +402,18 @@
               >{/each}</select
           ></label
         >
+        {#if sourcesBusy}<p role="status" class="muted mt-3 text-sm">
+            Loading sources…
+          </p>{/if}
+        {#if sourcesError}<p
+            role="alert"
+            class="mt-3 text-sm text-[var(--danger)]"
+          >
+            {sourcesError}
+            <button class="underline" onclick={() => loadSources()}
+              >Retry</button
+            >
+          </p>{/if}
       {/if}
       {#if busy && ['upload', 'paste'].includes(mode)}<div class="mt-5">
           <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
@@ -405,7 +450,11 @@
         >{#if busy}<LoaderCircle class="animate-spin" size={16} />{:else}<Upload
             size={16}
           />{/if}
-        {busy ? 'Adding…' : 'Add and select'}</button
+        {busy
+          ? 'Adding…'
+          : onpick
+            ? 'Review replacement'
+            : 'Add and select'}</button
       >
     </footer>
   </section>

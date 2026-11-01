@@ -11,13 +11,16 @@ import secrets
 import stat
 import threading
 import time
-from collections.abc import Iterable, Mapping
-from contextlib import ExitStack
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from pandrator.logic.dubbing.cloud_stt import (
@@ -26,13 +29,23 @@ from pandrator.logic.dubbing.cloud_stt import (
 )
 from pandrator.runtime import DataPaths
 
+from .accounts.models import User, Workspace
+from .credential_identity import CredentialNamespace, credential_namespace
 from .database import Database
 from .managed_services import (
     binding_for_provider,
     configured_tts_provider_ids,
     effective_tts_connection_mode,
 )
-from .models import AppSetting, Provider, StoredCredential, utcnow
+from .models import (
+    AppSetting,
+    Provider,
+    StoredCredential,
+    WorkspaceSetting,
+    WorkspaceSettingHistory,
+    utcnow,
+)
+from .settings_identity import settings_workspace_id, workspace_setting_in_workspace
 
 DATABASE_REFERENCE_PREFIX = "db:"
 ENVIRONMENT_REFERENCE_PREFIX = "env:"
@@ -80,13 +93,14 @@ AUXILIARY_CREDENTIALS: tuple[dict[str, str], ...] = (
     },
 )
 
-_SENSITIVE_FIELD = re.compile(
-    r"(^|_)(api_key|password|secret|credential)s?$", re.IGNORECASE
-)
+_SENSITIVE_FIELD = re.compile(r"(^|_)(api_key|password|secret|credential)s?$", re.IGNORECASE)
 _ENVIRONMENT_VARIABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TEXT_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)"
     r"(\s*[:=]\s*)([^\s,;]+)"
+)
+_SCOPED_REDACTION_VALUES: ContextVar[tuple[str, ...]] = ContextVar(
+    "pandrator_scoped_redaction_values", default=()
 )
 
 
@@ -119,6 +133,62 @@ class CredentialConfiguration:
     reference: str | None
     backend: str
     previous_credential_retained: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedCredentialValues:
+    workspace_id: str
+    values: Mapping[str, str] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+
+
+CredentialValues = Mapping[str, str] | ScopedCredentialValues
+_HOST_CREDENTIAL_REQUIRED = (
+    "This workspace requires a database credential. Host credential bindings are not configured."
+)
+_HOST_APPROVED_BINDING_REQUIRED = (
+    "This provider requires a host-approved binding before it can be used in this workspace."
+)
+_CREDENTIAL_PRELOAD_SCOPE = "Credential preload does not belong to the selected workspace."
+
+
+def _preloaded_values_for_namespace(
+    namespace: CredentialNamespace,
+    preloaded: CredentialValues | None,
+) -> Mapping[str, str] | None:
+    if preloaded is None:
+        return None
+    if isinstance(preloaded, ScopedCredentialValues):
+        if preloaded.workspace_id != namespace.workspace_id:
+            raise ValueError(_CREDENTIAL_PRELOAD_SCOPE)
+        return preloaded.values
+    if not namespace.legacy_host_access:
+        raise ValueError(_CREDENTIAL_PRELOAD_SCOPE)
+    return preloaded
+
+
+def _revalidate_credential_namespace(
+    session: Session,
+    expected: CredentialNamespace,
+) -> None:
+    actual = credential_namespace(session, expected.workspace_id)
+    if actual != expected:
+        raise ValueError("The credential workspace changed during the operation.")
+
+
+def _settings_credential_namespace(
+    database: Database,
+    *,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
+) -> CredentialNamespace:
+    with database.snapshot_session() as session:
+        actual_workspace_id = settings_workspace_id(
+            session, session_id=session_id, workspace_id=workspace_id
+        )
+        return credential_namespace(session, actual_workspace_id)
 
 
 def normalize_credential_id(value: object) -> str:
@@ -206,6 +276,22 @@ def credential_backend(reference: object) -> str:
     if value.startswith((SECRET_FILE_REFERENCE_PREFIX, LEGACY_FILE_REFERENCE_PREFIX)):
         return "file"
     return "unavailable"
+
+
+def _validate_workspace_provider_credential_references(
+    settings: dict[str, Any], namespace: CredentialNamespace
+) -> None:
+    if namespace.host_credentials_allowed:
+        return
+    records = settings.get("provider_configs")
+    if not isinstance(records, list):
+        return
+    if any(
+        credential_backend(record.get("secret_ref")) in {"environment", "keyring", "file"}
+        for record in records
+        if isinstance(record, dict)
+    ):
+        raise ValueError(_HOST_CREDENTIAL_REQUIRED)
 
 
 def credential_reference_input(reference: object) -> str:
@@ -354,28 +440,75 @@ def credential_backend_profiles() -> list[dict[str, Any]]:
 
 
 def upsert_credential(
-    session: Session, key: str, label: str, secret_value: object
+    session: Session,
+    key: str,
+    label: str,
+    secret_value: object,
+    *,
+    workspace_id: str | None = None,
 ) -> StoredCredential:
-    value = str(secret_value or "").strip()
-    if not value:
-        raise ValueError("API keys cannot be blank.")
-    record = session.get(StoredCredential, key)
-    if record is None:
-        record = StoredCredential(key=key, label=str(label or key), secret_value=value)
-        session.add(record)
-    else:
-        record.label = str(label or record.label)
-        record.secret_value = value
-        record.updated_at = utcnow()
-    return record
+    try:
+        value = str(secret_value or "").strip()
+        if not value:
+            raise ValueError("API keys cannot be blank.")
+        namespace = credential_namespace(session, workspace_id)
+        label_value = str(label or "")
+        timestamp = utcnow()
+        statement = sqlite_insert(StoredCredential).values(
+            workspace_id=namespace.workspace_id,
+            key=key,
+            label=label_value or key,
+            secret_value=value,
+            revision=1,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[StoredCredential.workspace_id, StoredCredential.key],
+            set_={
+                "label": label_value or StoredCredential.label,
+                "secret_value": value,
+                "updated_at": timestamp,
+                "revision": StoredCredential.revision + 1,
+            },
+        )
+        session.execute(statement)
+        _revalidate_credential_namespace(session, namespace)
+        record = session.scalar(
+            select(StoredCredential)
+            .where(
+                StoredCredential.workspace_id == namespace.workspace_id,
+                StoredCredential.key == key,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if record is None:
+            raise RuntimeError("The credential could not be stored.")
+        return record
+    except Exception:
+        session.rollback()
+        raise
 
 
-def delete_credential(session: Session, key: str) -> bool:
-    record = session.get(StoredCredential, key)
-    if record is None:
-        return False
-    session.delete(record)
-    return True
+def delete_credential(
+    session: Session,
+    key: str,
+    *,
+    workspace_id: str | None = None,
+) -> bool:
+    try:
+        namespace = credential_namespace(session, workspace_id)
+        result = session.execute(
+            delete(StoredCredential).where(
+                StoredCredential.workspace_id == namespace.workspace_id,
+                StoredCredential.key == key,
+            )
+        )
+        _revalidate_credential_namespace(session, namespace)
+        return bool(getattr(result, "rowcount", 0))
+    except Exception:
+        session.rollback()
+        raise
 
 
 def resolve_secret_reference(
@@ -384,35 +517,79 @@ def resolve_secret_reference(
     reference: object,
     *,
     fallback_environment_variable: str = "",
-    preloaded_database_credentials: Mapping[str, str] | None = None,
+    preloaded_database_credentials: CredentialValues | None = None,
+    workspace_id: str | None = None,
 ) -> ResolvedCredential:
     """Resolve a reference without exposing its value through an API response."""
 
     value = str(reference or "").strip()
     fallback = str(fallback_environment_variable or "").strip()
-    if not value:
-        return ResolvedCredential(
-            environment_variable=fallback, source="environment" if fallback else "none"
+    with database.session() as session:
+        namespace = credential_namespace(session, workspace_id)
+        return _resolve_secret_reference_in_namespace(
+            session,
+            paths,
+            value,
+            fallback_environment_variable=fallback,
+            preloaded_database_credentials=preloaded_database_credentials,
+            namespace=namespace,
         )
+
+
+def _resolve_secret_reference_in_namespace(
+    session: Session,
+    paths: DataPaths,
+    reference: object,
+    *,
+    fallback_environment_variable: str = "",
+    preloaded_database_credentials: CredentialValues | None = None,
+    namespace: CredentialNamespace,
+) -> ResolvedCredential:
+    """Resolve one reference using a namespace validated by the caller."""
+
+    value = str(reference or "").strip()
+    fallback = str(fallback_environment_variable or "").strip()
+    preloaded_values = _preloaded_values_for_namespace(
+        namespace, preloaded_database_credentials
+    )
+    if not value:
+        if namespace.host_credentials_allowed:
+            return ResolvedCredential(
+                environment_variable=fallback,
+                source="environment" if fallback else "none",
+            )
+        return ResolvedCredential()
     if value.startswith(DATABASE_REFERENCE_PREFIX):
         key = reference_key(value)
         if key:
-            if preloaded_database_credentials is not None:
-                if key in preloaded_database_credentials:
+            if preloaded_values is not None:
+                if key in preloaded_values:
                     return ResolvedCredential(
-                        value=str(preloaded_database_credentials[key] or ""),
+                        value=str(preloaded_values[key] or ""),
                         source="database",
                     )
             else:
-                with database.session() as session:
-                    record = session.get(StoredCredential, key)
-                    if record is not None:
-                        return ResolvedCredential(
-                            value=str(record.secret_value or ""), source="database"
-                        )
-        return ResolvedCredential(
-            environment_variable=fallback, source="environment" if fallback else "none"
-        )
+                record = session.scalar(
+                    select(StoredCredential).where(
+                        StoredCredential.workspace_id == namespace.workspace_id,
+                        StoredCredential.key == key,
+                    )
+                )
+                if record is not None:
+                    return ResolvedCredential(
+                        value=str(record.secret_value or ""), source="database"
+                    )
+        if namespace.host_credentials_allowed:
+            return ResolvedCredential(
+                environment_variable=fallback,
+                source="environment" if fallback else "none",
+            )
+        return ResolvedCredential()
+    if (
+        not namespace.host_credentials_allowed
+        and credential_backend(value) in {"environment", "keyring", "file"}
+    ):
+        raise ValueError(_HOST_CREDENTIAL_REQUIRED)
     if value.startswith(ENVIRONMENT_REFERENCE_PREFIX):
         environment_variable = value[len(ENVIRONMENT_REFERENCE_PREFIX) :].strip()
         if environment_variable:
@@ -500,14 +677,21 @@ def delete_managed_reference(
     reference: str,
     *,
     preserve_shared: bool = True,
+    workspace_id: str | None = None,
 ) -> bool:
     """Delete an app-controlled value; environment variables/files remain external."""
 
+    namespace = credential_namespace(session, workspace_id)
+    if (
+        not namespace.host_credentials_allowed
+        and credential_backend(reference) in {"environment", "keyring", "file"}
+    ):
+        raise ValueError(_HOST_CREDENTIAL_REQUIRED)
     if reference.startswith(DATABASE_REFERENCE_PREFIX):
         key = reference_key(reference)
         if not key or (preserve_shared and key.startswith("shared:")):
             return False
-        return delete_credential(session, key)
+        return delete_credential(session, key, workspace_id=namespace.workspace_id)
     if reference.startswith(KEYRING_REFERENCE_PREFIX):
         target = reference[len(KEYRING_REFERENCE_PREFIX) :].strip()
         _service, _separator, username = target.partition("/")
@@ -529,6 +713,7 @@ def configure_credential_reference(
     locator: object = "",
     secret_value: object = "",
     delete_previous: bool = False,
+    workspace_id: str | None = None,
 ) -> CredentialConfiguration:
     """Validate and configure a credential backend before changing its reference.
 
@@ -538,19 +723,35 @@ def configure_credential_reference(
     still use them.
     """
 
+    namespace = credential_namespace(session, workspace_id)
     selected = str(backend or "database").strip().lower()
+    current = str(current_reference or "").strip()
+    submitted = str(secret_value or "").strip()
     if selected not in {"database", "environment", "keyring", "file"}:
         raise ValueError(
             "Credential storage must be database, environment, keyring, or file."
         )
-    current = str(current_reference or "").strip()
-    submitted = str(secret_value or "").strip()
+    if (
+        delete_previous
+        and current
+        and not namespace.host_credentials_allowed
+        and credential_backend(current) in {"environment", "keyring", "file"}
+    ):
+        raise ValueError(_HOST_CREDENTIAL_REQUIRED)
+    if selected != "database" and not namespace.host_credentials_allowed:
+        raise ValueError(_HOST_CREDENTIAL_REQUIRED)
     desired: str | None
 
     if selected == "database":
         desired = database_reference(key)
         if submitted:
-            upsert_credential(session, key, label, submitted)
+            upsert_credential(
+                session,
+                key,
+                label,
+                submitted,
+                workspace_id=namespace.workspace_id,
+            )
         elif current == desired:
             # Keeping an already configured database reference requires no
             # round-trip of its write-only value.
@@ -582,7 +783,9 @@ def configure_credential_reference(
             raise ValueError(
                 "Enter the credential value before moving it to the operating-system store."
             )
-        resolved = resolve_secret_reference(database, paths, desired)
+        resolved = resolve_secret_reference(
+            database, paths, desired, workspace_id=namespace.workspace_id
+        )
         if not resolved.configured:
             raise ValueError(
                 "The operating-system credential store does not contain this credential."
@@ -593,7 +796,9 @@ def configure_credential_reference(
                 "Do not send a credential value when using an environment variable."
             )
         desired = environment_reference(locator)
-        resolved = resolve_secret_reference(database, paths, desired)
+        resolved = resolve_secret_reference(
+            database, paths, desired, workspace_id=namespace.workspace_id
+        )
         if not resolved.configured:
             raise ValueError(
                 "That environment variable is not available to this Pandrator process. "
@@ -603,13 +808,21 @@ def configure_credential_reference(
         if submitted:
             raise ValueError("Do not send a credential value when using a secret file.")
         desired = secret_file_reference(locator)
-        resolved = resolve_secret_reference(database, paths, desired)
+        resolved = resolve_secret_reference(
+            database, paths, desired, workspace_id=namespace.workspace_id
+        )
         if not resolved.configured:
             raise ValueError("The secret file does not contain a usable value.")
 
     previous_retained = bool(current and current != str(desired or ""))
     if delete_previous and previous_retained:
-        removed = delete_managed_reference(session, current)
+        try:
+            removed = delete_managed_reference(
+                session, current, workspace_id=namespace.workspace_id
+            )
+        except Exception:
+            session.rollback()
+            raise
         previous_retained = not removed
     return CredentialConfiguration(
         reference=desired,
@@ -624,6 +837,7 @@ def credential_status(
     reference: object,
     *,
     fallback_environment_variable: str = "",
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     try:
         resolved = resolve_secret_reference(
@@ -631,6 +845,7 @@ def credential_status(
             paths,
             reference,
             fallback_environment_variable=fallback_environment_variable,
+            workspace_id=workspace_id,
         )
         return {
             "credential_configured": resolved.configured,
@@ -648,7 +863,8 @@ def resolve_provider_credential(
     *,
     fallback_environment_variable: str = "",
     shared: bool = True,
-    preloaded_database_credentials: Mapping[str, str] | None = None,
+    preloaded_database_credentials: CredentialValues | None = None,
+    workspace_id: str | None = None,
 ) -> ResolvedCredential:
     """Resolve shared database credentials only for database references.
 
@@ -656,24 +872,54 @@ def resolve_provider_credential(
     ``resolve_secret_reference`` without falling back to shared database data.
     """
 
+    normalized_provider_id = normalize_credential_id(provider_id).replace("-", "_")
+    with database.session() as session:
+        namespace = credential_namespace(session, workspace_id)
+        return _resolve_provider_credential_in_namespace(
+            session,
+            paths,
+            normalized_provider_id,
+            reference,
+            namespace=namespace,
+            fallback_environment_variable=fallback_environment_variable,
+            shared=shared,
+            preloaded_database_credentials=preloaded_database_credentials,
+        )
+
+
+def _resolve_provider_credential_in_namespace(
+    session: Session,
+    paths: DataPaths,
+    provider_id: object,
+    reference: object,
+    *,
+    namespace: CredentialNamespace,
+    fallback_environment_variable: str = "",
+    shared: bool = True,
+    preloaded_database_credentials: CredentialValues | None = None,
+) -> ResolvedCredential:
+    """Resolve a provider reference using its caller-validated namespace."""
+
     normalized = normalize_credential_id(provider_id).replace("-", "_")
     if (
         shared
         and normalized in SHARED_PROVIDER_CREDENTIALS
         and credential_backend(reference) == "database"
     ):
-        resolved = resolve_secret_reference(
-            database,
+        resolved = _resolve_secret_reference_in_namespace(
+            session,
             paths,
             database_reference(shared_provider_credential_key(normalized)),
+            namespace=namespace,
             preloaded_database_credentials=preloaded_database_credentials,
         )
         if resolved.configured:
             return resolved
-    return resolve_secret_reference(
-        database,
+    return _resolve_secret_reference_in_namespace(
+        session,
         paths,
         reference,
+        namespace=namespace,
         fallback_environment_variable=fallback_environment_variable,
         preloaded_database_credentials=preloaded_database_credentials,
     )
@@ -701,45 +947,77 @@ def _credential_database_keys(
     return keys
 
 
+def _project_database_credentials(
+    session: Session,
+    keys: set[str],
+    namespace: CredentialNamespace,
+) -> ScopedCredentialValues:
+    rows = (
+        session.execute(
+            select(StoredCredential.key, StoredCredential.secret_value).where(
+                StoredCredential.workspace_id == namespace.workspace_id,
+                StoredCredential.key.in_(keys),
+            )
+        )
+        .all()
+        if keys
+        else []
+    )
+    return ScopedCredentialValues(
+        namespace.workspace_id,
+        {str(key): str(secret_value or "") for key, secret_value in rows},
+    )
+
+
 def _load_database_credentials(
     database: Database,
     keys: set[str],
-) -> dict[str, str]:
-    if not keys:
-        return {}
+    *,
+    workspace_id: str | None = None,
+) -> ScopedCredentialValues:
     with database.session() as session:
-        rows = session.execute(
-            select(StoredCredential.key, StoredCredential.secret_value).where(
-                StoredCredential.key.in_(keys)
-            )
-        ).all()
-    return {str(key): str(secret_value or "") for key, secret_value in rows}
+        namespace = credential_namespace(session, workspace_id)
+        return _project_database_credentials(session, keys, namespace)
 
 
 def resolve_provider_credentials(
     database: Database,
     paths: DataPaths,
     credentials: Iterable[ProviderCredentialInput],
+    *,
+    workspace_id: str | None = None,
 ) -> list[ResolvedCredential]:
     """Resolve provider credentials in input order with one database read."""
 
     inputs = list(credentials)
-    keys: set[str] = set()
-    for provider_id, reference, _fallback_environment_variable, shared in inputs:
-        keys.update(_credential_database_keys(provider_id, reference, shared))
-    preloaded = _load_database_credentials(database, keys)
-    return [
-        resolve_provider_credential(
-            database,
-            paths,
-            provider_id,
-            reference,
-            fallback_environment_variable=fallback_environment_variable,
-            shared=shared,
-            preloaded_database_credentials=preloaded,
-        )
-        for provider_id, reference, fallback_environment_variable, shared in inputs
-    ]
+    with database.snapshot_session() as session:
+        namespace = credential_namespace(session, workspace_id)
+        if not namespace.host_credentials_allowed:
+            if any(
+                str(reference or "").strip()
+                and credential_backend(reference)
+                in {"environment", "keyring", "file"}
+                for _provider_id, reference, _fallback_environment_variable, _shared in inputs
+            ):
+                raise ValueError(_HOST_CREDENTIAL_REQUIRED)
+        keys: set[str] = set()
+        for provider_id, reference, _fallback_environment_variable, shared in inputs:
+            keys.update(_credential_database_keys(provider_id, reference, shared))
+        preloaded = _project_database_credentials(session, keys, namespace)
+        resolved = [
+            _resolve_provider_credential_in_namespace(
+                session,
+                paths,
+                provider_id,
+                reference,
+                namespace=namespace,
+                fallback_environment_variable=fallback_environment_variable,
+                shared=shared,
+                preloaded_database_credentials=preloaded,
+            )
+            for provider_id, reference, fallback_environment_variable, shared in inputs
+        ]
+    return resolved
 
 
 def provider_credential_status(
@@ -750,7 +1028,8 @@ def provider_credential_status(
     *,
     fallback_environment_variable: str = "",
     shared: bool = True,
-    preloaded_database_credentials: Mapping[str, str] | None = None,
+    preloaded_database_credentials: CredentialValues | None = None,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     try:
         resolved = resolve_provider_credential(
@@ -761,6 +1040,7 @@ def provider_credential_status(
             fallback_environment_variable=fallback_environment_variable,
             shared=shared,
             preloaded_database_credentials=preloaded_database_credentials,
+            workspace_id=workspace_id,
         )
         return {
             "credential_configured": resolved.configured,
@@ -852,6 +1132,37 @@ def prepare_tts_settings_for_storage(
     paths: DataPaths,
     value: Any,
     previous_value: Any,
+    *,
+    workspace_id: str | None = None,
+) -> dict[str, Any]:
+    """Prepare one TTS settings batch inside its validated credential owner."""
+
+    try:
+        namespace = credential_namespace(session, workspace_id)
+        prepared = _prepare_tts_settings_for_storage(
+            session,
+            database,
+            paths,
+            value,
+            previous_value,
+            workspace_id=namespace.workspace_id,
+        )
+        _validate_workspace_provider_credential_references(prepared, namespace)
+        _revalidate_credential_namespace(session, namespace)
+        return prepared
+    except Exception:
+        session.rollback()
+        raise
+
+
+def _prepare_tts_settings_for_storage(
+    session: Session,
+    database: Database,
+    paths: DataPaths,
+    value: Any,
+    previous_value: Any,
+    *,
+    workspace_id: str,
 ) -> dict[str, Any]:
     """Move submitted inline TTS keys to the credential table and retain only references."""
 
@@ -882,27 +1193,17 @@ def prepare_tts_settings_for_storage(
         normalized_id = service_id.lower().replace("-", "_")
         current_ids.add(normalized_id)
         previous_record = previous_records.get(normalized_id, {})
-        connection_mode = (
-            str(record.get("connection_mode") or "external").strip().lower()
-        )
+        connection_mode = str(record.get("connection_mode") or "external").strip().lower()
         if connection_mode not in {"external", "managed_local"}:
-            raise ValueError(
-                "TTS connection mode must be 'external' or 'managed_local'."
-            )
+            raise ValueError("TTS connection mode must be 'external' or 'managed_local'.")
         record["connection_mode"] = connection_mode
         if connection_mode == "managed_local":
             binding = binding_for_provider(normalized_id)
             if binding is None:
-                raise ValueError(
-                    f"{service_id} cannot be bound to a manager-owned service."
-                )
-            requested_service = str(
-                record.get("managed_service_id") or binding.service_id
-            ).strip()
+                raise ValueError(f"{service_id} cannot be bound to a manager-owned service.")
+            requested_service = str(record.get("managed_service_id") or binding.service_id).strip()
             if requested_service != binding.service_id:
-                raise ValueError(
-                    f"{service_id} must use managed service {binding.service_id}."
-                )
+                raise ValueError(f"{service_id} must use managed service {binding.service_id}.")
             record["managed_service_id"] = binding.service_id
         else:
             record.pop("managed_service_id", None)
@@ -927,13 +1228,12 @@ def prepare_tts_settings_for_storage(
                 paths,
                 key=key,
                 label=f"{record.get('name') or service_id} API key",
-                current_reference=str(
-                    previous_record.get("secret_ref") or existing_reference
-                ),
+                current_reference=str(previous_record.get("secret_ref") or existing_reference),
                 backend=requested_backend or "database",
                 locator=requested_locator,
                 secret_value=submitted_key,
                 delete_previous=delete_previous,
+                workspace_id=workspace_id,
             )
             if configured.reference:
                 record["secret_ref"] = configured.reference
@@ -947,6 +1247,7 @@ def prepare_tts_settings_for_storage(
                 session,
                 current_reference,
                 preserve_shared=False,
+                workspace_id=workspace_id,
             )
             record.pop("secret_ref", None)
         elif existing_reference:
@@ -957,8 +1258,8 @@ def prepare_tts_settings_for_storage(
         previous_reference = str(previous_record.get("secret_ref") or "").strip()
         delete_managed_reference(
             session,
-            previous_reference
-            or database_reference(tts_service_credential_key(normalized_id)),
+            previous_reference or database_reference(tts_service_credential_key(normalized_id)),
+            workspace_id=workspace_id,
         )
     if contains_inline_secret(prepared):
         raise ValueError("TTS credentials must be saved in the API key field.")
@@ -976,12 +1277,21 @@ def _stt_credential_key_in_use(
     )
 
 
-def _database_credential_exists(session: Session, key: str) -> bool:
+def _database_credential_exists(
+    session: Session,
+    key: str,
+    *,
+    workspace_id: str | None = None,
+) -> bool:
     """Check a managed credential locator without loading its secret value."""
 
+    namespace = credential_namespace(session, workspace_id)
     return (
         session.execute(
-            select(StoredCredential.key).where(StoredCredential.key == key)
+            select(StoredCredential.key).where(
+                StoredCredential.workspace_id == namespace.workspace_id,
+                StoredCredential.key == key,
+            )
         ).scalar_one_or_none()
         is not None
     )
@@ -993,6 +1303,37 @@ def prepare_stt_settings_for_storage(
     paths: DataPaths,
     value: Any,
     previous_value: Any,
+    *,
+    workspace_id: str | None = None,
+) -> dict[str, Any]:
+    """Prepare one STT settings batch inside its validated credential owner."""
+
+    try:
+        namespace = credential_namespace(session, workspace_id)
+        prepared = _prepare_stt_settings_for_storage(
+            session,
+            database,
+            paths,
+            value,
+            previous_value,
+            workspace_id=namespace.workspace_id,
+        )
+        _validate_workspace_provider_credential_references(prepared, namespace)
+        _revalidate_credential_namespace(session, namespace)
+        return prepared
+    except Exception:
+        session.rollback()
+        raise
+
+
+def _prepare_stt_settings_for_storage(
+    session: Session,
+    database: Database,
+    paths: DataPaths,
+    value: Any,
+    previous_value: Any,
+    *,
+    workspace_id: str,
 ) -> dict[str, Any]:
     """Move submitted cloud-STT keys into credential storage.
 
@@ -1044,18 +1385,13 @@ def prepare_stt_settings_for_storage(
         for endpoint_field in ("api_base", "base_url"):
             if record.get(endpoint_field):
                 endpoint = str(record[endpoint_field]).strip().rstrip("/")
-                if (
-                    endpoint.casefold()
-                    == "https://your-resource-name.cognitiveservices.azure.com"
-                ):
+                if endpoint.casefold() == "https://your-resource-name.cognitiveservices.azure.com":
                     record[endpoint_field] = (
                         "https://YOUR-RESOURCE-NAME.cognitiveservices.azure.com"
                     )
                 else:
                     try:
-                        record[endpoint_field] = normalize_azure_speech_api_base(
-                            endpoint
-                        )
+                        record[endpoint_field] = normalize_azure_speech_api_base(endpoint)
                     except CloudSTTConfigurationError as error:
                         raise ValueError(str(error)) from error
         record["id"] = normalized_id
@@ -1077,15 +1413,17 @@ def prepare_stt_settings_for_storage(
             normalized_id == "azure_mai_transcribe_2"
             and not existing_reference
             and str(requested_backend or "database").strip().lower() == "database"
-            and _database_credential_exists(session, stt_service_credential_key(normalized_id))
+            and _database_credential_exists(
+                session,
+                stt_service_credential_key(normalized_id),
+                workspace_id=workspace_id,
+            )
         ):
             # A newly selected MAI-2 profile may arrive without the
             # write-only reference that was materialized for legacy 1.5.
             # Reuse the canonical locator when its row already exists; never
             # read or copy the stored secret.
-            existing_reference = database_reference(
-                stt_service_credential_key(normalized_id)
-            )
+            existing_reference = database_reference(stt_service_credential_key(normalized_id))
         if requested_backend is not None or submitted_key:
             key = stt_service_credential_key(normalized_id)
             shared_by_sibling = _stt_credential_key_in_use(
@@ -1097,13 +1435,12 @@ def prepare_stt_settings_for_storage(
                 paths,
                 key=key,
                 label=f"{record.get('name') or service_id} API key",
-                current_reference=str(
-                    previous_record.get("secret_ref") or existing_reference
-                ),
+                current_reference=str(previous_record.get("secret_ref") or existing_reference),
                 backend=requested_backend or "database",
                 locator=requested_locator,
                 secret_value=submitted_key,
                 delete_previous=delete_previous and not shared_by_sibling,
+                workspace_id=workspace_id,
             )
             if configured.reference:
                 record["secret_ref"] = configured.reference
@@ -1122,6 +1459,7 @@ def prepare_stt_settings_for_storage(
                     session,
                     current_reference,
                     preserve_shared=False,
+                    workspace_id=workspace_id,
                 )
             record.pop("secret_ref", None)
         elif existing_reference:
@@ -1135,9 +1473,9 @@ def prepare_stt_settings_for_storage(
         previous_reference = str(previous_record.get("secret_ref") or "").strip()
         delete_managed_reference(
             session,
-            previous_reference
-            or database_reference(key),
+            previous_reference or database_reference(key),
             preserve_shared=False,
+            workspace_id=workspace_id,
         )
     if contains_inline_secret(prepared):
         raise ValueError("STT credentials must be saved in the API key field.")
@@ -1148,10 +1486,18 @@ def hydrate_stt_settings(
     database: Database,
     paths: DataPaths,
     settings: dict[str, Any],
+    *,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Inject only the selected cloud-recognition credential at runtime."""
 
+    namespace = _settings_credential_namespace(
+        database, session_id=session_id, workspace_id=workspace_id
+    )
     hydrated = copy.deepcopy(settings or {})
+    if not namespace.host_credentials_allowed:
+        hydrated["stt_allow_environment_credentials"] = False
     service_id = (
         str(hydrated.get("stt_engine") or hydrated.get("stt_backend") or "whisper")
         .strip()
@@ -1159,9 +1505,7 @@ def hydrate_stt_settings(
         .replace("-", "_")
     )
     records = [
-        dict(item)
-        for item in hydrated.get("provider_configs", [])
-        if isinstance(item, dict)
+        dict(item) for item in hydrated.get("provider_configs", []) if isinstance(item, dict)
     ]
     record = next(
         (
@@ -1186,12 +1530,15 @@ def hydrate_stt_settings(
         reference,
         fallback_environment_variable=fallback_env,
         shared=False,
+        workspace_id=namespace.workspace_id,
     )
     if resolved.value:
         record["api_key"] = resolved.value
         record["api_key_env"] = ""
     elif resolved.environment_variable:
         record["api_key_env"] = resolved.environment_variable
+    elif not namespace.host_credentials_allowed:
+        record["api_key_env"] = ""
     hydrated["provider_configs"] = records
     return hydrated
 
@@ -1202,15 +1549,18 @@ def hydrate_tts_settings(
     settings: dict[str, Any],
     *,
     manager_bridge: Any | None = None,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """Inject only the selected TTS credential into a transient runtime settings copy."""
 
+    namespace = _settings_credential_namespace(
+        database, session_id=session_id, workspace_id=workspace_id
+    )
     from pandrator.logic import tts_handler
 
     hydrated = copy.deepcopy(settings or {})
-    selected_value = str(
-        hydrated.get("service") or hydrated.get("tts_service") or "XTTS"
-    )
+    selected_value = str(hydrated.get("service") or hydrated.get("tts_service") or "XTTS")
     if selected_value.strip().lower() in {
         "openai compatible",
         "openai-compatible",
@@ -1220,33 +1570,25 @@ def hydrate_tts_settings(
     selected = tts_handler.get_service_config(hydrated, selected_value)
     if selected is None:
         return hydrated
-    service_id = (
-        str(selected.get("id") or selected_value).strip().lower().replace("-", "_")
-    )
+    service_id = str(selected.get("id") or selected_value).strip().lower().replace("-", "_")
     configured_provider_ids = configured_tts_provider_ids(hydrated)
-    fallback_env = str(
-        selected.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, "")
-    )
+    fallback_env = str(selected.get("api_key_env") or TTS_SERVICE_ENVS.get(service_id, ""))
     resolved = resolve_provider_credential(
         database,
         paths,
         service_id,
         selected.get("secret_ref"),
         fallback_environment_variable=fallback_env,
+        workspace_id=namespace.workspace_id,
     )
     records = [
-        dict(item)
-        for item in hydrated.get("provider_configs", [])
-        if isinstance(item, dict)
+        dict(item) for item in hydrated.get("provider_configs", []) if isinstance(item, dict)
     ]
     record = next(
         (
             item
             for item in records
-            if str(item.get("id") or item.get("name") or "")
-            .strip()
-            .lower()
-            .replace("-", "_")
+            if str(item.get("id") or item.get("name") or "").strip().lower().replace("-", "_")
             == service_id
         ),
         None,
@@ -1259,7 +1601,18 @@ def hydrate_tts_settings(
         record["api_key_env"] = ""
     elif resolved.environment_variable:
         record["api_key_env"] = resolved.environment_variable
+    elif not namespace.host_credentials_allowed:
+        record["api_key_env"] = ""
     hydrated["provider_configs"] = records
+    if not namespace.legacy_host_access:
+        connection_mode = effective_tts_connection_mode(
+            selected,
+            configured_provider_ids=configured_provider_ids,
+            manager_configured=True,
+        )
+        if connection_mode == "managed_local":
+            raise ValueError(_HOST_APPROVED_BINDING_REQUIRED)
+        return hydrated
     from .manager_proxy import LocalManagerProxy, ManagerProxyError
 
     with ExitStack() as stack:
@@ -1280,16 +1633,12 @@ def hydrate_tts_settings(
         if connection_mode == "managed_local":
             binding = binding_for_provider(service_id)
             if binding is None:
-                raise ValueError(
-                    f"{selected_value} has no qualified local manager binding."
-                )
+                raise ValueError(f"{selected_value} has no qualified local manager binding.")
             requested_service = str(
                 selected.get("managed_service_id") or binding.service_id
             ).strip()
             if requested_service != binding.service_id:
-                raise ValueError(
-                    f"{selected_value} has an invalid managed-service binding."
-                )
+                raise ValueError(f"{selected_value} has an invalid managed-service binding.")
             try:
                 managed = bridge.managed_service(binding.service_id)
             except ManagerProxyError as error:
@@ -1299,9 +1648,7 @@ def hydrate_tts_settings(
             endpoint = str(managed.get("endpoint") or "").strip().rstrip("/")
             health = str((managed.get("health") or {}).get("state") or "stopped")
             if not endpoint:
-                raise RuntimeError(
-                    f"The managed local {selected_value} service has no endpoint."
-                )
+                raise RuntimeError(f"The managed local {selected_value} service has no endpoint.")
             if health != "healthy":
                 raise RuntimeError(
                     f"The managed local {selected_value} service is {health}. "
@@ -1316,8 +1663,11 @@ def hydrate_tts_settings(
         return hydrated
 
 
-def auxiliary_reference_map(session: Session) -> dict[str, str]:
-    record = session.get(AppSetting, AUXILIARY_REFERENCES_SETTING)
+def auxiliary_reference_map(session: Session, *, workspace_id: str | None = None) -> dict[str, str]:
+    namespace = credential_namespace(session, workspace_id)
+    record = workspace_setting_in_workspace(
+        session, namespace.workspace_id, AUXILIARY_REFERENCES_SETTING
+    )
     if record is None or not isinstance(record.value_json, dict):
         return {}
     return {
@@ -1328,26 +1678,96 @@ def auxiliary_reference_map(session: Session) -> dict[str, str]:
 
 
 def set_auxiliary_reference(
-    session: Session, credential_id: object, reference: str | None
+    session: Session,
+    credential_id: object,
+    reference: str | None,
+    *,
+    workspace_id: str | None = None,
 ) -> None:
-    normalized = normalize_credential_id(credential_id)
-    record = session.get(AppSetting, AUXILIARY_REFERENCES_SETTING)
-    values = auxiliary_reference_map(session)
-    if reference:
-        values[normalized] = str(reference).strip()
-    else:
-        values.pop(normalized, None)
-    if record is None:
-        session.add(AppSetting(key=AUXILIARY_REFERENCES_SETTING, value_json=values))
-    else:
-        record.value_json = values
-        record.revision += 1
-        record.updated_at = utcnow()
+    try:
+        normalized = normalize_credential_id(credential_id)
+        namespace = credential_namespace(session, workspace_id)
+        selected_reference = str(reference or "").strip()
+        if (
+            selected_reference
+            and not namespace.host_credentials_allowed
+            and credential_backend(selected_reference) in {"environment", "keyring", "file"}
+        ):
+            raise ValueError(_HOST_CREDENTIAL_REQUIRED)
+        result = session.execute(
+            sqlite_insert(WorkspaceSetting)
+            .values(
+                workspace_id=namespace.workspace_id,
+                key=AUXILIARY_REFERENCES_SETTING,
+                value_json={},
+                revision=1,
+                updated_at=utcnow(),
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    WorkspaceSetting.workspace_id,
+                    WorkspaceSetting.key,
+                ]
+            )
+        )
+        created = bool(getattr(result, "rowcount", 0))
+        _revalidate_credential_namespace(session, namespace)
+        record = workspace_setting_in_workspace(
+            session, namespace.workspace_id, AUXILIARY_REFERENCES_SETTING
+        )
+        if record is None:
+            raise RuntimeError("The auxiliary credential map could not be stored.")
+        values = {
+            normalize_credential_id(key): str(value or "").strip()
+            for key, value in (
+                record.value_json.items() if isinstance(record.value_json, dict) else ()
+            )
+            if str(value or "").strip()
+        }
+        if selected_reference:
+            values[normalized] = selected_reference
+        else:
+            values.pop(normalized, None)
+        current_values = _auxiliary_reference_map_from_value(record.value_json)
+        if values != current_values:
+            if not created:
+                session.add(
+                    WorkspaceSettingHistory(
+                        workspace_id=namespace.workspace_id,
+                        key=AUXILIARY_REFERENCES_SETTING,
+                        value_json=copy.deepcopy(record.value_json),
+                        revision=record.revision,
+                    )
+                )
+                record.revision += 1
+            record.value_json = values
+            record.updated_at = utcnow()
+            session.flush()
+        _revalidate_credential_namespace(session, namespace)
+    except Exception:
+        session.rollback()
+        raise
 
 
-def auxiliary_profiles(database: Database, paths: DataPaths) -> list[dict[str, Any]]:
+def _auxiliary_reference_map_from_value(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        normalize_credential_id(key): str(item or "").strip()
+        for key, item in value.items()
+        if str(item or "").strip()
+    }
+
+
+def auxiliary_profiles(
+    database: Database,
+    paths: DataPaths,
+    *,
+    workspace_id: str | None = None,
+) -> list[dict[str, Any]]:
     with database.session() as session:
-        references = auxiliary_reference_map(session)
+        namespace = credential_namespace(session, workspace_id)
+        references = auxiliary_reference_map(session, workspace_id=namespace.workspace_id)
     result: list[dict[str, Any]] = []
     for profile in AUXILIARY_CREDENTIALS:
         reference = references.get(
@@ -1359,6 +1779,7 @@ def auxiliary_profiles(database: Database, paths: DataPaths) -> list[dict[str, A
             paths,
             reference,
             fallback_environment_variable=profile["environment_variable"],
+            workspace_id=namespace.workspace_id,
         )
         result.append(
             {
@@ -1370,6 +1791,37 @@ def auxiliary_profiles(database: Database, paths: DataPaths) -> list[dict[str, A
             }
         )
     return result
+
+
+def resolve_auxiliary_credential(
+    database: Database,
+    paths: DataPaths,
+    credential_id: object,
+    *,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
+) -> ResolvedCredential:
+    normalized = normalize_credential_id(credential_id)
+    profile = next(
+        (item for item in AUXILIARY_CREDENTIALS if item["id"] == normalized),
+        None,
+    )
+    if profile is None:
+        raise ValueError(f"Unsupported auxiliary credential: {normalized}")
+    with database.snapshot_session() as session:
+        actual_workspace_id = settings_workspace_id(
+            session, session_id=session_id, workspace_id=workspace_id
+        )
+        namespace = credential_namespace(session, actual_workspace_id)
+        references = auxiliary_reference_map(session, workspace_id=namespace.workspace_id)
+    reference = references.get(normalized, database_reference(auxiliary_credential_key(normalized)))
+    return resolve_secret_reference(
+        database,
+        paths,
+        reference,
+        fallback_environment_variable=profile["environment_variable"],
+        workspace_id=namespace.workspace_id,
+    )
 
 
 def _secret_references(value: Any) -> set[str]:
@@ -1430,16 +1882,39 @@ class SecretRedactor:
     def _load_values(self) -> tuple[str, ...]:
         values: set[str] = set()
         references: set[str] = set()
+        original_workspace_id: str | None = None
         with self.database.session() as session:
             values.update(
                 str(item or "")
                 for item in session.scalars(select(StoredCredential.secret_value)).all()
             )
-            references.update(
-                str(item or "").strip()
-                for item in session.scalars(select(Provider.secret_ref)).all()
-                if str(item or "").strip()
+            original_workspace_ids = list(
+                session.scalars(
+                    select(Workspace.id)
+                    .join(User, Workspace.personal_owner_user_id == User.id)
+                    .where(
+                        Workspace.kind == "personal",
+                        User.legacy_subject == "owner",
+                    )
+                ).all()
             )
+            if len(original_workspace_ids) == 1:
+                original_workspace_id = str(original_workspace_ids[0])
+                references.update(
+                    str(item or "").strip()
+                    for item in session.scalars(
+                        select(Provider.secret_ref).where(
+                            Provider.workspace_id == original_workspace_id
+                        )
+                    ).all()
+                    if str(item or "").strip()
+                )
+                for setting in session.scalars(
+                    select(WorkspaceSetting.value_json).where(
+                        WorkspaceSetting.workspace_id == original_workspace_id
+                    )
+                ).all():
+                    references.update(_secret_references(setting))
             for setting in session.scalars(select(AppSetting.value_json)).all():
                 references.update(_secret_references(setting))
         environment_names = (
@@ -1450,24 +1925,24 @@ class SecretRedactor:
         environment_names.update(
             str(profile["environment_variable"]) for profile in AUXILIARY_CREDENTIALS
         )
-        for reference in references:
-            if reference.startswith(ENVIRONMENT_REFERENCE_PREFIX):
-                environment_names.add(
-                    reference[len(ENVIRONMENT_REFERENCE_PREFIX) :].strip()
-                )
-            if reference.startswith(DATABASE_REFERENCE_PREFIX):
-                continue
-            try:
-                resolved = resolve_secret_reference(
-                    self.database, self.paths, reference
-                )
-                values.add(resolved.resolved_value())
-            except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
-                continue
+        if original_workspace_id is not None:
+            for reference in references:
+                if reference.startswith(ENVIRONMENT_REFERENCE_PREFIX):
+                    environment_names.add(reference[len(ENVIRONMENT_REFERENCE_PREFIX) :].strip())
+                if reference.startswith(DATABASE_REFERENCE_PREFIX):
+                    continue
+                try:
+                    resolved = resolve_secret_reference(
+                        self.database,
+                        self.paths,
+                        reference,
+                        workspace_id=original_workspace_id,
+                    )
+                    values.add(resolved.resolved_value())
+                except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+                    continue
         values.update(os.environ.get(name, "") for name in environment_names)
-        return tuple(
-            sorted({item for item in values if len(item) >= 4}, key=len, reverse=True)
-        )
+        return tuple(sorted({item for item in values if len(item) >= 4}, key=len, reverse=True))
 
     def values(self) -> tuple[str, ...]:
         now = time.monotonic()
@@ -1485,8 +1960,25 @@ class SecretRedactor:
                 self._expires_at = time.monotonic() + self.ttl_seconds
         return self._values
 
+    @contextmanager
+    def scoped_values(self, values: Iterable[str]) -> Iterator[None]:
+        current_values = _SCOPED_REDACTION_VALUES.get()
+        added_values = tuple(
+            value
+            for value in values
+            if isinstance(value, str) and value and len(value) >= 4
+        )
+        token = _SCOPED_REDACTION_VALUES.set((*current_values, *added_values))
+        try:
+            yield
+        finally:
+            _SCOPED_REDACTION_VALUES.reset(token)
+
     def redact(self, value: object) -> str:
-        return redact_secret_text(value, self.values())
+        return redact_secret_text(
+            value,
+            (*self.values(), *_SCOPED_REDACTION_VALUES.get()),
+        )
 
     def redact_value(self, value: Any) -> Any:
         """Return a diagnostic/export-safe copy while preserving JSON types."""

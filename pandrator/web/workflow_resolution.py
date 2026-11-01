@@ -467,6 +467,7 @@ def resolve_workflow_stage_in_session(
         )):
             payload["speech_plan_revision_id"] = generation_revision.id
     if stage_key == "export":
+        from .export_subtitle_selection import capture_subtitle_track_snapshot
         from .export_subtitles import subtitle_profile
         from .workspace_settings import subtitle_settings_provenance
 
@@ -492,6 +493,7 @@ def resolve_workflow_stage_in_session(
             ) if record.target_language else None,
         }
         payload["subtitle_profile_scope"] = "source_target_alternatives"
+        payload["subtitle_track_snapshot"] = capture_subtitle_track_snapshot(session, session_id)
         payload["display_subtitle_snapshot"] = context.capture_display_subtitle_snapshot(
             session, session_id, flattened
         )
@@ -536,6 +538,33 @@ def resolve_workflow_stage_in_session(
             settings=flattened,
             source=export_source,
         )
+        from pathlib import Path
+
+        from .subtitle_selection import export_requires_captions, resolve_subtitle_selection
+
+        # Validate precisely the frozen roles the worker will consume, plus
+        # the attached SRT frozen by the export contract. No file reads or
+        # fresh role lookup may replace a missing captured component.
+        track_roles = {
+            track["role"] for track in payload["subtitle_track_snapshot"]["tracks"]
+        }
+        source_available = bool(
+            track_roles.intersection({"correction", "media_edit_subtitles", "transcription"})
+        ) or bool(
+            export_source.artifact is not None
+            and Path(export_source.artifact.relative_path).suffix.lower() == ".srt"
+        )
+        resolve_subtitle_selection(
+            flattened,
+            source_available=source_available,
+            translation_available="translation" in track_roles,
+            captions_required=export_requires_captions(
+                workflow_kind=record.workflow_kind,
+                export_mode=payload["export_contract"]["export_mode"],
+                subtitle_mode=str(flattened.get("subtitle_mode") or "none").lower(),
+                source_is_video=export_source.has_video,
+            ),
+        )
     if stage_key == "generate_audio" or continuation:
         payload.update(
             {"target_stage": stage_key, "stage_settings": resolved_stage_settings}
@@ -574,7 +603,9 @@ def resolve_workflow_stage_in_session(
                 artifact.state == "current" and artifact.role == "transcription"
                 for artifact in all_artifacts
             ):
-                resource_keys.append("service:stt")
+                from .stt_resources import stt_resource_keys
+
+                resource_keys.extend(stt_resource_keys(flattened))
         if stage_key == "generate_audio":
             context.validate_generation_language_payload(session, payload)
         return context.resolved_stage_type()(

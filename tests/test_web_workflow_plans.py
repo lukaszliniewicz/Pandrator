@@ -6,12 +6,11 @@ from unittest.mock import patch
 
 from sqlalchemy import func, select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
-    AppSetting,
     Artifact,
     GenerationPlan,
     GenerationPlanRevision,
@@ -26,13 +25,15 @@ from pandrator.web.models import (
     SessionStageSelection,
     SourceAsset,
     WorkflowExecutionPlan,
+    WorkspaceSetting,
     utcnow,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.workflow_plans import (
     WorkflowExecutionPlanService,
     canonical_digest,
 )
-from pandrator.web.workflows import ResolvedWorkflowStage
+from pandrator.web.workflows import ResolvedWorkflowStage, WorkflowService
 from pandrator.web.workspace import (
     WorkspaceSettingsService,
     output_assembly_settings_hash,
@@ -174,12 +175,12 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         session_id, original_source, _ = self._ready_session()
         _, replacement_source, replacement_asset = self._ready_session()
         database = self.extension["database"]
-        original_get = WorkspaceSettingsService.get_in_session
+        original_get = WorkspaceSettingsService._get_in_workspace
         changed = False
 
-        def replace_after_settings(service, db_session, target, section):
+        def replace_after_settings(service, db_session, target, section, workspace_id):
             nonlocal changed
-            result = original_get(service, db_session, target, section)
+            result = original_get(service, db_session, target, section, workspace_id)
             if target == session_id and section == last_section and not changed:
                 changed = True
                 # Commit on a separate connection between settings resolution
@@ -196,7 +197,7 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                     attachment.revision += 1
             return result
 
-        with patch.object(WorkspaceSettingsService, "get_in_session", replace_after_settings):
+        with patch.object(WorkspaceSettingsService, "_get_in_workspace", replace_after_settings):
             response = self.client.post(
                 f"/api/v1/sessions/{session_id}/stages/{stage_key}/run",
                 json={}, headers=self.headers,
@@ -263,25 +264,31 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
     def test_settings_resolution_captures_sections_and_connections_together(self):
         session_id, _, _ = self._ready_session()
         database = self.extension["database"]
-        original_get = WorkspaceSettingsService.get_in_session
+        original_get = WorkspaceSettingsService._get_in_workspace
         with database.session() as writer:
-            writer.merge(AppSetting(key="services.tts", value_json={"service": "kokoro"}))
+            workspace_id = initial_personal_workspace(writer).id
+            writer.merge(WorkspaceSetting(
+                workspace_id=workspace_id,
+                key="services.tts",
+                value_json={"service": "kokoro"},
+            ))
 
-        def replace_after_text(service, db_session, target, section):
-            result = original_get(service, db_session, target, section)
+        def replace_after_text(service, db_session, target, section, workspace_id):
+            result = original_get(service, db_session, target, section, workspace_id)
             if target == session_id and section == "text":
                 with database.session() as writer:
+                    workspace_id = initial_personal_workspace(writer).id
                     writer.add_all([
                         SessionSetting(session_id=session_id, section="text", value_json={"max_sentence_length": 999}),
                         SessionSetting(session_id=session_id, section="audio", value_json={"sentence_silence_ms": 999}),
                     ])
-                    connection = writer.get(AppSetting, "services.tts")
+                    connection = writer.get(WorkspaceSetting, (workspace_id, "services.tts"))
                     connection.value_json = {"service": "silero"}
                     connection.revision += 1
             return result
 
         service = WorkspaceSettingsService(database)
-        with patch.object(WorkspaceSettingsService, "get_in_session", replace_after_text):
+        with patch.object(WorkspaceSettingsService, "_get_in_workspace", replace_after_text):
             resolved, digest = service.resolve(session_id, ["text", "audio", "tts"])
         self.assertEqual(200, resolved["text"]["max_sentence_length"])
         self.assertEqual(250, resolved["audio"]["sentence_silence_ms"])
@@ -294,17 +301,20 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
 
     def test_direct_run_keeps_captured_settings_when_queue_handoff_changes_them(self):
         session_id, source_id, _ = self._ready_session()
-        original_enqueue = JobQueue.enqueue
+        original_resolve = WorkflowService.resolve_stage
 
-        def update_before_enqueue(queue, *args, **kwargs):
-            with queue.database.session() as writer:
+        def update_before_enqueue(service, *args, **kwargs):
+            resolved = original_resolve(service, *args, **kwargs)
+            # Resolution's snapshot is closed; inject the same concurrent edit
+            # before the user-scoped enqueue acquires its immediate writer.
+            with service.database.session() as writer:
                 writer.add(SessionSetting(
                     session_id=session_id, section="text",
                     value_json={"max_sentence_length": 999},
                 ))
-            return original_enqueue(queue, *args, **kwargs)
+            return resolved
 
-        with patch.object(JobQueue, "enqueue", update_before_enqueue):
+        with patch.object(WorkflowService, "resolve_stage", update_before_enqueue):
             response = self.client.post(
                 f"/api/v1/sessions/{session_id}/stages/generate_audio/run",
                 json={"text": {"max_sentence_length": 321}}, headers=self.headers,
@@ -322,12 +332,12 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
     def test_plan_still_rejects_edits_committed_during_snapshot_resolution(self):
         session_id, _, _ = self._ready_session()
         database = self.extension["database"]
-        original_get = WorkspaceSettingsService.get_in_session
+        original_get = WorkspaceSettingsService._get_in_workspace
         changed = False
 
-        def update_once(service, db_session, target, section):
+        def update_once(service, db_session, target, section, workspace_id):
             nonlocal changed
-            result = original_get(service, db_session, target, section)
+            result = original_get(service, db_session, target, section, workspace_id)
             if target == session_id and not changed:
                 changed = True
                 with database.session() as writer:
@@ -337,7 +347,7 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                     ))
             return result
 
-        with patch.object(WorkspaceSettingsService, "get_in_session", update_once):
+        with patch.object(WorkspaceSettingsService, "_get_in_workspace", update_once):
             response = self.client.post(
                 f"/api/v1/sessions/{session_id}/workflow-plans",
                 json={"target_stage": "generate_audio"}, headers=self.headers,
@@ -429,6 +439,12 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             workflow_kind="voiceover",
             suffix="mp4",
         )
+        for role in ("transcription", "translation"):
+            path = self.extension["paths"].uploads / f"assembly-export-{role}.srt"
+            path.write_text("1\n00:00:00,000 --> 00:00:01,000\nCaption\n", encoding="utf-8")
+            self.extension["services"].artifacts.register(
+                path, kind="srt", role=role, session_id=session_id,
+            )
         with self.extension["database"].session() as db_session:
             generation_plan = GenerationPlan(session_id=session_id)
             db_session.add(generation_plan)
@@ -520,8 +536,13 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             run_override={"output": output_override},
         )
         with self.extension["database"].session() as db_session:
+            artifact_ownership = resolve_artifact_ownership(
+                db_session, session_id=session_id
+            )
             deleted = Artifact(
                 session_id=session_id,
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="audio",
                 role="assembled_audio",
                 relative_path="deleted-assembly.wav",
@@ -585,8 +606,13 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             )
             db_session.add(run)
             db_session.flush()
+            artifact_ownership = resolve_artifact_ownership(
+                db_session, session_id=session_id
+            )
             artifact = Artifact(
                 session_id=session_id,
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="audio",
                 role="assembled_audio",
                 relative_path="fingerprint.wav",
@@ -793,6 +819,7 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         ):
             db_session.add(
                 Provider(
+                    workspace_id=initial_personal_workspace(db_session).id,
                     kind="llm",
                     provider_key=f"fixture-{self.source_counter}",
                     label=f"Fixture {self.source_counter}",

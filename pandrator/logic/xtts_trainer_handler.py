@@ -7,6 +7,7 @@ from typing import Callable
 from uuid import uuid4
 
 from pandrator.logic.cancellable_process import ProcessCancelled
+from pandrator.logic.model_acquisition import require_model_acquisition
 from pandrator.logic.xtts_model_paths import (
     promote_training_model_directory,
     resolve_training_model_target,
@@ -308,6 +309,7 @@ def start_training(
     publish_callback: Callable[[Path, Path], None] | None = None,
 ) -> tuple[bool, str]:
     """Runs XTTS training and returns `(success, message)`."""
+    require_model_acquisition()
     publication_error = False
 
     def publish(staging: Path, target: Path) -> None:
@@ -505,6 +507,7 @@ def _copy_trained_model(
     but it is staged beneath ``.downloads`` (ignored by the wrapper) and only
     the wrapper's exact four-file bundle is promoted into the visible registry.
     """
+    require_model_acquisition()
     callback_started = False
     try:
         models_root, target_dir = _trained_model_target(

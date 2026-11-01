@@ -12,7 +12,7 @@ from typing import Any
 
 from .audio_cpp_inventory_data import family_metadata
 
-REVIEWED_RUNTIME = "0.9.2"
+REVIEWED_RUNTIME = "0.9.2-drama3-base-small"
 NATIVE_SPLIT_ONLY_FAMILIES = frozenset({"f5_tts", "outetts"})
 NATIVE_SPLIT_NOTE = (
     "audio.cpp may split each Pandrator segment again inside this model. "
@@ -26,11 +26,11 @@ SINGLE_SEGMENT_SESSION_CHARACTERS = 65536
 # tokenizer budget unless an explicit character-size override is supplied.
 CHARACTER_CHUNK_FAMILIES = frozenset({
     "audio8_tts", "breeze_tts", "chatterbox", "chatterbox_turbo", "cosyvoice3",
-    "dots_tts", "echo_tts", "fireredtts3", "fish_audio", "higgs_audio_tts",
+    "dots_tts", "echo_tts", "fireredtts3", "fish_audio", "fish_drama3", "higgs_audio_tts",
     "inflect_v2", "kitten_tts", "kitten_tts2", "kokoro_tts", "kugelaudio",
     "lfm2_audio", "magpie_tts", "maya1", "moss_tts_local", "moss_tts_nano",
     "moss_tts_v15", "moss_voicegen", "neutts", "outetts", "piper_tts",
-    "qwen3_tts", "sanotts", "soprano_tts", "voxcpm1", "voxcpm2", "voxtral_tts", "zipvoice",
+    "plapre", "qwen3_tts", "sanotts", "soprano_tts", "voxcpm1", "voxcpm2", "voxtral_tts", "zipvoice",
 })
 
 
@@ -52,14 +52,19 @@ def native_character_chunk_default(family: str) -> int | None:
 
 
 def narration_character_policy(family: str, language: str = "en") -> tuple[int, str]:
-    """Return the reviewed policy ceiling before the shared 10% reserve."""
+    """Return the family policy; Qwen's conservative target is used directly."""
     family = _family(family)
     cjk = language.lower().replace("_", "-").split("-", 1)[0] in {"zh", "ja", "ko"}
     explicit = {
-        "qwen3_tts": 500 if cjk else 2000,
+        "qwen3_tts": 350,
         "voxcpm1": 2000,
         "voxcpm2": 2000,
         "fish_audio": 300,
+        # Native 128/380-character defaults select splitting, not input limits.
+        # These narration policies keep ordinary passages together; Drama's
+        # output/context budgets and Kitten's 1000-character ceiling still apply.
+        "fish_drama3": 600,
+        "kitten_tts2": 600,
         # 128 is a native splitting default, not a model input limit. These
         # ordinary narration policies stay above 160 after the shared reserve.
         "chatterbox": 200,
@@ -81,6 +86,7 @@ def narration_character_policy(family: str, language: str = "en") -> tuple[int, 
         cjk_limits = {
             "voxcpm1": 500, "voxcpm2": 500, "breeze_tts": 360,
             "higgs_audio_tts": 300, "moss_tts_local": 500, "moss_tts_nano": 80,
+            "fish_drama3": 300,
             # Korean Chatterbox has 384 speech tokens at 25 Hz: about 15 s.
             # A Latin-script character target cannot carry over to Hangul.
             "chatterbox": 70,

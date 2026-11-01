@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -28,8 +29,14 @@ from .export_video_commands import (
     run_video_command,
 )
 from .models import Artifact, new_id
+from .output_storage import estimated_pcm_bytes, estimated_video_bytes, reserve_output_space
 from .video_tail_fast import try_fast_video_tail
-from .workflow_output_context import OutputWorkflowContext
+from .workflow_output_context import (
+    OutputWorkflowContext,
+    check_output_io,
+    output_io_options,
+    publish_output,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +45,7 @@ class PreparedVideoAudio:
     parent_ids: list[str]
     tail_extension_ms: int
     tail_extension_method: str | None = None
+    source_info: dict | None = None
 
 
 def _tail_defers_to_final_render(
@@ -77,6 +85,7 @@ def _attempt_fast_video_tail(
     extra_seconds: float,
     ffmpeg_executable: str,
     cancel_event: threading.Event,
+    before_io: Callable[[], None] | None = None,
 ) -> bool:
     """Try the stream-copy tail helper; False means fall back to full tpad.
 
@@ -93,6 +102,7 @@ def _attempt_fast_video_tail(
             ffmpeg_executable=ffmpeg_executable,
             cancel_event=cancel_event,
             run_command=run_video_command,
+            before_io=before_io,
         )
     )
 
@@ -128,6 +138,7 @@ def _prepare_video_audio(
     working_video = media_path
     audio_parent_ids: list[str] = [upload_media.id]
     tail_extension_ms = 0
+    reference_info = None
     if dubbing_audio and audio_mode in {"dubbed", "mixed"}:
         from .soundtrack_export import (
             ensure_soundtrack_master,
@@ -135,11 +146,15 @@ def _prepare_video_audio(
             resolve_video_tail_extension_ms,
         )
 
-        reference_info = probe_soundtrack_media(media_path)
+        reference_info = probe_soundtrack_media(
+            media_path, **output_io_options(context)
+        )
         _speech_record, speech_probe_path = context._resolve_input(
             dubbing_audio.id
         )
-        speech_info = probe_soundtrack_media(speech_probe_path)
+        speech_info = probe_soundtrack_media(
+            speech_probe_path, **output_io_options(context)
+        )
         # Freeze math runs against the VIDEO stream duration (not the
         # container duration). resolve_video_tail_extension_ms is the
         # single shared computation: 0 when the timeline fits, the
@@ -169,6 +184,15 @@ def _prepare_video_audio(
             )
         preserve_audio_tail = tail_extension_ms > 0 or overrun > 0
         tail_extension_method: str | None = None
+        check_output_io(context)
+        duration_bound_ms = max(reference_duration + tail_extension_ms / 1000,
+                                speech_info["duration"]) * 1000
+        reserve_output_space(context, scratch_dir, 3 * estimated_video_bytes(
+            media_path.stat().st_size, duration_bound_ms,
+            transcode=bool(tail_extension_ms) or _tail_defers_to_final_render(settings, selection),
+            width=reference_info.get("width"), height=reference_info.get("height"),
+            fps=reference_info.get("fps"),
+        ) + 3 * estimated_pcm_bytes(duration_bound_ms), label="video preparation")
         if tail_extension_ms:
             # Single shared tail duration (frame-ceiled) feeds both the video
             # freeze and the soundtrack master below. When the final render
@@ -196,6 +220,7 @@ def _prepare_video_audio(
                     extra_seconds=tail_extension_ms / 1000,
                     ffmpeg_executable=ffmpeg_executable,
                     cancel_event=cancel_event,
+                    **output_io_options(context),
                 )
                 if fast_ok:
                     working_video = tail_video
@@ -223,7 +248,7 @@ def _prepare_video_audio(
                             "burn_video_resolution", "source"
                         ),
                     )
-                    run_video_command(tail_command, cancel_event)
+                    run_video_command(tail_command, cancel_event, **output_io_options(context))
                     working_video = tail_video
                     tail_extension_method = "full_transcode"
         _audio_record, audio_path = context._resolve_input(dubbing_audio.id)
@@ -265,7 +290,7 @@ def _prepare_video_audio(
                 shortest=not preserve_audio_tail,
             )
             progress(0.4, "Using the selected soundtrack")
-        run_video_command(command, cancel_event)
+        run_video_command(command, cancel_event, **output_io_options(context))
         progress(0.58, "Media audio track ready")
         working_video = audio_video
         audio_parent_ids.append(dubbing_audio.id)
@@ -289,15 +314,19 @@ def _prepare_video_audio(
             )
             _mixed, mixed_path = context._resolve_input(mixed.id)
             audio_video = scratch_dir / f".{record.storage_key}-sounds-{new_id()}.mp4"
+            check_output_io(context)
+            reserve_output_space(context, scratch_dir,
+                                 media_path.stat().st_size + mixed_path.stat().st_size + 65536,
+                                 label="video soundtrack")
             run_video_command(build_replace_video_audio_command(
                 str(working_video), str(mixed_path), str(audio_video),
                 ffmpeg_executable=ffmpeg_executable, audio_bitrate=video_audio_bitrate,
                 shortest=False,
-            ), cancel_event)
+            ), cancel_event, **output_io_options(context))
             working_video = audio_video
             audio_parent_ids.extend([master.id, mixed.id])
     return PreparedVideoAudio(
-        working_video, audio_parent_ids, tail_extension_ms, tail_extension_method
+        working_video, audio_parent_ids, tail_extension_ms, tail_extension_method, reference_info
     )
 
 
@@ -319,6 +348,8 @@ def render_video_export(
     from pandrator.logic.dubbing.srt_utils import srt_to_vtt
     from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
     from pandrator.logic.dubbing.video_muxing import normalize_video_resolution
+
+    from .soundtrack_export import probe_soundtrack_media
 
     session_id = inputs.session_id
     settings = inputs.settings
@@ -431,6 +462,27 @@ def render_video_export(
         render_destination = (
             scratch_dir / f".{record.storage_key}-render-{new_id()}.mp4"
         )
+        check_output_io(context)
+        # Copy paths need only file-size metadata. Reencoding reuses an input
+        # probe already taken during preparation, or probes once when needed.
+        storage_info = prepared.source_info or (
+            probe_soundtrack_media(media_path, **output_io_options(context)) if video_transcode else {}
+        )
+        storage_width = storage_info.get("width") or 1920
+        storage_height = storage_info.get("height") or 1080
+        if output_video_resolution != "source":
+            target_height = int(output_video_resolution.removesuffix("p"))
+            storage_width = math.ceil(storage_width * target_height / storage_height / 2) * 2
+            storage_height = target_height
+        video_estimate = estimated_video_bytes(
+            working_video.stat().st_size,
+            (float(storage_info.get("duration") or 0) * 1000) + tail_extension_ms,
+            transcode=video_transcode, width=storage_width, height=storage_height,
+            fps=storage_info.get("fps"),
+        )
+        reserve_output_space(context, scratch_dir, video_estimate + 4 * sum(
+            int(item.size_bytes or 0) for item in selected_subtitles
+        ), label="video export")
         video_track_artifacts: list[Artifact] = []
         # Playback/render helpers (player VTT sidecars, bilingual ASS
         # overlays) are registered but kept out of the deliverable
@@ -447,8 +499,10 @@ def render_video_export(
                 item.id
             )
             scratch = _finalize_track_scratch(track_name)
+            check_output_io(context)
             finalize_srt_file(subtitle_path, scratch, {**settings, "subtitle_language": track_details(item)[1]})
             finalized_subtitle_paths[item.id] = scratch
+            check_output_io(context)
             finalized_subtitle_diagnostics[item.id] = subtitle_file_diagnostics(
                 subtitle_path, scratch, settings, subtitle_settings_provenance,
                 language=track_details(item)[1],
@@ -476,6 +530,7 @@ def render_video_export(
                     intermediates_subtitle_dir
                     / f"{record.storage_key}_{track_name}_player.vtt"
                 )
+                check_output_io(context)
                 vtt_path.write_text(
                     srt_to_vtt(
                         subtitle_path.read_text(encoding="utf-8-sig")
@@ -483,7 +538,7 @@ def render_video_export(
                     encoding="utf-8",
                 )
                 video_track_artifacts.append(
-                    context.artifacts.register(
+                    publish_output(context,
                         vtt_path,
                         kind="vtt",
                         role=f"video_subtitle_track_{track_name}",
@@ -510,6 +565,7 @@ def render_video_export(
                 tail_extension_seconds=final_tail_seconds,
                 progress=progress,
                 cancel_event=cancel_event,
+                **output_io_options(context),
             ) or video_transcode
         elif subtitle_mode == "burned" and selected_subtitles:
             subtitle_paths = [
@@ -533,7 +589,7 @@ def render_video_export(
                         ),
                     )
                 )
-                context.artifacts.register(
+                overlay = publish_output(context,
                     burn_path,
                     kind="ass",
                     role="bilingual_subtitle_overlay",
@@ -541,25 +597,54 @@ def render_video_export(
                     parent_ids=[item.id for item in selected_subtitles],
                     settings=settings,
                 )
+                _overlay_record, burn_path = context._resolve_input(overlay.id)
             render_burned_subtitle_video(
                 working_video, burn_path, render_destination, encoding,
                 language=str(settings.get("target_language") or "und"),
                 tail_extension_seconds=final_tail_seconds,
                 progress=progress, cancel_event=cancel_event,
+                **output_io_options(context),
             )
         elif user_video_transcode or tail_extension_method == "render_filter":
             render_transcoded_video(
                 working_video, render_destination, encoding,
                 tail_extension_seconds=final_tail_seconds,
                 progress=progress, cancel_event=cancel_event,
+                **output_io_options(context),
             )
         else:
             video_transcode = render_web_video(
                 working_video, render_destination, encoding,
                 tail_extension_ms=tail_extension_ms, progress=progress,
                 cancel_event=cancel_event,
+                **output_io_options(context),
             ) or video_transcode
         check_video_cancelled(cancel_event)
+        rendered_media = probe_soundtrack_media(
+            render_destination, **output_io_options(context)
+        )
+        check_video_cancelled(cancel_event)
+        if rendered_media.get("has_video") is False:
+            raise ValueError("Rendered video export has no video stream.")
+        chapter_count = rendered_media.get("chapter_count")
+        if chapter_count is not None and chapter_count > 0:
+            raise ValueError("Rendered video export unexpectedly contains chapters.")
+
+        def measured_duration_ms(key: str) -> float | None:
+            raw = rendered_media.get(key)
+            if raw is None:
+                return None
+            try:
+                value = float(raw) * 1000
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return value if math.isfinite(value) and value >= 0 else None
+
+        media_durations_ms = {
+            "container": measured_duration_ms("container_duration"),
+            "video": measured_duration_ms("video_duration"),
+            "audio": measured_duration_ms("audio_duration"),
+        }
         if tail_extension_ms > 0:
             progress(
                 0.9,
@@ -590,6 +675,10 @@ def render_video_export(
             + [item.id for item in video_track_artifacts],
             settings=settings,
             metadata={
+                "media_durations_ms": media_durations_ms,
+                "media_stream_types": rendered_media.get("stream_types"),
+                "chapter_count": chapter_count,
+                "chapter_policy": "omit",
                 "output_settings": inputs.output_settings_snapshot,
                 "audio_mode": audio_mode,
                 "subtitle_mode": subtitle_mode,

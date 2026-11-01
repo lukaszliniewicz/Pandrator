@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from flask import jsonify, request
 from pydantic import ValidationError
+from sqlalchemy.orm import Session
 
+from .access.comparison_export_policy import require_comparison_export_access
+from .access.contracts import AccessDenied
 from .comparison_export_schemas import ComparisonExportRequest
 from .comparison_exports import (
     admit_comparison_export_in_session,
@@ -42,19 +45,30 @@ def register_comparison_export_routes(
     base = "/api/v1/sessions/<session_id>/comparison-exports"
 
     @app.post(base)
-    @guards.require_scope("app.run")
+    @guards.require_scope("app.read", "app.run")
     def create_comparison_export(session_id: str):
         key = str(request.headers.get("Idempotency-Key") or "").strip()
         if not key:
             return guards.error_response(
                 "idempotency_key_required", "Idempotency-Key is required.", 400
             )
+
+        def authorize(db_session: Session) -> None:
+            require_comparison_export_access(db_session, session_id)
+
         try:
+            with services.database.session() as db_session:
+                authorize(db_session)
             body = ComparisonExportRequest.model_validate(
                 request.get_json(silent=True) or {}
             ).model_dump(mode="json")
             accepted = {"session_id": session_id, **body}
-            replay = retry.inspect(operation_id, key, accepted)
+            replay = retry.inspect(
+                operation_id,
+                key,
+                accepted,
+                authorize=authorize,
+            )
             if replay is not None:
                 return replay
 
@@ -65,6 +79,7 @@ def register_comparison_export_routes(
                 body,
             )
             with services.database.immediate_session() as db_session:
+                authorize(db_session)
                 reservation = services.idempotency.begin(
                     db_session,
                     principal=retry.principal(),
@@ -90,6 +105,8 @@ def register_comparison_export_routes(
                     resource_id=result["job_id"],
                 )
             return jsonify(result), 202
+        except AccessDenied:
+            raise
         except (KeyError, ValueError, OSError, IdempotencyConflict, IdempotencyInProgress) as error:
             return _failure(context, retry, error)
 

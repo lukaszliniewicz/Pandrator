@@ -9,11 +9,11 @@ from unittest.mock import patch
 from sqlalchemy import select
 
 from pandrator.logic import tts_handler
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
-    AppSetting,
     Artifact,
     ArtifactEdge,
     AudioTake,
@@ -24,9 +24,12 @@ from pandrator.web.models import (
     SessionRecord,
     UploadSessionRecord,
     UsageEvent,
+    WorkspaceSetting,
     utcnow,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.tts_providers import KoboldQwenAdapter, TtsBatchItem
+from pandrator.web.usage_identity import bind_usage_ownership
 from pandrator.web.workspace import (
     BUILTIN_DEFAULTS,
     RUNTIME_SETTING_ALIASES,
@@ -68,7 +71,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="defaults.tts",
                     value_json={
                         "service": "Kokoro",
@@ -78,7 +82,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 )
             )
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="services.tts",
                     value_json={
                         "provider_configs": [
@@ -555,12 +560,14 @@ class WebParityWorkspaceTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="defaults.tts", value_json={"service": "Kokoro", "speed": 0.9}
                 )
             )
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="services.tts",
                     value_json={
                         "provider_configs": [
@@ -603,13 +610,15 @@ class WebParityWorkspaceTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="defaults.tts",
                     value_json={"service": "Kokoro", "language": "en-gb"},
                 )
             )
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="services.tts",
                     value_json={
                         "provider_configs": [
@@ -680,7 +689,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="services.tts",
                     value_json={
                         "provider_configs": [
@@ -723,7 +733,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             session.add(
-                AppSetting(
+                WorkspaceSetting(
+                    workspace_id=initial_personal_workspace(session).id,
                     key="services.tts",
                     value_json={
                         "provider_configs": [
@@ -1127,8 +1138,13 @@ class WebParityWorkspaceTests(unittest.TestCase):
         record = self.create_session()
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
+            artifact_ownership = resolve_artifact_ownership(
+                session, session_id=record["id"]
+            )
             source = Artifact(
                 session_id=record["id"],
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="srt",
                 role="upload",
                 relative_path="artifacts/source.srt",
@@ -1136,6 +1152,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
             )
             correction = Artifact(
                 session_id=record["id"],
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="srt",
                 role="correction",
                 relative_path="artifacts/correction.srt",
@@ -1172,14 +1190,21 @@ class WebParityWorkspaceTests(unittest.TestCase):
         record = self.create_session()
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
+            artifact_ownership = resolve_artifact_ownership(
+                session, session_id=record["id"]
+            )
             transcription = Artifact(
                 session_id=record["id"],
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="srt",
                 role="transcription",
                 relative_path="artifacts/transcription.srt",
             )
             correction = Artifact(
                 session_id=record["id"],
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="srt",
                 role="correction",
                 relative_path="artifacts/correction.srt",
@@ -1188,6 +1213,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
             session.flush()
             translation = Artifact(
                 session_id=record["id"],
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="srt",
                 role="translation",
                 relative_path="artifacts/translation.srt",
@@ -1400,11 +1427,16 @@ class WebParityWorkspaceTests(unittest.TestCase):
         ).get_json()["items"]
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
+            artifact_ownership = resolve_artifact_ownership(
+                session, session_id=record["id"]
+            )
             for index, verification_status in enumerate(
                 ("warning", "failed", "passed")
             ):
                 artifact = Artifact(
                     session_id=record["id"],
+                    workspace_id=artifact_ownership.workspace_id,
+                    project_id=artifact_ownership.project_id,
                     kind="audio",
                     role="generation_take",
                     relative_path=f"verification-{index}.wav",
@@ -1425,6 +1457,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 )
             older_artifact = Artifact(
                 session_id=record["id"],
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="audio",
                 role="generation_take",
                 relative_path="older-failed.wav",
@@ -1496,20 +1530,20 @@ class WebParityWorkspaceTests(unittest.TestCase):
             parent_ids=[cleaned.id],
         )
         with extension["database"].session() as session:
-            session.add(
-                UsageEvent(
-                    session_id=record["id"],
-                    artifact_id=cleaned.id,
-                    stage="correction",
-                    provider_key="openai",
-                    model_id="demo",
-                    input_tokens=10,
-                    output_tokens=5,
-                    cost_usd=0.0012,
-                    cost_source="fixture",
-                    raw_usage_json={"commercial": True},
-                )
+            usage_event = UsageEvent(
+                session_id=record["id"],
+                artifact_id=cleaned.id,
+                stage="correction",
+                provider_key="openai",
+                model_id="demo",
+                input_tokens=10,
+                output_tokens=5,
+                cost_usd=0.0012,
+                cost_source="fixture",
+                raw_usage_json={"commercial": True},
             )
+            bind_usage_ownership(session, usage_event)
+            session.add(usage_event)
 
         response = self.client.get(f"/api/v1/artifacts/{cleaned.id}/context")
 

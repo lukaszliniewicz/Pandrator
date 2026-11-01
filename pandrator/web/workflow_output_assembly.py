@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import logging
+import os
+import stat
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, update
+from sqlalchemy.orm import Session
 
+from .access.assembly_execution_policy import require_assembly_execution
+from .access.assembly_input_policy import AssemblyCoverInput, require_assembly_cover
 from .artifacts import ArtifactService
 from .generation_audio_version_assembly import revalidate_audio_version_assembly
 from .generation_audio_versions import audio_version_take_ids
@@ -25,7 +31,10 @@ from .models import (
     utcnow,
 )
 from .output_settings_snapshot import build_output_settings_snapshot
+from .output_storage import estimated_assembly_bytes, reserve_output_space, storage_wait_detail
 from .settings_policy import RevisionConflict
+from .speech_boundaries import assembly_pause
+from .storage_admission import StoragePressure
 from .workflow_output_context import OutputWorkflowContext
 
 # Preserve the historical logger name for existing log filters and dashboards.
@@ -58,10 +67,59 @@ def assemble_generation_output(
     )
     from .media_process import MediaProcessCancelled, probe_audio_stream
 
+    with context.database.snapshot_session() as session:
+        captured = require_assembly_execution(session, payload)
+
+    cover_input: AssemblyCoverInput | None = None
+
+    def prove(session: Session | None = None) -> None:
+        if session is None:
+            with context.database.snapshot_session() as current:
+                prove(current)
+            return
+        require_assembly_execution(session, payload, expected=captured)
+        if cover_input is not None:
+            require_assembly_cover(session, cover_input.artifact_id, expected=cover_input)
+
     assembly_id = str(payload.get("output_assembly_id") or "")
     destination: Path | None = None
+    requested_destination: Path | None = None
+    staging: tempfile.TemporaryDirectory[str] | None = None
+    published_path: Path | None = None
+    published_identity: tuple[int, int] | None = None
+    published_hash: str | None = None
     output_registered = False
+
+    def record_failure(status: str, error: str | None = None) -> None:
+        # Terminal bookkeeping belongs to the already-proven attempt. It must
+        # remain possible after revocation, without following a retargeted row.
+        from .models import SessionRecord
+        from .projects.models import Project
+
+        with context.database.immediate_session() as session:
+            current = session.scalar(
+                select(OutputAssembly.id)
+                .join(SessionRecord, SessionRecord.id == OutputAssembly.session_id)
+                .join(Project, Project.id == SessionRecord.project_id)
+                .where(
+                    OutputAssembly.id == captured.assembly_id,
+                    OutputAssembly.session_id == captured.session_id,
+                    OutputAssembly.job_id == captured.assembly_job_id,
+                    OutputAssembly.generation_run_id == captured.generation_run_id,
+                    OutputAssembly.settings_hash == captured.settings_hash,
+                    Project.id == captured.project_id,
+                    Project.workspace_id == captured.workspace_id,
+                )
+            )
+            if current is not None:
+                session.execute(
+                    update(OutputAssembly)
+                    .where(OutputAssembly.id == current)
+                    .values(status=status, error_message=error, updated_at=utcnow())
+                )
+
     with context.database.session() as session:
+        prove(session)
         assembly_row = session.execute(
             select(OutputAssembly, GenerationPlan)
             .select_from(OutputAssembly)
@@ -119,6 +177,7 @@ def assemble_generation_output(
 
     try:
         with context.database.session() as session:
+            prove(session)
             source_timings = []
             if source_revision_id:
                 source_timings = [
@@ -171,7 +230,12 @@ def assemble_generation_output(
                     selected_artifacts = {
                         artifact.id: artifact
                         for artifact in session.scalars(
-                            select(Artifact).where(Artifact.id.in_(artifact_ids))
+                            select(Artifact).where(
+                                Artifact.id.in_(artifact_ids),
+                                Artifact.session_id == session_id,
+                                Artifact.project_id == captured.project_id,
+                                Artifact.workspace_id == captured.workspace_id,
+                            )
                         ).all()
                     } if artifact_ids else {}
                     selected_rows = []
@@ -227,7 +291,12 @@ def assemble_generation_output(
                             )
                             .outerjoin(
                                 Artifact,
-                                Artifact.id == AudioTake.artifact_id,
+                                and_(
+                                    Artifact.id == AudioTake.artifact_id,
+                                    Artifact.session_id == session_id,
+                                    Artifact.project_id == captured.project_id,
+                                    Artifact.workspace_id == captured.workspace_id,
+                                ),
                             )
                             .where(
                                 GenerationSegment.plan_revision_id == plan_revision_id,
@@ -271,18 +340,20 @@ def assemble_generation_output(
         chapter_markers: list[tuple[float, str]] = []
         parent_ids: list[str] = []
         for index, (segment, take, artifact) in enumerate(selected):
+            if (
+                artifact.session_id != session_id
+                or artifact.project_id != captured.project_id
+                or artifact.workspace_id != captured.workspace_id
+            ):
+                raise ValueError("The selected audio input is not owned by this project.")
             if cancel_event.is_set():
-                with context.database.session() as session:
-                    assembly = session.get(OutputAssembly, assembly_id)
-                    if assembly is not None:
-                        assembly.status = "canceled"
-                        assembly.error_message = None
-                        assembly.updated_at = utcnow()
+                record_failure("canceled")
                 return {}
             progress(
                 0.2 * (index / len(selected)),
                 f"Validating audio segment {index + 1} of {len(selected)}",
             )
+            prove()
             path = context.paths.managed_path(artifact.relative_path)
             if not path.is_file():
                 raise ValueError(
@@ -294,6 +365,7 @@ def assemble_generation_output(
                 or 0
             )
             if duration_ms <= 0:
+                prove()
                 duration_ms = probe_audio_stream(
                     path, cancel_event=cancel_event
                 ).duration_ms
@@ -317,14 +389,18 @@ def assemble_generation_output(
             "speed_adjusted_block_count": 0,
         }
 
+        prove()
         session_record = context._session_record(session_id)
         output_format = str(output_settings.get("format") or "wav").lower()
         if session_record.workflow_kind != "audiobook" and output_format == "m4b":
             output_format = "wav"
         bitrate = str(output_settings.get("bitrate") or "192k")
         assemblies_dir = context._session_dir(session_id) / "assemblies"
+        prove()
         assemblies_dir.mkdir(parents=True, exist_ok=True)
-        destination = assemblies_dir / f"assembly-{assembly_id}.{output_format}"
+        requested_destination = assemblies_dir / f"assembly-{assembly_id}.{output_format}"
+        staging = tempfile.TemporaryDirectory(prefix=f".assembly-{assembly_id}-", dir=assemblies_dir)
+        destination = Path(staging.name) / requested_destination.name
         backend = resolve_assembly_backend()
         fade_enabled = bool(
             audio_settings.get(
@@ -362,7 +438,16 @@ def assemble_generation_output(
         sample_rate_hz, channels = preferred_pcm_format(
             loaded[0][3],
             cancel_event=cancel_event,
+            before_io=prove,
         )
+        # Budget before creating normalized/aligned copies. Caption-timed work
+        # can retain both segment WAVs and its complete aligned timeline.
+        duration_bound_ms = sum(item[4] for item in loaded) + sum(
+            assembly_pause(item[0], resolved) for item in loaded[:-1]
+        ) + (max((end for _start, end, _ordinal in source_timing_by_ref.values()), default=0)
+             if subtitle_timed else 0)
+        assembly_bytes = estimated_assembly_bytes(duration_bound_ms, sample_rate_hz, channels)
+        reserve_output_space(context, assemblies_dir, assembly_bytes, label="assembly")
 
         if subtitle_timed:
             alignment_blocks: list[AudioAlignmentBlock] = []
@@ -411,6 +496,7 @@ def assemble_generation_output(
                         backend=backend,
                         work_dir=temporary_path,
                         cancel_event=cancel_event,
+                        before_io=prove,
                     )
                     block = AudioAlignmentBlock(
                         number=str(index + 1).zfill(4),
@@ -495,6 +581,7 @@ def assemble_generation_output(
                     0.48,
                     f"Synchronizing {len(alignment_blocks)} speech blocks",
                 )
+                prove()
                 aligned_path = Path(
                     align_audio_blocks(
                         alignment_blocks,
@@ -515,6 +602,7 @@ def assemble_generation_output(
                         cancel_event=cancel_event,
                     )
                 )
+                prove()
                 aligned_duration_ms = probe_audio_stream(
                     aligned_path,
                     cancel_event=cancel_event,
@@ -531,12 +619,16 @@ def assemble_generation_output(
                     sample_rate_hz=sample_rate_hz,
                     channels=channels,
                 )
+                reserve_output_space(context, assemblies_dir, estimated_assembly_bytes(
+                    output_plan.expected_duration_ms, sample_rate_hz, channels, copies=3,
+                ), label="assembly")
                 assembly_result = assemble_audio_plan(
                     output_plan,
                     destination,
                     backend=backend,
                     work_dir=temporary_path,
                     cancel_event=cancel_event,
+                    before_io=prove,
                     progress=lambda fraction, detail: progress(
                         0.62 + 0.2 * fraction,
                         detail,
@@ -555,7 +647,6 @@ def assemble_generation_output(
             )
         else:
             from .assembly_silences import render_part_silences, silence_manifest
-            from .speech_boundaries import assembly_pause
 
             planned_parts: list[AudioAssemblyPart] = []
             planned_chapters: list[tuple[int, str]] = []
@@ -593,12 +684,16 @@ def assemble_generation_output(
                 channels=channels,
                 chapters=planned_chapters,
             )
+            reserve_output_space(context, assemblies_dir, estimated_assembly_bytes(
+                output_plan.expected_duration_ms, sample_rate_hz, channels, copies=3,
+            ), label="assembly")
             assembly_result = assemble_audio_plan(
                 output_plan,
                 destination,
                 backend=backend,
                 work_dir=assemblies_dir,
                 cancel_event=cancel_event,
+                before_io=prove,
                 progress=lambda fraction, detail: progress(
                     0.2 + 0.62 * fraction,
                     detail,
@@ -661,6 +756,9 @@ def assemble_generation_output(
                 output_settings.get("cover_artifact_id") or ""
             ).strip()
             if cover_artifact_id:
+                with context.database.snapshot_session() as session:
+                    prove(session)
+                    cover_input = require_assembly_cover(session, cover_artifact_id)
                 cover_artifact, candidate = context._resolve_input(cover_artifact_id)
                 if (
                     cover_artifact.state != "current"
@@ -677,6 +775,10 @@ def assemble_generation_output(
                 _save_metadata_and_cover,
             )
 
+            prove()
+            reserve_output_space(context, assemblies_dir,
+                                 2 * destination.stat().st_size + (cover_path.stat().st_size if cover_path else 0),
+                                 label="audiobook metadata")
             _save_metadata_and_cover(
                 str(destination),
                 output_format,
@@ -685,12 +787,14 @@ def assemble_generation_output(
                 raise_on_error=True,
             )
             if output_format == "m4b" and chapter_markers:
+                prove()
                 _add_chapters_to_m4b(
                     str(destination),
                     chapter_markers,
                     total_duration_sec=assembly_result.duration_ms / 1000,
                     raise_on_error=True,
                 )
+                prove()
                 _save_metadata_and_cover(
                     str(destination),
                     output_format,
@@ -708,13 +812,7 @@ def assemble_generation_output(
         )
         if cancel_event.is_set():
             raise MediaProcessCancelled("Output assembly was canceled.")
-        artifact = context.artifacts.register(
-            destination,
-            kind="audio",
-            role="assembled_audio",
-            session_id=session_id,
-            parent_ids=parent_ids,
-            settings={
+        artifact_settings = {
                 "audio": audio_settings,
                 "output": output_settings,
                 # Frame coordinates describe the rendered output, not settings.
@@ -727,8 +825,8 @@ def assemble_generation_output(
                     }
                     for item in manifest
                 ],
-            },
-            metadata={
+            }
+        artifact_metadata = {
                 "output_assembly_id": assembly_id,
                 **({key: frozen_selection[key] for key in (
                     "audio_version_side", "audio_version_take_ids", "audio_version_selection_hash",
@@ -748,36 +846,30 @@ def assemble_generation_output(
                 **timeline_metadata,
                 "synchronization": alignment_diagnostics,
                 "output_settings": output_settings_snapshot,
-            },
+            }
+        prove()
+        prepared_artifact = context.artifacts.prepare_registration(
+            destination, settings=artifact_settings,
         )
-        output_registered = True
-        invalidated = False
-        pin_error = None
-        with context.database.immediate_session() as session:
-            assembly = session.get(OutputAssembly, assembly_id)
-            if assembly is None:
-                raise KeyError(assembly_id)
+
+        def publication_state(session: Session, assembly: OutputAssembly):
             current_plan = (
                 session.scalar(
-                    select(GenerationPlan).where(
-                        GenerationPlan.session_id == session_id
-                    )
+                    select(GenerationPlan)
+                    .where(GenerationPlan.session_id == session_id)
+                    .execution_options(populate_existing=True)
                 )
-                if assembly.generation_run_id is None
-                else None
+                if assembly.generation_run_id is None else None
             )
             invalidated = (
                 cancel_event.is_set()
                 or assembly.status in {"stale", "canceled", "cancel_requested"}
-                or (
-                    assembly.generation_run_id is None
-                    and (
-                        current_plan is None
-                        or str(current_plan.active_revision_id or "")
-                        != plan_revision_id
-                    )
-                )
+                or (assembly.generation_run_id is None and (
+                    current_plan is None
+                    or str(current_plan.active_revision_id or "") != plan_revision_id
+                ))
             )
+            pin_error = None
             if is_recast:
                 try:
                     current_selection = dict(assembly.settings_json or {})
@@ -791,14 +883,55 @@ def assemble_generation_output(
                 except RevisionConflict as error:
                     pin_error = error
                     invalidated = True
-            assembly.artifact_id = artifact.id
+            return invalidated, pin_error
+
+        artifact = None
+        with context.database.immediate_session() as session:
+            prove(session)
+            assembly = session.get(OutputAssembly, assembly_id)
+            if assembly is None:
+                raise KeyError(assembly_id)
+            invalidated, pin_error = publication_state(session, assembly)
+            if not invalidated:
+                # Compare input headers in batches, without re-reading media in
+                # the writer. A replaced/staled input cannot publish new output.
+                expected_inputs = {
+                    item.id: (item.state, item.content_hash, item.relative_path,
+                              item.session_id, item.project_id, item.workspace_id)
+                    for _segment, _take, item in selected
+                }
+                input_ids = list(expected_inputs)
+                actual_inputs = {}
+                for offset in range(0, len(input_ids), 500):
+                    for row in session.execute(select(
+                        Artifact.id, Artifact.state, Artifact.content_hash, Artifact.relative_path,
+                        Artifact.session_id, Artifact.project_id, Artifact.workspace_id,
+                    ).where(Artifact.id.in_(input_ids[offset:offset + 500]))):
+                        actual_inputs[row.id] = tuple(row[1:])
+                if actual_inputs != expected_inputs:
+                    raise RevisionConflict("A selected audio input changed during assembly.")
+                assert requested_destination is not None
+                published_path = context.artifacts.next_available_path(requested_destination)
+                os.replace(destination, published_path)
+                identity = published_path.lstat()
+                published_identity = (identity.st_dev, identity.st_ino)
+                published_hash = prepared_artifact.content_hash
+                prepared_artifact = replace(
+                    prepared_artifact,
+                    relative_path=context.paths.relative_managed_path(published_path),
+                )
+                artifact = context.artifacts.register_in_session(
+                    session, published_path, kind="audio", role="assembled_audio",
+                    session_id=session_id, parent_ids=parent_ids,
+                    settings=artifact_settings, metadata=artifact_metadata,
+                    _prepared=prepared_artifact,
+                )
+                invalidated, pin_error = publication_state(session, assembly)
+                assembly.artifact_id = artifact.id
+                if invalidated:
+                    artifact.state = "stale"
+                    ArtifactService._mark_descendants_stale(session, artifact.id)
             if invalidated:
-                stored_artifact = session.get(Artifact, artifact.id)
-                if stored_artifact is not None:
-                    stored_artifact.state = "stale"
-                    ArtifactService._mark_descendants_stale(
-                        session, stored_artifact.id
-                    )
                 assembly.status = "failed" if pin_error else "canceled"
                 assembly.error_message = str(pin_error) if pin_error else None
             else:
@@ -813,10 +946,12 @@ def assemble_generation_output(
                     "synchronization": alignment_diagnostics,
                 }
             assembly.updated_at = utcnow()
+        output_registered = artifact is not None
         if pin_error:
             raise pin_error
         if invalidated:
             return {}
+        assert artifact is not None
         progress(1.0, "Output assembly ready")
         return {
             "output_assembly_id": assembly_id,
@@ -831,23 +966,35 @@ def assemble_generation_output(
                 if key != "blocks"
             },
         }
+    except StoragePressure as error:
+        record_failure("queued", storage_wait_detail(error))
+        raise
     except MediaProcessCancelled:
-        if destination is not None and not output_registered:
-            destination.unlink(missing_ok=True)
-        with context.database.session() as session:
-            assembly = session.get(OutputAssembly, assembly_id)
-            if assembly is not None:
-                assembly.status = "canceled"
-                assembly.error_message = None
-                assembly.updated_at = utcnow()
+        record_failure("canceled")
         return {}
     except Exception as error:
-        if destination is not None and not output_registered:
-            destination.unlink(missing_ok=True)
-        with context.database.session() as session:
-            assembly = session.get(OutputAssembly, assembly_id)
-            if assembly is not None:
-                assembly.status = "failed"
-                assembly.error_message = str(error)
-                assembly.updated_at = utcnow()
+        record_failure("failed", str(error))
         raise
+    finally:
+        if published_path is not None and not output_registered and published_identity is not None:
+            # A commit with an uncertain outcome is a reason to preserve bytes.
+            try:
+                with context.database.snapshot_session() as session:
+                    registered = session.scalar(select(Artifact.id).where(
+                        Artifact.relative_path == context.paths.relative_managed_path(published_path),
+                        Artifact.content_hash == published_hash,
+                    ))
+                if registered is None:
+                    current = published_path.lstat()
+                    if (stat.S_ISREG(current.st_mode)
+                            and (current.st_dev, current.st_ino) == published_identity):
+                        published_path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                logger.warning("Preserving uncertain assembly output %s", assembly_id, exc_info=True)
+        if staging is not None:
+            try:
+                staging.cleanup()
+            except OSError:
+                logger.warning("Could not remove assembly staging %s", assembly_id, exc_info=True)

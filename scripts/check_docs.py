@@ -1,4 +1,4 @@
-"""Validate the tracked Markdown documentation without network access."""
+"""Validate public Markdown documentation without network access."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ _INLINE_LINK_RE = re.compile(r"!?\[([^\]]+)\]\([^)]+\)")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _FORBIDDEN_PUBLIC_DOCUMENTS = frozenset(
     {
-        "AGENTS.md",
-        "PASSIVE_DISPATCHER_FIELD_NOTES.md",
-        "SUBTITLE_PIPELINE_REVIEW.md",
+        "agents.md",
+        "passive_dispatcher_field_notes.md",
+        "subtitle_pipeline_review.md",
         "release-acceptance.md",
     }
 )
@@ -53,19 +53,22 @@ def _public_paths(root: Path) -> tuple[Path, ...]:
 
 def _tracked_markdown(root: Path) -> tuple[Path, ...]:
     return tuple(
-        path for path in _public_paths(root)
-        if path.suffix.casefold() in {".md", ".markdown"}
+        path for path in _public_paths(root) if path.suffix.casefold() in {".md", ".markdown"}
     )
 
 
 def _private_path(relative: Path) -> bool:
+    parts = tuple(part.casefold() for part in relative.parts)
     return (
-        bool(relative.parts) and relative.parts[0].casefold() in _PRIVATE_ROOTS
-    ) or (
-        len(relative.parts) >= 2
-        and relative.parts[0].casefold() == "docs"
-        and relative.parts[1].casefold() in _PRIVATE_DOC_SECTIONS
-    ) or relative.name in _FORBIDDEN_PUBLIC_DOCUMENTS
+        (any(part in _PRIVATE_ROOTS for part in parts))
+        or (
+            any(
+                parts[index] == "docs" and parts[index + 1] in _PRIVATE_DOC_SECTIONS
+                for index in range(len(parts) - 1)
+            )
+        )
+        or relative.name.casefold() in _FORBIDDEN_PUBLIC_DOCUMENTS
+    )
 
 
 def _heading_slug(title: str) -> str:
@@ -100,10 +103,10 @@ def _local_target(
     target: str,
     root: Path,
 ) -> tuple[Path, str] | None:
-    cleaned = (
-        target[1:-1] if target.startswith("<") and target.endswith(">") else target
-    )
+    cleaned = target[1:-1] if target.startswith("<") and target.endswith(">") else target
     parsed = urlsplit(cleaned)
+    if parsed.scheme.casefold() == "file":
+        raise ValueError("local workstation file links are not public documentation")
     if parsed.scheme or parsed.netloc:
         return None
     if cleaned.startswith("//"):
@@ -133,8 +136,9 @@ def check_repository(root: Path) -> list[str]:
             errors.append(f"internal material must remain untracked: {relative.as_posix()}")
 
     for relative in documents:
-        if relative.name in _FORBIDDEN_PUBLIC_DOCUMENTS or relative.name.startswith(
-            "RELEASE_NOTES"
+        if (
+            relative.name.casefold() in _FORBIDDEN_PUBLIC_DOCUMENTS
+            or relative.name.upper().startswith("RELEASE_NOTES")
         ):
             errors.append(f"internal or release-only document is tracked: {relative}")
 
@@ -145,9 +149,7 @@ def check_repository(root: Path) -> list[str]:
         for match in _LINK_RE.finditer(text):
             raw_target = match.group("target")
             try:
-                target = _local_target(
-                    source=source, target=raw_target, root=repository
-                )
+                target = _local_target(source=source, target=raw_target, root=repository)
             except ValueError as error:
                 errors.append(f"{relative}: {raw_target}: {error}")
                 continue
@@ -155,7 +157,9 @@ def check_repository(root: Path) -> list[str]:
                 continue
             target_path, fragment = target
             if _private_path(target_path.relative_to(repository)):
-                errors.append(f"{relative}: internal material is not a public link target {raw_target}")
+                errors.append(
+                    f"{relative}: internal material is not a public link target {raw_target}"
+                )
                 continue
             if not target_path.exists():
                 errors.append(f"{relative}: missing local link target {raw_target}")
@@ -196,7 +200,7 @@ def check_repository(root: Path) -> list[str]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate tracked Markdown paths, anchors, and public navigation."
+        description="Validate public Markdown paths, anchors, and navigation."
     )
     parser.add_argument(
         "--root",
@@ -215,7 +219,7 @@ def main() -> int:
             print(f"documentation error: {error}")
         return 1
     document_count = len(_tracked_markdown(args.root.resolve(strict=True)))
-    print(f"Documentation check passed for {document_count} tracked Markdown files.")
+    print(f"Documentation check passed for {document_count} public Markdown files.")
     return 0
 
 

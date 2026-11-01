@@ -15,7 +15,16 @@
   import type { SessionSource } from '$lib/api-models';
   import type { PreviewableArtifact } from '$lib/artifact-display';
   import AddSourceDialog from '$lib/AddSourceDialog.svelte';
-  import PdfEditor from '$lib/PdfEditor.svelte';
+  import type PdfEditor from '$lib/PdfEditor.svelte';
+  let PdfEditorComponent = $state<typeof PdfEditor | null>(null);
+  async function openPdf(source: { id: string; filename: string }) {
+    try {
+      PdfEditorComponent ??= (await import('$lib/PdfEditor.svelte')).default;
+      pdf = source;
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
+  }
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
   import {
     invalidates,
@@ -232,7 +241,7 @@
               class="action primary">Make current</button
             >{/if}{#if source.kind === 'pdf'}<button
               onclick={() =>
-                (pdf = {
+                void openPdf({
                   id: source.artifact_id,
                   filename: source.display_name
                 })}
@@ -255,7 +264,7 @@
     onclose={() => (sourceDialog = false)}
     onadded={sourceAdded}
   />{/if}
-{#if pdf}<PdfEditor
+{#if pdf && PdfEditorComponent}<PdfEditorComponent
     {sessionId}
     source={pdf}
     onclose={() => (pdf = null)}

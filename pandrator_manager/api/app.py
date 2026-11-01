@@ -55,7 +55,8 @@ from ..processes import CommandRunner, CommandSpec
 from ..runtime_specs import (
     PANDRATOR_API_SERVICE,
     PANDRATOR_MCP_SERVICE,
-    PANDRATOR_WORKER_SERVICE,
+    PANDRATOR_SERVICE_STOP_ORDER,
+    PANDRATOR_WORKER_SERVICES,
     pandrator_runtime_specs,
 )
 from ..supervisor import ProcessSupervisor
@@ -128,7 +129,10 @@ def _browser_handoff_url(
             http_status=409,
         )
     try:
-        token = str(response.json()["token"]).strip()
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("login_required") is True:
+            return f"{base_url}/"
+        token = str(payload["token"]).strip()
     except (KeyError, TypeError, ValueError) as error:
         raise ManagerError(
             "application_launch_failed",
@@ -1073,12 +1077,12 @@ def create_api(
             in {
                 PANDRATOR_API_SERVICE,
                 PANDRATOR_MCP_SERVICE,
-                PANDRATOR_WORKER_SERVICE,
+                *PANDRATOR_WORKER_SERVICES,
             }
         }
         api_service = services.get(PANDRATOR_API_SERVICE)
         mcp_service = services.get(PANDRATOR_MCP_SERVICE)
-        worker_service = services.get(PANDRATOR_WORKER_SERVICE)
+        worker_services = [services[key] for key in PANDRATOR_WORKER_SERVICES if key in services]
         state = (
             str(component["inspection"]["state"])
             if component is not None
@@ -1086,7 +1090,10 @@ def create_api(
         )
         installed = state in {"present", "degraded"}
         api_running = bool(api_service and api_service.process)
-        worker_running = bool(worker_service and worker_service.process)
+        worker_running = any(service.process is not None for service in worker_services)
+        workers_ready = bool(worker_services) and all(
+            service.process is not None for service in worker_services
+        )
         mcp_running = bool(mcp_service and mcp_service.process)
         mcp_healthy = bool(
             mcp_running
@@ -1096,7 +1103,7 @@ def create_api(
         )
         healthy = bool(
             api_running
-            and worker_running
+            and workers_ready
             and api_service
             and api_service.health
             and api_service.health.state.value == "healthy"
@@ -1105,6 +1112,12 @@ def create_api(
             "installed": installed,
             "component_state": state,
             "running": api_running and worker_running,
+            "worker_running": worker_running,
+            "worker_capacity": {
+                "configured": len(worker_services),
+                "running": sum(service.process is not None for service in worker_services),
+                "ready": workers_ready,
+            },
             "healthy": healthy,
             "endpoint": api_service.endpoint if api_service else None,
             "mcp_available": mcp_service is not None,
@@ -1118,7 +1131,7 @@ def create_api(
             "browser_url": application_exposure_state["value"].browser_base_url,
             "services": [
                 service.model_dump(mode="json")
-                for service in (api_service, mcp_service, worker_service)
+                for service in (api_service, mcp_service, *worker_services)
                 if service is not None
             ],
         }
@@ -1197,7 +1210,7 @@ def create_api(
         application_service_ids = {
             PANDRATOR_API_SERVICE,
             PANDRATOR_MCP_SERVICE,
-            PANDRATOR_WORKER_SERVICE,
+            *PANDRATOR_WORKER_SERVICES,
         }
         active = {
             service.id
@@ -1206,7 +1219,7 @@ def create_api(
             and service.id in application_service_ids
         }
         if active.intersection(
-            {PANDRATOR_API_SERVICE, PANDRATOR_WORKER_SERVICE}
+            {PANDRATOR_API_SERVICE, *PANDRATOR_WORKER_SERVICES}
         ):
             return
         if PANDRATOR_MCP_SERVICE in active:
@@ -1260,7 +1273,9 @@ def create_api(
         try:
             ensure_application_installed()
             refresh_application_specs()
-            supervisor.start(PANDRATOR_WORKER_SERVICE)
+            for service_id in PANDRATOR_WORKER_SERVICES:
+                if supervisor.spec(service_id) is not None:
+                    supervisor.start(service_id)
         except Exception as error:
             emit_application_event(
                 "application.action_failed",
@@ -1285,11 +1300,7 @@ def create_api(
         emit_application_event("application.action_requested", "stop")
         try:
             failures: list[str] = []
-            for service_id in (
-                PANDRATOR_MCP_SERVICE,
-                PANDRATOR_WORKER_SERVICE,
-                PANDRATOR_API_SERVICE,
-            ):
+            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
                 if supervisor.spec(service_id) is None:
                     continue
                 try:
@@ -1390,11 +1401,7 @@ def create_api(
         try:
             ensure_application_installed()
             failures: list[str] = []
-            for service_id in (
-                PANDRATOR_MCP_SERVICE,
-                PANDRATOR_WORKER_SERVICE,
-                PANDRATOR_API_SERVICE,
-            ):
+            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
                 if supervisor.spec(service_id) is not None:
                     try:
                         supervisor.stop(service_id)
@@ -1403,7 +1410,9 @@ def create_api(
             if failures:
                 raise RuntimeError("; ".join(failures))
             refresh_application_specs()
-            supervisor.start(PANDRATOR_WORKER_SERVICE)
+            for service_id in PANDRATOR_WORKER_SERVICES:
+                if supervisor.spec(service_id) is not None:
+                    supervisor.start(service_id)
         except Exception as error:
             emit_application_event(
                 "application.action_failed",
@@ -1895,7 +1904,7 @@ def create_api(
             and {
                 PANDRATOR_API_SERVICE,
                 PANDRATOR_MCP_SERVICE,
-                PANDRATOR_WORKER_SERVICE,
+                *PANDRATOR_WORKER_SERVICES,
             }.intersection(selected)
         ):
             # The daemon registers a conservative fallback before a first

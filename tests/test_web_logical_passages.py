@@ -420,6 +420,84 @@ def test_stale_ledger_is_ignored_after_display_revision_changes(app_case):
         assert materialize_speech_source(session, managed) is None
 
 
+def test_source_passages_use_ordered_exact_ownership_without_interval_fallback(app_case):
+    case = app_case
+    _, original, _ = source(case)
+    database = case.extension["database"]
+    row = {
+        "id": "p000001",
+        "text": "An owned passage.",
+        "start_ms": 0,
+        "end_ms": 19000,
+        "speaker": "SPEAKER_99",
+        "source_cue_ids": ["second", "first", "second", "unknown"],
+        "review_state": "uncertain",
+        "review_note": "Keep the stored note.",
+        "evidence_ids": ["stored-evidence"],
+        "uncertain_source_cue_ids": [2],
+    }
+    with database.session() as session:
+        managed = session.get(Artifact, original.id)
+        segments = list(
+            session.scalars(
+                select(Segment)
+                .where(Segment.revision_id == managed.metadata_json["revision_id"])
+                .order_by(Segment.ordinal)
+            )
+        )
+        row["source_cue_ids"] = [
+            segments[1].id,
+            segments[0].id,
+            segments[1].id,
+            "unknown",
+        ]
+        attach_passages(managed, [row], source=managed)
+
+        with patch(
+            "pandrator.web.logical_passages.overlap_indexes",
+            side_effect=AssertionError("Exact cue ownership must skip interval lookup."),
+        ):
+            prepared = source_passages(session, managed)
+
+    assert prepared[0]["evidence_cue_ids"] == [1, 2]
+    assert prepared[0]["review_state"] == "uncertain"
+    assert prepared[0]["review_note"] == "Keep the stored note."
+    assert prepared[0]["evidence_ids"] == ["stored-evidence"]
+    assert prepared[0]["uncertain_source_cue_ids"] == [2]
+
+
+def test_source_passages_fallback_finds_nested_interval_parents_in_order(app_case):
+    case = app_case
+    _, original, _ = source(case)
+    database = case.extension["database"]
+    row = {
+        "id": "p000001",
+        "text": "A passage without current cue IDs.",
+        "start_ms": 250,
+        "end_ms": 950,
+        "speaker": "SPEAKER_00",
+        "source_cue_ids": ["stale-cue-id"],
+    }
+    with database.session() as session:
+        managed = session.get(Artifact, original.id)
+        segments = list(
+            session.scalars(
+                select(Segment)
+                .where(Segment.revision_id == managed.metadata_json["revision_id"])
+                .order_by(Segment.ordinal)
+            )
+        )
+        for segment, bounds in zip(
+            segments, ((0, 1000), (200, 300), (900, 1200)), strict=True
+        ):
+            segment.start_ms, segment.end_ms = bounds
+        attach_passages(managed, [row], source=managed)
+
+        prepared = source_passages(session, managed, segments=segments)
+
+    assert prepared[0]["evidence_cue_ids"] == [1, 2, 3]
+
+
 def test_fork_rebinds_passages_and_materializes_its_own_source(app_case):
     case = app_case
     session_id, original, _ = source(case)
@@ -577,7 +655,7 @@ def test_native_workflow_passes_logical_rows_between_models_and_preserves_review
     with patch.object(
         handlers,
         "_with_database_llm_settings",
-        side_effect=lambda settings, _stage: {**defaults, **settings},
+        side_effect=lambda settings, _stage, *, session_id=None: {**defaults, **settings},
     ):
         with patch(
             "pandrator.logic.llm_handler.chat_completion_with_metadata",

@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any
+from uuid import UUID
 
 from pydub import AudioSegment
 
@@ -25,6 +26,10 @@ from pandrator.logic.speech_markup import (
 )
 from pandrator.logic.speech_performance import Delivery, validate_annotation
 
+from .speech_input_contracts import (
+    PROJECT_SPEECH_INPUT_KEY,
+    validate_speech_input_pin,
+)
 from .tts_provider_contracts import TtsSynthesisResult
 
 _EMPTY_DELIVERY = {
@@ -133,7 +138,21 @@ def _voice_key(
         # A backend callback may put this description into generation_prompt;
         # retain it in the grouping identity without splitting on directions.
         values.append(("binding_voice_description", repr(binding["voice_description"])))
+    if PROJECT_SPEECH_INPUT_KEY in settings:
+        pin = validate_speech_input_pin(settings[PROJECT_SPEECH_INPUT_KEY])
+        retained_identity = "<explicit-null>" if pin is None else pin["content_hash"]
+        values.append((PROJECT_SPEECH_INPUT_KEY, retained_identity))
     return tuple(values)
+
+
+def _canonical_segment_slot(segment_id: str) -> str | None:
+    try:
+        canonical_id = str(UUID(segment_id))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if segment_id != canonical_id:
+        return None
+    return f"segment:{canonical_id}"
 
 
 def _default_apply_binding(
@@ -170,6 +189,10 @@ def _binding_result(
     xml_present: bool,
     apply_binding: Callable[[dict[str, Any] | None, dict[str, Any]], dict[str, Any]]
     | None,
+    apply_binding_at_slot: Callable[
+        [dict[str, Any] | None, dict[str, Any], str | None], dict[str, Any]
+    ]
+    | None,
 ) -> tuple[dict[str, Any], str, bool, dict[str, Any] | None]:
     from .generation_controls import resolve_cast_voice
 
@@ -199,7 +222,14 @@ def _binding_result(
     binding = resolution.get("binding")
     if binding is not None and not isinstance(binding, dict):
         raise ValueError("Cast resolver returned an invalid binding.")
-    if apply_binding is None:
+    if apply_binding_at_slot is not None:
+        result = apply_binding_at_slot(
+            deepcopy(binding), settings, resolution.get("slot_key")
+        )
+        if not isinstance(result, dict):
+            raise TypeError("apply_binding_at_slot must return a settings dictionary")
+        prepared = result
+    elif apply_binding is None:
         prepared = _default_apply_binding(binding, settings)
     else:
         result = apply_binding(deepcopy(binding), settings)
@@ -461,7 +491,12 @@ def build_render_parts(
     voice_binding: dict[str, Any] | None = None,
     apply_binding: Callable[[dict[str, Any] | None, dict[str, Any]], dict[str, Any]]
     | None = None,
+    apply_binding_at_slot: Callable[
+        [dict[str, Any] | None, dict[str, Any], str | None], dict[str, Any]
+    ]
+    | None = None,
     _settings_copy: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    _bind_base: bool = False,
 ) -> list[dict[str, Any]]:
     """Plan ordered provider requests for one logical segment."""
 
@@ -469,6 +504,12 @@ def build_render_parts(
         raise TypeError("text must be a string")
     if not isinstance(settings, dict):
         raise TypeError("settings must be a dictionary")
+    if apply_binding is not None and apply_binding_at_slot is not None:
+        raise TypeError("Provide only one binding callback.")
+    if apply_binding is not None and not callable(apply_binding):
+        raise TypeError("apply_binding must be callable")
+    if apply_binding_at_slot is not None and not callable(apply_binding_at_slot):
+        raise TypeError("apply_binding_at_slot must be callable")
     control_values = _control_values(settings, controls)
     character_labels = {
         item["id"]: item.get("display_name") or item["id"]
@@ -508,11 +549,25 @@ def build_render_parts(
     planned: list[_PlannedSpan] = []
     for span in parsed.spans:
         prepared = copy_settings(settings)
-        if voice_binding and not strict_single_voice:
+        if _bind_base and not _is_speakable_text(span.text):
+            # These separators fold into a speakable group below; they have no
+            # independent provider request or audible voice to acquire.
+            source, fallback, binding = "base", False, None
+        elif voice_binding and not strict_single_voice:
             # An explicit block assignment applies to the whole block, while
             # its markup still supplies delivery and boundary information.
             binding = voice_binding
-            prepared = (apply_binding or _default_apply_binding)(binding, prepared)
+            if apply_binding_at_slot is not None:
+                callback_settings = apply_binding_at_slot(
+                    deepcopy(binding), prepared, _canonical_segment_slot(segment_id)
+                )
+                if not isinstance(callback_settings, dict):
+                    raise TypeError(
+                        "apply_binding_at_slot must return a settings dictionary"
+                    )
+                prepared = callback_settings
+            else:
+                prepared = (apply_binding or _default_apply_binding)(binding, prepared)
             source, fallback = "segment", False
         elif casting_enabled:
             prepared, source, fallback, binding = _binding_result(
@@ -522,8 +577,13 @@ def build_render_parts(
                 source_speaker=source_speaker,
                 xml_present=xml_present,
                 apply_binding=apply_binding,
+                apply_binding_at_slot=apply_binding_at_slot,
             )
         else:
+            if _bind_base and apply_binding_at_slot is not None:
+                prepared = apply_binding_at_slot(None, prepared, None)
+                if not isinstance(prepared, dict):
+                    raise TypeError("apply_binding_at_slot must return a settings dictionary")
             source, fallback, binding = "base", False, None
         planned.append(
             _PlannedSpan(

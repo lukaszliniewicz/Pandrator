@@ -238,7 +238,12 @@
         "voice_design": false,
         "instructions": false
       },
-      "language_note": "Ten documented languages and 48 native presets. Cloning requires a matching reference transcript."
+      "language_note": "Ten documented languages and 48 native presets. Cloning requires a matching reference transcript.",
+      "license": {
+        "name": "Stellon Labs Community License",
+        "url": "https://huggingface.co/dignome/kitten_tts2/blob/main/LICENSE",
+        "commercial_use": "conditional"
+      }
     },
     "lfm2_audio": {
       "voice_mode": "prebuilt",
@@ -361,6 +366,46 @@
         "instructions": false,
         "streaming": true
       }
+    },
+    "fish_drama3": {
+      "license": {
+        "name": "Fish Audio Community License v1.0",
+        "url": "https://huggingface.co/fishaudio/drama-3/blob/main/LICENSE",
+        "commercial_use": "conditional"
+      },
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "reference_text": "recommended",
+      "upstream_features": {
+        "voice_cloning": true,
+        "instructions": true,
+        "emotion_control": true,
+        "vocal_events": true,
+        "multi_speaker": true
+      },
+      "language_note": "Upstream reports 83 languages; this native route infers language from text. Coverage and delivery quality vary by language and quantization.",
+      "recommended_for": "Expressive narration and per-part cast voices. Large checkpoints need a compatible memory configuration; disk-backed experts trade speed for lower memory use."
+    },
+    "plapre": {
+      "license": {
+        "name": "CC-BY-4.0",
+        "url": "https://huggingface.co/syvai/plapre-3",
+        "commercial_use": "permitted_with_attribution"
+      },
+      "voice_mode": "hybrid",
+      "reference_audio": "optional",
+      "reference_text": "recommended",
+      "supported_languages": [
+        "da"
+      ],
+      "upstream_features": {
+        "voice_cloning": true,
+        "instructions": false,
+        "voice_design": false,
+        "emotion_control": false,
+        "vocal_events": false
+      },
+      "language_note": "Danish speech with five built-in voices or a linked reference. A matching transcript is recommended; speaker-embedding-only cloning can omit it."
     }
   },
   "models": {

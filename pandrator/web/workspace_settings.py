@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,18 +16,24 @@ from pandrator.logic.tts_provider_switch import (
     prepare_tts_provider_switch,
 )
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
 from .database import Database
 from .models import (
-    AppSetting,
-    AppSettingHistory,
     Artifact,
+    GenerationPlan,
+    GenerationPlanRevision,
     GenerationRun,
     OutcomePlan,
     SessionRecord,
     SessionSetting,
     SessionSettingHistory,
+    WorkspaceSetting,
+    WorkspaceSettingHistory,
     utcnow,
 )
+from .project_settings_policy import validate_project_speech_preferences
+from .settings_identity import settings_workspace_id, workspace_setting_in_workspace
 from .settings_policy import (
     BUILTIN_DEFAULTS,
     RUNTIME_SETTING_ALIASES,
@@ -50,15 +57,48 @@ from .source_narration_settings import validate_source_narration_settings
 from .source_resolution import classify_source, resolve_media_source
 
 
+def _session_workspace_id(
+    session: Session, session_id: str, *, workspace_id: str | None = None
+) -> str:
+    try:
+        return settings_workspace_id(
+            session, session_id=session_id, workspace_id=workspace_id
+        )
+    except ValueError as error:
+        if session.scalar(
+            select(SessionRecord.id).where(SessionRecord.id == session_id)
+        ) is None:
+            raise KeyError(session_id) from error
+        raise
+
+
 def migrate_legacy_subtitle_settings(
-    session: Session, legacy: dict[str, Any], *, session_id: str | None = None,
+    session: Session,
+    legacy: dict[str, Any],
+    *,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> None:
     """Move recognized flat fields atomically; canonical section values win."""
     if not legacy:
         return
+    try:
+        actual_workspace_id = (
+            _session_workspace_id(session, session_id, workspace_id=workspace_id)
+            if session_id is not None
+            else settings_workspace_id(
+                session, workspace_id=workspace_id
+            )
+        )
+    except Exception:
+        session.rollback()
+        raise
     record = (
         session.get(SessionSetting, (session_id, "subtitles"))
-        if session_id is not None else session.get(AppSetting, "defaults.subtitles")
+        if session_id is not None
+        else workspace_setting_in_workspace(
+            session, actual_workspace_id, "defaults.subtitles"
+        )
     )
     stored = dict(record.value_json or {}) if record else {}
     migrated = {**legacy, **stored}
@@ -67,13 +107,25 @@ def migrate_legacy_subtitle_settings(
     if record is None:
         record = (
             SessionSetting(session_id=session_id, section="subtitles", value_json=migrated, revision=1)
-            if session_id is not None else AppSetting(key="defaults.subtitles", value_json=migrated, revision=1)
+            if session_id is not None
+            else WorkspaceSetting(
+                workspace_id=actual_workspace_id,
+                key="defaults.subtitles",
+                value_json=migrated,
+                revision=1,
+            )
         )
         session.add(record)
     else:
         history = (
             SessionSettingHistory(session_id=session_id, section="subtitles", value_json=stored, revision=record.revision)
-            if session_id is not None else AppSettingHistory(key="defaults.subtitles", value_json=stored, revision=record.revision)
+            if session_id is not None
+            else WorkspaceSettingHistory(
+                workspace_id=actual_workspace_id,
+                key="defaults.subtitles",
+                value_json=stored,
+                revision=record.revision,
+            )
         )
         session.add(history)
         record.value_json = migrated
@@ -132,6 +184,15 @@ def subtitle_settings_provenance(
                 "causes": causes,
             }
     return {"fields": fields}
+
+
+@dataclass(frozen=True, slots=True)
+class _SubtitleSettingsReadContext:
+    session_id: str
+    workspace_id: str
+    workspace_defaults: dict[str, WorkspaceSetting]
+    session_overrides: dict[str, SessionSetting]
+    outcome_value: dict[str, Any]
 
 
 class WorkspaceSettingsService:
@@ -245,6 +306,32 @@ class WorkspaceSettingsService:
                 applicable_groups.extend(["standalone_audio", "mix"])
             else:
                 applicable_groups.append("standalone_audio")
+        subtitle_tracks: list[dict[str, Any]] = []
+        subtitle_display_revision = None
+        if workflow_kind != "audiobook" and (
+            available_subtitle_roles or source_profile == "subtitles" or has_generated_voiceover
+        ):
+            from .export_subtitle_selection import capture_subtitle_track_snapshot
+
+            subtitle_tracks = capture_subtitle_track_snapshot(session, session_record.id)["tracks"]
+            if subtitle_tracks:
+                display_revision = session.scalar(
+                    select(GenerationPlanRevision)
+                    .join(GenerationPlan, GenerationPlan.active_revision_id == GenerationPlanRevision.id)
+                    .where(GenerationPlan.session_id == session_record.id)
+                )
+                if display_revision is not None:
+                    display_id = str((display_revision.settings_json or {}).get("_source_artifact_id") or "")
+                    pinned_ids = {item["artifact_id"] for item in subtitle_tracks}
+                    if display_id not in pinned_ids and display_id:
+                        speech_source = session.get(Artifact, display_id)
+                        if speech_source is not None and speech_source.role == "tts_optimized":
+                            display_id = str((speech_source.metadata_json or {}).get("source_artifact_id") or "")
+                    if display_id in pinned_ids:
+                        subtitle_display_revision = {
+                            "revision_id": display_revision.id,
+                            "artifact_id": display_id,
+                        }
         return {
             "workflow_kind": workflow_kind,
             "source_profile": source_profile,
@@ -252,17 +339,21 @@ class WorkspaceSettingsService:
             "source_kind": source_kind,
             "source_mime_type": source_mime_type,
             "source_artifact_id": source_artifact.id if source_artifact else None,
+            "source_content_hash": source_artifact.content_hash if source_artifact else None,
+            "source_revision_id": (source_artifact.metadata_json or {}).get("revision_id") if source_artifact else None,
             "source_resolution": source_resolution,
             "has_source_video": has_source_video,
             "has_source_audio": has_source_audio,
             "has_generated_voiceover": has_generated_voiceover,
+            "subtitle_tracks": subtitle_tracks,
+            "subtitle_display_revision": subtitle_display_revision,
             "subtitle_selection": subtitle_selection or None,
             "applicable_groups": applicable_groups,
         }
 
     def get(self, session_id: str, section: str) -> dict[str, Any]:
         section = self._validate_section(section)
-        with self.database.session() as session:
+        with self.database.snapshot_session() as session:
             return self.get_in_session(session, session_id, section)
 
     def get_in_session(
@@ -274,11 +365,82 @@ class WorkspaceSettingsService:
         """Return the complete settings representation from one transaction."""
 
         section = self._validate_section(section)
+        require_current_session_access(session, session_id)
+        actual_workspace_id = _session_workspace_id(session, session_id)
+        return self._get_in_workspace(
+            session, session_id, section, actual_workspace_id
+        )
+
+    def _get_in_workspace(
+        self,
+        session: Session,
+        session_id: str,
+        section: str,
+        workspace_id: str,
+        *,
+        _read_context: _SubtitleSettingsReadContext | None = None,
+    ) -> dict[str, Any]:
+        """Resolve one section inside an already validated workspace."""
+        section = self._validate_section(section)
+        if _read_context is not None and (
+            _read_context.session_id != session_id
+            or _read_context.workspace_id != workspace_id
+        ):
+            raise ValueError(
+                "Subtitle settings read context does not match the requested session and workspace."
+            )
         session_record = session.get(SessionRecord, session_id)
         if session_record is None:
             raise KeyError(session_id)
-        global_record = session.get(AppSetting, f"defaults.{section}")
-        override = session.get(SessionSetting, (session_id, section))
+        read_context = _read_context
+        if section == "subtitles" and read_context is None:
+            default_keys = (
+                "defaults.subtitles",
+                "defaults.stt",
+                "defaults.translation",
+            )
+            override_sections = ("subtitles", "stt", "translation")
+            with session.no_autoflush:
+                default_records = session.scalars(
+                    select(WorkspaceSetting)
+                    .where(
+                        WorkspaceSetting.workspace_id == workspace_id,
+                        WorkspaceSetting.key.in_(default_keys),
+                    )
+                    .execution_options(populate_existing=True)
+                ).all()
+            override_records = session.scalars(
+                select(SessionSetting).where(
+                    SessionSetting.session_id == session_id,
+                    SessionSetting.section.in_(override_sections),
+                )
+            ).all()
+            outcome = session.get(OutcomePlan, session_id)
+            outcome_value = (
+                outcome.value_json
+                if outcome and isinstance(outcome.value_json, dict)
+                else {}
+            )
+            read_context = _SubtitleSettingsReadContext(
+                session_id=session_id,
+                workspace_id=workspace_id,
+                workspace_defaults={
+                    record.key.removeprefix("defaults."): record
+                    for record in default_records
+                },
+                session_overrides={
+                    record.section: record for record in override_records
+                },
+                outcome_value=outcome_value,
+            )
+        if read_context is None:
+            global_record = workspace_setting_in_workspace(
+                session, workspace_id, f"defaults.{section}"
+            )
+            override = session.get(SessionSetting, (session_id, section))
+        else:
+            global_record = read_context.workspace_defaults.get(section)
+            override = read_context.session_overrides.get(section)
         global_value = (
             global_record.value_json
             if global_record and isinstance(global_record.value_json, dict)
@@ -289,8 +451,10 @@ class WorkspaceSettingsService:
             global_value, _ = split_legacy_stt_settings(global_value, reject_conflicts=False)
             override_value, _ = split_legacy_stt_settings(override_value, reject_conflicts=False)
         elif section == "subtitles":
-            legacy_global = session.get(AppSetting, "defaults.stt")
-            legacy_override = session.get(SessionSetting, (session_id, "stt"))
+            if read_context is None:
+                raise AssertionError("Subtitle read context was not prepared.")
+            legacy_global = read_context.workspace_defaults.get("stt")
+            legacy_override = read_context.session_overrides.get("stt")
             _, global_subtitles = split_legacy_stt_settings(
                 dict(legacy_global.value_json or {}) if legacy_global else {}, reject_conflicts=False,
             )
@@ -301,12 +465,15 @@ class WorkspaceSettingsService:
             override_value = {**override_subtitles, **override_value}
         source_language = str(session_record.source_language or "auto")
         target_language = str(session_record.target_language or "")
-        outcome = session.get(OutcomePlan, session_id)
-        outcome_value = (
-            outcome.value_json
-            if outcome and isinstance(outcome.value_json, dict)
-            else {}
-        )
+        if read_context is None:
+            outcome = session.get(OutcomePlan, session_id)
+            outcome_value = (
+                outcome.value_json
+                if outcome and isinstance(outcome.value_json, dict)
+                else {}
+            )
+        else:
+            outcome_value = read_context.outcome_value
         inputs = outcome_value.get("inputs")
         if not isinstance(inputs, dict):
             inputs = {}
@@ -408,6 +575,11 @@ class WorkspaceSettingsService:
                     )
             if speech_language:
                 session_context["language"] = speech_language
+            # A captured named selector is binding even when it came from
+            # workspace defaults. Synthesize a workflow choice only when
+            # neither persisted layer supplies one.
+            if "subtitle_selection" in global_value or "subtitle_selection" in override_value:
+                session_context.pop("subtitle_selection", None)
         effective = _merge(
             BUILTIN_DEFAULTS[section],
             normalize_tts_voice_aliases(global_value) if section == "tts" else global_value,
@@ -461,6 +633,7 @@ class WorkspaceSettingsService:
                 effective["format"] = "wav"
         result = {
             "section": section,
+            "workspace_id": workspace_id,
             "builtin": deepcopy(BUILTIN_DEFAULTS[section]),
             "global": deepcopy(global_value),
             "override": deepcopy(override_value),
@@ -477,7 +650,13 @@ class WorkspaceSettingsService:
             # Translation settings may change the requested language without
             # renaming the session or its project branch. Preview the language
             # the translation workflow will actually use.
-            translation = self.get_in_session(session, session_id, "translation")
+            translation = self._get_in_workspace(
+                session,
+                session_id,
+                "translation",
+                workspace_id,
+                _read_context=read_context,
+            )
             if target_language or any(
                 translation[layer].get("target_language")
                 for layer in ("global", "override")
@@ -542,6 +721,42 @@ class WorkspaceSettingsService:
             )
             return self.get_in_session(session, session_id, section)
 
+    def tts_update_candidate_in_session(
+        self,
+        session: Session,
+        session_id: str,
+        expected_revision: int,
+        value: dict[str, Any],
+        *,
+        patch: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Resolve a prospective saved selection without writing or reading files."""
+        require_current_session_access(session, session_id, ProjectAction.EDIT)
+        validate_project_speech_preferences(session, session_id, value)
+        current = self.get_in_session(session, session_id, "tts")
+        if current["revision"] != expected_revision:
+            raise RevisionConflict("Session settings changed in another client.")
+        candidate = dict(value)
+        if patch:
+            candidate = {
+                **dict(current["override"] or {}),
+                **normalize_tts_voice_aliases(candidate),
+            }
+        candidate = self._prepare_tts_value(current["effective"], candidate)
+        resolved, _digest = self.resolve_in_session(
+            session, session_id, ["tts"], _session_tts_override=candidate
+        )
+        return candidate, resolved["tts"]
+
+    @staticmethod
+    def _prepare_tts_value(previous: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
+        validate_tts_retry_settings(value)
+        validate_voiceover_repair_settings(value)
+        value = dict(value)
+        if "voice_mode_version" not in value and previous.get("voice_mode_version", 0):
+            value["voice_mode_version"] = previous["voice_mode_version"]
+        return normalize_tts_voice_aliases(prepare_tts_provider_switch(previous, value))
+
     def patch(
         self,
         session_id: str,
@@ -589,6 +804,14 @@ class WorkspaceSettingsService:
         """
 
         section = self._validate_section(section)
+        require_current_session_access(session, session_id, ProjectAction.EDIT)
+        if section == "tts":
+            validate_project_speech_preferences(session, session_id, value)
+        try:
+            _workspace_id = _session_workspace_id(session, session_id)
+        except Exception:
+            session.rollback()
+            raise
         session_record = session.get(SessionRecord, session_id)
         if session_record is None:
             raise KeyError(session_id)
@@ -637,6 +860,14 @@ class WorkspaceSettingsService:
         _stt_fields_validated: bool = False,
     ) -> dict[str, Any]:
         section = self._validate_section(section)
+        require_current_session_access(session, session_id, ProjectAction.EDIT)
+        if section == "tts":
+            validate_project_speech_preferences(session, session_id, value)
+        try:
+            workspace_id = _session_workspace_id(session, session_id)
+        except Exception:
+            session.rollback()
+            raise
         session_record = session.get(SessionRecord, session_id)
         if session_record is None:
             raise KeyError(session_id)
@@ -664,17 +895,16 @@ class WorkspaceSettingsService:
             if not _stt_fields_validated:
                 validate_stt_replacement(value, previous_stt)
             migrate_legacy_subtitle_settings(
-                session, {**previous_subtitles, **incoming_subtitles}, session_id=session_id,
+                session,
+                {**previous_subtitles, **incoming_subtitles},
+                session_id=session_id,
+                workspace_id=workspace_id,
             )
         if section == "tts":
-            validate_tts_retry_settings(value)
-            validate_voiceover_repair_settings(value)
-            previous = self.get_in_session(session, session_id, section)["effective"]
-            if "voice_mode_version" not in value and previous.get("voice_mode_version", 0):
-                value["voice_mode_version"] = previous["voice_mode_version"]
-            value = normalize_tts_voice_aliases(
-                prepare_tts_provider_switch(previous, value)
-            )
+            previous = self._get_in_workspace(
+                session, session_id, section, workspace_id
+            )["effective"]
+            value = self._prepare_tts_value(previous, value)
         if section == "output":
             validate_output_settings(value)
         if section == "source_cleaning":
@@ -692,7 +922,9 @@ class WorkspaceSettingsService:
                 )
             # PUT replaces the override, including {} to restore inheritance.
             # Validate the effective candidate without storing inherited values.
-            snapshot = self.get_in_session(session, session_id, section)
+            snapshot = self._get_in_workspace(
+                session, session_id, section, workspace_id
+            )
             candidate = {
                 **snapshot["builtin"],
                 **snapshot["global"],
@@ -728,7 +960,9 @@ class WorkspaceSettingsService:
             else:
                 mode = str(
                     value.get("export_mode")
-                    or self.get_in_session(session, session_id, section)["effective"].get("export_mode")
+                    or self._get_in_workspace(
+                        session, session_id, section, workspace_id
+                    )["effective"].get("export_mode")
                     or "media"
                 ).lower()
                 if output_context["has_source_video"] and mode == "media":
@@ -790,6 +1024,13 @@ class WorkspaceSettingsService:
             record.revision += 1
             record.updated_at = utcnow()
         session.flush()
+        try:
+            resolved_workspace_id = _session_workspace_id(session, session_id)
+            if resolved_workspace_id != workspace_id:
+                raise ValueError("The session workspace changed during settings update.")
+        except Exception:
+            session.rollback()
+            raise
         return {
             "section": section,
             "override": deepcopy(value),
@@ -811,14 +1052,28 @@ class WorkspaceSettingsService:
         session_id: str,
         sections: list[str] | None = None,
         run_override: dict[str, Any] | None = None,
+        *,
+        _session_tts_override: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
         """Resolve sections and service connections from the caller's snapshot."""
+        require_current_session_access(session, session_id)
+        workspace_id = _session_workspace_id(session, session_id)
         requested = sections or list(SETTING_SECTIONS)
         override = run_override or {}
         snapshots = {
-            section: self.get_in_session(session, session_id, section)
+            section: self._get_in_workspace(
+                session, session_id, section, workspace_id
+            )
             for section in requested
         }
+        if _session_tts_override is not None and "tts" in snapshots:
+            candidate = normalize_tts_voice_aliases(_session_tts_override)
+            current_tts = snapshots["tts"]
+            current_tts["override"] = candidate
+            current_tts["effective"] = _merge(
+                current_tts["builtin"], current_tts["global"],
+                current_tts.get("session_context", {}), candidate,
+            )
         resolved = {
             section: _merge(
                 snapshots[section]["effective"],
@@ -828,7 +1083,9 @@ class WorkspaceSettingsService:
             for section in requested
         }
         if "tts" in resolved:
-            connections = session.get(AppSetting, "services.tts")
+            connections = workspace_setting_in_workspace(
+                session, workspace_id, "services.tts"
+            )
             connection_value = (
                 connections.value_json
                 if connections and isinstance(connections.value_json, dict)
@@ -904,7 +1161,9 @@ class WorkspaceSettingsService:
                 if voice:
                     resolved["tts"]["voice"] = voice
         if "stt" in resolved:
-            connections = session.get(AppSetting, "services.stt")
+            connections = workspace_setting_in_workspace(
+                session, workspace_id, "services.stt"
+            )
             connection_value = (
                 connections.value_json
                 if connections and isinstance(connections.value_json, dict)

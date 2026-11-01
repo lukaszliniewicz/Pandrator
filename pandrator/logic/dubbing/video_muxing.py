@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol, cast
 
+from ..media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 from .languages import ffmpeg_subtitle_language_code, subtitle_language_title
 
 
@@ -230,6 +231,7 @@ def build_video_transcode_command(
     hardware_device: str | None = None,
     video_resolution: str | int | None = "source",
     tail_extension_seconds: float = 0.0,
+    drop_chapters: bool = False,
 ) -> list[str]:
     """Build a video transcode without requiring a subtitle overlay."""
 
@@ -247,6 +249,7 @@ def build_video_transcode_command(
         ffmpeg_executable,
         "-y",
         *before_input,
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         video_path,
         "-map",
@@ -256,6 +259,7 @@ def build_video_transcode_command(
         "-map_metadata",
         "0",
         *arguments,
+        *(["-map_chapters", "-1"] if drop_chapters else []),
         "-movflags",
         "+faststart",
         output_path,
@@ -268,6 +272,7 @@ def build_web_optimized_remux_command(
     ffmpeg_executable: str = "ffmpeg",
     audio_codec: str = "copy",
     audio_bitrate: str = "192k",
+    drop_chapters: bool = False,
 ) -> list[str]:
     """Build a web-friendly MP4 remux without re-encoding the video stream.
 
@@ -282,6 +287,7 @@ def build_web_optimized_remux_command(
     command = [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         video_path,
         "-map",
@@ -297,6 +303,8 @@ def build_web_optimized_remux_command(
     ]
     if normalized_audio_codec == "aac":
         command.extend(["-b:a", str(audio_bitrate or "192k")])
+    if drop_chapters:
+        command.extend(["-map_chapters", "-1"])
     command.extend(["-movflags", "+faststart", output_path])
     return command
 
@@ -404,6 +412,7 @@ def build_removal_only_video_command(
         "-y",
         *(["-progress", "pipe:1", "-nostats"] if include_progress else []),
         *before_input,
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         video_path,
         "-filter_complex",
@@ -441,6 +450,8 @@ def build_add_subtitles_command(
     hardware_device: str | None = None,
     video_resolution: str | int | None = "source",
     tail_extension_seconds: float = 0.0,
+    *,
+    drop_chapters: bool = False,
 ) -> list[str]:
     """Build the FFmpeg command for soft or burned subtitle output."""
     normalized_mode = str(subtitle_mode or "soft").strip().lower()
@@ -471,8 +482,10 @@ def build_add_subtitles_command(
             ffmpeg_executable,
             "-y",
             *before_input,
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             "-i",
             synced_video_path,
+            *(["-map", "0:v:0", "-map", "0:a?", "-map_chapters", "-1"] if drop_chapters else []),
             *arguments,
             "-movflags",
             "+faststart",
@@ -484,10 +497,13 @@ def build_add_subtitles_command(
     return [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         synced_video_path,
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         equalized_srt_path,
+        *(["-map", "0:v:0", "-map", "0:a?", "-map", "1:0", "-map_chapters", "-1"] if drop_chapters else []),
         "-c",
         "copy",
         "-c:s",
@@ -523,8 +539,10 @@ def build_replace_video_audio_command(
     command = [
         ffmpeg_executable,
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         video_path,
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         audio_path,
         "-map",
@@ -601,6 +619,7 @@ def build_video_tail_extension_command(
         ffmpeg_executable,
         "-y",
         *before_input,
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         video_path,
         "-map",
@@ -631,6 +650,7 @@ def build_multi_soft_subtitle_command(
     hardware_device: str | None = None,
     video_resolution: str | int | None = "source",
     tail_extension_seconds: float = 0.0,
+    drop_chapters: bool = False,
 ) -> list[str]:
     """Build an MP4 remux command with one or more language-labelled subtitle tracks."""
     before_input: list[str] = []
@@ -649,9 +669,18 @@ def build_multi_soft_subtitle_command(
             # and plain remuxes always pass 0 here.
             extra_filters=_tail_clip_filter(tail_extension_seconds),
         )
-    command = [ffmpeg_executable, "-y", *before_input, "-i", video_path]
+    command = [
+        ffmpeg_executable,
+        "-y",
+        *before_input,
+        *LOCAL_MEDIA_INPUT_OPTIONS,
+        "-i",
+        video_path,
+    ]
     for track in subtitle_tracks:
-        command.extend(["-i", str(track.get("path") or "")])
+        command.extend(
+            [*LOCAL_MEDIA_INPUT_OPTIONS, "-i", str(track.get("path") or "")]
+        )
     command.extend(["-map", "0:v:0", "-map", "0:a?"])
     for index in range(len(subtitle_tracks)):
         command.extend(["-map", f"{index + 1}:0"])
@@ -681,5 +710,7 @@ def build_multi_soft_subtitle_command(
                 disposition,
             ]
         )
+    if drop_chapters:
+        command.extend(["-map_chapters", "-1"])
     command.extend(["-movflags", "+faststart", output_path])
     return command

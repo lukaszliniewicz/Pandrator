@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "packages": [
+    {
+      "availability": {
+        "gated": false,
+        "missing_files": [],
+        "unavailable_metadata": null,
+        "unsupported_download": false,
+        "verified": true
+      },
+      "default": false,
+      "download": {
+        "gated": false,
+        "kind": "huggingface_snapshot",
+        "repo": "dignome/kitten_tts2",
+        "revision": "main"
+      },
+      "family": "kitten_tts2",
+      "files": [
+        "kitten-tts2-native-q8-multilingual.gguf",
+        "LICENSE",
+        "NOTICE",
+        "native/LICENSE",
+        "speaker/LICENSE",
+        "SHA256SUMS"
+      ],
+      "format": "gguf",
+      "id": "kitten_tts2_q8_0",
+      "label": "Kitten TTS 2 legacy Q8_0 GGUF",
+      "precision": "q8_0",
+      "strip_prefix": "",
+      "target_directory": "kitten-tts2",
+      "weight_manifest": {
+        "files": [
+          {
+            "path": "kitten-tts2-native-q8-multilingual.gguf",
+            "sha256": "e97920ca5053f9fcd4de638dcd8114ed2510d4291a93257473a8843c3ff349ad",
+            "size": 3282123776,
+            "source_path": "kitten-tts2-native-q8-multilingual.gguf"
+          },
+          {
+            "path": "LICENSE",
+            "sha256": "f2429d9172b1e192102ab07552d7ca86c981f13598cbe3b51cc1fbd94604e1a3",
+            "size": 12478,
+            "source_path": "LICENSE"
+          },
+          {
+            "path": "NOTICE",
+            "sha256": "4c38d62cf864f55f1f8e8067217d367a3a459ff406b70febda94a7596afd3a44",
+            "size": 453,
+            "source_path": "NOTICE"
+          },
+          {
+            "path": "native/LICENSE",
+            "sha256": "4248e910a928849fe5815a0f9236e17fa07768d95b9193212752c464b93d6caa",
+            "size": 1067,
+            "source_path": "native/LICENSE"
+          },
+          {
+            "path": "speaker/LICENSE",
+            "sha256": "14d7016ad68e7394d6e6b78d96cc2ae431c905287b89674cfdf021e79e62b8ba",
+            "size": 1061,
+            "source_path": "speaker/LICENSE"
+          },
+          {
+            "path": "SHA256SUMS",
+            "sha256": "d6dd81428b03675b8f951a3ae5b686d4a391d885d7dcd30e97bb1ce2a175d02d",
+            "size": 107,
+            "source_path": "SHA256SUMS"
+          }
+        ],
+        "repository": "dignome/kitten_tts2",
+        "repository_license": {
+          "note": "Repository card metadata only; individual model and component licensing remains unreviewed.",
+          "url": "https://huggingface.co/dignome/kitten_tts2",
+          "value": "other"
+        },
+        "requested_revision": "main",
+        "revision": "73b762c95b07c4f0675c927c25d65741b8dab7da"
+      },
+      "compatibility_source_url": "https://github.com/0xShug0/audio.cpp/blob/v0.9.2/model_specs/kitten_tts2.json"
+    }
+  ]
+}

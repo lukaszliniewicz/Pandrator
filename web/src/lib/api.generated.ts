@@ -4,6 +4,140 @@
  */
 
 export interface paths {
+    "/api/v1/admin/installation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getInstallationMode"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/installation/collaboration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["enableCollaboration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/public-sharing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read public-sharing configuration and effective hosting boundaries. */
+        get: operations["getPublicSharingSettings"];
+        /** @description Change link-sharing configuration. This does not mutate listener or proxy configuration. */
+        put: operations["configurePublicSharing"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description List account identity, role and password setup status. Password hashes and reset links are never listed. */
+        get: operations["listUsers"];
+        put?: never;
+        /** @description Create an account and its private personal workspace. The default role is User. Issue a password setup link separately. */
+        post: operations["createUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Change display name, role or active state at the expected authentication revision. Role/state changes revoke credentials. Initial Administrator retirement remains blocked while single-user mode is active. */
+        patch: operations["updateUser"];
+        trace?: never;
+    };
+    "/api/v1/admin/users/{userId}/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Issue a one-use 30-minute password setup link. Returned only in this response; never stored in idempotency responses. Reissuing invalidates earlier links. Deliver the link privately; existing passwords change only on redemption. */
+        post: operations["issueUserPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/workspace-recovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listWorkspacesWithoutManager"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/workspace-recovery/{workspaceId}/manager": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["recoverWorkspaceManager"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agent-runs/{runId}/accept": {
         parameters: {
             query?: never;
@@ -75,9 +209,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Read an existing media derivative or authorized active job without creating work. A cache miss returns preview_preparation_required with a current can_prepare hint. */
         get: operations["getArtifactAudioPreview"];
         put?: never;
-        post?: never;
+        /** @description Prepare a media derivative with current resource RUN permission. Browser requests require X-CSRF-Token. Query parameters match the read operation. */
+        post: operations["prepareArtifactAudioPreview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -155,9 +291,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Read an existing media derivative or authorized active job without creating work. A cache miss returns preview_preparation_required with a current can_prepare hint. */
         get: operations["getArtifactVideoPreview"];
         put?: never;
-        post?: never;
+        /** @description Prepare a media derivative with current resource RUN permission. Browser requests require X-CSRF-Token. Query parameters match the read operation. */
+        post: operations["prepareArtifactVideoPreview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -171,9 +309,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Read an existing media derivative or authorized active job without creating work. A cache miss returns preview_preparation_required with a current can_prepare hint. */
         get: operations["getArtifactWaveform"];
         put?: never;
-        post?: never;
+        /** @description Prepare a media derivative with current resource RUN permission. Browser requests require X-CSRF-Token. Query parameters match the read operation. */
+        post: operations["prepareArtifactWaveform"];
         delete?: never;
         options?: never;
         head?: never;
@@ -235,7 +375,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Trusted owner consent with exact redirect matching and mandatory S256 PKCE. */
+        /** @description Account consent with explicit workspace resources, exact redirect matching and mandatory S256 PKCE. */
         get: operations["authorizeAutomationClient"];
         put?: never;
         post?: never;
@@ -341,6 +481,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Redeem the one-use bearer from a reset link and set a password. Revokes affected credentials and does not sign the recipient in. Requires no browser session or CSRF cookie. */
+        post: operations["redeemPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/status": {
         parameters: {
             query?: never;
@@ -373,6 +530,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/tokens/{tokenId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Revoke a token owned by the current account. */
+        delete: operations["revokeApiToken"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/automation/local-paths": {
         parameters: {
             query?: never;
@@ -381,7 +555,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getAutomationLocalPaths"];
-        /** @description Replace the interactive owner's approved local MCP source and output roots. */
+        /** @description An interactive Administrator can replace approved local MCP source and output roots. */
         put: operations["replaceAutomationLocalPaths"];
         post?: never;
         delete?: never;
@@ -461,6 +635,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Workspace defaults are readable by Members and writable by Managers. Other workspace configuration requires management access; service credential writes additionally require app.credentials.write. Installation keys require an actual Administrator and app.admin, independently of workspace membership. Responses identify setting_scope and current can_manage authority. */
         get: operations["getGlobalDefaults"];
         put?: never;
         post?: never;
@@ -833,6 +1008,7 @@ export interface paths {
         };
         get: operations["listJobs"];
         put?: never;
+        /** @description Submit an approved command: noop accepts duration (0-30 seconds) and echo; session.bundle.export accepts session_id and include_sources. The envelope and payload session IDs must agree. Other worker kinds use their workflow, generation, voice, sound or model endpoints. Current resource authority is required in addition to Administrator scope. */
         post: operations["createJob"];
         delete?: never;
         options?: never;
@@ -898,6 +1074,74 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["decideExportVideoTail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/knowledge/{ledgerId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Replace saved knowledge under current project editing authority and revision CAS. */
+        patch: operations["updateKnowledgeLedger"];
+        trace?: never;
+    };
+    "/api/v1/link-submissions/{submissionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read a submission and its before/after text using ordinary project review authority. */
+        get: operations["getLinkSubmission"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/link-submissions/{submissionId}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Accept at the expected source and document revisions through the immutable subtitle-review publication path. */
+        post: operations["acceptLinkSubmission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/link-submissions/{submissionId}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Reject a pending submission at its expected revision. */
+        post: operations["rejectLinkSubmission"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1272,6 +1516,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/project-copies/{copyId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read a safe copy preview or the initiating user's current authorized copy status. Internal snapshots, private connections and file paths are withheld. */
+        get: operations["getProjectCopy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/project-folders": {
         parameters: {
             query?: never;
@@ -1314,6 +1575,178 @@ export interface paths {
         get?: never;
         put: operations["replaceProjectFolderProjects"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/project-links/{linkId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Revoke the project link and its associated browser sessions at the expected revision. */
+        post: operations["revokeProjectLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/shared-with-me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read projects shared with this account and approved for this credential. Private workspace metadata is withheld. */
+        get: operations["listSharedProjects"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/copy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Copy the approved saved project into a workspace using a durable job. Source editing and destination creation authority are required. Unsupported saved state or unresolved private connections block copying. The original project remains intact. */
+        post: operations["copyCurrentProject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/copy-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read a safe copy preview or the initiating user's current authorized copy status. Internal snapshots, private connections and file paths are withheld. */
+        get: operations["getProjectCopyPreview"];
+        put?: never;
+        /** @description Read a safe copy preview or the initiating user's current authorized copy status. Internal snapshots, private connections and file paths are withheld. */
+        post: operations["previewProjectCopy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/link-submissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description List review submissions using ordinary project review authority; instance administration does not grant project access. */
+        get: operations["listLinkSubmissions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description List links only when the current principal has project-link governance authority. */
+        get: operations["listProjectLinks"];
+        put?: never;
+        /** @description Create a project capability. The returned bearer URL is shown only at creation; a repeated request returns no URL. */
+        post: operations["createProjectLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/viewers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Only the personal owner or shared-workspace Manager can manage named Can view access. Editing requires workspace membership. */
+        get: operations["getProjectViewers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/viewers/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Only the personal owner or shared-workspace Manager can manage named Can view access. Editing requires workspace membership. */
+        get: operations["searchProjectViewers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/viewers/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Only the personal owner or shared-workspace Manager can manage named Can view access. Editing requires workspace membership. */
+        put: operations["grantProjectView"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{projectId}/viewers/{userId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Only the personal owner or shared-workspace Manager can manage named Can view access. Editing requires workspace membership. */
+        post: operations["revokeProjectView"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1464,6 +1897,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/public-links/{linkId}/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Revoke only this link visitor session and clear its cookie. An ordinary account session is preserved. */
+        post: operations["leaveProjectLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/public-links/{linkId}/redeem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Exchange a bearer secret for a link-bound HttpOnly cookie. The raw browser credential is never returned in JSON. */
+        post: operations["redeemProjectLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/public-links/{linkId}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read the pinned translation through the matching link-bound browser cookie. This operation never falls back to an account session. */
+        get: operations["getPublicTranslationReview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/public-links/{linkId}/services/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Project-management links only: read the current project language's configured service and model without provider discovery or workspace library access. */
+        get: operations["getProjectLinkServices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/public-links/{linkId}/submissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Save bounded text corrections through the matching link-bound cookie. The reviewer label is supplied attribution, not verified identity. */
+        post: operations["submitPublicTranslationReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/purge-inspections/{jobId}": {
         parameters: {
             query?: never;
@@ -1553,6 +2071,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Read the caller's workspace catalogue without probing providers. Members receive approved choices; workspace managers can inspect configuration. A project share alone does not grant workspace catalogue access. */
         get: operations["listSttServices"];
         put?: never;
         post?: never;
@@ -1569,7 +2088,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description TTS readiness and catalogues */
+        /** @description Read the caller's workspace catalogue without probing providers. Members receive approved choices; workspace managers can inspect configuration. A project share alone does not grant workspace catalogue access. */
         get: operations["listTtsServices"];
         put?: never;
         post?: never;
@@ -1589,6 +2108,23 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["discoverTtsService"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/tts/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Explicitly probe up to 20 configured workspace connections. Requires current workspace management authority and all delegated scopes; no session selector or body. */
+        post: operations["refreshTtsServices"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1634,7 +2170,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Full catalogue entry for one selected TTS service, identical to its full-collection entry. */
+        /** @description Read the caller's workspace catalogue without probing providers. Members receive approved choices; workspace managers can inspect configuration. A project share alone does not grant workspace catalogue access. */
         get: operations["getTtsServiceDetail"];
         put?: never;
         post?: never;
@@ -1653,7 +2189,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Queue an audition in the caller's workspace. A managed voice_id selects the exact library voice. Linked audio.cpp samples are retained before queueing so later library changes do not change that audition. */
         post: operations["previewTtsVoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/tts/{serviceId}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Explicitly probe up to 20 configured workspace connections. Requires current workspace management authority and all delegated scopes; no session selector or body. */
+        post: operations["refreshTtsServiceDetail"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1669,6 +2223,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Queue an artifact archive import into the source artifact's workspace with current source READ, workspace creation and RUN authority. */
         post: operations["importSessionBundle"];
         delete?: never;
         options?: never;
@@ -1775,6 +2330,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Queue a session bundle with current project RUN authority. A retry key replays only an authorized matching bundle job. */
         post: operations["exportSessionBundle"];
         delete?: never;
         options?: never;
@@ -1793,7 +2349,7 @@ export interface paths {
         put?: never;
         /**
          * Export a comparison of selected speech takes
-         * @description Queue one reusable WAV or MP3 from the ordered selected speech takes. Recast sides use their pinned before/after takes. The separately assembled sound mix is excluded.
+         * @description Queue one reusable WAV or MP3 from the ordered selected speech takes. Recast sides use their pinned before/after takes. The separately assembled sound mix is excluded. Requires current permission to read and run the session.
          */
         post: operations["createComparisonExport"];
         delete?: never;
@@ -2200,6 +2756,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/knowledge/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read saved knowledge under current project reading authority. An absent ledger returns empty content with null id and revision 0, without creating a row. */
+        get: operations["getKnowledgeLedger"];
+        put?: never;
+        /** @description Initialize an empty ledger once under current project editing authority. Repeating the same session/kind/language scope returns the existing row. */
+        post: operations["initializeKnowledgeLedger"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/media-edit": {
         parameters: {
             query?: never;
@@ -2369,6 +2943,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Queue a separate soundtrack mix preview with current project RUN authority and readable media inputs. */
         post: operations["createOutputMixPreview"];
         delete?: never;
         options?: never;
@@ -2401,6 +2976,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Create a derived PDF and provenance with current project RUN authority and readable source bytes. The source remains unchanged. */
         post: operations["applyPdfEdits"];
         delete?: never;
         options?: never;
@@ -2670,7 +3246,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Preview removal of a trashed session */
+        /** Manager preview of removal of a trashed session */
         get: operations["getSessionPurgePreview"];
         put?: never;
         post?: never;
@@ -3381,6 +3957,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Record an editorial decision with current project editing authority. New collaboration decisions require the latest record.revision token. Exact authorized retries replay their accepted result. */
         post: operations["resolveSubtitleEvidence"];
         delete?: never;
         options?: never;
@@ -3595,7 +4172,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Workspace defaults are readable by Members and writable by Managers. Other workspace configuration requires management access; service credential writes additionally require app.credentials.write. Installation keys require an actual Administrator and app.admin, independently of workspace membership. Responses identify setting_scope and current can_manage authority. */
         get: operations["getSetting"];
+        /** @description Workspace defaults are readable by Members and writable by Managers. Other workspace configuration requires management access; service credential writes additionally require app.credentials.write. Installation keys require an actual Administrator and app.admin, independently of workspace membership. Responses identify setting_scope and current can_manage authority. */
         put: operations["putSetting"];
         post?: never;
         delete?: never;
@@ -4346,6 +4925,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Upload a source. A session-bound source candidate can set attach_to_session=false to retain project ownership without selecting it; the normal source-change impact and confirmation flow applies afterwards. */
         post: operations["uploadSource"];
         delete?: never;
         options?: never;
@@ -4424,6 +5004,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Uses the caller's personal workspace when no root is supplied. A project root also requires independent access to its workspace. Workspace Members can edit library content; connection management is separate. */
         get: operations["queryVoiceCatalog"];
         put?: never;
         post?: never;
@@ -4440,6 +5021,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Uses the caller's personal workspace when no root is supplied. A project root also requires independent access to its workspace. Workspace Members can edit library content; connection management is separate. */
         get: operations["getVoiceCatalogCapabilities"];
         put?: never;
         post?: never;
@@ -4462,6 +5044,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /** @description Uses the caller's personal workspace when no root is supplied. A project root also requires independent access to its workspace. Workspace Members can edit library content; connection management is separate. */
         patch: operations["updateCatalogVoiceMetadata"];
         trace?: never;
     };
@@ -4472,8 +5055,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Uses the caller's personal workspace when no root is supplied. A project root also requires independent access to its workspace. Workspace Members can edit library content; connection management is separate. */
         get: operations["listVoiceCollections"];
         put?: never;
+        /** @description Uses the caller's personal workspace when no root is supplied. A project root also requires independent access to its workspace. Workspace Members can edit library content; connection management is separate. */
         post: operations["createVoiceCollection"];
         delete?: never;
         options?: never;
@@ -4494,6 +5079,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /** @description Uses the caller's personal workspace when no root is supplied. A project root also requires independent access to its workspace. Workspace Members can edit library content; connection management is separate. */
         patch: operations["updateVoiceCollection"];
         trace?: never;
     };
@@ -4504,6 +5090,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Read the caller's workspace catalogue without probing providers. Members receive approved choices; workspace managers can inspect configuration. A project share alone does not grant workspace catalogue access. */
         get: operations["listVoices"];
         put?: never;
         post: operations["createVoice"];
@@ -4788,10 +5375,309 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspace-invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listMyWorkspaceInvitations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspace-invitations/{invitationId}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["acceptWorkspaceInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspace-invitations/{invitationId}/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["declineWorkspaceInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listWorkspaces"];
+        put?: never;
+        post: operations["createWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getWorkspace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["renameWorkspace"];
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["archiveWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listWorkspaceInvitations"];
+        put?: never;
+        post: operations["inviteWorkspaceUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/invitations/{invitationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["revokeWorkspaceInvitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/leave": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["leaveWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listWorkspaceMembers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/members/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["removeWorkspaceMember"];
+        options?: never;
+        head?: never;
+        patch: operations["setWorkspaceMemberRole"];
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["restoreWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/user-search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["searchWorkspaceUsers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AccountCreateRequest */
+        AccountCreateRequest: {
+            /** Display Name */
+            display_name: string;
+            /** Login Name */
+            login_name: string;
+            /**
+             * Role
+             * @default user
+             * @enum {string}
+             */
+            role?: "user" | "administrator";
+        };
+        /** AccountListResponse */
+        AccountListResponse: {
+            /** Initial User Id */
+            initial_user_id: string;
+            /** Items */
+            items: components["schemas"]["AccountSummaryResponse"][];
+            /**
+             * Named User Access
+             * @default false
+             */
+            named_user_access?: boolean;
+        };
+        /** AccountResetIssueRequest */
+        AccountResetIssueRequest: {
+            /** Expected Auth Revision */
+            expected_auth_revision: number;
+        };
+        /** AccountResetIssueResponse */
+        AccountResetIssueResponse: {
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Grant Id */
+            grant_id: string;
+            /** Reset Path */
+            reset_path: string;
+            /** User Id */
+            user_id: string;
+        };
+        /** AccountResetRedeemRequest */
+        AccountResetRedeemRequest: {
+            /** New Password */
+            new_password: string;
+            /** Token */
+            token: string;
+        };
+        /** AccountSummaryResponse */
+        AccountSummaryResponse: {
+            /** Auth Revision */
+            auth_revision: number;
+            /** Display Name */
+            display_name: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Login Name */
+            login_name: string;
+            /** Password Configured */
+            password_configured: boolean;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "administrator";
+            /** User Id */
+            user_id: string;
+        };
+        /** AccountUpdateRequest */
+        AccountUpdateRequest: {
+            /**
+             * Display Name
+             * @default null
+             */
+            display_name?: string | null;
+            /** Expected Auth Revision */
+            expected_auth_revision: number;
+            /**
+             * Is Active
+             * @default null
+             */
+            is_active?: boolean | null;
+            /**
+             * Role
+             * @default null
+             */
+            role?: ("user" | "administrator") | null;
+        };
         /** AgentRunCreateRequest */
         AgentRunCreateRequest: {
             /** Settings */
@@ -4871,6 +5757,49 @@ export interface components {
              */
             mode: "single_voice" | "multi_voice";
         };
+        /** AuthPrincipalResponse */
+        AuthPrincipalResponse: {
+            /** Auth Revision */
+            auth_revision: number | null;
+            /** Client Id */
+            client_id: string | null;
+            /** Display Name */
+            display_name: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "owner_session" | "project_link" | "api_token" | "manager_bootstrap" | "automation_client" | "service";
+            /** Login Name */
+            login_name: string | null;
+            /** Role */
+            role: ("user" | "administrator") | null;
+            /** Scopes */
+            scopes: string[];
+            /** Subject */
+            subject: string;
+            /** User Id */
+            user_id: string | null;
+        };
+        /** AuthStatusResponse */
+        AuthStatusResponse: {
+            /** Authenticated */
+            authenticated: boolean;
+            /** Csrf Token */
+            csrf_token: string | null;
+            /** Initialized */
+            initialized: boolean;
+            installation: components["schemas"]["InstallationModeResponse"];
+            /** Instance Id */
+            instance_id: string;
+            principal: components["schemas"]["AuthPrincipalResponse"] | null;
+            /** Remote Access */
+            remote_access: boolean;
+            /** Secure Transport */
+            secure_transport: boolean;
+            /** Security Warning */
+            security_warning: string;
+        };
         /** AutomationClientCreateRequest */
         AutomationClientCreateRequest: {
             /** Client Id */
@@ -4880,7 +5809,7 @@ export interface components {
             /** Redirect Uris */
             redirect_uris: string[];
             /** Scopes */
-            scopes: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
+            scopes: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.workspaces.enroll" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
         };
         /** BootstrapRequest */
         BootstrapRequest: {
@@ -4998,6 +5927,11 @@ export interface components {
         /** ChunkUploadInitialize */
         ChunkUploadInitialize: {
             /**
+             * Attach To Session
+             * @default true
+             */
+            attach_to_session?: boolean;
+            /**
              * Chunk Size
              * @default 8388608
              */
@@ -5021,6 +5955,11 @@ export interface components {
             sha256?: string | null;
             /** Size Bytes */
             size_bytes: number;
+            /**
+             * Workspace Id
+             * @default null
+             */
+            workspace_id?: string | null;
         };
         /** ComparisonExportClipRequest */
         ComparisonExportClipRequest: {
@@ -5669,6 +6608,11 @@ export interface components {
             /** Translations */
             translations: components["schemas"]["DispatchTranslationItem"][];
         };
+        /** EnableCollaborationRequest */
+        EnableCollaborationRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
         /** ErrorBody */
         ErrorBody: {
             /** Code */
@@ -6206,6 +7150,20 @@ export interface components {
              */
             voice_category?: "male" | "female" | "androgynous" | "unspecified";
         };
+        /** InstallationModeResponse */
+        InstallationModeResponse: {
+            /** Collaboration Available */
+            collaboration_available: boolean;
+            /** Collaboration Enabled */
+            collaboration_enabled: boolean;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "solo" | "collaboration";
+            /** Revision */
+            revision: number;
+        };
         /** JobCreate */
         JobCreate: {
             /** Kind */
@@ -6225,15 +7183,148 @@ export interface components {
              */
             session_id?: string | null;
         };
+        /** KnowledgeLedgerResponse */
+        KnowledgeLedgerResponse: {
+            /** Id */
+            id: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "research" | "glossary";
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Revision */
+            revision: number;
+            /** Session Id */
+            session_id: string;
+            /** Source Language */
+            source_language: string;
+            /** Target Language */
+            target_language: string;
+            /** Updated At */
+            updated_at: string | null;
+        };
+        /** KnowledgeScope */
+        KnowledgeScope: {
+            /**
+             * Source Language
+             * @default auto
+             */
+            source_language?: string;
+            /**
+             * Target Language
+             * @default
+             */
+            target_language?: string;
+        };
+        /** KnowledgeUpdateRequest */
+        KnowledgeUpdateRequest: {
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+        };
+        /** KnowledgeUpdateResponse */
+        KnowledgeUpdateResponse: {
+            /** Id */
+            id: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Revision */
+            revision: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** LinkSubmissionDetailResponse */
+        LinkSubmissionDetailResponse: {
+            /** Changes */
+            changes: components["schemas"]["SubmissionChangeDetail"][];
+            /** Document Revision */
+            document_revision: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Project Id */
+            project_id: string;
+            /** Selected Artifact Id */
+            selected_artifact_id: string | null;
+            /**
+             * Source Unavailable
+             * @default false
+             */
+            source_unavailable?: boolean;
+            submission: components["schemas"]["LinkSubmissionSummary"];
+            /** Target Artifact Id */
+            target_artifact_id: string;
+            /** Target Composition Hash */
+            target_composition_hash: string;
+            /** Target Hash */
+            target_hash: string;
+            /** Total */
+            total: number;
+        };
+        /** LinkSubmissionSummary */
+        LinkSubmissionSummary: {
+            /** Accepted Artifact Id */
+            accepted_artifact_id: string | null;
+            /** Change Count */
+            change_count: number;
+            /** Created At */
+            created_at: string;
+            /** Link Id */
+            link_id: string;
+            /** Link Label */
+            link_label: string;
+            /** Reviewed At */
+            reviewed_at: string | null;
+            /** Reviewed By User Id */
+            reviewed_by_user_id: string | null;
+            /** Reviewer Label */
+            reviewer_label: string | null;
+            /** Reviewer Label Verified */
+            reviewer_label_verified: boolean;
+            /** Revision */
+            revision: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "accepted" | "rejected";
+            /** Submission Id */
+            submission_id: string;
+        };
+        /** LinkSubmissionsResponse */
+        LinkSubmissionsResponse: {
+            /** Items */
+            items: components["schemas"]["LinkSubmissionSummary"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
         /** LoginRequest */
         LoginRequest: {
+            /**
+             * Login Name
+             * @default null
+             */
+            login_name?: string | null;
             /** Password */
             password: string;
         };
         /** ManagerBootstrapRequest */
         ManagerBootstrapRequest: {
             /** Scopes */
-            scopes?: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
+            scopes?: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.workspaces.enroll" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
         };
         /** ManagerDesiredComponentState */
         ManagerDesiredComponentState: {
@@ -7199,6 +8290,146 @@ export interface components {
             /** Lease Token */
             lease_token: string;
         };
+        /** ProjectCopyBlocker */
+        ProjectCopyBlocker: {
+            /** Code */
+            code: string;
+            /** Domain */
+            domain: string;
+        };
+        /** ProjectCopyConnectionChoice */
+        ProjectCopyConnectionChoice: {
+            /** Provider Id */
+            provider_id: string;
+            /** Provider Model Id */
+            provider_model_id: string;
+            /** Requirement Id */
+            requirement_id: string;
+        };
+        /** ProjectCopyConnectionOption */
+        ProjectCopyConnectionOption: {
+            /** Model Name */
+            model_name: string;
+            /** Provider Id */
+            provider_id: string;
+            /** Provider Label */
+            provider_label: string;
+            /** Provider Model Id */
+            provider_model_id: string;
+        };
+        /** ProjectCopyConnectionRequirement */
+        ProjectCopyConnectionRequirement: {
+            /** Id */
+            id: string;
+            /**
+             * Purpose
+             * @enum {string}
+             */
+            purpose: "correction" | "translation" | "speech_preparation";
+            /**
+             * Selected Provider Id
+             * @default null
+             */
+            selected_provider_id?: string | null;
+            /**
+             * Selected Provider Model Id
+             * @default null
+             */
+            selected_provider_model_id?: string | null;
+            /** Session Count */
+            session_count: number;
+            /** Session Names */
+            session_names: string[];
+        };
+        /** ProjectCopyPreview */
+        ProjectCopyPreview: {
+            /** Active Job Count */
+            active_job_count: number;
+            /** Blockers */
+            blockers: components["schemas"]["ProjectCopyBlocker"][];
+            /** Connection Options */
+            connection_options?: components["schemas"]["ProjectCopyConnectionOption"][];
+            /** Connection Requirements */
+            connection_requirements?: components["schemas"]["ProjectCopyConnectionRequirement"][];
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Destination Workspace Id */
+            destination_workspace_id: string;
+            /** File Count */
+            file_count: number;
+            /** Fingerprint */
+            fingerprint: string;
+            /** Known Bytes */
+            known_bytes: number;
+            /** Name */
+            name: string;
+            /** Ready */
+            ready: boolean;
+            /** Source Project Id */
+            source_project_id: string;
+            /** Unknown Size Count */
+            unknown_size_count: number;
+        };
+        /** ProjectCopyPreviewRequest */
+        ProjectCopyPreviewRequest: {
+            /** Destination Connections */
+            destination_connections?: components["schemas"]["ProjectCopyConnectionChoice"][];
+            /** Destination Workspace Id */
+            destination_workspace_id: string;
+        };
+        /** ProjectCopyRequest */
+        ProjectCopyRequest: {
+            /** Destination Connections */
+            destination_connections?: components["schemas"]["ProjectCopyConnectionChoice"][];
+            /** Destination Workspace Id */
+            destination_workspace_id: string;
+            /** Expected Fingerprint */
+            expected_fingerprint: string;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+        };
+        /** ProjectCopyResultResponse */
+        ProjectCopyResultResponse: {
+            /** Fingerprint */
+            fingerprint: string;
+            /** Name */
+            name: string;
+            /** Project Id */
+            project_id: string;
+            /** Source Session Id */
+            source_session_id: string;
+            /** Translation Project Id */
+            translation_project_id: string | null;
+            /** Workspace Id */
+            workspace_id: string;
+        };
+        /** ProjectCopyStatus */
+        ProjectCopyStatus: {
+            /** Detail */
+            detail: string | null;
+            error: components["schemas"]["ProjectCopyStatusError"] | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Progress */
+            progress: number;
+            result: components["schemas"]["ProjectCopyResultResponse"] | null;
+            /** State */
+            state: string;
+        };
+        /** ProjectCopyStatusError */
+        ProjectCopyStatusError: {
+            /** Code */
+            code: string | null;
+            /** Message */
+            message: string;
+        };
         /** ProjectExportBundleRequest */
         ProjectExportBundleRequest: {
             /** Expected Manifest Digest */
@@ -7240,6 +8471,244 @@ export interface components {
              * @default null
              */
             parent_id?: string | null;
+        };
+        /** ProjectLink */
+        ProjectLink: {
+            /** Expires At */
+            expires_at: string;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "manage_project" | "review_translation";
+            /** Project Id */
+            project_id: string;
+            /** Revision */
+            revision: number;
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Root Session Id */
+            root_session_id: string;
+            /** Target Artifact Id */
+            target_artifact_id: string | null;
+            /** Target Composition Hash */
+            target_composition_hash: string | null;
+            /** Target Hash */
+            target_hash: string | null;
+            /** Target Revision Id */
+            target_revision_id: string | null;
+            /** Target Revision Number */
+            target_revision_number: number | null;
+            /** Target Session Id */
+            target_session_id: string | null;
+        };
+        /** ProjectLinkCreateRequest */
+        ProjectLinkCreateRequest: {
+            /**
+             * Expires In Days
+             * @default 7
+             */
+            expires_in_days?: number;
+            /** Label */
+            label: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "manage_project" | "review_translation";
+            /** Request Key */
+            request_key: string;
+            /**
+             * Target Artifact Id
+             * @default null
+             */
+            target_artifact_id?: string | null;
+        };
+        /** ProjectLinkCreateResponse */
+        ProjectLinkCreateResponse: {
+            /** Already Created */
+            already_created: boolean;
+            link: components["schemas"]["ProjectLink"];
+            /** Url */
+            url: string | null;
+        };
+        /** ProjectLinkListResponse */
+        ProjectLinkListResponse: {
+            /** Items */
+            items: components["schemas"]["ProjectLink"][];
+        };
+        /** ProjectLinkResponse */
+        ProjectLinkResponse: {
+            link: components["schemas"]["ProjectLink"];
+        };
+        /** ProjectLinkRevokeRequest */
+        ProjectLinkRevokeRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** ProjectLinkService */
+        ProjectLinkService: {
+            /**
+             * Adapter
+             * @default null
+             */
+            adapter?: string | null;
+            /**
+             * Available
+             * @default null
+             */
+            available?: boolean | null;
+            /**
+             * Has Multiple Models
+             * @default null
+             */
+            has_multiple_models?: boolean | null;
+            /** Id */
+            id: string;
+            /** Model Catalog */
+            model_catalog: components["schemas"]["ProjectLinkServiceModel"][];
+            /** Models */
+            models: string[];
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+            /**
+             * Online
+             * @default null
+             */
+            online?: boolean | null;
+            /**
+             * Supports Predefined Voices
+             * @default null
+             */
+            supports_predefined_voices?: boolean | null;
+            /**
+             * Supports Voice Cloning
+             * @default null
+             */
+            supports_voice_cloning?: boolean | null;
+        };
+        /** ProjectLinkServiceModel */
+        ProjectLinkServiceModel: {
+            /**
+             * Available
+             * @default null
+             */
+            available?: boolean | null;
+            /**
+             * Family
+             * @default null
+             */
+            family?: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Label
+             * @default null
+             */
+            label?: string | null;
+            /**
+             * Loaded
+             * @default null
+             */
+            loaded?: boolean | null;
+            /**
+             * Online
+             * @default null
+             */
+            online?: boolean | null;
+            /**
+             * Supported Languages
+             * @default null
+             */
+            supported_languages?: string[] | null;
+            /**
+             * Voice Mode
+             * @default null
+             */
+            voice_mode?: string | null;
+        };
+        /** ProjectLinkServiceWarning */
+        ProjectLinkServiceWarning: {
+            /** Code */
+            code: string;
+            /** Model Id */
+            model_id: string;
+            /** Service Id */
+            service_id: string;
+        };
+        /** ProjectLinkServicesResponse */
+        ProjectLinkServicesResponse: {
+            /**
+             * Can Edit
+             * @constant
+             */
+            can_edit: false;
+            /**
+             * Scope
+             * @constant
+             */
+            scope: "project";
+            /** Services */
+            services: components["schemas"]["ProjectLinkService"][];
+            /** Session Id */
+            session_id: string;
+            /** Warnings */
+            warnings: components["schemas"]["ProjectLinkServiceWarning"][];
+        };
+        /** ProjectViewer */
+        ProjectViewer: {
+            /**
+             * Access
+             * @constant
+             */
+            access: "view";
+            /** Display Name */
+            display_name: string;
+            /** Granted At */
+            granted_at: string;
+            /** Granted By User Id */
+            granted_by_user_id: string | null;
+            /** Is Active */
+            is_active: boolean;
+            /** Login Name */
+            login_name: string;
+            /** User Id */
+            user_id: string;
+        };
+        /** ProjectViewersResponse */
+        ProjectViewersResponse: {
+            /** Items */
+            items: components["schemas"]["ProjectViewer"][];
+            /** Project Id */
+            project_id: string;
+            /** Revision */
+            revision: number;
+        };
+        /** ProjectViewingCandidate */
+        ProjectViewingCandidate: {
+            /** Display Name */
+            display_name: string;
+            /** Login Name */
+            login_name: string;
+            /** User Id */
+            user_id: string;
+        };
+        /** ProjectViewingCandidatesResponse */
+        ProjectViewingCandidatesResponse: {
+            /** Items */
+            items: components["schemas"]["ProjectViewingCandidate"][];
+        };
+        /** ProjectViewingRevisionRequest */
+        ProjectViewingRevisionRequest: {
+            /** Expected Revision */
+            expected_revision: number;
         };
         /** PronunciationCreate */
         PronunciationCreate: {
@@ -7464,6 +8933,120 @@ export interface components {
              */
             secret_ref?: string | null;
         };
+        /** PublicLinkRedeemRequest */
+        PublicLinkRedeemRequest: {
+            /** Token */
+            token: string;
+        };
+        /** PublicLinkRedeemResponse */
+        PublicLinkRedeemResponse: {
+            /** Csrf Token */
+            csrf_token: string;
+            link: components["schemas"]["ProjectLink"];
+        };
+        /** PublicReviewItem */
+        PublicReviewItem: {
+            /** End Ms */
+            end_ms: number | null;
+            /** Id */
+            id: string;
+            /** Ordinal */
+            ordinal: number;
+            /** Start Ms */
+            start_ms: number | null;
+            /** Text */
+            text: string;
+        };
+        /** PublicSharingHosting */
+        PublicSharingHosting: {
+            /** Canonical Origin */
+            canonical_origin: string;
+            /** Observed Origin */
+            observed_origin: string;
+            /** Proxy Hops */
+            proxy_hops: number;
+            /** Secure Cookies */
+            secure_cookies: boolean;
+            /** Secure Transport */
+            secure_transport: boolean;
+            /** Trusted Hosts */
+            trusted_hosts: string[];
+        };
+        /** PublicSharingSettingsRequest */
+        PublicSharingSettingsRequest: {
+            /** Enabled */
+            enabled: boolean;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Public Origin */
+            public_origin: string | null;
+        };
+        /** PublicSharingSettingsResponse */
+        PublicSharingSettingsResponse: {
+            /** Enabled */
+            enabled: boolean;
+            hosting: components["schemas"]["PublicSharingHosting"];
+            /** Public Origin */
+            public_origin: string | null;
+            /** Revision */
+            revision: number;
+        };
+        /** PublicTranslationReviewResponse */
+        PublicTranslationReviewResponse: {
+            /** Document Revision */
+            document_revision: number;
+            /** Items */
+            items: components["schemas"]["PublicReviewItem"][];
+            /** Label */
+            label: string;
+            /** Limit */
+            limit: number;
+            /** Link Id */
+            link_id: string;
+            /**
+             * Mode
+             * @constant
+             */
+            mode: "review_translation";
+            /** Offset */
+            offset: number;
+            /** Project Id */
+            project_id: string;
+            /** Target Artifact Id */
+            target_artifact_id: string;
+            /** Target Hash */
+            target_hash: string;
+            /** Total */
+            total: number;
+        };
+        /** PublicTranslationSubmissionRequest */
+        PublicTranslationSubmissionRequest: {
+            /** Changes */
+            changes: components["schemas"]["TranslationChange"][];
+            /** Expected Source Hash */
+            expected_source_hash: string;
+            /**
+             * Reviewer Label
+             * @default null
+             */
+            reviewer_label?: string | null;
+        };
+        /** PublicTranslationSubmissionResponse */
+        PublicTranslationSubmissionResponse: {
+            /** Change Count */
+            change_count: number;
+            /** Created At */
+            created_at: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "accepted" | "rejected";
+            /** Submission Id */
+            submission_id: string;
+        };
         /** PurgeAdmissionRequest */
         PurgeAdmissionRequest: {
             /**
@@ -7604,6 +9187,16 @@ export interface components {
         };
         /** SessionCreate */
         SessionCreate: {
+            /**
+             * Folder Id
+             * @default null
+             */
+            folder_id?: string | null;
+            /**
+             * Folder Revision
+             * @default null
+             */
+            folder_revision?: number | null;
             /** Included Stages */
             included_stages?: string[];
             /**
@@ -7616,6 +9209,11 @@ export interface components {
             multilingual_setup?: components["schemas"]["MultilingualSetup"] | null;
             /** Name */
             name: string;
+            /**
+             * Overwrite Revision
+             * @default null
+             */
+            overwrite_revision?: number | null;
             /**
              * Overwrite Session Id
              * @default null
@@ -7642,6 +9240,11 @@ export interface components {
              * @default custom
              */
             workflow_preset?: string;
+            /**
+             * Workspace Id
+             * @default null
+             */
+            workspace_id?: string | null;
         };
         /** SessionForkRequest */
         SessionForkRequest: {
@@ -7766,6 +9369,28 @@ export interface components {
         SettingUpdate: {
             /** Value */
             value: unknown;
+        };
+        /** SharedProjectSummary */
+        SharedProjectSummary: {
+            /** Name */
+            name: string;
+            /** Project Id */
+            project_id: string;
+            /** Source Language */
+            source_language: string | null;
+            /** Source Session Id */
+            source_session_id: string;
+            /** Target Language */
+            target_language: string | null;
+            /** Updated At */
+            updated_at: string;
+            /** Workflow Kind */
+            workflow_kind: string;
+        };
+        /** SharedProjectsResponse */
+        SharedProjectsResponse: {
+            /** Items */
+            items: components["schemas"]["SharedProjectSummary"][];
         };
         /** SoundAnchor */
         SoundAnchor: {
@@ -9044,6 +10669,37 @@ export interface components {
              */
             artifact_id?: string | null;
         };
+        /** SubmissionAcceptRequest */
+        SubmissionAcceptRequest: {
+            /** Expected Document Revision */
+            expected_document_revision: number;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Expected Selected Artifact Id */
+            expected_selected_artifact_id: string;
+            /** Expected Source Hash */
+            expected_source_hash: string;
+        };
+        /** SubmissionChangeDetail */
+        SubmissionChangeDetail: {
+            /** After */
+            after: string;
+            /** Before */
+            before: string | null;
+            /** End Ms */
+            end_ms: number | null;
+            /** Ordinal */
+            ordinal: number | null;
+            /** Segment Id */
+            segment_id: string;
+            /** Start Ms */
+            start_ms: number | null;
+        };
+        /** SubmissionRejectRequest */
+        SubmissionRejectRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
         /** SubtitleAlignRequest */
         SubtitleAlignRequest: {
             /** Expected Revision */
@@ -9095,6 +10751,12 @@ export interface components {
              * @default null
              */
             candidate_id?: string | null;
+            /**
+             * Expected Revision
+             * @description Latest record.revision token; required for a new decision when collaboration is enabled.
+             * @default null
+             */
+            expected_revision?: string | null;
             /**
              * Note
              * @default
@@ -9252,7 +10914,7 @@ export interface components {
              */
             label?: string;
             /** Scopes */
-            scopes: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
+            scopes: ("app.read" | "app.write" | "app.run" | "app.cancel" | "app.workspaces.enroll" | "app.credentials.read" | "app.credentials.write" | "manager.read" | "manager.runtime" | "manager.mutate" | "app.admin")[];
         };
         /** TrainingCreateRequest */
         TrainingCreateRequest: {
@@ -9461,6 +11123,13 @@ export interface components {
             /** Targets */
             targets: components["schemas"]["TranslationBranchTarget"][];
         };
+        /** TranslationChange */
+        TranslationChange: {
+            /** Segment Id */
+            segment_id: string;
+            /** Text */
+            text: string;
+        };
         /** TranslationProjectCreateRequest */
         TranslationProjectCreateRequest: {
             /** Checkpoint Artifact Id */
@@ -9539,6 +11208,12 @@ export interface components {
              * @default
              */
             voice?: string;
+            /**
+             * Voice Id
+             * @description Managed voice to select. Linked audio.cpp samples are retained for this audition.
+             * @default null
+             */
+            voice_id?: string | null;
         };
         /** VocalEvent */
         VocalEvent: {
@@ -9673,6 +11348,11 @@ export interface components {
              */
             service_id?: string;
             /**
+             * Session Id
+             * @default null
+             */
+            session_id?: string | null;
+            /**
              * Sort
              * @default relevance
              * @enum {string}
@@ -9699,6 +11379,11 @@ export interface components {
              * @enum {string}
              */
             voice_category?: "" | "male" | "female" | "androgynous" | "unspecified";
+            /**
+             * Workspace Id
+             * @default null
+             */
+            workspace_id?: string | null;
         };
         /** VoiceCollectionCreate */
         VoiceCollectionCreate: {
@@ -10010,6 +11695,82 @@ export interface components {
             /** Transcript */
             transcript: string;
         };
+        /**
+         * VoiceTranscriptionChoices
+         * @description Per-operation controls; connection and executable settings are server-owned.
+         */
+        VoiceTranscriptionChoices: {
+            /**
+             * Crispasr Vad Enabled
+             * @default null
+             */
+            crispasr_vad_enabled?: boolean | null;
+            /**
+             * Crispasr Vad Threshold
+             * @default null
+             */
+            crispasr_vad_threshold?: number | null;
+            /**
+             * Moss Ctc Alignment Enabled
+             * @default null
+             */
+            moss_ctc_alignment_enabled?: boolean | null;
+            /**
+             * Moss Ctc Padding Seconds
+             * @default null
+             */
+            moss_ctc_padding_seconds?: number | null;
+            /**
+             * Moss Max Chunk Seconds
+             * @default null
+             */
+            moss_max_chunk_seconds?: number | null;
+            /**
+             * Moss Vad Enabled
+             * @default null
+             */
+            moss_vad_enabled?: boolean | null;
+            /**
+             * Qwen Asr Backend
+             * @default null
+             */
+            qwen_asr_backend?: ("auto" | "cpu" | "cuda" | "vulkan" | "metal") | null;
+            /**
+             * Qwen Asr Model
+             * @default null
+             */
+            qwen_asr_model?: ("qwen3_asr_0_6b" | "qwen3_asr_1_7b") | null;
+            /**
+             * Stt Backend
+             * @default null
+             */
+            stt_backend?: string | null;
+            /**
+             * Stt Compute Backend
+             * @default null
+             */
+            stt_compute_backend?: ("auto" | "cpu" | "cuda" | "vulkan" | "metal") | null;
+            /**
+             * Stt Engine
+             * @default null
+             */
+            stt_engine?: string | null;
+            /**
+             * Stt Language
+             * @default null
+             */
+            stt_language?: string | null;
+            /**
+             * Stt Model Quantization
+             * @default null
+             */
+            stt_model_quantization?: string | null;
+            /**
+             * Transcription Vocal Isolation
+             * @default null
+             */
+            transcription_vocal_isolation?: ("off" | "bs_roformer" | "mel_band_roformer" | "htdemucs") | null;
+        };
         /** VoiceUpdate */
         VoiceUpdate: {
             /**
@@ -10092,6 +11853,12 @@ export interface components {
          * @description Stable public work projection; raw job inputs are intentionally absent.
          */
         WorkView: {
+            /**
+             * Available At
+             * @description Earliest UTC time at which queued work can be claimed again.
+             * @default null
+             */
+            available_at?: string | null;
             /** Cancellable */
             cancellable: boolean;
             /**
@@ -10106,6 +11873,13 @@ export interface components {
             detail?: string | null;
             /** @default null */
             error?: components["schemas"]["WorkError"] | null;
+            /**
+             * External Effect
+             * @default null
+             */
+            external_effect?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Finished At
              * @default null
@@ -10230,6 +12004,241 @@ export interface components {
             /** Plan Digest */
             plan_digest: string;
         };
+        /** WorkspaceCreateRequest */
+        WorkspaceCreateRequest: {
+            /** Name */
+            name: string;
+        };
+        /** WorkspaceInvitationResponse */
+        WorkspaceInvitationResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Id */
+            id: string;
+            /** Invited By Display Name */
+            invited_by_display_name: string;
+            /** Invited By User Id */
+            invited_by_user_id: string;
+            /** Responded At */
+            responded_at: string | null;
+            /** Revision */
+            revision: number;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "manager" | "member";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "accepted" | "revoked" | "declined" | "expired";
+            /** User Id */
+            user_id: string;
+            /** Workspace Id */
+            workspace_id: string;
+            /** Workspace Name */
+            workspace_name: string;
+        };
+        /** WorkspaceInvitationsResponse */
+        WorkspaceInvitationsResponse: {
+            /** Items */
+            items: components["schemas"]["WorkspaceInvitationResponse"][];
+        };
+        /** WorkspaceInviteRequest */
+        WorkspaceInviteRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "manager" | "member";
+            /** User Id */
+            user_id: string;
+        };
+        /** WorkspaceListResponse */
+        WorkspaceListResponse: {
+            /** Items */
+            items: components["schemas"]["WorkspaceResponse"][];
+        };
+        /** WorkspaceManagerRecoveryRequest */
+        WorkspaceManagerRecoveryRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** User Id */
+            user_id: string;
+        };
+        /** WorkspaceManagerRecoveryResponse */
+        WorkspaceManagerRecoveryResponse: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Recovered User Id */
+            recovered_user_id: string;
+            /** Revision */
+            revision: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "active" | "archived";
+        };
+        /** WorkspaceMemberResponse */
+        WorkspaceMemberResponse: {
+            /** Display Name */
+            display_name: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Login Name */
+            login_name: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "owner" | "manager" | "member";
+            /** User Id */
+            user_id: string;
+        };
+        /** WorkspaceMembersResponse */
+        WorkspaceMembersResponse: {
+            /** Items */
+            items: components["schemas"]["WorkspaceMemberResponse"][];
+        };
+        /** WorkspaceRecoveryCandidate */
+        WorkspaceRecoveryCandidate: {
+            /** Display Name */
+            display_name: string;
+            /** User Id */
+            user_id: string;
+        };
+        /** WorkspaceRecoveryItem */
+        WorkspaceRecoveryItem: {
+            /** Candidates */
+            candidates: components["schemas"]["WorkspaceRecoveryCandidate"][];
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Revision */
+            revision: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "active" | "archived";
+        };
+        /** WorkspaceRecoveryList */
+        WorkspaceRecoveryList: {
+            /** Has More */
+            has_more: boolean;
+            /** Items */
+            items: components["schemas"]["WorkspaceRecoveryItem"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** WorkspaceRecoveryQuery */
+        WorkspaceRecoveryQuery: {
+            /**
+             * Limit
+             * @default 50
+             */
+            limit?: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset?: number;
+        };
+        /** WorkspaceRemovalResponse */
+        WorkspaceRemovalResponse: {
+            /** Removed */
+            removed: boolean;
+            /** Revision */
+            revision: number;
+            /** User Id */
+            user_id: string;
+            /** Workspace Id */
+            workspace_id: string;
+        };
+        /** WorkspaceRenameRequest */
+        WorkspaceRenameRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Name */
+            name: string;
+        };
+        /** WorkspaceResponse */
+        WorkspaceResponse: {
+            /** Allowed Actions */
+            allowed_actions: ("read" | "edit" | "manage")[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "personal" | "team";
+            /** Name */
+            name: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "owner" | "manager" | "member";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "active" | "archived";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** WorkspaceRevisionRequest */
+        WorkspaceRevisionRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** WorkspaceRoleRequest */
+        WorkspaceRoleRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "manager" | "member";
+        };
+        /** WorkspaceUserSearchResponse */
+        WorkspaceUserSearchResponse: {
+            /** Items */
+            items: {
+                [key: string]: string;
+            }[];
+        };
         XttsModel: {
             bundle_complete: boolean;
             created?: number;
@@ -10252,6 +12261,635 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getInstallationMode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallationModeResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    enableCollaboration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnableCollaborationRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstallationModeResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getPublicSharingSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSharingSettingsResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    configurePublicSharing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicSharingSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicSharingSettingsResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountListResponse"];
+                };
+            };
+            /** @description Invalid account or reset request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Account revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Metadata exceeds 16 KiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createUser: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountSummaryResponse"];
+                };
+            };
+            /** @description Invalid account or reset request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Account revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Metadata exceeds 16 KiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateUser: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountSummaryResponse"];
+                };
+            };
+            /** @description Invalid account or reset request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Account revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Metadata exceeds 16 KiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    issueUserPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountResetIssueRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountResetIssueResponse"];
+                };
+            };
+            /** @description Invalid account or reset request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Account revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Metadata exceeds 16 KiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listWorkspacesWithoutManager: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceRecoveryList"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recoverWorkspaceManager: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceManagerRecoveryRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceManagerRecoveryResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     acceptAgentRun: {
         parameters: {
             query?: never;
@@ -10353,15 +12991,112 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Browser-safe source audio preview */
+            /** @description Existing preview or waveform peaks */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Preview queued or running */
+            /** @description Authorized preview job queued or running */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope, project role or browser CSRF check denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown, deleted or inaccessible source */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Preview is not prepared; details.can_prepare is a hint for an explicit POST */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The managed source file is missing */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid waveform bounds or unsupported media */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    prepareArtifactAudioPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing preview or waveform peaks */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authorized preview job queued or running */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope, project role or browser CSRF check denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown, deleted or inaccessible source */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source changed or preparation conflicted */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The managed source file is missing */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid waveform bounds or unsupported media */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10466,21 +13201,49 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Cached compatible video preview */
+            /** @description Existing preview or waveform peaks */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Durable preview job queued or running */
+            /** @description Authorized preview job queued or running */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Source cannot produce a bounded video preview; audio fallback is available */
+            /** @description Required scope, project role or browser CSRF check denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown, deleted or inaccessible source */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Preview is not prepared; details.can_prepare is a hint for an explicit POST */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The managed source file is missing */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid waveform bounds or unsupported media */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -10489,7 +13252,7 @@ export interface operations {
             };
         };
     };
-    getArtifactWaveform: {
+    prepareArtifactVideoPreview: {
         parameters: {
             query?: never;
             header?: never;
@@ -10500,8 +13263,184 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Waveform peaks or queued generation */
+            /** @description Existing preview or waveform peaks */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authorized preview job queued or running */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope, project role or browser CSRF check denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown, deleted or inaccessible source */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source changed or preparation conflicted */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The managed source file is missing */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid waveform bounds or unsupported media */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getArtifactWaveform: {
+        parameters: {
+            query?: {
+                points?: number;
+                start_ms?: number;
+                /** @description End of a positive window of at most ten minutes. */
+                end_ms?: number;
+            };
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing preview or waveform peaks */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authorized preview job queued or running */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope, project role or browser CSRF check denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown, deleted or inaccessible source */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Preview is not prepared; details.can_prepare is a hint for an explicit POST */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The managed source file is missing */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid waveform bounds or unsupported media */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    prepareArtifactWaveform: {
+        parameters: {
+            query?: {
+                points?: number;
+                start_ms?: number;
+                /** @description End of a positive window of at most ten minutes. */
+                end_ms?: number;
+            };
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing preview or waveform peaks */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authorized preview job queued or running */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope, project role or browser CSRF check denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown, deleted or inaccessible source */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source changed or preparation conflicted */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The managed source file is missing */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid waveform bounds or unsupported media */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10732,6 +13671,56 @@ export interface operations {
             };
         };
     };
+    redeemPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountResetRedeemRequest"];
+            };
+        };
+        responses: {
+            /** @description Password saved; sign in separately */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Reset link invalid or expired */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Metadata exceeds 16 KiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid input; sensitive values omitted */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many invalid reset attempts */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getAuthStatus: {
         parameters: {
             query?: never;
@@ -10741,12 +13730,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Authentication status */
+            /** @description Authentication status and current account role */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AuthStatusResponse"];
+                };
             };
         };
     };
@@ -10783,6 +13774,33 @@ export interface operations {
         responses: {
             /** @description Created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeApiToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tokenId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Token not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10864,7 +13882,10 @@ export interface operations {
     };
     listCredentials: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -10882,7 +13903,10 @@ export interface operations {
     };
     putCredential: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 credentialId: string;
@@ -10906,7 +13930,12 @@ export interface operations {
     };
     getGlobalDefaults: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized workspace for workspace settings; omission uses the caller's personal home. Installation keys reject this query. */
+                workspace_id?: string;
+                /** @description Resolve this project's workspace with independent session and workspace reading authority. */
+                session_id?: string;
+            };
             header?: never;
             path: {
                 section: string;
@@ -11578,12 +14607,43 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["JobCreate"];
+                "application/json": components["schemas"]["JobCreate"] & {
+                    /** @enum {string} */
+                    kind?: "noop" | "session.bundle.export";
+                };
             };
         };
         responses: {
-            /** @description Queued */
+            /** @description Approved command queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current role, scope or resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or receipt job unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Command state or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid command fields or job_operation_required; use the domain endpoint */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11692,6 +14752,284 @@ export interface operations {
             };
         };
     };
+    updateKnowledgeLedger: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Current ledger revision. */
+                "If-Match": string;
+            };
+            path: {
+                ledgerId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KnowledgeUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Current ledger state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeUpdateResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or ledger unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current ledger revision changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getLinkSubmission: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                submissionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkSubmissionDetailResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    acceptLinkSubmission: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                submissionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmissionAcceptRequest"];
+            };
+        };
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkSubmissionSummary"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rejectLinkSubmission: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                submissionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmissionRejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkSubmissionSummary"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listManagerComponents: {
         parameters: {
             query?: never;
@@ -11766,6 +15104,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getManagerLogs: {
@@ -11824,6 +15169,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getManagerOperation: {
@@ -11859,6 +15211,13 @@ export interface operations {
         responses: {
             /** @description Safe cancellation requested */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11906,6 +15265,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     listManagerReleases: {
@@ -11946,6 +15312,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     controlManagerRuntime: {
@@ -11965,6 +15338,13 @@ export interface operations {
         responses: {
             /** @description Managed runtime action completed */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12023,6 +15403,13 @@ export interface operations {
         responses: {
             /** @description Immutable whole-product uninstall plan */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12222,9 +15609,69 @@ export interface operations {
             };
         };
     };
-    listProjectFolders: {
+    getProjectCopy: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                copyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current authorized state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCopyStatus"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project, workspace or copy unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, stale preview, unsupported state or receipt conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listProjectFolders: {
+        parameters: {
+            query?: {
+                /** @description Owning workspace; defaults to the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -12263,7 +15710,10 @@ export interface operations {
     };
     createProjectFolder: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Owning workspace; defaults to the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -12308,7 +15758,10 @@ export interface operations {
     };
     deleteProjectFolder: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Owning workspace; defaults to the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -12355,7 +15808,10 @@ export interface operations {
     };
     updateProjectFolder: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Owning workspace; defaults to the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -12402,7 +15858,10 @@ export interface operations {
     };
     replaceProjectFolderProjects: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Owning workspace; defaults to the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -12439,6 +15898,779 @@ export interface operations {
                 content?: never;
             };
             /** @description Invalid project-folder request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeProjectLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                linkId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectLinkRevokeRequest"];
+            };
+        };
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectLinkResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSharedProjects: {
+        parameters: {
+            query?: {
+                query?: string;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current viewing access */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SharedProjectsResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current project management authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project or account not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, changed revision or unavailable project */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    copyCurrentProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectCopyRequest"];
+            };
+        };
+        responses: {
+            /** @description Current authorized state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCopyStatus"];
+                };
+            };
+            /** @description Copy queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCopyStatus"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project, workspace or copy unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, stale preview, unsupported state or receipt conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request exceeds the bounded input limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getProjectCopyPreview: {
+        parameters: {
+            query: {
+                workspace_id: string;
+            };
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current authorized state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCopyPreview"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project, workspace or copy unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, stale preview, unsupported state or receipt conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewProjectCopy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectCopyPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Current authorized state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectCopyPreview"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project, workspace or copy unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, stale preview, unsupported state or receipt conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request exceeds the bounded input limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listLinkSubmissions: {
+        parameters: {
+            query?: {
+                status?: "pending" | "accepted" | "rejected";
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkSubmissionsResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listProjectLinks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectLinkListResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createProjectLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectLinkCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectLinkCreateResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getProjectViewers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current viewing access */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectViewersResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current project management authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project or account not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, changed revision or unavailable project */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    searchProjectViewers: {
+        parameters: {
+            query?: {
+                query?: string;
+            };
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current viewing access */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectViewingCandidatesResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current project management authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project or account not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, changed revision or unavailable project */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    grantProjectView: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectViewingRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Current viewing access */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectViewersResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current project management authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project or account not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, changed revision or unavailable project */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeProjectView: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectViewingRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Current viewing access */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectViewersResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current project management authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project or account not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, changed revision or unavailable project */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -12533,7 +16765,12 @@ export interface operations {
     };
     listProviders: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+                /** @description Select the session's workspace catalogue with independent current session and workspace reading authority. */
+                session_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -12551,7 +16788,10 @@ export interface operations {
     };
     createProvider: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -12591,7 +16831,10 @@ export interface operations {
     };
     deleteProvider: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 providerId: string;
@@ -12618,7 +16861,10 @@ export interface operations {
     };
     updateProvider: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 providerId: string;
@@ -12649,7 +16895,12 @@ export interface operations {
     };
     listProviderModels: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+                /** @description Select the session's workspace catalogue with independent current session and workspace reading authority. */
+                session_id?: string;
+            };
             header?: never;
             path: {
                 providerId: string;
@@ -12669,7 +16920,10 @@ export interface operations {
     };
     createProviderModel: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 providerId: string;
@@ -12693,7 +16947,10 @@ export interface operations {
     };
     refreshProviderModels: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 providerId: string;
@@ -12713,7 +16970,10 @@ export interface operations {
     };
     deleteProviderModel: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 providerId: string;
@@ -12741,7 +17001,10 @@ export interface operations {
     };
     updateProviderModel: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 providerId: string;
@@ -12773,7 +17036,10 @@ export interface operations {
     };
     testProvider: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized active workspace; omitted scope uses the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 providerId: string;
@@ -12794,6 +17060,362 @@ export interface operations {
                 content?: never;
             };
             /** @description Provider test failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    leaveProjectLink: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Select the matching HttpOnly visitor cookie; this ID alone grants no access. */
+                "X-Pandrator-Project-Link": string;
+                /** @description The CSRF token from this visitor session's redemption response. */
+                "X-CSRF-Token": string;
+            };
+            path: {
+                linkId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Visitor session revoked and cookie removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    redeemProjectLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                linkId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicLinkRedeemRequest"];
+            };
+        };
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicLinkRedeemResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Per-client redemption backoff; see Retry-After */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getPublicTranslationReview: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header: {
+                /** @description Select the matching HttpOnly visitor cookie; this ID alone grants no access. */
+                "X-Pandrator-Project-Link": string;
+            };
+            path: {
+                linkId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicTranslationReviewResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getProjectLinkServices: {
+        parameters: {
+            query: {
+                session_id: string;
+            };
+            header: {
+                /** @description Select the matching HttpOnly visitor cookie; this ID alone grants no access. */
+                "X-Pandrator-Project-Link": string;
+            };
+            path: {
+                linkId: string;
+                kind: "tts" | "stt";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectLinkServicesResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitPublicTranslationReview: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                /** @description Select the matching HttpOnly visitor cookie; this ID alone grants no access. */
+                "X-Pandrator-Project-Link": string;
+                /** @description The CSRF token from this visitor session's redemption response. */
+                "X-CSRF-Token": string;
+            };
+            path: {
+                linkId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicTranslationSubmissionRequest"];
+            };
+        };
+        responses: {
+            /** @description Current bounded result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicTranslationSubmissionResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current resource authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unavailable or not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current revision or source conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds its bounded limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -12845,7 +17467,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Insufficient scope. */
+            /** @description Required scope or workspace Manager authority unavailable. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12923,6 +17545,13 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator and delegated scopes required */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13007,7 +17636,12 @@ export interface operations {
     };
     listSttServices: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+                /** @description Project used to resolve a workspace; independent workspace access is required. */
+                session_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -13021,19 +17655,37 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Workspace or project is unavailable to this caller */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid workspace or project selector */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     listTtsServices: {
         parameters: {
             query?: {
-                /** @description Full catalogue (default, legacy shape) or the slim compact projection for the session view. */
-                view?: "full" | "compact";
-                /** @description Probe providers and enrich catalogues. */
+                /** @description Full configuration, compact UI choices, or a small approved summary without connection credentials, large catalogues or model schemas. */
+                view?: "full" | "compact" | "summary";
+                /** @description Compatibility parameter. A true value returns 409; use explicit POST refresh. */
                 refresh?: boolean;
                 /** @description Restrict the payload to one service (id or name, mutually exclusive with services). */
                 service_id?: string;
                 /** @description Comma-separated service ids or names (at most 20, mutually exclusive with service_id). */
                 services?: string;
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+                /** @description Project used to resolve a workspace; independent workspace access is required. */
+                session_id?: string;
             };
             header?: never;
             path?: never;
@@ -13048,14 +17700,21 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Unknown TTS service selected */
+            /** @description Workspace or project is unavailable to this caller */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Invalid catalogue view or filter */
+            /** @description catalogue_refresh_requires_post: use explicit POST refresh */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid workspace or project selector */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -13066,7 +17725,10 @@ export interface operations {
     };
     discoverTtsService: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -13084,11 +17746,76 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Current Administrator, workspace authority and all scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    refreshTtsServices: {
+        parameters: {
+            query?: {
+                /** @description Full configuration, compact UI choices, or a small approved summary without connection credentials, large catalogues or model schemas. */
+                view?: "full" | "compact" | "summary";
+                /** @description Restrict the payload to one service (id or name, mutually exclusive with services). */
+                service_id?: string;
+                /** @description Comma-separated service ids or names (at most 20, mutually exclusive with service_id). */
+                services?: string;
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description TTS readiness and catalogues */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workspace management authority and all scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workspace or project is unavailable to this caller */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description catalogue_changed: connection or default settings changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid selectors, session selector, or more than 20 services */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     listXttsModels: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -13112,11 +17839,21 @@ export interface operations {
                     };
                 };
             };
+            /** @description Current Administrator, workspace authority and all scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     uploadXttsModel: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -13144,11 +17881,21 @@ export interface operations {
                     };
                 };
             };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     deleteXttsModel: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 modelId: string;
@@ -13171,17 +17918,28 @@ export interface operations {
                     };
                 };
             };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getTtsServiceDetail: {
         parameters: {
             query?: {
-                /** @description Probe the provider and enrich its catalogue. */
+                /** @description Compatibility parameter. A true value returns 409; use explicit POST refresh. */
                 refresh?: boolean;
                 /** @description Restrict heavy per-model maps to one chosen model (mutually exclusive with models). */
                 model?: string;
                 /** @description Comma-separated chosen models for the heavy per-model maps (at most 20, mutually exclusive with model). */
                 models?: string;
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+                /** @description Project used to resolve a workspace; independent workspace access is required. */
+                session_id?: string;
             };
             header?: never;
             path: {
@@ -13198,14 +17956,21 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Unknown TTS service or model */
+            /** @description Workspace or project is unavailable to this caller */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Invalid service id or model filter */
+            /** @description catalogue_refresh_requires_post: use explicit POST refresh */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid workspace or project selector */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -13216,7 +17981,10 @@ export interface operations {
     };
     previewTtsVoice: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Workspace for this audition. Omit to use the caller's own workspace. Members can audition approved workspace services. */
+                workspace_id?: string;
+            };
             header?: {
                 "Idempotency-Key"?: string;
             };
@@ -13245,10 +18013,67 @@ export interface operations {
                                 source: "inherited" | "custom" | "cleared";
                             };
                         };
+                        /** @description Owning workspace for a new audition; an older retained solo receipt may omit it. */
+                        workspace_id?: string;
                     } & {
                         [key: string]: unknown;
                     };
                 };
+            };
+        };
+    };
+    refreshTtsServiceDetail: {
+        parameters: {
+            query?: {
+                /** @description Restrict heavy per-model maps to one chosen model (mutually exclusive with models). */
+                model?: string;
+                /** @description Comma-separated chosen models for the heavy per-model maps (at most 20, mutually exclusive with model). */
+                models?: string;
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+            };
+            header?: never;
+            path: {
+                serviceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Selected TTS service detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workspace management authority and all scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workspace or project is unavailable to this caller */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description catalogue_changed: connection or default settings changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid selectors, session selector, or more than 20 services */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -13267,6 +18092,27 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current READ, WRITE and RUN scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source artifact or destination workspace unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bundle import fields */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13306,7 +18152,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Insufficient scope. */
+            /** @description Required scope or Manager/Administrator authority unavailable. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13365,7 +18211,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Insufficient scope. */
+            /** @description Required scope or Manager/Administrator authority unavailable. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13391,6 +18237,8 @@ export interface operations {
     listSessions: {
         parameters: {
             query?: {
+                /** @description Filter sessions visible to this credential by workspace. */
+                workspace_id?: string;
                 include_trashed?: boolean;
             };
             header?: never;
@@ -13693,7 +18541,10 @@ export interface operations {
     exportSessionBundle: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Required for automation-client writes; optional for browser/API-token writes. */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 sessionId: string;
             };
@@ -13705,8 +18556,36 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Queued */
+            /** @description Bundle queued or authorized replay */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Project RUN authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or receipt job unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Command state or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bundle command fields */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13756,7 +18635,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The authenticated actor lacks app.run. */
+            /** @description Current session processing permission or a required scope is missing. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13924,7 +18803,10 @@ export interface operations {
     };
     getGenerationControls: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Include safe retained cast-slot model hints for the project UI; no input IDs, paths or library records. */
+                include_retained?: boolean;
+            };
             header?: never;
             path: {
                 sessionId: string;
@@ -14836,6 +19718,138 @@ export interface operations {
             };
         };
     };
+    getKnowledgeLedger: {
+        parameters: {
+            query?: {
+                source_language?: string;
+                target_language?: string;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+                kind: "research" | "glossary";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current ledger state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeLedgerResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or ledger unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current ledger revision changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    initializeKnowledgeLedger: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                kind: "research" | "glossary";
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["KnowledgeScope"];
+            };
+        };
+        responses: {
+            /** @description Current ledger state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeLedgerResponse"];
+                };
+            };
+            /** @description Ledger initialized */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeLedgerResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or ledger unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current ledger revision changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bounded request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getMediaEdit: {
         parameters: {
             query?: never;
@@ -15228,6 +20242,27 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Processing is not permitted */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or media input not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Mix preview is unavailable */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     deleteOutputArtifact: {
@@ -15275,6 +20310,20 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Processing is not permitted */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session or source artifact not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16089,7 +21138,10 @@ export interface operations {
     };
     replaceSessionProjectFolders: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Owning workspace; defaults to the caller's personal workspace. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -16172,7 +21224,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Insufficient scope. */
+            /** @description Required scope or Manager/Administrator authority unavailable. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -16235,7 +21287,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Insufficient scope. */
+            /** @description Required scope or workspace Manager authority unavailable. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -16298,7 +21350,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Insufficient scope. */
+            /** @description Required scope or workspace Manager authority unavailable. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -16355,7 +21407,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Insufficient scope. */
+            /** @description Required scope or Manager/Administrator authority unavailable. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -18205,6 +23257,8 @@ export interface operations {
         parameters: {
             query?: {
                 source_artifact_id?: string;
+                /** @description Also include evidence referenced by this exact subtitle artifact's saved revision. Requires source_artifact_id. */
+                include_referenced?: boolean;
             };
             header?: never;
             path: {
@@ -18285,6 +23339,13 @@ export interface operations {
             };
             /** @description Evidence state conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Latest evidence revision required in collaboration mode */
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18890,7 +23951,10 @@ export interface operations {
     };
     getSetting: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized workspace for workspace settings; omission uses the caller's personal home. Installation keys reject this query. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 settingKey: string;
@@ -18910,7 +23974,10 @@ export interface operations {
     };
     putSetting: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Authorized workspace for workspace settings; omission uses the caller's personal home. Installation keys reject this query. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 settingKey: string;
@@ -18947,6 +24014,8 @@ export interface operations {
                 query?: string;
                 tag?: string;
                 archived?: boolean;
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
             };
             header?: never;
             path?: never;
@@ -18970,7 +24039,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19005,6 +24074,8 @@ export interface operations {
             query?: {
                 cursor?: string;
                 limit?: number;
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
             };
             header?: never;
             path?: never;
@@ -19028,7 +24099,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19060,7 +24131,10 @@ export interface operations {
     };
     getSoundCandidate: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 candidateId: string;
@@ -19085,7 +24159,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19117,7 +24191,10 @@ export interface operations {
     };
     discardSoundCandidate: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -19144,7 +24221,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19231,7 +24308,10 @@ export interface operations {
     };
     generateSound: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -19260,7 +24340,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19292,7 +24372,10 @@ export interface operations {
     };
     importSoundAudio: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
+            };
             header: {
                 "X-Audio-Filename": string;
                 "Idempotency-Key": string;
@@ -19322,7 +24405,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19354,7 +24437,10 @@ export interface operations {
     };
     importSoundMultipart: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -19386,7 +24472,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19418,7 +24504,10 @@ export interface operations {
     };
     saveSound: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -19447,7 +24536,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19482,6 +24571,8 @@ export interface operations {
             query?: {
                 cursor?: string;
                 limit?: number;
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
             };
             header?: never;
             path: {
@@ -19507,7 +24598,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19539,7 +24630,10 @@ export interface operations {
     };
     updateSound: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select a member workspace, or use the caller's personal library when omitted. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -19570,7 +24664,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Required scope is missing. */
+            /** @description Caller lacks the required scopes or content authority. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19773,6 +24867,8 @@ export interface operations {
     listSourceAssets: {
         parameters: {
             query?: {
+                /** @description Workspace library to read; defaults to the caller's personal workspace. */
+                workspace_id?: string;
                 /** @description Compact library cards omit stored metadata and filesystem paths. */
                 view?: "full" | "compact";
                 include_trashed?: boolean;
@@ -20023,6 +25119,7 @@ export interface operations {
     listSubtitleEvidenceRoutes: {
         parameters: {
             query?: {
+                session_id?: string;
                 language?: string;
                 include_languages?: boolean;
             };
@@ -20073,7 +25170,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Subtitle evidence candidates and provenance */
+            /** @description Current authorized evidence and record.revision token for a later editorial decision. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -20125,6 +25222,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Current Administrator and both delegated scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     createTrainingRun: {
@@ -20142,6 +25246,13 @@ export interface operations {
         responses: {
             /** @description Queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator and delegated scopes required */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -20167,6 +25278,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Current Administrator and delegated scopes required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     retryTrainingRun: {
@@ -20182,6 +25300,13 @@ export interface operations {
         responses: {
             /** @description Retry queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current Administrator and delegated scopes required */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -20773,7 +25898,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Operation not found or belongs to another principal */
+            /** @description Operation not found or unavailable to this user */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -20814,7 +25939,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Operation not found or belongs to another principal */
+            /** @description Operation not found or unavailable to this user */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -21169,12 +26294,33 @@ export interface operations {
     };
     uploadSource: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Destination workspace; defaults to the caller's personal workspace for an unbound source. */
+                workspace_id?: string;
+                /** @description Destination project session. Query and multipart selectors must agree. */
+                session_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * @description Literal multipart true/false. False requires purpose=source and an explicit project session; it does not attach or select the candidate.
+                     * @default true
+                     */
+                    attach_to_session?: boolean;
+                    /** Format: binary */
+                    file: string;
+                    /** @default source */
+                    purpose?: string;
+                    session_id?: string;
+                    workspace_id?: string;
+                };
+            };
+        };
         responses: {
             /** @description Uploaded */
             201: {
@@ -21293,6 +26439,8 @@ export interface operations {
     queryVoiceCatalog: {
         parameters: {
             query?: {
+                workspace_id?: string | null;
+                session_id?: string | null;
                 query?: string;
                 language?: string;
                 accent?: string;
@@ -21327,9 +26475,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        can_edit?: boolean;
+                        workspace_id?: string;
+                    } & {
                         [key: string]: unknown;
                     };
                 };
+            };
+            /** @description The workspace, project or collection is absent or unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request or scope identifier is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -21338,6 +26503,10 @@ export interface operations {
             query?: {
                 service_id?: string;
                 model?: string;
+                /** @description A nonblank scope identifier without surrounding whitespace. */
+                workspace_id?: string;
+                /** @description A nonblank scope identifier without surrounding whitespace. */
+                session_id?: string;
             };
             header?: never;
             path?: never;
@@ -21352,15 +26521,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        can_edit?: boolean;
+                        workspace_id?: string;
+                    } & {
                         [key: string]: unknown;
                     };
                 };
+            };
+            /** @description The workspace, project or collection is absent or unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request or scope identifier is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
     updateCatalogVoiceMetadata: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description A nonblank scope identifier without surrounding whitespace. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -21380,15 +26569,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        can_edit?: boolean;
+                        workspace_id?: string;
+                    } & {
                         [key: string]: unknown;
                     };
                 };
+            };
+            /** @description The workspace, project or collection is absent or unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The revision, captured catalogue or idempotency request conflicts. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request or scope identifier is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
     listVoiceCollections: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description A nonblank scope identifier without surrounding whitespace. */
+                workspace_id?: string;
+                /** @description A nonblank scope identifier without surrounding whitespace. */
+                session_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -21402,15 +26620,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        can_edit?: boolean;
+                        workspace_id?: string;
+                    } & {
                         [key: string]: unknown;
                     };
                 };
+            };
+            /** @description The workspace, project or collection is absent or unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request or scope identifier is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
     createVoiceCollection: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description A nonblank scope identifier without surrounding whitespace. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -21430,15 +26668,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        can_edit?: boolean;
+                        workspace_id?: string;
+                    } & {
                         [key: string]: unknown;
                     };
                 };
+            };
+            /** @description The workspace, project or collection is absent or unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The revision, captured catalogue or idempotency request conflicts. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request or scope identifier is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
     updateVoiceCollection: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description A nonblank scope identifier without surrounding whitespace. */
+                workspace_id?: string;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -21460,15 +26725,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
+                        can_edit?: boolean;
+                        workspace_id?: string;
+                    } & {
                         [key: string]: unknown;
                     };
                 };
+            };
+            /** @description The workspace, project or collection is absent or unavailable. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The revision, captured catalogue or idempotency request conflicts. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request or scope identifier is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
     listVoices: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Workspace to read; omitted roots use the caller's personal workspace. */
+                workspace_id?: string;
+                /** @description Project used to resolve a workspace; independent workspace access is required. */
+                session_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -21482,11 +26776,28 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Workspace or project is unavailable to this caller */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid workspace or project selector */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     createVoice: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Targets the caller's personal workspace when omitted. */
+                workspace_id?: string;
+            };
             header?: {
                 "Idempotency-Key"?: string;
             };
@@ -21510,7 +26821,10 @@ export interface operations {
     };
     designGoogleVoice: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Targets the caller's personal workspace when omitted; current workspace content and run rights are required. */
+                workspace_id?: string;
+            };
             header: {
                 /** @description Required for every caller. Reuse the same key and identical body to receive the original job and voice. */
                 "Idempotency-Key": string;
@@ -21549,7 +26863,10 @@ export interface operations {
     };
     importVoiceReferenceAudio: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Targets an editable workspace, or the caller's personal workspace when omitted. */
+                workspace_id?: string;
+            };
             header: {
                 "X-Audio-Filename": string;
                 "Idempotency-Key": string;
@@ -21611,7 +26928,10 @@ export interface operations {
     };
     deleteVoice: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header: {
                 "If-Match": string;
             };
@@ -21640,7 +26960,10 @@ export interface operations {
     };
     updateVoice: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header: {
                 "If-Match": string;
             };
@@ -21673,7 +26996,10 @@ export interface operations {
     };
     publishVoiceToProvider: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header: {
                 "If-Match": string;
                 "Idempotency-Key"?: string;
@@ -21701,9 +27027,13 @@ export interface operations {
     };
     removeVoiceFromProvider: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header: {
                 "If-Match": string;
+                "Idempotency-Key"?: string;
             };
             path: {
                 voiceId: string;
@@ -21738,7 +27068,10 @@ export interface operations {
     };
     listVoiceSamples: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header?: never;
             path: {
                 voiceId: string;
@@ -21758,7 +27091,10 @@ export interface operations {
     };
     uploadVoiceSample: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header?: {
                 /** @description Current voice revision, used when multipart expected_revision is absent or cannot be parsed as an integer. */
                 "If-Match"?: string;
@@ -21810,7 +27146,10 @@ export interface operations {
     };
     createVoiceSampleFromArtifact: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header?: {
                 "Idempotency-Key"?: string;
             };
@@ -21840,7 +27179,10 @@ export interface operations {
     };
     createVoiceSampleFromPreview: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header?: {
                 "Idempotency-Key"?: string;
             };
@@ -21873,7 +27215,10 @@ export interface operations {
     };
     deleteVoiceSample: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header: {
                 "If-Match": string;
             };
@@ -21903,7 +27248,10 @@ export interface operations {
     };
     replaceVoiceSample: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header: {
                 "If-Match": string;
             };
@@ -21953,7 +27301,10 @@ export interface operations {
     };
     transcribeVoiceSample: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header?: {
                 "Idempotency-Key"?: string;
             };
@@ -21963,7 +27314,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Public transcription choices. Services and executable paths come from the workspace configuration. The original owner's personal workspace retains its legacy settings contract. */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["VoiceTranscriptionChoices"];
+            };
+        };
         responses: {
             /** @description Transcription queued */
             202: {
@@ -21976,7 +27332,10 @@ export interface operations {
     };
     reviewVoiceSampleTranscript: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Optionally constrains the voice's stored workspace; current workspace access is required. */
+                workspace_id?: string;
+            };
             header?: {
                 "Idempotency-Key"?: string;
             };
@@ -22133,6 +27492,1016 @@ export interface operations {
             };
             /** @description Plan stale, consumed, expired, or confirmation missing */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listMyWorkspaceInvitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceInvitationsResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    acceptWorkspaceInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceInvitationResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    declineWorkspaceInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceInvitationResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listWorkspaces: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceListResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createWorkspace: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renameWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRenameRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    archiveWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listWorkspaceInvitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceInvitationsResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    inviteWorkspaceUser: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceInviteRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceInvitationResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeWorkspaceInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceInvitationResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    leaveWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceRemovalResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listWorkspaceMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceMembersResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    removeWorkspaceMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceRemovalResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    setWorkspaceMemberRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    restoreWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    searchWorkspaceUsers: {
+        parameters: {
+            query: {
+                q: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceUserSearchResponse"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Current account, credential or action authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Collaboration disabled, revision conflict or protected transition */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request fields */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

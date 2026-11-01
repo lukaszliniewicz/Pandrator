@@ -22,11 +22,34 @@ from flask import (
     send_from_directory,
     session,
 )
+from pydantic import ValidationError
 from sqlalchemy import select
 from werkzeug.utils import secure_filename
 
 from pandrator.version import PANDRATOR_VERSION
 
+from .access.agent_run_policy import require_current_agent_run_access
+from .access.artifact_policy import ArtifactNotFound, require_artifact_access
+from .access.contracts import AccessDenied, ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .access.job_policy import JobAction, JobNotFound, job_visibility_clause, require_job_access
+from .access.local_tools_policy import (
+    LocalToolOperation,
+    require_local_tool_inputs,
+    require_local_tool_workspace,
+)
+from .access.session_policy import require_session_access
+from .access.session_presentation import session_access_payloads
+from .access.session_queries import list_session_records
+from .access.upload_policy import require_upload_creation_access
+from .account_routes import register_account_routes
+from .accounts.actor_authorization import require_actor_in_session
+from .accounts.administration import PRIVILEGED_JOB_SCOPES, AdministratorRequired
+from .accounts.auth_state import account_state_in_session
+from .accounts.browser_auth import establish_browser_session, revoke_browser_session
+from .accounts.credential_resources import default_personal_resources, require_delegation_resources
+from .accounts.execution_actor import execution_actor_scope
+from .accounts.installation_mode import installation_mode_in_session
 from .agent_run_commands import AgentRunAdmissionError, AgentRunStateError
 from .artifact_routes import register_artifact_routes
 from .artifact_selection import (
@@ -36,22 +59,39 @@ from .artifact_selection import (
     stage_history,
     trash_stage_artifact,
 )
-from .auth import ALL_SCOPES, MCP_BOOTSTRAP_SCOPES, normalize_scopes
+from .auth import ALL_SCOPES, MCP_BOOTSTRAP_SCOPES, LoginThrottle, normalize_scopes
 from .automation_routes import register_automation_routes
 from .credentials import (
     redact_inline_secrets,
 )
 from .dispatch_routes import register_dispatch_routes
 from .domain_blueprints import DomainBlueprints
+from .evidence_access import (
+    EvidenceRevisionConflict,
+    EvidenceRevisionRequired,
+    authorize_evidence_request,
+    evidence_revision,
+    get_evidence_in_session,
+    list_evidence_in_session,
+    require_evidence_access,
+    require_evidence_revision,
+)
 from .generation_routes import register_generation_routes
-from .global_settings import SettingPreconditionError
 from .google_voice_design_routes import register_google_voice_design_routes
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
 from .http_serialization import job_projects
 from .http_serialization import model_payload as _model_dict
+from .http_session_access import require_session_action
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
-from .knowledge import KnowledgeLedgerStore, KnowledgeValidationError
+from .job_commands import (
+    BundleExportJobPayload,
+    enqueue_bundle_export_in_session,
+    enqueue_bundle_import_in_session,
+    enqueue_diagnostic_in_session,
+    parse_diagnostic_payload,
+)
+from .job_inputs import artifact_job_ownership
 from .managed_services import binding_for_provider, normalize_tts_provider_id
 from .manager_proxy import register_manager_routes
 from .media_edit_dispatch_routes import register_media_edit_dispatch_routes
@@ -59,8 +99,8 @@ from .media_edit_routes import register_media_edit_routes
 from .models import (
     AgentRun,
     AgentStep,
-    AppSetting,
-    SessionRecord,
+    ApiIdempotency,
+    SubtitleEvidence,
     utcnow,
 )
 from .openapi import build_openapi_document
@@ -84,7 +124,6 @@ from .schemas import (
     PronunciationUpdate,
     RvcConvertRequest,
     RvcModelUploadRequest,
-    SettingUpdate,
     StageSelectionUpdate,
     SubtitleEvidenceCreateRequest,
     SubtitleEvidenceResolveRequest,
@@ -98,7 +137,9 @@ from .session_routes import (
     register_session_list_routes,
 )
 from .session_settings_routes import register_session_settings_routes
+from .settings_identity import settings_workspace_id, workspace_setting_in_workspace
 from .settings_policy import RevisionConflict as WorkspaceRevisionConflict
+from .settings_routes import register_settings_routes
 from .source_cleaning_dispatch_routes import (
     register_source_cleaning_dispatch_routes,
 )
@@ -121,6 +162,8 @@ from .workflow_routes import (
     register_workflow_job_routes,
     register_workflow_session_routes,
 )
+from .workspace_recovery_routes import register_workspace_recovery_routes
+from .workspace_routes import register_workspace_routes
 
 
 def _is_loopback_address(value: object) -> bool:
@@ -138,6 +181,7 @@ def _session_payload(record) -> dict[str, Any]:
         record,
         (
             "id",
+            "project_id",
             "name",
             "storage_key",
             "workflow_kind",
@@ -203,6 +247,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     database = services.database
     auth = services.auth
     login_throttle = services.login_throttle
+    account_login_throttle = LoginThrottle(max_attempts=20, initial_block_seconds=30)
     capability_service = services.capabilities
     jobs = services.jobs
     work = services.work
@@ -220,13 +265,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     static_dir = context.static_dir
     error_response = context.guards.error_response
     inline_credential_error = context.guards.inline_credential_error
-    authenticated = context.guards.authenticated
     require_auth = context.guards.require_auth
 
 
     idempotency = MutationIdempotency(context)
     mutation_idempotency_key = idempotency.require_key
     idempotency_failure = idempotency.failure
+    replay_idempotency = idempotency.replay
 
     def enrich_manager_plan(
         manager_plan: dict[str, Any],
@@ -243,7 +288,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         if not removals:
             return manager_plan
         with database.session() as db_session:
-            setting = db_session.get(AppSetting, "services.tts")
+            workspace_id = settings_workspace_id(db_session)
+            setting = workspace_setting_in_workspace(db_session, workspace_id, "services.tts")
             value = (
                 dict(setting.value_json)
                 if setting is not None and isinstance(setting.value_json, dict)
@@ -297,6 +343,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         proxy=services.manager_bridge,
         plan_response_transform=enrich_manager_plan,
     )
+    register_workspace_routes(app, context)
+    register_workspace_recovery_routes(app, context)
     register_automation_routes(app, context)
     register_workflow_plan_routes(app, context)
     register_media_edit_routes(app, context)
@@ -396,6 +444,20 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/auth/status")
     def auth_status():
         principal = context.guards.principal()
+        account = None
+        if principal is not None and principal.user_id is not None:
+            try:
+                with database.snapshot_session() as account_session:
+                    account = account_state_in_session(
+                        account_session, principal.user_id,
+                        auth_revision=principal.auth_revision,
+                    )
+            except PermissionError:
+                principal = None
+        with database.snapshot_session() as mode_session:
+            access_mode = installation_mode_in_session(mode_session)
+        public_links = context.guards.app.extensions["pandrator_public_links"].status()
+        guest = context.guards.project_link_context()
         remote_access = not _is_loopback_address(request.remote_addr)
         warning = ""
         if remote_access:
@@ -406,10 +468,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             )
         return jsonify(
             {
+                "instance_id": services.identity.instance_id,
+                "installation": access_mode.payload(),
                 "initialized": auth.initialized(),
-                "authenticated": authenticated(),
+                "authenticated": principal is not None,
                 "csrf_token": session.get("csrf_token")
-                if session.get("authenticated")
+                if principal is not None and principal.browser_session_id is not None and guest is None
                 else None,
                 "principal": (
                     {
@@ -417,6 +481,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         "kind": principal.kind,
                         "scopes": sorted(principal.scopes),
                         "client_id": principal.client_id,
+                        "user_id": principal.user_id,
+                        "auth_revision": principal.auth_revision,
+                        "display_name": guest.link["label"] if guest else (account.display_name if account else None),
+                        "login_name": None if guest else (account.login_name if account else None),
+                        "role": (
+                            "administrator" if account.is_instance_admin and guest is None else "user"
+                        ) if account else None,
                     }
                     if principal is not None
                     else None
@@ -424,6 +495,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "remote_access": remote_access,
                 "secure_transport": bool(request.is_secure),
                 "security_warning": warning,
+                "public_links": public_links,
+                "project_link": guest.link if guest else None,
             }
         )
 
@@ -431,20 +504,35 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def auth_bootstrap():
         payload = BootstrapRequest.model_validate(request.get_json(silent=True) or {})
         grant = bootstrap.consume_grant(payload.token)
+        if grant is not None and grant.kind == "owner_session" and auth.collaboration_enabled():
+            return error_response("login_required", "Sign in with your user account.", 401)
         if grant is None:
             return error_response(
                 "invalid_bootstrap_token",
                 "The local bootstrap token is invalid or expired.",
                 401,
             )
-        session.clear()
-        session["authenticated"] = True
-        session["csrf_token"] = secrets.token_urlsafe(24)
-        session["principal_subject"] = grant.subject
-        session["principal_kind"] = grant.kind
-        session["principal_scopes"] = sorted(grant.scopes)
-        if grant.client_id:
-            session["principal_client_id"] = grant.client_id
+        try:
+            if grant.user_id is not None and grant.auth_revision is not None:
+                with services.database.session() as db_session:
+                    account = account_state_in_session(
+                        db_session, grant.user_id, auth_revision=grant.auth_revision
+                    )
+            elif grant.subject == "owner" and grant.kind == "owner_session":
+                # A local launch token can precede application construction.
+                account = auth.initial_account()
+            else:
+                raise PermissionError("The bootstrap account identity is missing.")
+            if not auth.solo_access_allowed(account.user_id, account.auth_revision):
+                raise PermissionError("Named-account access is not enabled.")
+            establish_browser_session(
+                auth, account, subject=grant.subject, principal_kind=grant.kind,
+                scopes=grant.scopes, client_id=grant.client_id,
+            )
+        except (PermissionError, ValueError):
+            return error_response(
+                "invalid_bootstrap_token", "The local bootstrap token is invalid or expired.", 401
+            )
         return jsonify({"authenticated": True, "csrf_token": session["csrf_token"]})
 
     def manager_authentication_error():
@@ -499,6 +587,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         authentication_error = manager_authentication_error()
         if authentication_error is not None:
             return authentication_error
+        if auth.collaboration_enabled():
+            return jsonify({"login_required": True})
+        try:
+            account = auth.initial_account()
+        except PermissionError:
+            return error_response("administrator_required", "The initial Administrator is inactive.", 403)
         return jsonify(
             {
                 "token": bootstrap.issue(
@@ -506,6 +600,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     kind="owner_session",
                     scopes=ALL_SCOPES,
                     client_id="pandrator-manager-browser",
+                    user_id=account.user_id,
+                    auth_revision=account.auth_revision,
                 ),
                 "expires_in_seconds": 120,
                 "scopes": sorted(ALL_SCOPES),
@@ -522,6 +618,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         authentication_error = manager_authentication_error()
         if authentication_error is not None:
             return authentication_error
+        try:
+            account = auth.initial_account()
+        except PermissionError:
+            return error_response("administrator_required", "The initial Administrator is inactive.", 403)
         extra_policy = normalize_scopes(
             os.environ.get("PANDRATOR_MCP_BOOTSTRAP_EXTRA_SCOPES", ""),
             allow_empty=True,
@@ -532,7 +632,6 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 {
                     "app.credentials.read",
                     "app.credentials.write",
-                    "app.admin",
                 }
             )
         )
@@ -551,6 +650,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     kind="manager_bootstrap",
                     scopes=selected_scopes,
                     client_id="pandrator-mcp-local",
+                    user_id=account.user_id,
+                    auth_revision=account.auth_revision,
                 ),
                 "expires_in_seconds": 120,
                 "scopes": sorted(selected_scopes),
@@ -559,11 +660,21 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
 
     @app.post("/api/v1/auth/login")
     def auth_login():
+        request.max_content_length = 8 * 1024
         payload = LoginRequest.model_validate(request.get_json(silent=True) or {})
         client_key = request.remote_addr or "unknown"
-        remote_access = not _is_loopback_address(client_key)
-        retry_after = login_throttle.retry_after(client_key) if remote_access else 0
+        collaboration = auth.collaboration_enabled()
+        throttle_enabled = collaboration or not _is_loopback_address(client_key)
+        account_key = (
+            (payload.login_name or "").strip().casefold()
+            if collaboration else "solo-owner"
+        )
+        retry_after = max(
+            login_throttle.retry_after(client_key),
+            account_login_throttle.retry_after(account_key),
+        ) if throttle_enabled else 0
         if retry_after:
+            context.guards.security_event("authentication_throttled", 429)
             response, status = error_response(
                 "login_throttled",
                 "Too many failed sign-in attempts. Try again later.",
@@ -572,33 +683,39 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             )
             response.headers["Retry-After"] = str(retry_after)
             return response, status
-        if not auth.verify_password(payload.password):
+        account = auth.authenticate_login(payload.login_name, payload.password)
+        if account is None:
+            context.guards.security_event("authentication_failed", 401)
             retry_after = (
-                login_throttle.record_failure(client_key) if remote_access else 0
+                max(login_throttle.record_failure(client_key),
+                    account_login_throttle.record_failure(account_key))
+                if throttle_enabled else 0
             )
             response, status = error_response(
                 "invalid_credentials",
-                "The password is incorrect.",
+                "The sign-in details are incorrect.",
                 401,
                 {"retry_after_seconds": retry_after} if retry_after else None,
             )
             if retry_after:
                 response.headers["Retry-After"] = str(retry_after)
             return response, status
-        if remote_access:
+        if throttle_enabled:
             login_throttle.reset(client_key)
-        session.clear()
-        session["authenticated"] = True
-        session["csrf_token"] = secrets.token_urlsafe(24)
-        session["principal_subject"] = "owner"
-        session["principal_kind"] = "owner_session"
-        session["principal_scopes"] = sorted(ALL_SCOPES)
+            account_login_throttle.reset(account_key)
+        try:
+            establish_browser_session(
+                auth, account, subject=f"user:{account.user_id}",
+                principal_kind="owner_session", scopes=auth.browser_scopes(account)
+            )
+        except (PermissionError, ValueError):
+            return error_response("invalid_credentials", "The sign-in details are incorrect.", 401)
         return jsonify({"authenticated": True, "csrf_token": session["csrf_token"]})
 
     @app.post("/api/v1/auth/logout")
     @require_auth
     def auth_logout():
-        session.clear()
+        revoke_browser_session(auth)
         return jsonify({"authenticated": False})
 
     @app.get("/api/v1/auth/tokens")
@@ -626,7 +743,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                             "revoked_at",
                         ),
                     )
-                    for item in auth.list_tokens()
+                    for item in auth.list_tokens(actor=context.guards.access_context().actor)
                 ]
             }
         )
@@ -643,14 +760,30 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             if payload.expires_in_days is not None
             else None
         )
-        token, raw = auth.create_api_token(
-            payload.label,
-            scopes=payload.scopes,
-            expires_at=expires_at,
-            created_by=principal.subject,
-            target_instance_id=identity.instance_id,
-            canonical_origin=identity.canonical_origin,
-        )
+        try:
+            actor = context.guards.access_context().actor
+            selected_scopes = normalize_scopes(payload.scopes)
+            if not selected_scopes <= actor.scopes:
+                raise PermissionError("The requested scopes exceed this credential.")
+            with database.immediate_session() as token_session:
+                require_actor_in_session(token_session, actor, required_scopes=selected_scopes | {"app.credentials.write"})
+                resources = require_delegation_resources(token_session, actor, default_personal_resources(token_session, actor.user_id))
+                token, raw = auth.create_api_token_in_session(
+                    token_session,
+                    payload.label,
+                    scopes=payload.scopes,
+                    expires_at=expires_at,
+                    created_by=principal.subject,
+                    target_instance_id=identity.instance_id,
+                    canonical_origin=identity.canonical_origin,
+                    user_id=principal.user_id,
+                    auth_revision=principal.auth_revision,
+                    resource_grants=resources,
+                )
+        except PermissionError:
+            return error_response(
+                "scope_denied", "This credential cannot approve the requested token.", 403
+            )
         return (
             jsonify(
                 {
@@ -672,7 +805,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def token_revoke(token_id: str):
         try:
-            auth.revoke_token(token_id)
+            auth.revoke_token(token_id, actor=context.guards.access_context().actor)
         except KeyError:
             return error_response("not_found", "API token not found.", 404)
         return "", 204
@@ -718,46 +851,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         app, context, _session_payload=lambda record: _session_payload(record),
     )
 
-    @app.get("/api/v1/defaults/<section>")
-    @require_auth
-    def global_default_get(section: str):
-        try:
-            result = services.global_settings.defaults(section)
-        except KeyError:
-            return error_response("not_found", "Settings section not found.", 404)
-        response = jsonify(result)
-        response.headers["ETag"] = f'"{result["revision"]}"'
-        return response
-
-    @app.get("/api/v1/settings/<setting_key>")
-    @require_auth
-    def setting_get(setting_key: str):
-        try:
-            result = services.global_settings.get(setting_key)
-        except KeyError:
-            return error_response("not_found", "Setting not found.", 404)
-        response = jsonify(result)
-        response.headers["ETag"] = f'"{result["revision"]}"'
-        return response
-
-    @app.put("/api/v1/settings/<setting_key>")
-    @require_auth
-    def setting_put(setting_key: str):
-        if not setting_key or len(setting_key) > 120:
-            return error_response("validation_error", "Invalid setting key.", 422)
-        payload = SettingUpdate.model_validate(request.get_json(silent=True) or {})
-        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
-        try:
-            result = services.global_settings.replace(setting_key, payload.value, raw_etag)
-        except SettingPreconditionError as error:
-            return error_response(error.code, str(error), error.status_code)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
-        except (OSError, RuntimeError) as error:
-            return error_response("credential_unavailable", str(error), 422)
-        response = jsonify(result)
-        response.headers["ETag"] = f'"{result["revision"]}"'
-        return response
+    register_settings_routes(app, context)
 
     register_session_lifecycle_routes(
         app, context, idempotency=idempotency,
@@ -767,7 +861,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_session_settings_routes(app, context, idempotency=idempotency)
 
     @app.get("/api/v1/sessions/<session_id>/outcome-plan")
-    @require_auth
+    @context.guards.require_scope("app.read")
     def outcome_plan_get(session_id: str):
         try:
             result = outcome_plans.get(session_id)
@@ -778,7 +872,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         return response
 
     @app.put("/api/v1/sessions/<session_id>/outcome-plan")
-    @require_auth
+    @context.guards.require_scope("app.write")
     def outcome_plan_put(session_id: str):
         payload = OutcomePlanUpdate.model_validate(request.get_json(silent=True) or {})
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
@@ -810,16 +904,39 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_source_passage_routes(app, context)
     from .session_flow_routes import register_session_flow_routes
 
-    register_session_flow_routes(app, services, require_auth, error_response, context.guards.principal)
+    register_session_flow_routes(app, context)
 
     from .project_folder_routes import register_project_folder_routes
 
     register_project_folder_routes(app, context)
 
+    from .project_sharing_routes import register_project_sharing_routes
+
+    register_project_sharing_routes(app, context)
+
+    from .public_link_routes import register_public_link_routes
+    from .public_links.reviews import PublicTranslationReviewService
+    from .public_links.service import PublicLinkService
+
+    public_links = PublicLinkService(services.database, services.auth, services.audit)
+    public_reviews = PublicTranslationReviewService(services.database, services.subtitle_review, services.audit)
+    context.guards.app.extensions["pandrator_public_links"] = public_links
+    context.guards.app.extensions["pandrator_public_reviews"] = public_reviews
+    register_public_link_routes(app, context, public_links, public_reviews)
+
+    from .project_copy_routes import register_project_copy_routes
+
+    register_project_copy_routes(app, context)
+
+    from .knowledge_routes import register_knowledge_routes
+
+    register_knowledge_routes(app, context)
+
     from .translation_project_routes import register_translation_project_routes
 
     register_translation_project_routes(
-        app, services, require_auth, error_response, context.guards.principal
+        app, services, require_auth, error_response, context.guards.principal,
+        access_context=context.guards.access_context,
     )
     from .project_operation_routes import register_project_operation_routes
 
@@ -836,8 +953,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def agent_run_list(session_id: str):
         with database.session() as db_session:
-            if db_session.get(SessionRecord, session_id) is None:
-                return error_response("not_found", "Session not found.", 404)
+            require_current_session_access(db_session, session_id, ProjectAction.READ)
             statement = select(AgentRun).where(AgentRun.session_id == session_id)
             requested_kind = str(request.args.get("kind") or "").strip()
             if requested_kind:
@@ -874,6 +990,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
 
     @app.post("/api/v1/sessions/<session_id>/agent-runs")
     @require_auth
+    @require_session_action(context, ProjectAction.RUN)
     def agent_run_create(session_id: str):
         payload = AgentRunCreateRequest.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.settings):
@@ -890,7 +1007,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def agent_step_list(run_id: str):
         with database.session() as db_session:
-            if db_session.get(AgentRun, run_id) is None:
+            try:
+                require_current_agent_run_access(db_session, run_id, ProjectAction.READ)
+            except KeyError:
                 return error_response(
                     "not_found", "Agentic cleaning run not found.", 404
                 )
@@ -938,55 +1057,6 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("invalid_state", str(error), 409)
         return jsonify(result), 202
 
-    @app.get("/api/v1/sessions/<session_id>/knowledge/<kind>")
-    @require_auth
-    def knowledge_get(session_id: str, kind: str):
-        try:
-            sessions.get(session_id)
-            result = KnowledgeLedgerStore(database).get(
-                session_id,
-                kind,
-                source_language=str(request.args.get("source_language") or "auto"),
-                target_language=str(request.args.get("target_language") or ""),
-            )
-        except KeyError:
-            return error_response("not_found", "Session not found.", 404)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
-        return jsonify(result)
-
-    @app.patch("/api/v1/knowledge/<ledger_id>")
-    @require_auth
-    def knowledge_update(ledger_id: str):
-        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
-        try:
-            revision = int(raw_etag)
-        except ValueError:
-            return error_response(
-                "precondition_required",
-                "If-Match must contain the current ledger revision.",
-                428,
-            )
-        body = request.get_json(silent=True) or {}
-        payload = body.get("payload")
-        if not isinstance(payload, dict):
-            return error_response("validation_error", "payload must be an object.", 422)
-        try:
-            result = KnowledgeLedgerStore(database).replace(
-                ledger_id,
-                revision,
-                payload,
-            )
-        except KeyError:
-            return error_response("not_found", "Knowledge ledger not found.", 404)
-        except KnowledgeValidationError as error:
-            return error_response("validation_error", str(error), 422)
-        except ValueError as error:
-            return error_response("revision_conflict", str(error), 409)
-        response = jsonify(result)
-        response.headers["ETag"] = f'"{result["revision"]}"'
-        return response
-
     @app.post("/api/v1/agent-runs/<run_id>/accept")
     @require_auth
     def agent_run_accept(run_id: str):
@@ -998,22 +1068,93 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("invalid_state", str(error), 409)
         return jsonify(result)
 
+    def authorize_job_submission(db_session, access, kind):
+        privileged = PRIVILEGED_JOB_SCOPES.get(kind)
+        scopes = {"app.admin"} | set(privileged or ())
+        if kind in {"noop", "session.bundle.export"}:
+            scopes.add("app.run")
+        try:
+            require_actor_in_session(
+                db_session, access.actor, required_scopes=scopes, require_admin=True,
+            )
+        except PermissionError:
+            if privileged is not None:
+                raise AdministratorRequired() from None
+            raise
+
+    def bundle_replay_job(db_session, access, job_id, *, session_id=None):
+        saved = require_job_access(db_session, access, job_id, JobAction.RUN)
+        if (
+            saved.kind != "session.bundle.export" or saved.session_id is None
+            or (session_id is not None and saved.session_id != session_id)
+        ):
+            raise JobNotFound()
+        return saved
+
+    def bundle_export_response(command, *, max_attempts=1, raw_submission=False):
+        access = context.guards.access_context()
+        key, key_error = mutation_idempotency_key()
+        if key_error is not None:
+            return key_error
+        canonical = {**command.model_dump(mode="json"), "max_attempts": max_attempts}
+        try:
+            with database.immediate_session() as db_session:
+                if raw_submission:
+                    authorize_job_submission(db_session, access, "session.bundle.export")
+                require_session_access(db_session, access, command.session_id, ProjectAction.RUN)
+                reservation = None
+                if key is not None:
+                    try:
+                        services.idempotency.validate_key(key)
+                    except ValueError as error:
+                        return idempotency_failure(error)
+                    existing = db_session.execute(
+                        select(ApiIdempotency.resource_kind, ApiIdempotency.resource_id).where(
+                            ApiIdempotency.principal_subject == access.actor.subject,
+                            ApiIdempotency.operation_id == "exportSessionBundle",
+                            ApiIdempotency.idempotency_key == key,
+                        )
+                    ).one_or_none()
+                    if existing is not None:
+                        if existing.resource_kind != "job" or not existing.resource_id:
+                            raise JobNotFound()
+                        bundle_replay_job(db_session, access, existing.resource_id)
+                    reservation = services.idempotency.begin(
+                        db_session, principal=idempotency.principal(),
+                        operation_id="exportSessionBundle", idempotency_key=key,
+                        payload=canonical,
+                    )
+                    if reservation.replayed:
+                        bundle_replay_job(
+                            db_session, access, reservation.record.resource_id,
+                            session_id=command.session_id,
+                        )
+                        return replay_idempotency(reservation)
+                job = enqueue_bundle_export_in_session(
+                    db_session, access, jobs, command, max_attempts=max_attempts,
+                )
+                result = _job_payload(job)
+                if reservation is not None:
+                    services.idempotency.complete(
+                        db_session, reservation, response=result, status_code=202,
+                        resource_kind="job", resource_id=job.id,
+                    )
+        except KeyError:
+            return error_response("not_found", "Session or bundle job not found.", 404)
+        except (IdempotencyConflict, IdempotencyInProgress) as error:
+            return idempotency_failure(error)
+        except ValueError as error:
+            return error_response("job_conflict", str(error), 409)
+        return jsonify(result), 202
+
     @app.post("/api/v1/sessions/<session_id>/bundle")
     @require_auth
+    @require_session_action(context, ProjectAction.RUN)
     def session_bundle_export(session_id: str):
-        payload = BundleExportRequest.model_validate(
-            request.get_json(silent=True) or {}
+        payload = BundleExportRequest.model_validate(request.get_json(silent=True) or {})
+        return bundle_export_response(
+            BundleExportJobPayload(session_id=session_id, include_sources=payload.include_sources)
         )
-        try:
-            sessions.get(session_id)
-        except KeyError:
-            return error_response("not_found", "Session not found.", 404)
-        job = jobs.enqueue(
-            "session.bundle.export",
-            {"session_id": session_id, "include_sources": payload.include_sources},
-            session_id=session_id,
-        )
-        return jsonify(_job_payload(job)), 202
 
     @app.post("/api/v1/session-bundles/import")
     @require_auth
@@ -1022,39 +1163,41 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             request.get_json(silent=True) or {}
         )
         try:
-            artifacts.resolve(payload.source_artifact_id)
+            with database.immediate_session() as db_session:
+                job = enqueue_bundle_import_in_session(
+                    db_session,
+                    context.guards.access_context(),
+                    jobs,
+                    source_artifact_id=payload.source_artifact_id,
+                    name=payload.name,
+                )
         except KeyError:
             return error_response("not_found", "Bundle artifact not found.", 404)
-        job = jobs.enqueue("session.bundle.import", payload.model_dump())
         return jsonify(_job_payload(job)), 202
 
     @app.get("/api/v1/jobs")
     @require_auth
     def job_list():
-        items = work.diagnostic_list(
-            request.args.get("limit", 100, type=int),
-            session_id=request.args.get("session_id"),
-            kind=request.args.get("kind"),
-        )
-        principal = context.guards.principal()
-        assert principal is not None
-        hidden = services.quick_transcriptions.hidden_job_ids(
-            principal.subject, (item.id for item in items)
-        )
-        visible_items = [item for item in items if item.id not in hidden]
-        waiting_for_jobs = jobs.waiting_for_jobs(visible_items)
-        projects = job_projects(database, visible_items)
-        return jsonify(
-            {
-                "items": [
-                    _job_payload(
-                        item, waiting_for_job=waiting_for_jobs.get(item.id),
-                        project=projects.get(item.id),
-                    )
-                    for item in visible_items
-                ]
-            }
-        )
+        with database.snapshot_session() as db_session:
+            items = work.diagnostic_list_in_session(
+                db_session, context.guards.access_context(),
+                request.args.get("limit", 100, type=int),
+                session_id=request.args.get("session_id"),
+                kind=request.args.get("kind"),
+            )
+            waiting_for_jobs = work.waiting_for_jobs_in_session(db_session, context.guards.access_context(), items)
+            projects = job_projects(database, items, db_session=db_session)
+            return jsonify(
+                {
+                    "items": [
+                        _job_payload(
+                            item, waiting_for_job=waiting_for_jobs.get(item.id),
+                            project=projects.get(item.id),
+                        )
+                        for item in items
+                    ]
+                }
+            )
 
     @app.post("/api/v1/jobs")
     @require_auth
@@ -1062,28 +1205,55 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         payload = JobCreate.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.payload):
             return rejected
-        job = jobs.enqueue(
-            payload.kind,
-            payload.payload,
-            session_id=payload.session_id,
-            max_attempts=payload.max_attempts,
-        )
-        return jsonify(_job_payload(job)), 202
+        if payload.kind == "session.bundle.export":
+            body = dict(payload.payload)
+            if payload.session_id is not None:
+                body.setdefault("session_id", payload.session_id)
+            command = BundleExportJobPayload.model_validate(body)
+            if payload.session_id is not None and payload.session_id.strip() != command.session_id:
+                return error_response("validation_error", "The job session and payload session disagree.", 422)
+            return bundle_export_response(
+                command, max_attempts=payload.max_attempts, raw_submission=True,
+            )
+        access = context.guards.access_context()
+        try:
+            with database.immediate_session() as db_session:
+                authorize_job_submission(db_session, access, payload.kind)
+                if payload.kind != "noop":
+                    return error_response(
+                        "job_operation_required",
+                        "Use the workflow, generation, voice, sound or model endpoint for this job.",
+                        422, {"kind": payload.kind, "supported_kinds": ["noop", "session.bundle.export"]},
+                    )
+                command = parse_diagnostic_payload(payload.payload)
+                job = enqueue_diagnostic_in_session(
+                    db_session, access, jobs, command, session_id=payload.session_id,
+                    max_attempts=payload.max_attempts,
+                )
+                result = _job_payload(job)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValidationError:
+            raise
+        except ValueError as error:
+            return error_response("job_conflict", str(error), 409)
+        return jsonify(result), 202
 
     @app.get("/api/v1/jobs/<job_id>")
     @require_auth
     def job_get(job_id: str):
         try:
-            job = work.diagnostic_get(job_id)
-            waiting_for_jobs = jobs.waiting_for_jobs([job])
-            projects = job_projects(database, [job])
-            return jsonify(
-                _job_payload(
-                    job,
-                    waiting_for_job=waiting_for_jobs.get(job.id),
-                    project=projects.get(job.id),
+            with database.snapshot_session() as db_session:
+                job = work.diagnostic_get_in_session(db_session, context.guards.access_context(), job_id)
+                waiting_for_jobs = work.waiting_for_jobs_in_session(db_session, context.guards.access_context(), [job])
+                projects = job_projects(database, [job], db_session=db_session)
+                return jsonify(
+                    _job_payload(
+                        job,
+                        waiting_for_job=waiting_for_jobs.get(job.id),
+                        project=projects.get(job.id),
+                    )
                 )
-            )
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
 
@@ -1092,27 +1262,22 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def job_logs(job_id: str):
         """Return the job's durable event and captured worker-log timeline."""
         try:
-            events = work.diagnostic_events(
-                job_id,
-                request.args.get("limit", 1000, type=int),
-            )
+            with database.snapshot_session() as db_session:
+                events = work.diagnostic_events_in_session(
+                    db_session, context.guards.access_context(), job_id,
+                    request.args.get("limit", 1000, type=int),
+                )
+                payload = [
+                    redact_inline_secrets({
+                        "id": event.id,
+                        "event_type": event.event_type,
+                        "payload_json": event.payload_json,
+                        "created_at": event.created_at.isoformat(),
+                    }) for event in events
+                ]
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
-        return jsonify(
-            {
-                "items": [
-                    redact_inline_secrets(
-                        {
-                            "id": event.id,
-                            "event_type": event.event_type,
-                            "payload_json": event.payload_json,
-                            "created_at": event.created_at.isoformat(),
-                        }
-                    )
-                    for event in events
-                ]
-            }
-        )
+        return jsonify({"items": payload})
 
     def _query_values(name: str) -> tuple[str, ...]:
         values: list[str] = []
@@ -1125,25 +1290,19 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/work")
     @require_auth
     def work_list():
-        items = work.list(
-            session_id=str(request.args.get("session_id") or "").strip() or None,
-            kinds=_query_values("kind"),
-            states=_query_values("state"),
-            limit=request.args.get("limit", 50, type=int) or 50,
-        )
-        principal = context.guards.principal()
-        assert principal is not None
-        hidden = services.quick_transcriptions.hidden_job_ids(
-            principal.subject, (item.id for item in items)
-        )
+        with database.snapshot_session() as db_session:
+            items = work.list_in_session(
+                db_session, context.guards.access_context(),
+                session_id=str(request.args.get("session_id") or "").strip() or None,
+                kinds=_query_values("kind"),
+                states=_query_values("state"),
+                limit=request.args.get("limit", 50, type=int) or 50,
+            )
+            payload = [item.model_dump(mode="json") for item in items]
         return jsonify(
             {
                 "schema_version": "1",
-                "items": [
-                    item.model_dump(mode="json")
-                    for item in items
-                    if item.id not in hidden
-                ],
+                "items": payload,
             }
         )
 
@@ -1151,7 +1310,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def work_get(job_id: str):
         try:
-            return jsonify(work.get(job_id).model_dump(mode="json"))
+            with database.snapshot_session() as db_session:
+                return jsonify(work.get_in_session(db_session, context.guards.access_context(), job_id).model_dump(mode="json"))
         except KeyError:
             return error_response("not_found", "Work item not found.", 404)
 
@@ -1189,11 +1349,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def work_events(job_id: str):
         try:
-            page = work.events(
-                job_id,
-                after=request.args.get("after", 0, type=int) or 0,
-                limit=request.args.get("limit", 200, type=int) or 200,
-            )
+            with database.snapshot_session() as db_session:
+                page = work.events_in_session(
+                    db_session, context.guards.access_context(), job_id,
+                    after=request.args.get("after", 0, type=int) or 0,
+                    limit=request.args.get("limit", 200, type=int) or 200,
+                )
         except KeyError:
             return error_response("not_found", "Work item not found.", 404)
         return jsonify(page.model_dump(mode="json"))
@@ -1210,6 +1371,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             )
         try:
             with database.immediate_session() as db_session:
+                access = context.guards.access_context()
+                work.diagnostic_get_in_session(
+                    db_session, access, job_id, action=JobAction.CANCEL
+                )
                 reservation = services.idempotency.begin(
                     db_session,
                     principal=principal,
@@ -1225,8 +1390,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     response.status_code = status_code
                     response.headers["Idempotency-Replayed"] = "true"
                     return response
-                payload = work.cancel_in_session(
+                payload = work.cancel_authorized_in_session(
                     db_session,
+                    access,
                     job_id,
                 ).model_dump(mode="json")
                 services.idempotency.complete(
@@ -1285,6 +1451,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         ),
         selection_update_type=lambda: StageSelectionUpdate,
         job_payload=lambda job: _job_payload(job),
+        access_context=context.guards.access_context,
     )
     register_workflow_session_routes(app, workflow_route_context)
 
@@ -1365,8 +1532,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         return save_subtitle_mutation(session_id, stage, canonical=True)
 
     @app.post("/api/v1/sessions/<session_id>/subtitle-evidence")
-    @require_auth
+    @context.guards.require_scope("app.run")
     def subtitle_evidence_create(session_id: str):
+        request.max_content_length = 32 * 1024
         payload = SubtitleEvidenceCreateRequest.model_validate(
             request.get_json(silent=True) or {}
         )
@@ -1376,11 +1544,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
+        reservation = None
         try:
-            if idempotency_key is None:
-                result = subtitle_evidence.request(session_id, values)
-            else:
-                with database.immediate_session() as db_session:
+            with database.immediate_session() as db_session:
+                access = context.guards.access_context()
+                authorize_evidence_request(db_session, access, session_id, values)
+                if idempotency_key is not None:
                     reservation = services.idempotency.begin(
                         db_session,
                         principal=idempotency.principal(),
@@ -1389,14 +1558,22 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         payload={"session_id": session_id, **values},
                     )
                     if reservation.response is not None:
+                        if reservation.record.resource_kind != "subtitle_evidence" or not reservation.record.resource_id:
+                            raise KeyError("Subtitle evidence not found.")
+                        require_evidence_access(db_session, access, reservation.record.resource_id, ProjectAction.RUN, expected_session_id=session_id)
                         result, status_code = reservation.response
                         response = jsonify(result)
                         response.status_code = status_code
                         response.headers["Idempotency-Replayed"] = "true"
                         return response
+                with execution_actor_scope(access.actor):
                     result = subtitle_evidence.request_in_session(
                         db_session, session_id, values
                     )
+                record = db_session.get(SubtitleEvidence, str(result["record"]["id"]))
+                assert record is not None and record.session_id == session_id
+                result["record"]["revision"] = evidence_revision(record)
+                if reservation is not None:
                     services.idempotency.complete(
                         db_session,
                         reservation,
@@ -1420,40 +1597,52 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/sessions/<session_id>/subtitle-evidence")
     @require_auth
     def subtitle_evidence_list(session_id: str):
+        include_referenced = request.args.get("include_referenced", "false")
+        source_artifact_id = request.args.get("source_artifact_id") or None
+        if include_referenced not in {"true", "false"}:
+            return error_response("validation_error", "include_referenced must be true or false.", 422)
+        if include_referenced == "true" and not source_artifact_id:
+            return error_response("validation_error", "Choose a subtitle artifact to include its saved evidence.", 422)
         try:
-            sessions.get(session_id)
-            return jsonify(
-                subtitle_evidence.list(
-                    session_id,
-                    request.args.get("source_artifact_id") or None,
-                )
-            )
+            with database.snapshot_session() as db_session:
+                return jsonify(list_evidence_in_session(
+                    db_session, context.guards.access_context(), session_id,
+                    source_artifact_id,
+                    include_referenced=include_referenced == "true",
+                ))
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
 
     @app.get("/api/v1/subtitle-evidence/<evidence_id>")
     @require_auth
     def subtitle_evidence_get(evidence_id: str):
         try:
-            return jsonify(subtitle_evidence.get(evidence_id))
+            with database.snapshot_session() as db_session:
+                return jsonify(get_evidence_in_session(db_session, context.guards.access_context(), evidence_id))
         except KeyError:
             return error_response("not_found", "Subtitle evidence not found.", 404)
 
     @app.post("/api/v1/sessions/<session_id>/subtitle-evidence/<evidence_id>/resolve")
-    @require_auth
+    @context.guards.require_scope("app.write")
     def subtitle_evidence_resolve(session_id: str, evidence_id: str):
+        request.max_content_length = 128 * 1024
         payload = SubtitleEvidenceResolveRequest.model_validate(
             request.get_json(silent=True) or {}
         )
         values = payload.model_dump(mode="json")
+        if values.get("expected_revision") is None:
+            values.pop("expected_revision", None)
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
+        reservation = None
         try:
-            if idempotency_key is None:
-                result = subtitle_evidence.resolve(session_id, evidence_id, values)
-            else:
-                with database.immediate_session() as db_session:
+            with database.immediate_session() as db_session:
+                access = context.guards.access_context()
+                record, _root = require_evidence_access(db_session, access, evidence_id, ProjectAction.REVIEW, expected_session_id=session_id)
+                if idempotency_key is not None:
                     principal = context.guards.principal()
                     assert principal is not None
                     reservation = services.idempotency.begin(
@@ -1468,14 +1657,23 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         },
                     )
                     if reservation.response is not None:
+                        if reservation.record.resource_kind != "subtitle_evidence" or reservation.record.resource_id != evidence_id:
+                            raise KeyError("Subtitle evidence not found.")
                         result, status_code = reservation.response
                         response = jsonify(result)
                         response.status_code = status_code
                         response.headers["Idempotency-Replayed"] = "true"
                         return response
-                    result = subtitle_evidence.resolve_in_session(
+                require_evidence_revision(record, payload.expected_revision, required=installation_mode_in_session(db_session).enabled)
+                result = subtitle_evidence.resolve_in_session(
                         db_session, session_id, evidence_id, values
                     )
+                result["record"]["revision"] = evidence_revision(record)
+                services.audit.record_command_in_session(
+                    db_session, access, action="subtitle_evidence.resolve",
+                    workspace_id=evidence_id, resource_kind="subtitle_evidence", metadata={},
+                )
+                if reservation is not None:
                     services.idempotency.complete(
                         db_session,
                         reservation,
@@ -1488,6 +1686,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("not_found", "Subtitle evidence not found.", 404)
         except (IdempotencyConflict, IdempotencyInProgress) as error:
             return idempotency_failure(error)
+        except EvidenceRevisionRequired as error:
+            return error_response("precondition_required", str(error), 428)
+        except EvidenceRevisionConflict as error:
+            return error_response("evidence_revision_conflict", str(error), 409)
         except ValueError as error:
             return error_response("evidence_conflict", str(error), 409)
         g.audit_resource_kind = "subtitle_evidence"
@@ -1500,7 +1702,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def job_cancel(job_id: str):
         try:
-            return jsonify(_job_payload(work.diagnostic_cancel(job_id)))
+            with database.immediate_session() as db_session:
+                work.diagnostic_get_in_session(
+                    db_session, context.guards.access_context(), job_id,
+                    action=JobAction.CANCEL,
+                )
+                return jsonify(_job_payload(jobs.request_cancel_in_session(db_session, job_id)))
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
 
@@ -1514,40 +1721,39 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("validation_error", "Unknown event snapshot view.", 422)
         # Capture the cursor before reading resources. Events committed while
         # the snapshot is assembled are replayed after this cursor.
-        bounds = work.event_bounds()
         local_mode = _is_loopback_address(request.remote_addr)
         capability_payload = capability_service.get(local_mode=local_mode)
         capability_payload["application"] = {"version": PANDRATOR_VERSION}
-        items = work.diagnostic_list(40)
-        principal = context.guards.principal()
-        assert principal is not None
-        hidden = services.quick_transcriptions.hidden_job_ids(
-            principal.subject, (item.id for item in items)
-        )
-        visible_items = [item for item in items if item.id not in hidden]
-        waiting_for_jobs = jobs.waiting_for_jobs(visible_items)
-        projects = job_projects(database, visible_items)
-        session_items = [_session_payload(item) for item in sessions.list()]
-        memberships = session_project_memberships(
-            database, [item["id"] for item in session_items]
-        )
-        for item in session_items:
-            item["translation_project"] = memberships.get(item["id"])
+        with database.snapshot_session() as db_session:
+            access = context.guards.access_context()
+            bounds = work.event_bounds_in_session(db_session)
+            items = work.diagnostic_list_in_session(db_session, access, 40)
+            waiting_for_jobs = work.waiting_for_jobs_in_session(db_session, context.guards.access_context(), items)
+            projects = job_projects(database, items, db_session=db_session)
+            session_items = [
+                _session_payload(item) for item in list_session_records(db_session, access)
+            ]
+            memberships = session_project_memberships(
+                database, [item["id"] for item in session_items], db_session=db_session
+            )
+            metadata = session_access_payloads(db_session, access, [item["id"] for item in session_items]) if auth.collaboration_enabled() else {}
+            for item in session_items:
+                item["translation_project"] = memberships.get(item["id"])
+                item.update(metadata.get(item["id"], {}))
+            job_items = [
+                _job_payload(
+                    item, include_details=view != "compact",
+                    waiting_for_job=waiting_for_jobs.get(item.id),
+                    project=projects.get(item.id),
+                ) for item in items
+            ]
         return jsonify(
             {
                 "cursor": bounds.latest,
                 "retained_after": bounds.retained_after,
                 "sessions": {"items": session_items},
                 "jobs": {
-                    "items": [
-                        _job_payload(
-                            item,
-                            include_details=view != "compact",
-                            waiting_for_job=waiting_for_jobs.get(item.id),
-                            project=projects.get(item.id),
-                        )
-                        for item in visible_items
-                    ]
+                    "items": job_items
                 },
                 "capabilities": capability_payload,
             }
@@ -1556,10 +1762,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/events")
     @require_auth
     def events():
-        principal = context.guards.principal()
-        assert principal is not None
-        subject = principal.subject
-        bounds = work.event_bounds()
+        access = context.guards.access_context()
+        with database.snapshot_session() as db_session:
+            # Prove the subscription before yielding any stream metadata.
+            job_visibility_clause(db_session, access)
+            bounds = work.event_bounds_in_session(db_session)
         supplied_cursor = request.headers.get("Last-Event-ID")
         if supplied_cursor is None:
             supplied_cursor = request.args.get("after")
@@ -1592,7 +1799,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 reset_reason = None
             deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
-                retained = work.event_bounds()
+                try:
+                    with database.snapshot_session() as db_session:
+                        page = work.events_after_in_session(db_session, access, cursor)
+                        retained = work.event_bounds_in_session(db_session)
+                except AccessDenied:
+                    return
                 if retained.oldest and cursor < retained.oldest - 1:
                     cursor = retained.latest
                     yield (
@@ -1601,16 +1813,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         f"data: {json.dumps({'cursor': cursor, 'reason': 'cursor_expired'})}\n\n"
                     )
                     continue
-                new_events = work.events_after(cursor).items
+                new_events = page.items
                 if new_events:
-                    hidden = services.quick_transcriptions.hidden_job_ids(
-                        subject, (event.work_id for event in new_events)
-                    )
                     last_visible_id = cursor
                     for event in new_events:
                         cursor = event.id
-                        if event.event_type == "job.log" or event.work_id in hidden:
-                            continue
                         last_visible_id = event.id
                         payload = _sse_event_payload(event)
                         yield (
@@ -1618,10 +1825,14 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                             f"event: {event.event_type}\n"
                             f"data: {json.dumps(payload)}\n\n"
                         )
+                    cursor = page.next_cursor
                     if cursor > last_visible_id:
                         # Advance the browser reconnect cursor without exposing
                         # worker log records to every open tab.
                         yield (f"id: {cursor}\nevent: stream.cursor\ndata: {{}}\n\n")
+                elif page.next_cursor > cursor:
+                    cursor = page.next_cursor
+                    yield (f"id: {cursor}\nevent: stream.cursor\ndata: {{}}\n\n")
                 else:
                     yield ": heartbeat\n\n"
                 time.sleep(1)
@@ -1633,14 +1844,34 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         )
 
     @app.post("/api/v1/uploads")
-    @require_auth
+    @context.guards.require_scope("app.write")
     def upload():
+        query_session_id = request.args.get("session_id") or None
+        query_workspace_id = request.args.get("workspace_id") or None
+        if query_session_id or query_workspace_id:
+            with database.snapshot_session() as unit:
+                require_upload_creation_access(
+                    unit, session_id=query_session_id, workspace_id=query_workspace_id
+                )
         incoming = request.files.get("file")
         if incoming is None or not incoming.filename:
             return error_response("missing_file", "A multipart file is required.", 400)
         filename = secure_filename(incoming.filename) or f"upload-{uuid.uuid4()}"
         temporary = paths.temporary / f"upload-{uuid.uuid4()}.part"
-        requested_session_id = str(request.form.get("session_id") or "") or None
+        form_session_id = request.form.get("session_id") or None
+        form_workspace_id = request.form.get("workspace_id") or None
+        if (
+            query_session_id and form_session_id and query_session_id != form_session_id
+        ) or (
+            query_workspace_id and form_workspace_id and query_workspace_id != form_workspace_id
+        ):
+            return error_response("validation_error", "Upload selectors must agree.", 422)
+        requested_session_id = query_session_id or form_session_id
+        requested_workspace_id = query_workspace_id or form_workspace_id
+        attach_values = request.form.getlist("attach_to_session")
+        if len(attach_values) > 1 or (attach_values and attach_values[0] not in {"true", "false"}):
+            return error_response("validation_error", "attach_to_session must be true or false.", 422)
+        attach_to_session = not attach_values or attach_values[0] == "true"
         purpose = str(request.form.get("purpose") or "source").strip().lower()
         if purpose not in {"source", "cover"}:
             return error_response(
@@ -1650,12 +1881,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response(
                 "validation_error", "Cover artwork must belong to a session.", 422
             )
-        if requested_session_id:
-            try:
-                sessions.get(requested_session_id)
-            except KeyError:
-                return error_response("not_found", "Session not found.", 404)
+        if not attach_to_session and (not requested_session_id or purpose != "source"):
+            return error_response("validation_error", "Staged source uploads require an explicit session.", 422)
         try:
+            with database.snapshot_session() as unit:
+                require_upload_creation_access(
+                    unit, session_id=requested_session_id, workspace_id=requested_workspace_id
+                )
             incoming.save(temporary)
             if purpose == "cover":
                 if temporary.stat().st_size > 25 * 1024 * 1024:
@@ -1692,10 +1924,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 original_filename=incoming.filename,
                 session_id=requested_session_id,
                 purpose=purpose,
+                attach_to_session=attach_to_session,
                 database=database,
                 paths=paths,
                 artifacts=artifacts,
                 sources=source_library,
+                workspace_id=requested_workspace_id,
             )
             return jsonify(result), 201
         except KeyError:
@@ -1709,11 +1943,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 flask_app.logger.warning("Could not remove staged upload %s", temporary, exc_info=True)
 
     @app.post("/api/v1/uploads/init")
-    @require_auth
+    @context.guards.require_scope("app.write")
     def chunk_upload_init():
         payload = ChunkUploadInitialize.model_validate(
             request.get_json(silent=True) or {}
         )
+        canonical_payload = payload.model_dump(
+            mode="json", exclude={"workspace_id"} if payload.workspace_id is None else set(),
+        )
+        if payload.attach_to_session:
+            canonical_payload.pop("attach_to_session", None)
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
@@ -1722,15 +1961,25 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             created_directories = []
             try:
                 with database.immediate_session() as db_session:
+                    require_upload_creation_access(
+                        db_session, session_id=payload.session_id, workspace_id=payload.workspace_id
+                    )
                     reservation = services.idempotency.begin(
                         db_session,
                         principal=idempotency.principal(),
                         operation_id="initializeChunkUpload",
                         idempotency_key=idempotency_key,
-                        payload=payload.model_dump(mode="json"),
+                        payload=canonical_payload,
                     )
                     if reservation.response is not None:
                         result, status_code = reservation.response
+                        replay_record = chunk_uploads._scoped_record(
+                            db_session, str(result.get("id") or ""),
+                            workspace_id=payload.workspace_id, action=ProjectAction.EDIT,
+                            validate_result=True,
+                        )
+                        if replay_record.attach_to_session is not payload.attach_to_session:
+                            raise ValueError("The upload attachment mode changed.")
                         response = jsonify(result)
                         response.status_code = status_code
                         response.headers["Idempotency-Replayed"] = "true"
@@ -1741,6 +1990,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         size_bytes=payload.size_bytes,
                         mime_type=payload.mime_type,
                         session_id=payload.session_id,
+                        attach_to_session=payload.attach_to_session,
+                        workspace_id=payload.workspace_id,
                         expected_hash=payload.sha256,
                         chunk_size=payload.chunk_size,
                         max_size=int(
@@ -1781,6 +2032,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 size_bytes=payload.size_bytes,
                 mime_type=payload.mime_type,
                 session_id=payload.session_id,
+                attach_to_session=payload.attach_to_session,
+                workspace_id=payload.workspace_id,
                 expected_hash=payload.sha256,
                 chunk_size=payload.chunk_size,
                 max_size=int(
@@ -1854,37 +2107,52 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def pdf_metadata(artifact_id: str):
         from .pdf_editor import inspect_pdf
 
+        access = context.guards.access_context()
         try:
-            _artifact, path = artifacts.resolve(artifact_id)
-        except KeyError:
+            with database.snapshot_session() as db_session:
+                artifact = require_artifact_access(db_session, access, artifact_id)
+                if artifact.state == "deleted":
+                    raise ArtifactNotFound()
+                path = paths.managed_path(artifact.relative_path)
+                if path.suffix.lower() != ".pdf" or not path.is_file():
+                    return error_response(
+                        "invalid_pdf", "Artifact is not an available PDF.", 422
+                    )
+                first_page_side = request.args.get("first_page_side", "right")
+                try:
+                    return jsonify(inspect_pdf(path, first_page_side=first_page_side))
+                except (ValueError, RuntimeError) as error:
+                    return error_response("invalid_pdf", str(error), 422)
+        except ArtifactNotFound:
             return error_response("not_found", "Artifact not found.", 404)
-        if path.suffix.lower() != ".pdf" or not path.is_file():
-            return error_response(
-                "invalid_pdf", "Artifact is not an available PDF.", 422
-            )
-        first_page_side = request.args.get("first_page_side", "right")
-        try:
-            return jsonify(inspect_pdf(path, first_page_side=first_page_side))
-        except (ValueError, RuntimeError) as error:
-            return error_response("invalid_pdf", str(error), 422)
 
     @app.post("/api/v1/sessions/<session_id>/pdf/apply")
     @require_auth
+    @require_session_action(context, ProjectAction.RUN)
     def pdf_apply(session_id: str):
-        try:
-            sessions.get(session_id)
-        except KeyError:
-            return error_response("not_found", "Session not found.", 404)
+        from .access.pdf_edit_policy import require_pdf_edit_access
+
         payload = PdfEditRequest.model_validate(request.get_json(silent=True) or {})
-        job = jobs.enqueue(
-            "pdf.apply_edits",
-            {
-                "session_id": session_id,
-                "source_artifact_id": payload.source_artifact_id,
-                "plan": payload.model_dump(exclude={"source_artifact_id"}),
-            },
-            session_id=session_id,
-        )
+        access = context.guards.access_context()
+        try:
+            with database.immediate_session() as db_session, execution_actor_scope(access.actor):
+                source = require_pdf_edit_access(db_session, session_id, payload.source_artifact_id)
+                if source is None:
+                    raise AccessDenied()
+                job = jobs.enqueue_in_session(
+                    db_session,
+                    "pdf.apply_edits",
+                    {
+                        "session_id": session_id,
+                        "source_artifact_id": payload.source_artifact_id,
+                        "plan": payload.model_dump(exclude={"source_artifact_id"}),
+                    },
+                    session_id=session_id,
+                    workspace_id=source.workspace_id,
+                    project_id=source.target_project_id,
+                )
+        except KeyError:
+            return error_response("not_found", "Source artifact not found.", 404)
         return jsonify(_job_payload(job)), 202
 
     register_provider_routes(app, context)
@@ -1997,6 +2265,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     def rvc_model_list():
         from pandrator.logic import rvc_handler
 
+        with database.snapshot_session() as db_session:
+            require_local_tool_workspace(db_session, LocalToolOperation.RVC_READ)
         available = rvc_handler.is_rvc_available()
         return jsonify(
             {
@@ -2010,9 +2280,19 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/rvc/models")
     @require_auth
     def rvc_model_upload():
+        with database.snapshot_session() as db_session:
+            workspace_id = require_local_tool_workspace(
+                db_session, LocalToolOperation.RVC_MODEL_WRITE
+            )
         payload = RvcModelUploadRequest.model_validate(
             request.get_json(silent=True) or {}
         )
+        with database.snapshot_session() as db_session:
+            require_local_tool_inputs(
+                db_session, LocalToolOperation.RVC_MODEL_WRITE,
+                artifact_ids=[payload.pth_artifact_id, payload.index_artifact_id],
+                workspace_id=workspace_id,
+            )
         for artifact_id in (payload.pth_artifact_id, payload.index_artifact_id):
             try:
                 _record, source = artifacts.resolve(artifact_id)
@@ -2024,15 +2304,38 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 return error_response(
                     "artifact_missing", "An RVC upload artifact is missing.", 410
                 )
-        job = jobs.enqueue("rvc.model.upload", payload.model_dump())
+        with database.immediate_session() as db_session:
+            require_local_tool_inputs(
+                db_session, LocalToolOperation.RVC_MODEL_WRITE,
+                artifact_ids=[payload.pth_artifact_id, payload.index_artifact_id],
+                workspace_id=workspace_id,
+            )
+            owner = artifact_job_ownership(
+                db_session, [payload.pth_artifact_id, payload.index_artifact_id],
+                project_scoped=False,
+            )
+            job = jobs.enqueue_in_session(
+                db_session, "rvc.model.upload", payload.model_dump(),
+                workspace_id=owner.workspace_id,
+            )
         return jsonify(_job_payload(job)), 202
 
     @app.post("/api/v1/rvc/convert")
     @require_auth
     def rvc_convert():
+        with database.snapshot_session() as db_session:
+            workspace_id = require_local_tool_workspace(
+                db_session, LocalToolOperation.RVC_CONVERT
+            )
         payload = RvcConvertRequest.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.settings):
             return rejected
+        with database.snapshot_session() as db_session:
+            require_local_tool_inputs(
+                db_session, LocalToolOperation.RVC_CONVERT,
+                artifact_ids=[payload.source_artifact_id],
+                session_id=payload.session_id, workspace_id=workspace_id,
+            )
         try:
             artifacts.resolve(payload.source_artifact_id)
             if payload.session_id:
@@ -2043,12 +2346,21 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "The requested session or source artifact was not found.",
                 404,
             )
-        job = jobs.enqueue(
-            "rvc.convert",
-            payload.model_dump(),
-            session_id=payload.session_id,
-            resource_keys=["service:rvc", "gpu:default"],
-        )
+        with database.immediate_session() as db_session:
+            require_local_tool_inputs(
+                db_session, LocalToolOperation.RVC_CONVERT,
+                artifact_ids=[payload.source_artifact_id],
+                session_id=payload.session_id, workspace_id=workspace_id,
+            )
+            owner = artifact_job_ownership(
+                db_session, [payload.source_artifact_id], session_id=payload.session_id
+            )
+            job = jobs.enqueue_in_session(
+                db_session, "rvc.convert", payload.model_dump(),
+                session_id=payload.session_id,
+                workspace_id=owner.workspace_id, project_id=owner.project_id,
+                resource_keys=["service:rvc", "gpu:default"],
+            )
         return jsonify(_job_payload(job)), 202
 
     register_training_routes(app, context)
@@ -2075,4 +2387,5 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    register_account_routes(app, context)
     app.register(flask_app)

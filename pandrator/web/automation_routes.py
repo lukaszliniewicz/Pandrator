@@ -11,10 +11,16 @@ from urllib.parse import urlencode
 
 from flask import Response, g, jsonify, redirect, request, session
 
-from .auth import ALL_SCOPES, Principal
+from .access.contracts import AccessContext
+from .accounts.browser_auth import establish_browser_session
+from .accounts.credential_resources import CredentialResources
+from .accounts.execution_actor import actor_from_principal
+from .accounts.workspace_queries import WorkspaceQueries
+from .auth import Principal
 from .automation_enrollment import TTY_REDIRECT_URI, EnrollmentError
 from .domain_blueprints import DomainBlueprints
 from .models import utcnow
+from .projects.sharing_queries import ProjectSharingQueries
 from .route_context import RouteContext
 from .schemas import AutomationClientCreateRequest
 
@@ -98,7 +104,9 @@ def register_automation_routes(
         methods=["GET", "POST"],
     )
     def auth_automation_authorize():
-        """Render trusted owner consent for a public native client."""
+        """Let a signed-in account approve its own bounded native client."""
+        collaboration = auth.collaboration_enabled()
+        just_signed_in = False
 
         if request.method == "GET":
             state = str(request.args.get("state") or "")
@@ -176,41 +184,50 @@ def register_automation_routes(
         pending = session.get("automation_authorization")
         assert isinstance(pending, dict)
         principal = context.guards.principal()
-        owner_approved = bool(
+        browser_approved = bool(
             principal is not None
             and principal.kind == "owner_session"
-            and principal.has_scope("app.admin")
+            and principal.browser_session_id is not None
+            and principal.has_scope("app.credentials.write" if collaboration else "app.admin")
         )
-        if request.method == "POST" and not owner_approved:
+        if browser_approved and principal is not None and not collaboration:
+            try:
+                auth.require_administrator(principal)
+            except PermissionError:
+                browser_approved = False
+        if request.method == "POST" and not browser_approved:
             client_key = request.remote_addr or "unknown"
-            remote_access = not _is_loopback(client_key)
+            remote_access = collaboration or not _is_loopback(client_key)
             retry_after = throttle.retry_after(client_key) if remote_access else 0
             password = str(request.form.get("password") or "")
-            if retry_after or not auth.verify_password(password):
+            login_name = str(request.form.get("login_name") or "") if collaboration else None
+            account = auth.authenticate_login(login_name, password) if not retry_after else None
+            if account is None:
                 if remote_access and not retry_after:
                     throttle.record_failure(client_key)
                 session["automation_authorization"] = pending
                 return html_page(
                     "Pandrator automation consent",
-                    "<p>The owner password was incorrect or temporarily "
+                    "<p>The sign-in details were incorrect or temporarily "
                     "throttled. Return to the authorization URL and try "
                     "again.</p>",
                     status=401,
                 )
             if remote_access:
                 throttle.reset(client_key)
-            session.clear()
-            session["authenticated"] = True
-            session["csrf_token"] = secrets.token_urlsafe(24)
-            session["principal_subject"] = "owner"
-            session["principal_kind"] = "owner_session"
-            session["principal_scopes"] = sorted(ALL_SCOPES)
+            try:
+                establish_browser_session(
+                    auth, account, subject=f"user:{account.user_id}", principal_kind="owner_session", scopes=auth.browser_scopes(account)
+                )
+            except (PermissionError, ValueError):
+                return html_page("Enrollment request expired", "<p>Sign in again to approve enrollment.</p>", status=401)
             session["automation_authorization"] = pending
             g.principal_resolved = False
             principal = context.guards.principal()
-            owner_approved = principal is not None
+            browser_approved = principal is not None
+            just_signed_in = collaboration
 
-        if request.method == "POST" and owner_approved and principal is not None:
+        if request.method == "POST" and browser_approved and principal is not None and not just_signed_in:
             session.pop("automation_authorization", None)
             identity = services.identity.snapshot(observed_origin=request.url_root)
             try:
@@ -225,12 +242,16 @@ def register_automation_routes(
                     target_instance_id=identity.instance_id,
                     canonical_origin=identity.canonical_origin,
                     approved_by=principal,
+                    resource_grants=CredentialResources(
+                        workspace_ids=frozenset(request.form.getlist("workspace_id")),
+                        project_ids=frozenset(request.form.getlist("project_id")),
+                    ) if collaboration else None,
                 )
-            except EnrollmentError as error:
+            except (EnrollmentError, ValueError) as error:
                 return html_page(
                     "Enrollment failed",
                     f"<p>{escape(str(error))}</p>",
-                    status=error.status_code,
+                    status=getattr(error, "status_code", 422),
                 )
             g.audit_resource_kind = "automation_client"
             g.audit_resource_id = str(pending["client_id"])
@@ -248,11 +269,46 @@ def register_automation_routes(
         scope_items = "".join(
             f"<li><code>{escape(scope)}</code></li>" for scope in pending["scopes"]
         )
+        administrator_notice = (
+            "<p><strong>Administrator access requested.</strong> This client can "
+            "manage users and password setup links, install or download models, "
+            "and manage local services. Project access is assigned separately.</p>"
+            if "app.admin" in pending["scopes"]
+            else ""
+        )
+        workspace_fields = ""
+        if collaboration and browser_approved and principal is not None:
+            actor = actor_from_principal(principal)
+            assert actor is not None
+            with services.database.snapshot_session() as workspace_session:
+                workspaces = WorkspaceQueries.list_workspaces(workspace_session, AccessContext(actor))
+                shared_projects = ProjectSharingQueries.shared_with_me(
+                    workspace_session, AccessContext(actor), limit=100,
+                )
+            choices = "".join(
+                '<label style="display:block;margin:.5rem 0"><input type="checkbox" name="workspace_id" '
+                f'value="{escape(item["id"])}" {"checked" if item["kind"] == "personal" else ""}> '
+                f'{escape("My workspace (private)" if item["kind"] == "personal" else item["name"])}</label>'
+                for item in workspaces
+            )
+            workspace_fields = "<fieldset><legend>Approve access to these workspaces</legend>" + choices + "</fieldset>"
+            if shared_projects:
+                project_choices = "".join(
+                    '<label style="display:block;margin:.5rem 0"><input type="checkbox" name="project_id" '
+                    f'value="{escape(item["project_id"] or "")}"> {escape(item["name"] or "Project")} · Can view</label>'
+                    for item in shared_projects
+                )
+                workspace_fields += (
+                    "<fieldset><legend>Approve access to individual shared projects</legend>"
+                    + project_choices + "</fieldset><p>These projects remain read-only. "
+                    "No project access is selected automatically.</p>"
+                )
         password_field = (
             ""
-            if owner_approved
+            if browser_approved
             else (
-                "<label>Owner password<br>"
+                ('<label>Login name<br><input name="login_name" required autocomplete="username"></label><br><br>' if collaboration else "")
+                + "<label>Password<br>"
                 '<input type="password" name="password" required '
                 'autocomplete="current-password"></label><br><br>'
             )
@@ -271,12 +327,15 @@ def register_automation_routes(
                 f"<dt>Exact callback</dt><dd><code>{escape(str(pending['redirect_uri']))}</code></dd>"
                 "</dl><p>Requested scopes:</p>"
                 f"<ul>{scope_items}</ul>"
+                f"{administrator_notice}"
                 '<form method="post">'
                 '<input type="hidden" name="authorization_nonce" '
                 f'value="{escape(str(pending["nonce"]))}">'
-                f"{password_field}"
-                '<button name="decision" value="approve" type="submit">'
-                "Approve and enroll</button> "
+                f"{password_field}{workspace_fields}"
+                + ("<p>This client may create workspaces and join invitations for your account.</p>" if "app.workspaces.enroll" in pending["scopes"] else "")
+                +                 '<button name="decision" value="approve" type="submit">'
+                + ("Review workspace access" if collaboration and not browser_approved else "Approve and enroll")
+                + "</button> "
                 '<button name="decision" value="deny" type="submit">'
                 "Deny</button></form>"
             ),
@@ -318,6 +377,8 @@ def register_automation_routes(
             network_zone=context.guards._network_zone(),
             target_instance_id=identity.instance_id,
             client_id=issued.client.id,
+            user_id=issued.record.user_id,
+            auth_revision=issued.record.user_auth_revision,
         )
         g.audit_resource_kind = "automation_client"
         g.audit_resource_id = issued.client.id
@@ -344,7 +405,7 @@ def register_automation_routes(
     @app.get("/api/v1/auth/automation-clients")
     @require_auth
     def automation_client_list():
-        return jsonify({"items": enrollment.list_clients()})
+        return jsonify({"items": enrollment.list_clients(actor=context.guards.access_context().actor)})
 
     @app.post("/api/v1/auth/automation-clients")
     @require_auth
@@ -364,6 +425,9 @@ def register_automation_routes(
                 target_instance_id=identity.instance_id,
                 canonical_origin=identity.canonical_origin,
                 created_by=principal.subject,
+                user_id=principal.user_id,
+                auth_revision=principal.auth_revision,
+                approval_actor=context.guards.access_context().actor,
             )
         except EnrollmentError as error:
             return error_response(
@@ -387,7 +451,7 @@ def register_automation_routes(
         )
 
     @app.route("/api/v1/automation/local-paths", methods=["GET", "PUT"])
-    @require_auth
+    @context.guards.require_scope("app.admin")
     def automation_local_paths():
         """Inspect or replace the owner-approved local MCP path boundary."""
 
@@ -398,6 +462,10 @@ def register_automation_routes(
                 "Only the interactive owner session may change local MCP filesystem access.",
                 403,
             )
+        try:
+            auth.require_administrator(principal)
+        except PermissionError:
+            return error_response("scope_denied", "Administrator access is required.", 403)
         workspace = str(os.environ.get("PANDRATOR_WORKSPACE") or "").strip()
         if not workspace:
             return error_response(
@@ -466,7 +534,7 @@ def register_automation_routes(
     @require_auth
     def automation_client_revoke(client_id: str):
         try:
-            enrollment.revoke(client_id)
+            enrollment.revoke(client_id, actor=context.guards.access_context().actor)
         except KeyError:
             return error_response(
                 "not_found",

@@ -226,6 +226,25 @@ class ComponentStagingTasks(ComponentSourceTasks):
             entries = payload.get("packages") if isinstance(payload, dict) else None
             if not isinstance(entries, list):
                 continue
+            if (
+                payload.get("family") == "kitten_tts2"
+                and "kitten_tts2_q8_0" in remaining
+                and not any(
+                    isinstance(entry, dict) and entry.get("id") == "kitten_tts2_q8_0"
+                    for entry in entries
+                )
+            ):
+                # Upstream removed this ID when publishing the new exports.
+                # Its pinned legacy GGUF remains compatible with the native
+                # loader; preserve saved selections without replacing weights.
+                legacy = packages_by_id["kitten_tts2_q8_0"]
+                entries.append({
+                    "id": legacy.id,
+                    "display_name": legacy.label or legacy.id,
+                    "format": "gguf",
+                    "precision": legacy.precision,
+                    "default": False,
+                })
             changed = False
             for entry in entries:
                 if not isinstance(entry, dict) or entry.get("id") not in remaining:
@@ -499,7 +518,11 @@ class ComponentStagingTasks(ComponentSourceTasks):
                 ),
                 check_cancelled=execution.check_cancelled,
             )
-        config = server_config(effective, [package.id for package in packages])
+        config = server_config(
+            effective,
+            [package.id for package in packages],
+            drama3_memory=task.inputs.get("drama3_memory", "native"),
+        )
         for entry in config["models"]:
             prepared = japanese.get("models", {}).get(entry["id"])
             if prepared:

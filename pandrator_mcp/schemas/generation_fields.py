@@ -12,7 +12,7 @@ GenerationSegmentField = Literal[
     "audio_reuse_reason", "has_reusable_take", "history_take_id", "node_kind",
     "paragraph_break_after", "speaker", "speech_block_provenance", "alignment_group",
     "optimized_text", "speech_plan", "optimization_reviewed", "optimization_model",
-    "voice_id", "voice", "language", "silence_after_ms", "marked", "takes",
+    "voice_id", "voice", "language", "retained_voice", "silence_after_ms", "marked", "takes",
     "search_matches", "passage_structure", "take_history_loaded", "effective_take",
     "assembly_silence_after_ms",
 ]

@@ -11,6 +11,8 @@
 
   let {
     service,
+    workspaceId,
+    canEdit = false,
     initialPrompt = '',
     initialCategory = '',
     onbusychange,
@@ -19,6 +21,8 @@
     ondone
   }: {
     service: TtsService;
+    workspaceId: string;
+    canEdit?: boolean;
     initialPrompt?: string;
     initialCategory?: string;
     onbusychange: (busy: boolean) => void;
@@ -45,8 +49,12 @@
   const validLanguage = $derived(
     /^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$/.test(language)
   );
+  // Member catalogues omit credential status; admission validates the connection.
   const configured = $derived(
-    service.credential_configured === true && service.available !== false
+    canEdit &&
+      Boolean(workspaceId) &&
+      service.credential_configured !== false &&
+      service.available !== false
   );
 
   async function createVoice() {
@@ -59,6 +67,10 @@
       !configured
     )
       return;
+    const workspace = workspaceId;
+    const provider = service.id;
+    const current = () =>
+      alive && workspaceId === workspace && service.id === provider && canEdit;
     busy = true;
     onbusychange(true);
     error = '';
@@ -75,14 +87,21 @@
             language,
             voice_category: category
           },
-          idempotencyKey
+          idempotencyKey,
+          workspace
         );
+        if (!current()) return;
+        if (queued.workspace_id !== workspace)
+          throw new Error(
+            'The saved request returned a different workspace. Check Activity & logs before trying again.'
+          );
         jobId = queued.id;
         onqueued(queued.voice_id);
       }
       for (let attempt = 0; attempt < 600; attempt += 1) {
-        if (!alive) return;
+        if (!current()) return;
         const job = await jobApi.get(jobId);
+        if (!current()) return;
         detail = job.progress_detail || 'Google is creating your voice…';
         if (job.status === 'succeeded') {
           const result = job.result_json ?? {};
@@ -92,6 +111,7 @@
             );
           receipt = {
             voice_id: String(result.voice_id),
+            workspace_id: workspace,
             provider_voice_id: String(result.provider_voice_id),
             service_id: service.id,
             model,
@@ -115,7 +135,7 @@
         'Voice creation is still running. Check its progress in Activity & logs.'
       );
     } catch (caught) {
-      if (alive) {
+      if (current()) {
         error = errorMessage(caught);
         if (
           !jobId &&
@@ -128,7 +148,7 @@
         }
       }
     } finally {
-      if (alive) {
+      if (current()) {
         busy = false;
         onbusychange(false);
       }
@@ -172,8 +192,8 @@
     <div role="status" class="rounded-xl border border-[var(--accent)] p-4">
       <h3 class="font-semibold">{name} is saved</h3>
       <p class="muted mt-2 text-sm">
-        Its description, Google identity and project association are stored in
-        your Voice Library.
+        Its description and Google identity are stored in this workspace’s Voice
+        Library.
       </p>
       <p class="mt-2 break-all font-mono text-xs">
         {receipt.provider_voice_id}

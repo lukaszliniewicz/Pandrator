@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
@@ -187,7 +188,9 @@ class SubtitleEvidenceCacheTests(unittest.TestCase):
         ).hexdigest()
         return {"stt": settings}, digest
 
-    def _hydrate_stt(self, _database, _paths, settings):
+    def _hydrate_stt(self, _database, _paths, settings, *, session_id):
+        self.assertIsInstance(session_id, str)
+        self.assertTrue(session_id)
         return {
             **settings,
             "provider_configs": [
@@ -274,6 +277,7 @@ class SubtitleEvidenceCacheTests(unittest.TestCase):
     def _add_audio_model(self):
         with self.services.database.session() as session:
             provider = Provider(
+                workspace_id=initial_personal_workspace(session).id,
                 kind="llm",
                 provider_key="gemini",
                 label="Evidence cache test provider",
@@ -296,7 +300,8 @@ class SubtitleEvidenceCacheTests(unittest.TestCase):
             session.flush()
             return model.id
 
-    def _mock_audio_runtime(self, model_record_id):
+    def _mock_audio_runtime(self, model_record_id, *, session_id):
+        self.assertEqual(self.session.id, session_id)
         return {
             "record_id": model_record_id,
             "model_id": "audio-cache-test",

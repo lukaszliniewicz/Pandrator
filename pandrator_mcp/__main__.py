@@ -376,6 +376,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         choices=range(1, 91),
         default=30,
+        metavar="DAYS",
+        help="Credential lifetime: 1-90 days, or at most 30 with --manager-recovery.",
     )
     login.add_argument(
         "--headless",
@@ -396,6 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--credential-backend",
         choices=("keyring",),
         default="keyring",
+        help="Save in the OS keychain; requires the credential-stores extra and an unlocked keychain.",
     )
     login.add_argument("--credential-reference")
     login.add_argument(

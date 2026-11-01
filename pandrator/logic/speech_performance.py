@@ -48,7 +48,14 @@ from .speech_capabilities import (
 )
 
 SCHEMA = "pandrator.performance/v1"
-COMPILER_VERSION = "pssml-1.3.20261010.2"
+COMPILER_VERSION = "pssml-1.3.20261019.1"
+_CACHED_CAPABILITY_ENDPOINT_FIELDS = frozenset({
+    "id", "name", "adapter", "provider", "profile_id", "base_url", "api_base",
+    "backend_version", "default_model", "default_voice", "default_voices",
+    "model_voice_modes",
+})
+_CACHED_MODEL_CATALOG_FIELDS = frozenset({"model_catalog"})
+_CACHED_AZURE_VOICE_FIELDS = frozenset({"default_voice", "default_voices"})
 
 
 def content_hash(value: Any) -> str:
@@ -214,9 +221,18 @@ def _azure_speech_selection(
     if endpoint is None:
         service_name = str(settings.get("service") or settings.get("tts_service") or "")
         selected = str(settings.get("openai_audio_endpoint") or service_name)
-        endpoint = catalogue.get_service_config(
-            settings, selected, _cache=_service_config_cache
-        ) or {}
+        if _service_config_cache is not None:
+            selected_endpoint = catalogue.get_service_config(
+                settings,
+                selected,
+                _cache=_service_config_cache,
+                _fields=_CACHED_AZURE_VOICE_FIELDS,
+            )
+        else:
+            selected_endpoint = catalogue.get_service_config(
+                settings, selected, _cache=_service_config_cache
+            )
+        endpoint = selected_endpoint or {}
 
     settings_defaults = settings.get("default_voices")
     endpoint_defaults = endpoint.get("default_voices")
@@ -251,6 +267,8 @@ def resolve_capabilities(
     service_name = str(settings.get("service") or settings.get("tts_service") or "")
     cache_requested = endpoint is None and _service_config_cache is not None
     cache_key = None
+    selected = ""
+    selected_service_found = False
     if cache_requested and _service_config_cache is not None:
         cache_key = (
             "resolved_capabilities",
@@ -268,7 +286,19 @@ def resolve_capabilities(
             return deepcopy(hit)
     if endpoint is None:
         selected = str(settings.get("openai_audio_endpoint") or service_name)
-        endpoint = catalogue.get_service_config(settings, selected, _cache=_service_config_cache) or {}
+        if cache_requested and _service_config_cache is not None:
+            selected_endpoint = catalogue.get_service_config(
+                settings,
+                selected,
+                _cache=_service_config_cache,
+                _fields=_CACHED_CAPABILITY_ENDPOINT_FIELDS,
+            )
+        else:
+            selected_endpoint = catalogue.get_service_config(
+                settings, selected, _cache=_service_config_cache
+            )
+        selected_service_found = selected_endpoint is not None
+        endpoint = selected_endpoint or {}
     route = capability_backend(endpoint, service_name)
     if route in {"silero", "silero_tts"}:
         model = str(
@@ -298,6 +328,16 @@ def resolve_capabilities(
         model, selected_voice = _azure_speech_selection(
             settings, endpoint, model, _service_config_cache
         )
+    if cache_requested and selected_service_found and _service_config_cache is not None:
+        model_projection = catalogue.get_service_config(
+            settings,
+            selected,
+            _cache=_service_config_cache,
+            _fields=_CACHED_MODEL_CATALOG_FIELDS,
+            _model_catalog_id=model,
+        )
+        if model_projection is not None:
+            endpoint.update(model_projection)
     if route in {"elevenlabs", "elevenlabs_native"}:
         model = model.strip()
         if not model:
@@ -779,11 +819,21 @@ def compile_performance(
 
     phrase_transport = capability.get("phrase_instruction_transport", "none")
     inline = phrase_transport == "inline_hint"
+    scoped_inline = phrase_transport == "scoped_inline"
 
     def insert_direction(position: int, priority: int, direction: str):
-        if re.search(r"[\[\]\x00]|<\||\|>", direction):
+        if re.search(r"[\[\]\x00]|<\||\|>", direction) or (
+            dialect == "fish_drama3" and re.search(r"[<>]", direction)
+        ):
             raise ValueError("Use plain performance directions, not provider tags or control tokens.")
         insert(position, priority, direction.replace("\n", "; "))
+
+    def insert_scoped_direction(start: int, end: int, direction: str):
+        if re.search(r"[\[\]<>\x00]", direction):
+            raise ValueError("Use plain performance directions, not provider tags or control tokens.")
+        tag = direction.replace("\n", "; ")
+        inserts.setdefault(start, []).append((20, f"<{tag}>"))
+        inserts.setdefault(end, []).append((-10, f"</{tag}>"))
     if combined:
         if capability["instructions"] == "none":
             note(
@@ -869,7 +919,15 @@ def compile_performance(
                         "was retained but not applied; this native option covers the "
                         "whole request.",
                     )
-        if markup_scope_has_differences and inline:
+        if markup_scope_has_differences and scoped_inline:
+            for start, end, effective_delivery in markup_scope_spans:
+                direction = "; ".join(
+                    part for part in (general, _delivery_text(effective_delivery)) if part
+                )
+                if direction:
+                    insert_scoped_direction(start, end, direction)
+            note("applied", "span", "Compiled paired Drama 3 phrase tags; delivery remains model-interpreted.")
+        elif markup_scope_has_differences and inline:
             previous_direction: str | None = None
             for start, _end, effective_delivery in markup_scope_spans:
                 direction = _delivery_text(effective_delivery)
@@ -986,7 +1044,10 @@ def compile_performance(
             direction = _delivery_text(span_delivery)
             if not direction:
                 continue
-            if inline:
+            if scoped_inline:
+                insert_scoped_direction(start, end, direction)
+                note("applied", "span", "Compiled paired Drama 3 phrase tags; delivery remains model-interpreted.")
+            elif inline:
                 insert_direction(start, 20, direction)
                 next_start = anchor_range(text, ordered_spans[index + 1].anchor)[0] if index + 1 < len(ordered_spans) else None
                 if end < len(text) and next_start != end:
@@ -1048,7 +1109,7 @@ def compile_performance(
             note("applied", "event", "Compiled a provider SSML break; assembly timing is unchanged.")
             continue
         if event.duration_ms:
-            if dialect in {"fish_s2", "gemini"}:
+            if dialect in {"fish_s2", "fish_drama3", "gemini"}:
                 tag = f"pause for approximately {event.duration_ms} milliseconds"
             elif pause.get("format") == "inline":
                 tag = pause["long_tag"] if event.duration_ms > pause["threshold_ms"] else pause["short_tag"]
@@ -1262,7 +1323,7 @@ def compile_performance(
                 "The native intensity capability has no supported request option mapping; "
                 "the annotation was retained and the value was omitted.",
             )
-    if dialect == "fish_s2" and capability["backend"] == "audio_cpp" and inserts:
+    if dialect in {"fish_s2", "fish_drama3"} and capability["backend"] == "audio_cpp" and inserts:
         # Word-budget/Japanese splitting must not cut generated bracket controls
         # in half. Keep Pandrator's block intact while selecting the engine's
         # tag-aware splitter for any internal chunking it still performs.

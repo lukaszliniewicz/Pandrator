@@ -25,6 +25,8 @@ from sqlalchemy import select
 from pandrator.logic import tts_handler
 from pandrator.runtime import DataPaths
 from pandrator.web import google_voice_design
+from pandrator.web.accounts.execution_actor import HostActor, execution_actor_scope
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
@@ -40,7 +42,7 @@ from pandrator.web.google_voice_design import (
     google_voice_scope,
 )
 from pandrator.web.google_voice_design_schemas import GoogleVoiceDesignCreate
-from pandrator.web.models import AppSetting, Artifact, Job, Voice, VoiceSample
+from pandrator.web.models import Artifact, Job, Voice, VoiceSample, WorkspaceSetting
 from pandrator.web.tts_providers import TtsProviderRegistry
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflow_voice import VoiceWorkflowContext
@@ -93,9 +95,15 @@ def _write_setting(
     value: dict[str, Any],
 ) -> None:
     with database.session() as session:
-        row = session.get(AppSetting, key)
+        workspace_id = initial_personal_workspace(session).id
+        row = session.get(WorkspaceSetting, (workspace_id, key))
         if row is None:
-            session.add(AppSetting(key=key, value_json=deepcopy(value), revision=1))
+            session.add(WorkspaceSetting(
+                workspace_id=workspace_id,
+                key=key,
+                value_json=deepcopy(value),
+                revision=1,
+            ))
         else:
             row.value_json = deepcopy(value)
             row.revision += 1
@@ -151,25 +159,26 @@ def _new_queued_voice(
     name: str = "Designed voice",
     prompt: str = "A calm, clear narrator with measured pacing.",
 ) -> tuple[str, dict[str, Any]]:
-    voice = Voice(
-        name=name,
-        language="en-GB",
-        description=prompt,
-        metadata_json={
-            "voice_category": "androgynous",
-            "custom_keep": {"source": "fixture"},
-            "google_voice_design": {
-                "state": "queued",
-                "job_id": job_id,
-                "service_id": service_id,
-                "model": model,
-                "prompt": prompt,
-                "scope_fingerprint": scope["fingerprint"],
-                "project": scope["project"],
-            },
-        },
-    )
     with database.session() as session:
+        voice = Voice(
+            workspace_id=initial_personal_workspace(session).id,
+            name=name,
+            language="en-GB",
+            description=prompt,
+            metadata_json={
+                "voice_category": "androgynous",
+                "custom_keep": {"source": "fixture"},
+                "google_voice_design": {
+                    "state": "queued",
+                    "job_id": job_id,
+                    "service_id": service_id,
+                    "model": model,
+                    "prompt": prompt,
+                    "scope_fingerprint": scope["fingerprint"],
+                    "project": scope["project"],
+                },
+            },
+        )
         session.add(voice)
         session.flush()
         voice_id = voice.id
@@ -407,14 +416,15 @@ def test_configured_google_service_reads_settings_and_resolves_without_writing(
         assert set(MODELS).issubset(service["models"])
         assert credential == secret
         with database.session() as session:
+            workspace_id = initial_personal_workspace(session).id
             for key in ("defaults.tts", "services.tts"):
-                row = session.get(AppSetting, key)
+                row = session.get(WorkspaceSetting, (workspace_id, key))
                 assert row is not None
                 assert secret not in repr(row.value_json)
                 assert row.revision == 1
             assert session.get(
-                AppSetting,
-                "credentials.auxiliary_refs",
+                WorkspaceSetting,
+                (workspace_id, "credentials.auxiliary_refs"),
             ) is None
         assert database_reference(tts_service_credential_key("gemini"))
         assert TTS_SERVICE_ENVS["gemini"] == "GEMINI_API_KEY"
@@ -478,7 +488,8 @@ def test_route_queues_one_voice_and_replays_before_mutable_settings(
         assert secret not in repr(voice.metadata_json)
 
         voice.description = "Locally edited description"
-        row = session.get(AppSetting, "services.tts")
+        workspace_id = initial_personal_workspace(session).id
+        row = session.get(WorkspaceSetting, (workspace_id, "services.tts"))
         assert row is not None
         row.value_json = {"provider_configs": []}
 
@@ -526,7 +537,13 @@ def test_route_rejects_duplicate_local_voice_name_with_conflict(
     _config, key_env, secret = _configure_service(database, "gemini")
     monkeypatch.setenv(key_env, secret)
     with database.session() as session:
-        session.add(Voice(name="Existing name", language="en"))
+        session.add(
+            Voice(
+                workspace_id=initial_personal_workspace(session).id,
+                name="Existing name",
+                language="en",
+            )
+        )
     response = api_fixture.client.post(
         "/api/v1/voices/design/google",
         json=_request_body(name="Existing name"),
@@ -589,6 +606,7 @@ def _unexpected_input(_artifact_id: str) -> tuple[Artifact, Path]:
 @pytest.mark.parametrize("service_id", ("gemini", "vertex_ai"))
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("sample_format", ("wav", "l16"))
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_worker_creates_and_persists_google_voice_once_with_safe_preview(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -617,6 +635,9 @@ def test_worker_creates_and_persists_google_voice_once_with_safe_preview(
     calls: list[tuple[str, dict[str, Any]]] = []
 
     def create_voice(endpoint: str, **options: Any) -> dict[str, Any]:
+        before_io = options.get("before_io")
+        if callable(before_io):
+            before_io()
         calls.append((endpoint, options))
         assert options["vertex"] is (service_id == "vertex_ai")
         assert options["model"] == model
@@ -654,7 +675,10 @@ def test_worker_creates_and_persists_google_voice_once_with_safe_preview(
     token_calls: list[dict[str, Any]] = []
     if service_id == "vertex_ai":
 
-        def access_token(current: dict[str, Any]) -> tuple[str, str]:
+        def access_token(current: dict[str, Any], **options: Any) -> tuple[str, str]:
+            before_io = options.get("before_io")
+            if callable(before_io):
+                before_io()
             token_calls.append(current)
             return VERTEX_TOKEN, VERTEX_PROJECT
 
@@ -776,6 +800,7 @@ def test_worker_creates_and_persists_google_voice_once_with_safe_preview(
     database.dispose()
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_worker_rejects_changed_gemini_scope_before_provider_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -813,6 +838,7 @@ def test_worker_rejects_changed_gemini_scope_before_provider_call(
 
 
 @pytest.mark.parametrize("failure", ("invalid_sample", "artifact_save"))
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_worker_retains_created_id_when_preview_is_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -838,6 +864,9 @@ def test_worker_retains_created_id_when_preview_is_unavailable(
     )
 
     def create_voice(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        before_io = _kwargs.get("before_io")
+        if callable(before_io):
+            before_io()
         calls.append(True)
         return {"id": REMOTE_VOICE_ID, "sample_audio": sample}
 
@@ -849,7 +878,7 @@ def test_worker_retains_created_id_when_preview_is_unavailable(
     if failure == "artifact_save":
         monkeypatch.setattr(
             context.artifacts,
-            "register",
+            "register_in_session",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fixture disk failure")),
         )
     result = design_google_voice(context, payload, lambda *_args: None, threading.Event())
@@ -877,6 +906,7 @@ def test_worker_retains_created_id_when_preview_is_unavailable(
     "failure",
     ("timeout", "http_408", "http_503", "http_unknown", "malformed_2xx"),
 )
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_worker_marks_unknown_post_outcome_uncertain_without_retrying(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -897,6 +927,9 @@ def test_worker_marks_unknown_post_outcome_uncertain_without_retrying(
     calls: list[bool] = []
 
     def failed_post(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        before_io = _kwargs.get("before_io")
+        if callable(before_io):
+            before_io()
         calls.append(True)
         status_by_failure = {
             "http_408": 408,
@@ -943,6 +976,7 @@ def test_worker_marks_unknown_post_outcome_uncertain_without_retrying(
     database.dispose()
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_worker_persists_known_http_rejections_without_provider_details_or_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -996,6 +1030,9 @@ def test_worker_persists_known_http_rejections_without_provider_details_or_retry
     calls: list[int] = []
 
     def rejected_post(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        before_io = _kwargs.get("before_io")
+        if callable(before_io):
+            before_io()
         calls.append(current_status[0])
         error = google_voice_design.google_tts_catalogue_http.GoogleVoiceCreationStatusError(
             current_status[0]
@@ -1041,7 +1078,7 @@ def test_worker_persists_known_http_rejections_without_provider_details_or_retry
             assert "fixture-private-google-key" not in str(design)
             assert "fixture-secret-token" not in str(design)
 
-        with pytest.raises(ValueError, match="not queued for creation"):
+        with pytest.raises(ValueError, match="already in progress|unresolved outcome"):
             design_google_voice(context, payload, lambda *_args: None, threading.Event())
         assert len(calls) == index + 1
 
@@ -1050,6 +1087,7 @@ def test_worker_persists_known_http_rejections_without_provider_details_or_retry
     database.dispose()
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_worker_persists_http_429_rejection_without_identity_or_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1136,13 +1174,14 @@ def test_worker_persists_http_429_rejection_without_identity_or_retry(
             select(VoiceSample.id).where(VoiceSample.voice_id == voice_id)
         ) is None
 
-    with pytest.raises(ValueError, match="not queued for creation"):
+    with pytest.raises(ValueError, match="already in progress|unresolved outcome"):
         design_google_voice(context, payload, lambda *_args: None, threading.Event())
     assert len(request_session.post_calls) == 1
     context.tts_providers.close()
     database.dispose()
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_worker_persists_remote_identity_when_cancelled_during_post(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1162,6 +1201,9 @@ def test_worker_persists_remote_identity_when_cancelled_during_post(
     cancel_event = threading.Event()
 
     def create_during_cancel(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        before_io = _kwargs.get("before_io")
+        if callable(before_io):
+            before_io()
         cancel_event.set()
         return {"id": REMOTE_VOICE_ID}
 

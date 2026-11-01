@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { projectLinkUrl } from './project-link-context';
   import { errorMessage } from './errors';
   import {
     ImagePlus,
@@ -21,26 +22,30 @@
   import BookOutputSettings from './BookOutputSettings.svelte';
   import { artifactFilename } from './artifact-display';
   import { onDestroy } from 'svelte';
+  import { appState } from './app-state.svelte';
+  import { subtitleSelectionIssue, type ExportProfile } from './export-intent';
 
-  type SavedOutputProfile = {
-    output: Record<string, unknown>;
-    audio: Record<string, unknown>;
-  };
+  type SavedOutputProfile = ExportProfile;
   type Props = {
     sessionId: string;
     generationRunId?: string;
     audioVersionSide?: 'before' | 'after';
     onSaveForExportReady?: (save: () => Promise<SavedOutputProfile>) => void;
+    onExportProfileChanged?: (profile: ExportProfile) => void;
   };
   let {
     sessionId,
     generationRunId = '',
     audioVersionSide = 'after',
-    onSaveForExportReady
+    onSaveForExportReady,
+    onExportProfileChanged
   }: Props = $props();
   let settings = $state<SettingsPayload | null>(null);
   let audioSettings = $state<SettingsPayload | null>(null);
   let session = $state<SessionRecord | null>(null);
+  const canManageDefaults = $derived(
+    appState.canManageWorkspace(session?.workspace_id)
+  );
   let capabilities = $state<RuntimeCapabilities>({});
   let draft = $state<Record<string, unknown>>({});
   let audioDraft = $state<Record<string, unknown>>({});
@@ -107,6 +112,24 @@
     String(value('audio_mode', hasSourceAudio ? 'mixed' : 'dubbing_only'))
   );
   const subtitleMode = $derived(String(value('subtitle_mode', 'none')));
+  const checkCurrentSubtitles = $derived(
+    !audiobookWorkspace &&
+      String(value('subtitle_text_source', 'current')) === 'current'
+  );
+  const unavailableSource = $derived(
+    checkCurrentSubtitles && Boolean(subtitleSelectionIssue(context, 'source'))
+  );
+  const unavailableTranslation = $derived(
+    checkCurrentSubtitles &&
+      Boolean(subtitleSelectionIssue(context, 'translation'))
+  );
+  const subtitleChoiceIssue = $derived(
+    checkCurrentSubtitles &&
+      (['subtitles', 'text'].includes(exportMode) ||
+        (rendersVideo && subtitleMode !== 'none'))
+      ? subtitleSelectionIssue(context, value('subtitle_selection', 'auto'))
+      : ''
+  );
   const videoTranscode = $derived(Boolean(value('video_transcode', false)));
   const outputFormat = $derived(String(value('format', 'wav')).toLowerCase());
   const formatUsesBitrate = (format: unknown) =>
@@ -198,6 +221,17 @@
       Object.entries(source).filter(([key]) => audioSyncKeys.includes(key))
     );
   }
+
+  $effect(() => {
+    if (!settings || !audioSettings) return;
+    onExportProfileChanged?.({
+      output: { ...(settings.effective ?? {}), ...sanitizeOutput(draft) },
+      audio: {
+        ...(audioSettings.effective ?? {}),
+        ...sanitizeAudio(audioDraft)
+      }
+    });
+  });
 
   async function load() {
     [session, settings, audioSettings, { items: images }, capabilities] =
@@ -412,6 +446,7 @@
   });
 
   async function saveAsDefaults() {
+    if (!canManageDefaults) return;
     busy = true;
     error = '';
     message = '';
@@ -421,17 +456,29 @@
           ([key]) => key !== 'cover_artifact_id'
         )
       );
-      const defaults = await sessionApi.defaults('output');
-      await sessionApi.saveDefaults('output', defaults.revision, {
-        ...(defaults.value ?? {}),
-        ...promoted
-      });
+      const defaults = await sessionApi.defaults('output', { sessionId });
+      if (!defaults.can_manage || !defaults.workspace_id)
+        throw new Error('Workspace managers can change these defaults.');
+      await sessionApi.saveDefaults(
+        'output',
+        defaults.revision,
+        {
+          ...(defaults.value ?? {}),
+          ...promoted
+        },
+        defaults.workspace_id
+      );
       if (!audiobookWorkspace && !subtitleWorkspace) {
-        const audioDefaults = await sessionApi.defaults('audio');
-        await sessionApi.saveDefaults('audio', audioDefaults.revision, {
-          ...(audioDefaults.value ?? {}),
-          ...sanitizeAudio(audioDraft)
-        });
+        const audioDefaults = await sessionApi.defaults('audio', { sessionId });
+        await sessionApi.saveDefaults(
+          'audio',
+          audioDefaults.revision,
+          {
+            ...(audioDefaults.value ?? {}),
+            ...sanitizeAudio(audioDraft)
+          },
+          audioDefaults.workspace_id
+        );
       }
       const retained = Object.fromEntries(
         Object.entries(sanitizeOutput(draft)).filter(
@@ -454,7 +501,7 @@
       }
       draft = sanitizeOutput({ ...settings.override });
       audioDraft = {};
-      message = 'Saved as the application defaults for compatible outputs.';
+      message = 'Saved as workspace defaults for compatible outputs.';
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -536,9 +583,12 @@
           (!Object.keys(draft).length && !Object.keys(audioDraft).length)}
         class="tool"><RotateCcw size={15} /> Revert to defaults</button
       ><button
-        title="Use these settings as defaults for compatible projects."
+        title={canManageDefaults
+          ? 'Use these settings as workspace defaults for compatible projects.'
+          : 'Workspace managers can change shared defaults.'}
         onclick={saveAsDefaults}
-        disabled={busy ||
+        disabled={!canManageDefaults ||
+          busy ||
           (!Object.keys(draft).length && !Object.keys(audioDraft).length)}
         class="tool"><Save size={15} /> Save as defaults</button
       ><button
@@ -569,6 +619,8 @@
             aria-describedby="subtitle-text-help"
           >
             <option value="current">Current display text</option>
+            <option value="selected_artifact">Selected subtitle revision</option
+            >
             <option value="generation_run" disabled={!generationRunId}
               >Historical text from selected audio version</option
             >
@@ -576,8 +628,10 @@
         >
         <p id="subtitle-text-help" class="muted mt-2 text-xs">
           Current display text applies your latest display edits to the matching
-          subtitle track. Historical text uses the wording saved with the
-          selected Audio version. Neither choice changes the recorded speech.
+          subtitle track. Selected subtitle revision keeps the chosen caption
+          file, including display-only labels. Historical text uses the wording
+          saved with the selected Audio version. Recorded speech stays
+          unchanged.
         </p>
       </div>
     {/if}
@@ -624,11 +678,20 @@
             onchange={(event) =>
               set('subtitle_selection', event.currentTarget.value)}
             class="field"
-            ><option value="source">Source / corrected</option><option
-              value="translation">Translation</option
-            ><option value="dual">Source and translation</option></select
-          ></label
-        >
+            ><option value="auto">Automatic (available documents)</option
+            ><option value="source" disabled={unavailableSource}
+              >Source / corrected</option
+            ><option value="translation" disabled={unavailableTranslation}
+              >Translation</option
+            ><option
+              value="dual"
+              disabled={unavailableSource || unavailableTranslation}
+              >Source and translation</option
+            ></select
+          >{#if subtitleChoiceIssue}<small class="mt-2 block text-amber-700"
+              >{subtitleChoiceIssue}</small
+            >{/if}
+        </label>
         <label
           >Language identifier<input
             value={String(value('language', ''))}
@@ -728,7 +791,7 @@
                 }}
                 class="mt-3 block aspect-square w-full overflow-hidden rounded-xl bg-[var(--paper)]"
                 ><img
-                  src={`/api/v1/artifacts/${selectedCover.id}/content`}
+                  src={projectLinkUrl(`/api/v1/artifacts/${selectedCover.id}/content`)}
                   alt={artifactFilename(selectedCover)}
                   class="size-full object-cover"
                 /></button
@@ -858,15 +921,24 @@
             >{/if}
           {#if ['subtitles', 'text'].includes(exportMode) || (rendersVideo && subtitleMode !== 'none')}<label
               >Subtitle tracks<select
-                value={String(value('subtitle_selection', 'translation'))}
+                value={String(value('subtitle_selection', 'auto'))}
                 onchange={(event) =>
                   set('subtitle_selection', event.currentTarget.value)}
                 class="field"
-                ><option value="source">Source / corrected</option><option
-                  value="translation">Translation</option
-                ><option value="dual">Source and translation</option></select
-              ></label
-            >{/if}
+                ><option value="auto">Automatic (available documents)</option
+                ><option value="source" disabled={unavailableSource}
+                  >Source / corrected</option
+                ><option value="translation" disabled={unavailableTranslation}
+                  >Translation</option
+                ><option
+                  value="dual"
+                  disabled={unavailableSource || unavailableTranslation}
+                  >Source and translation</option
+                ></select
+              >{#if subtitleChoiceIssue}<small class="mt-2 block text-amber-700"
+                  >{subtitleChoiceIssue}</small
+                >{/if}
+            </label>{/if}
         </div>
 
         {#if exportMode === 'audio'}

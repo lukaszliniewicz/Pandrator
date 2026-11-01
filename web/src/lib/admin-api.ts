@@ -9,8 +9,16 @@ import type {
   TtsDiscovery
 } from './api-models';
 import { artifactApi, jobApi } from './domain-api';
+import {
+  fetchTtsCatalogue,
+  speechScopeQuery,
+  type SpeechCatalogueScope
+} from './speech-catalogue-api';
 
 export type RevisionedValue<T> = {
+  workspace_id?: string;
+  can_manage?: boolean;
+  setting_scope?: 'workspace' | 'installation';
   revision: number;
   value: T;
   effective?: T;
@@ -19,100 +27,136 @@ export type RevisionedValue<T> = {
 };
 
 export const settingApi = {
-  get: <T>(settingKey: string) =>
+  get: <T>(settingKey: string, workspaceId?: string) =>
     typedApiJson<'/api/v1/settings/{settingKey}', 'get', RevisionedValue<T>>(
       '/api/v1/settings/{settingKey}',
       'get',
       {
-        path: { settingKey }
+        path: { settingKey },
+        query: workspaceQuery(workspaceId)
       }
     ),
-  put: <T>(settingKey: string, revision: number, value: T) =>
+  put: <T>(
+    settingKey: string,
+    revision: number,
+    value: T,
+    workspaceId?: string
+  ) =>
     typedApiJson<'/api/v1/settings/{settingKey}', 'put', RevisionedValue<T>>(
       '/api/v1/settings/{settingKey}',
       'put',
       {
         path: { settingKey },
+        query: workspaceQuery(workspaceId),
         headers: { 'If-Match': `"${revision}"` },
         body: { value }
       }
     )
 };
 
+export type WorkspaceCatalogue<T> = ItemPage<T> & {
+  workspace_id: string;
+  can_manage: boolean;
+  credential_backends?: string[];
+};
+const workspaceQuery = (workspaceId?: string) =>
+  workspaceId ? { workspace_id: workspaceId } : undefined;
+
 export const credentialApi = {
-  list: <T>() =>
-    typedApiJson<'/api/v1/credentials', 'get', ItemPage<T>>(
+  list: <T>(workspaceId?: string) =>
+    typedApiJson<'/api/v1/credentials', 'get', WorkspaceCatalogue<T>>(
       '/api/v1/credentials',
-      'get'
+      'get',
+      { query: workspaceQuery(workspaceId) }
     ),
   backends: <T>() =>
     typedApiJson<'/api/v1/credential-backends', 'get', ItemPage<T>>(
       '/api/v1/credential-backends',
       'get'
     ),
-  update: <T>(credentialId: string, body: ApiSchema<'CredentialUpdate'>) =>
+  update: <T>(
+    credentialId: string,
+    body: ApiSchema<'CredentialUpdate'>,
+    workspaceId?: string
+  ) =>
     typedApiJson<'/api/v1/credentials/{credentialId}', 'put', T>(
       '/api/v1/credentials/{credentialId}',
       'put',
       {
         path: { credentialId },
+        query: workspaceQuery(workspaceId),
         body
       }
     )
 };
 
 export const providerApi = {
-  list: <T>() =>
-    typedApiJson<'/api/v1/providers', 'get', ItemPage<T>>(
+  list: <T>(workspaceId?: string) =>
+    typedApiJson<'/api/v1/providers', 'get', WorkspaceCatalogue<T>>(
       '/api/v1/providers',
-      'get'
+      'get',
+      { query: workspaceQuery(workspaceId) }
     ),
   profiles: <T>() =>
     typedApiJson<'/api/v1/providers/profiles', 'get', ItemPage<T>>(
       '/api/v1/providers/profiles',
       'get'
     ),
-  models: <T>(providerId: string) =>
+  models: <T>(providerId: string, workspaceId?: string) =>
     typedApiJson<'/api/v1/providers/{providerId}/models', 'get', ItemPage<T>>(
       '/api/v1/providers/{providerId}/models',
       'get',
       {
-        path: { providerId }
+        path: { providerId },
+        query: workspaceQuery(workspaceId)
       }
     ),
-  create: <T>(body: ApiSchema<'ProviderCreate'>) =>
+  create: <T>(body: ApiSchema<'ProviderCreate'>, workspaceId?: string) =>
     typedApiJson<'/api/v1/providers', 'post', T>('/api/v1/providers', 'post', {
-      body
+      body,
+      query: workspaceQuery(workspaceId)
     }),
   update: <T>(
     providerId: string,
     revision: number,
-    body: ApiSchema<'ProviderUpdate'>
+    body: ApiSchema<'ProviderUpdate'>,
+    workspaceId?: string
   ) =>
     typedApiJson<'/api/v1/providers/{providerId}', 'patch', T>(
       '/api/v1/providers/{providerId}',
       'patch',
       {
         path: { providerId },
+        query: workspaceQuery(workspaceId),
         headers: { 'If-Match': `"${revision}"` },
         body
       }
     ),
-  remove: (providerId: string, replacementModelRecordId: string | null) =>
+  remove: (
+    providerId: string,
+    replacementModelRecordId: string | null,
+    workspaceId?: string
+  ) =>
     typedApiJson<'/api/v1/providers/{providerId}', 'delete', void>(
       '/api/v1/providers/{providerId}',
       'delete',
       {
         path: { providerId },
+        query: workspaceQuery(workspaceId),
         body: { replacement_model_record_id: replacementModelRecordId }
       }
     ),
-  createModel: <T>(providerId: string, body: ApiSchema<'ModelCreate'>) =>
+  createModel: <T>(
+    providerId: string,
+    body: ApiSchema<'ModelCreate'>,
+    workspaceId?: string
+  ) =>
     typedApiJson<'/api/v1/providers/{providerId}/models', 'post', T>(
       '/api/v1/providers/{providerId}/models',
       'post',
       {
         path: { providerId },
+        query: workspaceQuery(workspaceId),
         body
       }
     ),
@@ -120,13 +164,15 @@ export const providerApi = {
     providerId: string,
     modelId: string,
     revision: number,
-    body: ApiSchema<'ModelUpdate'>
+    body: ApiSchema<'ModelUpdate'>,
+    workspaceId?: string
   ) =>
     typedApiJson<'/api/v1/providers/{providerId}/models/{modelId}', 'patch', T>(
       '/api/v1/providers/{providerId}/models/{modelId}',
       'patch',
       {
         path: { providerId, modelId },
+        query: workspaceQuery(workspaceId),
         headers: { 'If-Match': `"${revision}"` },
         body
       }
@@ -134,7 +180,8 @@ export const providerApi = {
   removeModel: (
     providerId: string,
     modelId: string,
-    replacementModelRecordId: string | null
+    replacementModelRecordId: string | null,
+    workspaceId?: string
   ) =>
     typedApiJson<
       '/api/v1/providers/{providerId}/models/{modelId}',
@@ -142,21 +189,27 @@ export const providerApi = {
       void
     >('/api/v1/providers/{providerId}/models/{modelId}', 'delete', {
       path: { providerId, modelId },
+      query: workspaceQuery(workspaceId),
       body: { replacement_model_record_id: replacementModelRecordId }
     }),
-  refreshModels: <T>(providerId: string) =>
+  refreshModels: <T>(providerId: string, workspaceId?: string) =>
     typedApiJson<'/api/v1/providers/{providerId}/models/refresh', 'post', T>(
       '/api/v1/providers/{providerId}/models/refresh',
       'post',
       {
-        path: { providerId }
+        path: { providerId },
+        query: workspaceQuery(workspaceId)
       }
     ),
-  test: <T>(providerId: string, body: ApiSchema<'ProviderTestRequest'>) =>
+  test: <T>(
+    providerId: string,
+    body: ApiSchema<'ProviderTestRequest'>,
+    workspaceId?: string
+  ) =>
     typedApiJson<'/api/v1/providers/{providerId}/test', 'post', T>(
       '/api/v1/providers/{providerId}/test',
       'post',
-      { path: { providerId }, body }
+      { path: { providerId }, body, query: workspaceQuery(workspaceId) }
     )
 };
 
@@ -285,35 +338,38 @@ export const managerApi = {
 };
 
 export const speechServiceApi = {
-  catalogue: (refresh = false) =>
-    typedApiJson<'/api/v1/services/tts', 'get', TtsCatalogue>(
-      '/api/v1/services/tts',
-      'get',
-      refresh ? { query: new URLSearchParams({ refresh: 'true' }) } : {}
-    ),
-  catalogueAs: <T>(refresh = false) =>
-    typedApiJson<'/api/v1/services/tts', 'get', T>(
-      '/api/v1/services/tts',
-      'get',
-      refresh ? { query: new URLSearchParams({ refresh: 'true' }) } : {}
-    ),
-  discover: (body: ApiSchema<'TtsEndpointDiscoveryRequest'>) =>
+  catalogue: (refresh = false, scope?: SpeechCatalogueScope) =>
+    fetchTtsCatalogue<TtsCatalogue>(refresh, scope),
+  catalogueAs: <T>(refresh = false, scope?: SpeechCatalogueScope) =>
+    fetchTtsCatalogue<T>(refresh, scope),
+  discover: (
+    body: ApiSchema<'TtsEndpointDiscoveryRequest'>,
+    workspaceId?: string
+  ) =>
     typedApiJson<'/api/v1/services/tts/discover', 'post', TtsDiscovery>(
       '/api/v1/services/tts/discover',
       'post',
-      { body }
+      { body, query: speechScopeQuery({ workspaceId }) }
     ),
-  discoverAs: <T>(body: ApiSchema<'TtsEndpointDiscoveryRequest'>) =>
+  discoverAs: <T>(
+    body: ApiSchema<'TtsEndpointDiscoveryRequest'>,
+    workspaceId?: string
+  ) =>
     typedApiJson<'/api/v1/services/tts/discover', 'post', T>(
       '/api/v1/services/tts/discover',
       'post',
-      { body }
+      { body, query: speechScopeQuery({ workspaceId }) }
     ),
-  preview: (serviceId: string, body: ApiSchema<'TtsVoicePreviewRequest'>) =>
+  preview: (
+    serviceId: string,
+    body: ApiSchema<'TtsVoicePreviewRequest'>,
+    workspaceId?: string
+  ) =>
     typedApiJson<
       '/api/v1/services/tts/{serviceId}/preview',
       'post',
       JobRecord & {
+        workspace_id: string;
         preview?: {
           directions: {
             source: 'inherited' | 'custom' | 'cleared';
@@ -323,70 +379,95 @@ export const speechServiceApi = {
       }
     >('/api/v1/services/tts/{serviceId}/preview', 'post', {
       path: { serviceId },
+      query: workspaceQuery(workspaceId),
       body
     })
 };
 
 export const speechRecognitionApi = {
-  catalogue: () => apiJson<SttCatalogue>('/api/v1/services/stt')
+  catalogue: (scope?: SpeechCatalogueScope) =>
+    typedApiJson<'/api/v1/services/stt', 'get', SttCatalogue>(
+      '/api/v1/services/stt',
+      'get',
+      { query: speechScopeQuery(scope) }
+    )
 };
 
 export const voiceApi = {
   designGoogle: (
     body: ApiSchema<'GoogleVoiceDesignCreate'>,
-    idempotencyKey: string
+    idempotencyKey: string,
+    workspaceId?: string
   ) =>
     typedApiJson<
       '/api/v1/voices/design/google',
       'post',
-      JobRecord & { voice_id: string }
+      JobRecord & { voice_id: string; workspace_id: string }
     >('/api/v1/voices/design/google', 'post', {
       headers: { 'Idempotency-Key': idempotencyKey },
+      query: workspaceQuery(workspaceId),
       body
     }),
-  list: <T>() =>
-    typedApiJson<'/api/v1/voices', 'get', ItemPage<T>>('/api/v1/voices', 'get'),
-  create: <T>(body: ApiSchema<'VoiceCreate'>) =>
+  list: <T>(scope?: SpeechCatalogueScope) =>
+    typedApiJson<'/api/v1/voices', 'get', ItemPage<T>>(
+      '/api/v1/voices',
+      'get',
+      {
+        query: speechScopeQuery(scope)
+      }
+    ),
+  create: <T>(body: ApiSchema<'VoiceCreate'>, workspaceId?: string) =>
     typedApiJson<'/api/v1/voices', 'post', T>('/api/v1/voices', 'post', {
-      body
+      body,
+      query: workspaceQuery(workspaceId)
     }),
   update: <T>(
     voiceId: string,
     revision: number,
-    body: ApiSchema<'VoiceUpdate'>
+    body: ApiSchema<'VoiceUpdate'>,
+    workspaceId?: string
   ) =>
     typedApiJson<'/api/v1/voices/{voiceId}', 'patch', T>(
       '/api/v1/voices/{voiceId}',
       'patch',
       {
         path: { voiceId },
+        query: workspaceQuery(workspaceId),
         headers: { 'If-Match': `"${revision}"` },
         body
       }
     ),
-  delete: (voiceId: string, revision: number) =>
+  delete: (voiceId: string, revision: number, workspaceId?: string) =>
     typedApiJson<'/api/v1/voices/{voiceId}', 'delete', void>(
       '/api/v1/voices/{voiceId}',
       'delete',
       {
         path: { voiceId },
+        query: workspaceQuery(workspaceId),
         headers: { 'If-Match': `"${revision}"` }
       }
     ),
-  samples: <T>(voiceId: string) =>
+  samples: <T>(voiceId: string, workspaceId?: string) =>
     typedApiJson<'/api/v1/voices/{voiceId}/samples', 'get', ItemPage<T>>(
       '/api/v1/voices/{voiceId}/samples',
       'get',
       {
-        path: { voiceId }
+        path: { voiceId },
+        query: workspaceQuery(workspaceId)
       }
     ),
-  uploadSample: (voiceId: string, revision: number, body: FormData) =>
+  uploadSample: (
+    voiceId: string,
+    revision: number,
+    body: FormData,
+    workspaceId?: string
+  ) =>
     typedApiJson<'/api/v1/voices/{voiceId}/samples', 'post', JobRecord>(
       '/api/v1/voices/{voiceId}/samples',
       'post',
       {
         path: { voiceId },
+        query: workspaceQuery(workspaceId),
         headers: { 'If-Match': `"${revision}"` },
         body
       }
@@ -394,7 +475,8 @@ export const voiceApi = {
   promoteDesignPreview: (
     voiceId: string,
     revision: number,
-    body: ApiSchema<'VoiceDesignedSampleCreate'>
+    body: ApiSchema<'VoiceDesignedSampleCreate'>,
+    workspaceId?: string
   ) =>
     typedApiJson<
       '/api/v1/voices/{voiceId}/samples/from-preview',
@@ -402,6 +484,7 @@ export const voiceApi = {
       JobRecord
     >('/api/v1/voices/{voiceId}/samples/from-preview', 'post', {
       path: { voiceId },
+      query: workspaceQuery(workspaceId),
       headers: { 'If-Match': `"${revision}"` },
       body
     }),
@@ -409,7 +492,8 @@ export const voiceApi = {
     voiceId: string,
     sampleId: string,
     revision: number,
-    body: FormData
+    body: FormData,
+    workspaceId?: string
   ) =>
     typedApiJson<
       '/api/v1/voices/{voiceId}/samples/{sampleId}/replace',
@@ -417,22 +501,30 @@ export const voiceApi = {
       JobRecord
     >('/api/v1/voices/{voiceId}/samples/{sampleId}/replace', 'post', {
       path: { voiceId, sampleId },
+      query: workspaceQuery(workspaceId),
       headers: { 'If-Match': `"${revision}"` },
       body
     }),
-  deleteSample: (voiceId: string, sampleId: string, revision: number) =>
+  deleteSample: (
+    voiceId: string,
+    sampleId: string,
+    revision: number,
+    workspaceId?: string
+  ) =>
     typedApiJson<
       '/api/v1/voices/{voiceId}/samples/{sampleId}',
       'delete',
       { id: string; status: string; voice_revision: number }
     >('/api/v1/voices/{voiceId}/samples/{sampleId}', 'delete', {
       path: { voiceId, sampleId },
+      query: workspaceQuery(workspaceId),
       headers: { 'If-Match': `"${revision}"` }
     }),
   transcribeSample: (
     voiceId: string,
     sampleId: string,
-    settings: Record<string, unknown>
+    settings: Record<string, unknown>,
+    workspaceId?: string
   ) =>
     typedApiJson<
       '/api/v1/voices/{voiceId}/samples/{sampleId}/transcribe',
@@ -440,12 +532,14 @@ export const voiceApi = {
       JobRecord
     >('/api/v1/voices/{voiceId}/samples/{sampleId}/transcribe', 'post', {
       path: { voiceId, sampleId },
+      query: workspaceQuery(workspaceId),
       body: settings
     }),
   reviewTranscript: <T>(
     voiceId: string,
     sampleId: string,
-    body: ApiSchema<'VoiceTranscriptReview'>
+    body: ApiSchema<'VoiceTranscriptReview'>,
+    workspaceId?: string
   ) =>
     typedApiJson<
       '/api/v1/voices/{voiceId}/samples/{sampleId}/transcript',
@@ -453,24 +547,37 @@ export const voiceApi = {
       T
     >('/api/v1/voices/{voiceId}/samples/{sampleId}/transcript', 'patch', {
       path: { voiceId, sampleId },
+      query: workspaceQuery(workspaceId),
       body
     }),
-  publish: (voiceId: string, serviceId: string, revision: number) =>
+  publish: (
+    voiceId: string,
+    serviceId: string,
+    revision: number,
+    workspaceId?: string
+  ) =>
     typedApiJson<
       '/api/v1/voices/{voiceId}/providers/{serviceId}',
       'post',
       JobRecord
     >('/api/v1/voices/{voiceId}/providers/{serviceId}', 'post', {
       path: { voiceId, serviceId },
+      query: workspaceQuery(workspaceId),
       headers: { 'If-Match': `"${revision}"` }
     }),
-  unpublish: (voiceId: string, serviceId: string, revision: number) =>
+  unpublish: (
+    voiceId: string,
+    serviceId: string,
+    revision: number,
+    workspaceId?: string
+  ) =>
     typedApiJson<
       '/api/v1/voices/{voiceId}/providers/{serviceId}',
       'delete',
       JobRecord
     >('/api/v1/voices/{voiceId}/providers/{serviceId}', 'delete', {
       path: { voiceId, serviceId },
+      query: workspaceQuery(workspaceId),
       headers: { 'If-Match': `"${revision}"` }
     })
 };

@@ -1,9 +1,15 @@
 # Remote and headless Pandrator
 
+For optional project links, effective hosting status and server-side protection
+examples, see [public hosting protection](public-hosting-protection.md) and
+[project links and translation review](../guides/project-links.md).
+
 Pandrator and Manager bind to loopback by default. A headless workstation,
-home server, LAN/VPN host, external HTTPS server, or GPU pod is possible, but
-it remains a single-owner deployment. Pandrator is not designed as a public
-multi-user service.
+home server, LAN/VPN host, external HTTPS server, or GPU pod can run in Solo or
+explicitly enabled small-team collaboration mode. Network hosting and account/
+workspace access are configured separately. Pandrator does not provide public
+self-registration or untrusted multi-tenant hosting. Follow the
+[collaboration guide](../guides/collaboration.md) for named accounts and team work.
 
 ## Supported topologies
 
@@ -21,7 +27,11 @@ re-enrollment.
 
 ## Prepare a managed headless installation
 
-The native launcher can configure the exact workstation-facing origins:
+Install Manager first using the [installation guide](../getting-started/installation.md).
+Run setup as the account that will own the installation, using a writable parent
+directory. The example below uses the Python package's launcher command; with
+the Linux AppImage, replace `pandrator-manager-launcher` with its executable path.
+Set separate application and recovery origins:
 
 ```bash
 pandrator-manager-launcher setup \
@@ -37,8 +47,9 @@ container or network namespace, `--network-bind-host 0.0.0.0` may be necessary;
 restrict that listener with firewall or platform network policy. Do not expose
 it broadly merely because the application also has authentication.
 
-The recovery URL is a bootstrap path, not a permanent bearer to paste into a
-script. Keep the Manager's permanent local client endpoint private.
+The recovery origin serves the bounded remote enrollment/recovery interface.
+Keep its credentials in the approved credential store and the Manager's permanent
+local client endpoint private.
 
 ## HTTPS, proxies, and host identity
 

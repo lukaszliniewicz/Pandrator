@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
+from .access.contracts import ProjectAction
+from .access.purge_policy import require_purge_policy_administration
 from .domain_blueprints import DomainBlueprints
+from .http_session_access import require_session_action
 from .route_context import RouteContext
 from .session_purge import PurgeBlocked, SessionPurgeService
 from .sessions import RevisionConflict
@@ -27,6 +30,7 @@ def register_session_purge_routes(app: DomainBlueprints, context: RouteContext) 
 
     @app.post("/api/v1/sessions/<session_id>/purge")
     @require_scope("app.write")
+    @require_session_action(context, ProjectAction.PURGE)
     def session_purge(session_id: str):
         body = request.get_json(silent=True)
         if not isinstance(body, dict) or set(body) != {"expected_revision", "impact_token"}:
@@ -53,8 +57,10 @@ def register_session_purge_routes(app: DomainBlueprints, context: RouteContext) 
         return jsonify(service.policy())
 
     @app.patch("/api/v1/session-trash-policy")
-    @require_scope("app.write")
+    @require_scope("app.admin")
     def session_trash_policy_patch():
+        with context.services.database.snapshot_session() as session:
+            require_purge_policy_administration(session)
         body = request.get_json(silent=True)
         if not isinstance(body, dict) or set(body) != {"expected_revision", "days"}:
             return error_response("invalid_request", "expected_revision and days are required.", 400)

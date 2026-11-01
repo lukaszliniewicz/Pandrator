@@ -382,7 +382,8 @@ def list_sources(
     arguments: ListSourcesInput,
 ) -> dict[str, Any]:
     payload = runtime.require_application().list_sources(
-        include_trashed=arguments.state == "trashed"
+        include_trashed=arguments.state == "trashed",
+        **({"workspace_id": arguments.workspace_id} if arguments.workspace_id else {}),
     )
     source = payload.get("items")
     source = source if isinstance(source, list) else []
@@ -404,6 +405,7 @@ def list_sources(
         items.append(
             {
                 "source_asset_id": item.get("id"),
+                **({"workspace_id": item["workspace_id"]} if item.get("workspace_id") else {}),
                 "artifact_id": item.get("artifact_id"),
                 "display_name": item.get("display_name"),
                 "kind": item.get("kind"),
@@ -437,6 +439,7 @@ def create_session(
         included_stages=arguments.included_stages,
         multilingual_setup=arguments.multilingual_setup,
         idempotency_key=arguments.idempotency_key,
+        **({"workspace_id": arguments.workspace_id} if arguments.workspace_id is not None else {}),
     )
     session = {
         "schema_version": "1",
@@ -449,7 +452,10 @@ def create_session(
                 tool=("pandrator_get_translation_project" if arguments.multilingual_setup else "pandrator_list_sources"),
                 arguments=(
                     {"session_id": result["id"]}
-                    if arguments.multilingual_setup else {"state": "current", "limit": 50}
+                    if arguments.multilingual_setup else {
+                        "state": "current", "limit": 50,
+                        **({"workspace_id": result["workspace_id"]} if result.get("workspace_id") else {}),
+                    }
                 ),
                 reason=(
                     "Inspect deferred language setup and correction readiness."

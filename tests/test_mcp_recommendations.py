@@ -1,6 +1,8 @@
 import unittest
 from types import SimpleNamespace
+from typing import cast
 
+from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.schemas import RecommendNextStepsInput
 from pandrator_mcp.tools.recommendations import recommend_next_steps
 
@@ -26,9 +28,9 @@ class _Application:
 
 
 class RecommendMediaEditTests(unittest.TestCase):
-    def _recommend(self, plan, goal="Trim video setup chatter"):
+    def _recommend(self, plan, goal: str | None = "Trim video setup chatter"):
         application = _Application(plan)
-        runtime = SimpleNamespace(require_application=lambda: application)
+        runtime = cast(McpRuntime, SimpleNamespace(require_application=lambda: application))
         return recommend_next_steps(
             runtime,
             RecommendNextStepsInput(
@@ -71,7 +73,7 @@ class RecommendMediaEditTests(unittest.TestCase):
         self.assertNotIn("pandrator_plan_workflow", tools)
 
     def test_sessionless_media_edit_goal_routes_to_workflow_guide(self):
-        runtime = SimpleNamespace(require_application=lambda: None)
+        runtime = cast(McpRuntime, SimpleNamespace(require_application=lambda: None))
         result = recommend_next_steps(
             runtime,
             RecommendNextStepsInput(goal="Cut video using the Zoom captions"),
@@ -86,3 +88,14 @@ class RecommendMediaEditTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_team_onboarding_recommends_packaged_collaboration_guide_without_transport():
+    for goal in ('Create a shared workspace', 'Invite a user', 'Enable collaboration'):
+        result = recommend_next_steps(
+            cast(McpRuntime, SimpleNamespace(application=None)), RecommendNextStepsInput(goal=goal),
+        )
+        assert result['basis'] == 'static_guidance'
+        assert result['steps'][0]['tool'] == 'pandrator_explain_system'
+        assert result['steps'][0]['arguments'] == {'topic': 'collaboration', 'detail': 'full'}
+        assert result['steps'][1]['tool'] == 'pandrator_get_target_status'

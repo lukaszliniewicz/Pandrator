@@ -22,18 +22,23 @@ from ..network_policy import TargetMode, normalize_origin
 from ..request_context import correlation_headers
 from ..targets import ResolvedTarget, TargetBinding
 from ..transport import PinnedAddressAdapter
+from .application_accounts import ApplicationAccountMethods
 from .application_dispatch import ApplicationDispatchMethods
 from .application_editor import ApplicationEditorMethods
 from .application_generation import ApplicationGenerationMethods
 from .application_generation_operations import ApplicationGenerationOperationMethods
 from .application_media_edit import ApplicationMediaEditMethods
+from .application_project_copy import ApplicationProjectCopyMethods
+from .application_project_sharing import ApplicationProjectSharingMethods
 from .application_projects import ApplicationProjectMethods
 from .application_pronunciations import ApplicationPronunciationMethods
+from .application_public_links import ApplicationPublicLinkMethods
 from .application_sessions import ApplicationSessionMethods
 from .application_sounds import ApplicationSoundMethods
 from .application_sources import ApplicationSourceMethods
 from .application_voices import ApplicationVoiceMethods
 from .application_work_manager import ApplicationWorkManagerMethods
+from .application_workspaces import ApplicationWorkspaceMethods
 
 LocalBootstrap = Callable[
     [ResolvedTarget, requests.Session],
@@ -54,6 +59,30 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "finalization_incomplete",
         "ineligible_source",
         "structured_speech_source_required",
+        "account_not_found",
+        "stale_account",
+        "login_name_taken",
+        "last_administrator",
+        "initial_administrator_required",
+        "workspace_revision_conflict",
+        "personal_workspace_protected",
+        "last_workspace_manager",
+        "user_not_available",
+        "invitation_not_found",
+        "invitation_unavailable",
+        "collaboration_disabled",
+        "collaboration_not_available",
+        "administrator_password_required",
+        "installation_revision_conflict",
+        "installation_policy_invalid",
+        "invalid_workspace_name",
+        "invalid_workspace_role",
+        "account_disabled",
+        "invalid_login_name",
+        "invalid_display_name",
+        "invalid_role",
+        "invalid_account_state",
+        "model_acquisition_required",
         "ineligible_session",
         "invalid_kind",
         "invalid_model_response",
@@ -81,6 +110,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "precondition_required",
         "preparation_conflict",
         "revision_conflict",
+        "evidence_revision_conflict",
         "response_too_large",
         "result_kind_mismatch",
         "result_phase_mismatch",
@@ -142,7 +172,12 @@ class ApplicationClient(
     ApplicationGenerationMethods,
     ApplicationGenerationOperationMethods,
     ApplicationProjectMethods,
+    ApplicationProjectCopyMethods,
+    ApplicationProjectSharingMethods,
+    ApplicationPublicLinkMethods,
     ApplicationPronunciationMethods,
+    ApplicationAccountMethods,
+    ApplicationWorkspaceMethods,
     ApplicationMediaEditMethods,
     ApplicationWorkManagerMethods,
 ):
@@ -518,6 +553,7 @@ class ApplicationClient(
         body: bytes,
         content_type: str,
         extra_headers: dict[str, str] | None = None,
+        parameters: dict[str, str] | None = None,
         _allow_local_retry: bool = True,
     ) -> dict[str, Any]:
         """Send one bounded binary body through the normal target boundary."""
@@ -576,16 +612,18 @@ class ApplicationClient(
                     csrf_token = self._local_csrf_tokens.get(target.application.origin)
                     if target.application_credential is None and csrf_token:
                         headers["X-CSRF-Token"] = csrf_token
-                    response = self.session.put(
-                        url,
-                        data=body,
-                        headers=headers,
-                        timeout=_DEFAULT_REQUEST_TIMEOUT_LIMIT_SECONDS,
-                        allow_redirects=False,
-                        stream=True,
-                        verify=verify,
-                        proxies=proxies,
-                    )
+                    request_arguments: dict[str, Any] = {
+                        "data": body,
+                        "headers": headers,
+                        "timeout": _DEFAULT_REQUEST_TIMEOUT_LIMIT_SECONDS,
+                        "allow_redirects": False,
+                        "stream": True,
+                        "verify": verify,
+                        "proxies": proxies,
+                    }
+                    if parameters is not None:
+                        request_arguments["params"] = parameters
+                    response = self.session.put(url, **request_arguments)
                     if 300 <= response.status_code < 400:
                         response.close()
                         raise PandratorMcpError(
@@ -642,6 +680,7 @@ class ApplicationClient(
                 body=body,
                 content_type=content_type,
                 extra_headers=extra_headers,
+                parameters=parameters,
                 _allow_local_retry=False,
             )
         if status_code == 401:

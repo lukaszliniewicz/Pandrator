@@ -5,12 +5,19 @@ import json
 import logging
 from collections.abc import Callable, Iterator
 from threading import Event
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 import requests
 from pydub import AudioSegment
 
 from .kobold_qwen_contracts import KoboldQwenBatchAudioEvent, KoboldQwenBatchCapabilities
+from .model_acquisition import (
+    model_inference_uses_prepared_endpoint,
+    require_model_acquisition,
+    require_prepared_model_inference,
+)
+from .native_speech_http import require_prepared_model_response
+from .tts_io_policy import check_tts_io, current_tts_io_policy
 from .tts_openai_http_policy import (
     _normalize_base_url,
     _openai_audio_speech_batch_urls,
@@ -32,6 +39,10 @@ from .tts_service_catalogue import (
 KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS = 1800
 
 
+class _RedirectOptions(TypedDict, total=False):
+    allow_redirects: bool
+
+
 class AudioDecoder(Protocol):
     def __call__(self, audio: bytes, *, format_hint: str) -> AudioSegment: ...
 
@@ -43,10 +54,15 @@ def _kobold_qwen_is_ready(
     normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
     headers = _openai_auth_headers(api_key or resolve_api_key())
     try:
+        redirect_options: _RedirectOptions = (
+            {"allow_redirects": False} if current_tts_io_policy() is not None else {}
+        )
+        check_tts_io()
         response = requests.get(
             f"{normalized_base_url}/readyz",
             headers=headers,
             timeout=request_timeout(2),
+            **redirect_options,
         )
         if response.status_code < 400:
             return True
@@ -57,10 +73,15 @@ def _kobold_qwen_is_ready(
 
     # Compatibility with wrapper versions predating /readyz.
     try:
+        redirect_options = (
+            {"allow_redirects": False} if current_tts_io_policy() is not None else {}
+        )
+        check_tts_io()
         response = requests.get(
             f"{normalized_base_url}/health",
             headers=headers,
             timeout=request_timeout(2),
+            **redirect_options,
         )
         if response.status_code >= 400:
             return False
@@ -85,16 +106,30 @@ def _request_kobold_qwen_audio(
     )
     api_key = resolve_api_key(tts_settings)
     payload = build_payload(text, tts_settings)
+    prepared_only = model_inference_uses_prepared_endpoint()
 
     last_response = None
     for speech_url in _openai_audio_speech_urls(normalized_base_url):
+        if prepared_only:
+            require_prepared_model_inference()
+            speech_url = f"{speech_url}/prepared"
+        else:
+            require_model_acquisition()
+        redirect_options: _RedirectOptions = (
+            {"allow_redirects": False}
+            if prepared_only or current_tts_io_policy() is not None else {}
+        )
+        check_tts_io()
         response = requests.post(
             speech_url,
             headers=_openai_auth_headers(api_key),
             json=payload,
             timeout=request_timeout(KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS),
+            **redirect_options,
         )
 
+        if prepared_only:
+            require_prepared_model_response(response)
         if _should_try_next_openai_candidate(response.status_code):
             last_response = response
             continue
@@ -124,7 +159,13 @@ def get_kobold_qwen_batch_capabilities(
     }
     for url in _openai_capabilities_urls(normalized_base_url):
         try:
-            response = requests.get(url, headers=headers, timeout=2)
+            redirect_options: _RedirectOptions = (
+                {"allow_redirects": False} if current_tts_io_policy() is not None else {}
+            )
+            check_tts_io()
+            response = requests.get(
+                url, headers=headers, timeout=2, **redirect_options,
+            )
         except requests.RequestException:
             continue
         if _should_try_next_openai_candidate(response.status_code):
@@ -203,21 +244,35 @@ def _iter_kobold_qwen_batch_audio_http(
         "stream": True,
         "fail_fast": False,
     }
+    prepared_only = model_inference_uses_prepared_endpoint()
     last_response = None
     for batch_url in _openai_audio_speech_batch_urls(normalized_base_url):
         if stop_event is not None and stop_event.is_set():
             return
+        if prepared_only:
+            require_prepared_model_inference()
+            batch_url = f"{batch_url}/prepared"
+        else:
+            require_model_acquisition()
+        redirect_options: _RedirectOptions = (
+            {"allow_redirects": False}
+            if prepared_only or current_tts_io_policy() is not None else {}
+        )
+        check_tts_io()
         response = requests.post(
             batch_url,
             headers=_openai_auth_headers(resolved_api_key),
             json=request_payload,
             stream=True,
             timeout=(10, KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS),
+            **redirect_options,
         )
         with response:
             try:
                 if response_callback is not None:
                     response_callback(response)
+                if prepared_only:
+                    require_prepared_model_response(response)
                 if _should_try_next_openai_candidate(response.status_code):
                     last_response = response
                     continue
@@ -306,10 +361,15 @@ def check_kobold_qwen_connection(
 
     for probe_url in dedupe_ordered(probe_urls):
         try:
+            redirect_options: _RedirectOptions = (
+                {"allow_redirects": False} if current_tts_io_policy() is not None else {}
+            )
+            check_tts_io()
             response = requests.get(
                 probe_url,
                 headers=_openai_auth_headers(api_key),
                 timeout=4,
+                **redirect_options,
             )
             if _should_try_next_openai_candidate(response.status_code):
                 continue
@@ -336,10 +396,15 @@ def get_kobold_qwen_models(
     discovered_models: list[str] = []
     for models_url in _openai_models_urls(normalized_base_url):
         try:
+            redirect_options: _RedirectOptions = (
+                {"allow_redirects": False} if current_tts_io_policy() is not None else {}
+            )
+            check_tts_io()
             response = requests.get(
                 models_url,
                 headers=_openai_auth_headers(api_key),
                 timeout=8,
+                **redirect_options,
             )
             if _should_try_next_openai_candidate(response.status_code):
                 continue
@@ -377,10 +442,15 @@ def get_kobold_qwen_voice_catalog(
 
     for voices_url in voice_urls:
         try:
+            redirect_options: _RedirectOptions = (
+                {"allow_redirects": False} if current_tts_io_policy() is not None else {}
+            )
+            check_tts_io()
             response = requests.get(
                 voices_url,
                 headers=_openai_auth_headers(api_key),
                 timeout=8,
+                **redirect_options,
             )
             if _should_try_next_openai_candidate(response.status_code):
                 continue

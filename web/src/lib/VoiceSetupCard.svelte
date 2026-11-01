@@ -208,11 +208,11 @@
         </p>
       </details>
       <p class="muted my-4 text-sm">
-        Identify speakers on whole segments or selected words in
+        Label speakers and dialogue in
         <a
           class="underline"
-          href={`/sessions/${encodeURIComponent(sessionId)}/generation?mode=editing`}
-          >Editing</a
+          href={`/sessions/${encodeURIComponent(sessionId)}/speech`}
+          >Speakers &amp; delivery</a
         >. Their cast voices are shared across this project. Speaker analysis
         can also propose the roster below.
       </p>

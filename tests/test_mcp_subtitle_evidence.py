@@ -4,20 +4,23 @@ import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import get_args
+from typing import cast, get_args
 from unittest.mock import patch
 
 from pydantic import ValidationError
 
 from pandrator.web.schemas import SubtitleEvidenceCreateRequest
 from pandrator.web.subtitle_evidence import EVIDENCE_ROUTES, evidence_stt_routes
+from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.schemas.subtitle_evidence import (
     GetSubtitleEvidenceInput,
+    GetSubtitleEvidenceRoutesInput,
     RequestSubtitleEvidenceInput,
     ResolveSubtitleEvidenceInput,
 )
 from pandrator_mcp.tools.subtitle_evidence import (
     get_subtitle_evidence,
+    get_subtitle_evidence_routes,
     request_subtitle_evidence,
     resolve_subtitle_evidence,
 )
@@ -52,6 +55,7 @@ class _Application:
         return {
             "record": {
                 "id": evidence_id,
+                "revision": "a" * 64,
                 "status": self.status,
                 "candidates": self.candidates,
                 "private_path": "/must/not/leak.json",
@@ -81,6 +85,10 @@ class _Application:
             "job": {"id": "job-1", "status": "succeeded"},
         }
 
+    def get_subtitle_evidence_routes(self, **kwargs):
+        self.calls.append(("routes", kwargs))
+        return {"audio_models": [{"id": "team-audio-model"}], "routes": []}
+
 
 class SubtitleEvidenceMcpTests(unittest.TestCase):
     def test_api_mcp_and_service_route_enums_match_all_seven_routes(self):
@@ -98,22 +106,15 @@ class SubtitleEvidenceMcpTests(unittest.TestCase):
         self.assertEqual(expected, set(EVIDENCE_ROUTES))
 
         routes = evidence_stt_routes() + ["audio_llm"]
-        web_request = SubtitleEvidenceCreateRequest(
-            source_artifact_id="artifact-1",
-            cue_id=1,
-            reason="Check every supported route.",
-            routes=routes,
-            audio_model_ids=["audio-model"],
-        )
-        mcp_request = RequestSubtitleEvidenceInput(
-            session_id="session-1",
-            source_artifact_id="artifact-1",
-            cue_id=1,
-            reason="Check every supported route.",
-            routes=routes,
-            audio_model_ids=["audio-model"],
-            idempotency_key="evidence:all-routes",
-        )
+        values = {
+            "source_artifact_id": "artifact-1", "cue_id": 1,
+            "reason": "Check every supported route.", "routes": routes,
+            "audio_model_ids": ["audio-model"],
+        }
+        web_request = SubtitleEvidenceCreateRequest.model_validate(values)
+        mcp_request = RequestSubtitleEvidenceInput.model_validate({
+            "session_id": "session-1", "idempotency_key": "evidence:all-routes", **values,
+        })
         self.assertEqual(expected, set(web_request.routes))
         self.assertEqual(expected, set(mcp_request.routes))
 
@@ -145,6 +146,10 @@ class SubtitleEvidenceMcpTests(unittest.TestCase):
             set(route_schema["items"]["enum"]),
         )
         self.assertEqual(7, route_schema["maxItems"])
+        resolve_tool = next(item for item in registered if item.name == "pandrator_resolve_subtitle_evidence")
+        self.assertIn("expected_revision", resolve_tool.input_schema["properties"])
+        route_tool = next(item for item in registered if item.name == "pandrator_get_subtitle_evidence_routes")
+        self.assertIn("session_id", route_tool.input_schema["properties"])
 
     def test_failed_job_does_not_keep_polling_a_queued_record(self):
         with patch.object(self.application, "get_subtitle_evidence", return_value={
@@ -160,7 +165,7 @@ class SubtitleEvidenceMcpTests(unittest.TestCase):
 
     def setUp(self):
         self.application = _Application()
-        self.runtime = SimpleNamespace(require_application=lambda: self.application)
+        self.runtime = cast(McpRuntime, SimpleNamespace(require_application=lambda: self.application))
 
     def test_inputs_are_strict_and_resolution_shapes_are_action_specific(self):
         with self.assertRaises(ValidationError):
@@ -196,7 +201,7 @@ class SubtitleEvidenceMcpTests(unittest.TestCase):
                 idempotency_key="resolve:three",
             )
         with self.assertRaises(ValidationError):
-            GetSubtitleEvidenceInput(evidence_id="evidence-1", extra="rejected")
+            GetSubtitleEvidenceInput.model_validate({"evidence_id": "evidence-1", "extra": "rejected"})
 
     def test_request_projects_the_record_envelope_and_points_to_polling(self):
         outcome = request_subtitle_evidence(
@@ -233,6 +238,7 @@ class SubtitleEvidenceMcpTests(unittest.TestCase):
             self.runtime, GetSubtitleEvidenceInput(evidence_id="evidence-1")
         )
         self.assertEqual([], completed.next_actions)
+        self.assertEqual("a" * 64, completed.result["revision"])
 
         resolved = resolve_subtitle_evidence(
             self.runtime,
@@ -242,6 +248,7 @@ class SubtitleEvidenceMcpTests(unittest.TestCase):
                 action="accepted",
                 candidate_id="whisper-1",
                 note="Matches the surrounding sentence.",
+                expected_revision=completed.result["revision"],
                 idempotency_key="evidence:resolve:one",
             ),
         )
@@ -249,6 +256,22 @@ class SubtitleEvidenceMcpTests(unittest.TestCase):
         call = self.application.calls[-1][1]
         self.assertEqual("accepted", call["action"])
         self.assertEqual("whisper-1", call["candidate_id"])
+        self.assertEqual("a" * 64, call["expected_revision"])
+
+    def test_routes_forward_the_project_scope_and_revisions_are_strict(self):
+        result = get_subtitle_evidence_routes(
+            self.runtime,
+            GetSubtitleEvidenceRoutesInput(session_id="team-source", language="de"),
+        )
+        self.assertEqual("team-audio-model", result["audio_models"][0]["id"])
+        self.assertEqual({"session_id": "team-source", "language": "de", "include_languages": False}, self.application.calls[-1][1])
+        for revision in (True, 1, "a" * 63, "A" * 64):
+            with self.subTest(revision=revision), self.assertRaises(ValidationError):
+                ResolveSubtitleEvidenceInput.model_validate({
+                    "session_id": "session-1", "evidence_id": "evidence-1",
+                    "action": "dismissed", "idempotency_key": "evidence:strict-revision",
+                    "expected_revision": revision,
+                })
 
     def test_summary_projects_candidates_across_request_get_and_resolve(self):
         candidate = {
@@ -437,7 +460,7 @@ class SubtitleEvidenceMcpTests(unittest.TestCase):
         self.assertEqual([candidate], outcome.result["candidates"])
         self.assertEqual("summary", GetSubtitleEvidenceInput(evidence_id="evidence-1").detail)
         with self.assertRaises(ValidationError):
-            GetSubtitleEvidenceInput(evidence_id="evidence-1", detail="invalid")
+            GetSubtitleEvidenceInput.model_validate({"evidence_id": "evidence-1", "detail": "invalid"})
 
 
 if __name__ == "__main__":

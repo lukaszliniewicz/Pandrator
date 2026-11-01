@@ -7,9 +7,31 @@ prosody reference.
 
 ## Workflow and interface
 
-In the review workflow, select the intended **Speech plan**, then expand
-**Speech direction**. This is available for narration/audiobooks
-as well as timed voiceovers.
+Select the intended **Speech plan** in the project overview. Its expandable
+**Narration settings** section groups block length, sentence packing and dialogue
+flow. The whole-sentence threshold controls Pandrator's packing of detected
+sentences; it is separate from wtpsplit sentence detection. Short-dialogue
+recognition defaults to on for new projects, uses punctuation/language rules
+without an LLM, and preserves explicit Off overrides.
+
+Open **Annotate & review**, or the **Speakers & delivery** project section, for
+the annotation workspace. It is available for audiobooks and timed voiceovers.
+The block navigator sits beside the editing view on wider screens. Select words
+in the accepted spoken text, choose a character, unnamed dialogue or narrator,
+and use **Mark selected text**. Select a complete marked turn to reassign it.
+**Direct selected words** adds a phrase direction; whole-block controls remain
+separate. The annotation preview highlights marked text. **Undo selection change**
+undoes recent unsaved selection actions until another block control is edited;
+**Discard block changes** restores the
+loaded block. Neither is a history of already saved edits. Change spoken wording
+in Generation rather than in the annotation workspace.
+
+**Generation defaults**, **Speakers & cast voices**, and **AI & passive analysis**
+are expandable sections. Analysis starts the configured LLM (or the model
+specified in the form); preparing passive analysis creates work for a connected
+MCP client without starting a model in Pandrator. A manual draft needs neither.
+All three routes produce drafts for the same review and adoption workflow.
+Active project work allows reading annotations but blocks editing and adoption.
 
 General speech direction is independent of the optional analysis pass. For
 Gemini, choose preceding text or preceding-and-following text to include a
@@ -25,8 +47,8 @@ LLM analysis can incur that provider's costs; passive MCP analysis uses the host
 model instead. Normal generation defaults remain unchanged until enabled.
 
 Review the draft, choose a block, edit its direction, and preview the compiled
-request without making an audio request. Advanced JSON supports phrase controls
-and vocal events. A manual lock protects an annotation from reanalysis; changing
+request without making an audio request. XML supports nested phrase controls and vocal events; legacy drafts retain
+their JSON editor. A manual lock protects an annotation from reanalysis; changing
 a locked annotation requires an explicit unlock. Adopt the saved draft when
 ready. Unanalysed blocks can only be accepted unchanged explicitly. Adoption can
 enable the plan for future generation but never overwrites an old take.
@@ -93,6 +115,7 @@ The initial compiler supports:
 | Route | Directions | Phrase controls / context |
 | --- | --- | --- |
 | Fish S2 through audio.cpp or native Fish S2 | Inline free-form tags | Whole-segment cues recommended; phrase cues best effort, can be ignored or extend past the marked text |
+| Drama 3 through audio.cpp | Inline free-form directions and Drama-specific vocal events | Paired phrase tags; cast voices render as separate parts; no native multi-speaker, previous-take or infill workflow |
 | Qwen 1.7B CustomVoice through audio.cpp | Separate instruction | Phrase intent described in the whole-request instruction |
 | Qwen 1.7B VoiceDesign through audio.cpp | Separate instruction | Stable voice description remains required |
 | Kobold Qwen's instruction-capable prebuilt path | Separate instruction | Not applied to its cloning path |

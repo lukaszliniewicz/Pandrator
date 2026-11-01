@@ -8,7 +8,16 @@ from typing import Literal
 from flask import jsonify, request
 from pydantic import BaseModel, ConfigDict, Field
 
+from .access.contracts import AccessDenied, ProjectAction
+from .access.current_session_policy import require_current_session_access
+from .access.source_management_policy import (
+    require_source_change_access,
+    require_source_session_creation_access,
+)
+from .domain_blueprints import DomainBlueprints
+from .http_session_access import require_session_action
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
+from .route_context import RouteContext
 from .settings_policy import RevisionConflict
 from .source_management import (
     change_source_in_session,
@@ -43,18 +52,14 @@ class SourceChangeRequest(SourceChangePreviewRequest):
 class SpeechPlanPrepareRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=1)
-    expected_plan_revision_id: str | None = Field(
-        default=None, min_length=1, max_length=80
-    )
+    expected_plan_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
     source_artifact_id: str = Field(min_length=1, max_length=80)
 
 
 class SpeechPlanSelectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     revision_id: str = Field(min_length=1, max_length=80)
-    expected_plan_revision_id: str | None = Field(
-        default=None, min_length=1, max_length=80
-    )
+    expected_plan_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class SpeechPlanReviewRequest(BaseModel):
@@ -123,7 +128,7 @@ def session_flow_paths():
             "security": [
                 {"cookieAuth": []},
                 {"bearerToken": []},
-                {"nativeOAuth": ["app.write" if write else "app.read"]},
+                {"nativeOAuth": ["app.write" if method == "post" else "app.read"]},
             ],
             "responses": {
                 "200": {
@@ -135,9 +140,7 @@ def session_flow_paths():
                     },
                 },
                 "404": {"description": "Session or revision not found"},
-                "409": {
-                    "description": "Changed revision, active work, or idempotency conflict"
-                },
+                "409": {"description": "Changed revision, active work, or idempotency conflict"},
                 "422": {"description": "Invalid action"},
             },
         }
@@ -163,21 +166,22 @@ def session_flow_paths():
     return paths
 
 
-def register_session_flow_routes(
-    app, services, require_auth, error_response, principal
-):
+def register_session_flow_routes(app: DomainBlueprints, context: RouteContext) -> None:
+    services = context.services
+    require_auth = context.guards.require_auth
+    error_response = context.guards.error_response
+    principal = context.guards.principal
+
     def failure(error):
         if isinstance(error, KeyError):
             return error_response(
                 "not_found", "Session, source or speech-plan revision not found.", 404
             )
-        if isinstance(
-            error, (RevisionConflict, IdempotencyConflict, IdempotencyInProgress)
-        ):
+        if isinstance(error, (RevisionConflict, IdempotencyConflict, IdempotencyInProgress)):
             return error_response("revision_conflict", str(error), 409)
         return error_response("validation_error", str(error), 422)
 
-    def mutate(session_id, operation_id, payload, action):
+    def mutate(session_id, operation_id, payload, action, *, extra_action=None):
         key = request.headers.get("Idempotency-Key", "")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,199}", key):
             return error_response(
@@ -186,10 +190,23 @@ def register_session_flow_routes(
                 400,
             )
         try:
+            authenticated_principal = principal()
+            if authenticated_principal is None:
+                raise AccessDenied()
             with services.database.immediate_session() as session:
+                if operation_id in {"changeSessionSource", "startNewSourceSession"}:
+                    require_source_change_access(
+                        session, session_id, source_asset_id=payload.get("new_source_asset_id")
+                    )
+                else:
+                    require_current_session_access(session, session_id, ProjectAction.EDIT)
+                if operation_id == "startNewSourceSession":
+                    require_source_session_creation_access(session, session_id)
+                if extra_action is not None:
+                    require_current_session_access(session, session_id, extra_action)
                 reservation = services.idempotency.begin(
                     session,
-                    principal=principal(),
+                    principal=authenticated_principal,
                     operation_id=operation_id,
                     idempotency_key=key,
                     payload={"session_id": session_id, **payload},
@@ -230,20 +247,18 @@ def register_session_flow_routes(
 
     @app.post("/api/v1/sessions/<session_id>/sources/change-preview")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def session_source_change_preview(session_id):
-        payload = SourceChangePreviewRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
+        payload = SourceChangePreviewRequest.model_validate(request.get_json(silent=True) or {})
         try:
             with services.database.session() as session:
-                return jsonify(
-                    preview_source_change(session, session_id, **payload.model_dump())
-                )
+                return jsonify(preview_source_change(session, session_id, **payload.model_dump()))
         except (KeyError, ValueError) as error:
             return failure(error)
 
     @app.post("/api/v1/sessions/<session_id>/sources/change")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def session_source_change(session_id):
         payload = SourceChangeRequest.model_validate(
             request.get_json(silent=True) or {}
@@ -252,9 +267,7 @@ def register_session_flow_routes(
             session_id,
             "changeSessionSource",
             payload,
-            lambda session: change_source_in_session(
-                services, session, session_id, **payload
-            ),
+            lambda session: change_source_in_session(services, session, session_id, **payload),
         )
         if getattr(response, "status_code", 500) == 200:
             cleanup_reset_files(services, session_id)
@@ -262,6 +275,7 @@ def register_session_flow_routes(
 
     @app.post("/api/v1/sessions/<session_id>/sources/start-new-session")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def session_source_start_new(session_id):
         payload = SourceChangeRequest.model_validate(
             request.get_json(silent=True) or {}
@@ -277,17 +291,17 @@ def register_session_flow_routes(
 
     @app.post("/api/v1/sessions/<session_id>/sources/cleanup")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def session_source_cleanup(session_id):
         # Only pre-existing tombstones are eligible; this never removes live data.
         try:
-            with services.database.session() as session:
-                source_status(session, session_id)
             return jsonify(cleanup_reset_files(services, session_id))
         except (KeyError, ValueError) as error:
             return failure(error)
 
     @app.post("/api/v1/sessions/<session_id>/sources/confirm-timing")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def session_recording_timing_confirm(session_id):
         payload = RecordingTimingRequest.model_validate(
             request.get_json(silent=True) or {}
@@ -301,19 +315,24 @@ def register_session_flow_routes(
 
     @app.get("/api/v1/sessions/<session_id>/generation-plan/status")
     @require_auth
+    @require_session_action(context, ProjectAction.READ)
     def speech_plan_workspace_status(session_id):
         try:
             from .generation_review import parse_summary_flag
 
-            return jsonify(speech_plan_status(
-                services, session_id,
-                summary=parse_summary_flag(request.args.get("summary")),
-            ))
+            return jsonify(
+                speech_plan_status(
+                    services,
+                    session_id,
+                    summary=parse_summary_flag(request.args.get("summary")),
+                )
+            )
         except (KeyError, ValueError) as error:
             return failure(error)
 
     @app.post("/api/v1/sessions/<session_id>/generation-plan/prepare")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def speech_plan_prepare(session_id):
         payload = SpeechPlanPrepareRequest.model_validate(
             request.get_json(silent=True) or {}
@@ -323,6 +342,8 @@ def register_session_flow_routes(
                 guard_before = preparation_guard(session, session_id)
             settings = planning_settings(services, session_id, final_optimization=True)
             if settings["llm_tts_optimization"]:
+                with services.database.snapshot_session() as session:
+                    require_current_session_access(session, session_id, ProjectAction.RUN)
                 from .speech_plan_preparation import (
                     enqueue_speech_preparation,
                     resolve_speech_model,
@@ -333,14 +354,18 @@ def register_session_flow_routes(
                 with services.database.session() as session:
                     guard = preparation_guard(session, session_id)
                 if guard != guard_before:
-                    raise RevisionConflict("The selected text or settings changed while preparing the request. Refresh and try again.")
-                model = resolve_speech_model(services, settings)
+                    raise RevisionConflict(
+                        "The selected text or settings changed while preparing the request. Refresh and try again."
+                    )
+                model = resolve_speech_model(services, settings, session_id=session_id)
                 return mutate(
                     session_id,
                     "prepareSpeechPlan",
                     payload,
                     lambda session: enqueue_speech_preparation(
-                        services, session, session_id,
+                        services,
+                        session,
+                        session_id,
                         expected_revision=payload["expected_revision"],
                         expected_plan_revision_id=payload["expected_plan_revision_id"],
                         source_artifact_id=payload["source_artifact_id"],
@@ -349,10 +374,9 @@ def register_session_flow_routes(
                         guard=guard,
                         selected_artifact_id=(selected or {}).get("artifact_id", ""),
                     ),
+                    extra_action=ProjectAction.RUN,
                 )
-            prepared = prepare_speech_plan_data(
-                services, session_id, payload["source_artifact_id"]
-            )
+            prepared = prepare_speech_plan_data(services, session_id, payload["source_artifact_id"])
         except (KeyError, ValueError, RevisionConflict) as error:
             return failure(error)
         return mutate(
@@ -371,6 +395,7 @@ def register_session_flow_routes(
 
     @app.post("/api/v1/sessions/<session_id>/generation-plan/select")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def speech_plan_select(session_id):
         payload = SpeechPlanSelectRequest.model_validate(
             request.get_json(silent=True) or {}
@@ -384,6 +409,7 @@ def register_session_flow_routes(
 
     @app.post("/api/v1/sessions/<session_id>/generation-plan/review")
     @require_auth
+    @require_session_action(context, ProjectAction.EDIT)
     def speech_plan_review(session_id):
         payload = SpeechPlanReviewRequest.model_validate(
             request.get_json(silent=True) or {}

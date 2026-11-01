@@ -1,4 +1,5 @@
 import { ApiError, ApiMutationAttempt, apiJson } from './api';
+import { browserStorageKey, onBrowserIdentityReset } from './browser-identity';
 import type { GenerationRun, JobRecord } from './api-models';
 
 export type AdmissionProgress = {
@@ -8,6 +9,7 @@ export type AdmissionProgress = {
 };
 type SavedAttempt = { signature: string; key: string; jobId?: string };
 const attempts = new Map<string, SavedAttempt>();
+onBrowserIdentityReset(() => attempts.clear());
 
 function loadAttempt(storageKey: string): SavedAttempt | undefined {
   try {
@@ -79,7 +81,7 @@ export async function admitGeneration(
   const signature = Array.from(new Uint8Array(digest), (n) =>
     n.toString(16).padStart(2, '0')
   ).join('');
-  const storageKey = 'pandrator:generation-admission:' + sessionId;
+  const storageKey = browserStorageKey('generation-admission', sessionId);
   let saved = loadAttempt(storageKey);
   if (!saved || saved.signature !== signature) {
     const headers = (options.attempt ?? new ApiMutationAttempt()).headersFor(

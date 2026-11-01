@@ -19,9 +19,11 @@ from sqlalchemy import event, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from pandrator.runtime import DataPaths
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.artifacts import ArtifactService
-from pandrator.web.auth import ALL_SCOPES, Principal
+from pandrator.web.auth import ALL_SCOPES, AuthService, Principal
 from pandrator.web.database import Database, upgrade_database
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     ApiIdempotency,
     Artifact,
@@ -44,6 +46,7 @@ from pandrator.web.project_operations import (
     ProjectOperationError,
     TranslationProjectOperationService,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.session_purge import PurgeBlocked, SessionPurgeService
 from pandrator.web.sessions import RevisionConflict, SessionService
 from pandrator.web.settings_policy import stable_hash
@@ -56,8 +59,10 @@ from pandrator.web.workspace_settings import WorkspaceSettingsService
 def _project_operation(harness, *, status="running"):
     database, _paths, _sessions, _purge = harness
     source, source_folder = _session(harness, "project source")
-    selected, selected_folder = _session(harness, "Japanese")
-    other, other_folder = _session(harness, "Polish")
+    selected, selected_folder = _session(
+        harness, "Japanese", project_id=source.project_id
+    )
+    other, other_folder = _session(harness, "Polish", project_id=source.project_id)
     checkpoint = source_folder / "checkpoint.txt"
     checkpoint.write_text("source")
     _artifact(harness, source, checkpoint, "project-checkpoint")
@@ -98,6 +103,7 @@ def _project_operation(harness, *, status="running"):
     with database.session() as db:
         db.add(TranslationProject(
             id="project", name="languages", source_session_id=source.id,
+            project_root_id=source.project_id,
             checkpoint_artifact_id="project-checkpoint", source_content_hash="a" * 64,
             source_language="en",
         ))
@@ -127,9 +133,21 @@ def harness(tmp_path):
     database.dispose()
 
 
-def _session(harness, name="one"):
+def _operation_principal(database) -> Principal:
+    auth = AuthService(database)
+    _token, raw = auth.create_api_token(
+        "Purge operation fixture", scopes=ALL_SCOPES, subject="owner"
+    )
+    principal = auth.resolve_api_token(
+        raw, network_zone="loopback", target_instance_id="instance"
+    )
+    assert principal is not None
+    return principal
+
+
+def _session(harness, name="one", *, project_id=None):
     _database, paths, sessions, _purge = harness
-    record = sessions.create(name)
+    record = sessions.create(name, project_id=project_id)
     folder = paths.sessions / record.storage_key
     folder.mkdir()
     return record, folder
@@ -138,7 +156,10 @@ def _session(harness, name="one"):
 def _artifact(harness, record, path, artifact_id):
     database, paths, _sessions, _purge = harness
     with database.session() as session:
-        session.add(Artifact(id=artifact_id, session_id=record.id, kind="text", role="test",
+        ownership = resolve_artifact_ownership(session, session_id=record.id)
+        session.add(Artifact(id=artifact_id, session_id=record.id,
+                             workspace_id=ownership.workspace_id,
+                             project_id=ownership.project_id, kind="text", role="test",
                              relative_path=path.relative_to(paths.root).as_posix()))
 
 
@@ -157,8 +178,11 @@ def _legacy_subtitle(harness, record, artifact_id="legacy-subtitle", *, role="tr
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("1\n00:00:01,000 --> 00:00:02,000\nLegacy subtitle\n")
     with database.session() as session:
+        ownership = resolve_artifact_ownership(session, session_id=record.id)
         session.add(Artifact(
-            id=artifact_id, session_id=record.id, kind="srt", role=role,
+            id=artifact_id, session_id=record.id,
+            workspace_id=ownership.workspace_id, project_id=ownership.project_id,
+            kind="srt", role=role,
             relative_path=relative_path, metadata_json=metadata,
         ))
     return path, source_hash
@@ -210,8 +234,11 @@ def test_project_bundle_frozen_branch_reference_blocks_purge(harness, status, re
     else:
         language["files"] = [{"artifact_id": "deleted-language-artifact"}]
     with database.session() as db:
+        ownership = job_creation_ownership(db, session_id=case.source.id)
         db.add(Job(id="bundle-job", kind="project.exports.bundle", status=status,
-                   session_id=case.source.id, payload_json={"languages": [language]}))
+                   session_id=case.source.id, workspace_id=ownership.workspace_id,
+                   project_id=ownership.project_id,
+                   payload_json={"languages": [language]}))
     _trashed(harness, case.selected)
     preview = purge.preview(case.selected.id)
     assert preview["blockers"] == [f"unfinished:project.exports.bundle:{status}"]
@@ -226,10 +253,17 @@ def test_project_operation_and_unrelated_bundle_do_not_block_idle_branch(harness
     database, _paths, _sessions, purge = harness
     case = _project_operation(harness)
     with database.session() as db:
+        other_ownership = job_creation_ownership(db, session_id=case.other.id)
         db.add(Job(id="other-child-job", kind="export", status="queued",
-                   session_id=case.other.id))
+                   session_id=case.other.id,
+                   workspace_id=other_ownership.workspace_id,
+                   project_id=other_ownership.project_id))
+        source_ownership = job_creation_ownership(db, session_id=case.source.id)
         db.add(Job(id="other-bundle-job", kind="project.exports.bundle", status="running",
-                   session_id=case.source.id, payload_json={"languages": [{
+                   session_id=case.source.id,
+                   workspace_id=source_ownership.workspace_id,
+                   project_id=source_ownership.project_id,
+                   payload_json={"languages": [{
                        "session_id": case.other.id,
                        "files": [{"artifact_id": "other-language-artifact"}],
                    }]}))
@@ -355,7 +389,7 @@ def test_old_project_operation_preview_cannot_enqueue_purged_branch(harness):
     preview = purge.preview(case.selected.id)
     assert purge.purge(case.selected.id, preview["revision"], preview["impact_token"])["state"] == "complete"
     service = TranslationProjectOperationService(SimpleNamespace(database=database))
-    principal = Principal("owner", "owner_session", ALL_SCOPES, None, "loopback", "instance")
+    principal = _operation_principal(database)
     with pytest.raises(ProjectOperationError) as rejected:
         service.execute("operation", case.digest, [], principal=principal,
                         target_identity=case.target, idempotency_key="old-preview-key")
@@ -384,7 +418,7 @@ def test_purged_project_child_poll_and_retry_never_restore_old_job_run_receipt(h
     service = TranslationProjectOperationService(SimpleNamespace(
         database=database, redactor=SimpleNamespace(redact_value=lambda value: value),
     ))
-    principal = Principal("owner", "owner_session", ALL_SCOPES, None, "loopback", "instance")
+    principal = _operation_principal(database)
     with database.session() as db:
         tombstone = _assert_project_operation_scrubbed(db, case)
         assert service._receipt(db, db.get(TranslationProjectOperation, "operation"), tombstone) == {}
@@ -430,6 +464,9 @@ def _completed_project_bundle(harness, case, *, manifest=True):
                            "relative_path": artifact.relative_path, "role": artifact.role,
                            "sha256": artifact.content_hash}],
             })
+        artifact_ownership = resolve_artifact_ownership(
+            db, session_id=case.source.id
+        )
         contracts = [("project_export_bundle", "zip", "artifact_id", "sha256", "size_bytes")]
         if manifest:
             contracts.append(("project_export_manifest", "json", "manifest_artifact_id",
@@ -441,6 +478,8 @@ def _completed_project_bundle(harness, case, *, manifest=True):
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             db.add(Artifact(
                 id=artifact_id, session_id=case.source.id, kind=kind, role=role,
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 relative_path=path.relative_to(paths.root).as_posix(), state="current",
                 content_hash=digest, size_bytes=path.stat().st_size,
                 metadata_json={
@@ -455,8 +494,11 @@ def _completed_project_bundle(harness, case, *, manifest=True):
                 db.add(ArtifactEdge(parent_artifact_id=source_id, child_artifact_id=artifact_id))
             result.update({id_key: artifact_id, hash_key: digest, size_key: path.stat().st_size})
             output_paths[artifact_id] = path
+        job_ownership = job_creation_ownership(db, session_id=case.source.id)
         db.add(Job(id="completed-bundle-job", kind="project.exports.bundle", status="succeeded",
-                   session_id=case.source.id, payload_json=frozen, result_json=result))
+                   session_id=case.source.id, workspace_id=job_ownership.workspace_id,
+                   project_id=job_ownership.project_id,
+                   payload_json=frozen, result_json=result))
     return output_paths
 
 
@@ -727,10 +769,13 @@ def test_reference_impact_preview_select_count_is_artifact_count_independent(har
     def preview_with_artifacts(count):
         record, folder = _session(harness, f"query budget {count}")
         with database.session() as session:
+            ownership = resolve_artifact_ownership(session, session_id=record.id)
             session.add_all([
                 Artifact(
                     id=f"query-budget-{count}-{index:03d}",
                     session_id=record.id,
+                    workspace_id=ownership.workspace_id,
+                    project_id=ownership.project_id,
                     kind="text",
                     role="test",
                     relative_path=(folder / f"artifact-{index:03d}.txt").relative_to(paths.root).as_posix(),
@@ -763,13 +808,17 @@ def test_registered_legacy_subtitle_purges_without_inventorying_neighbors(harnes
     global_file.parent.mkdir(parents=True, exist_ok=True)
     global_file.write_text("global source")
     with database.session() as session:
-        session.add(Artifact(
+        ownership = resolve_artifact_ownership(session)
+        global_artifact = Artifact(
             id="global-subtitle-source", session_id=None, kind="srt", role="source",
+            workspace_id=ownership.workspace_id,
             relative_path="artifacts/global-subtitle-source.srt",
-        ))
+        )
+        session.add(global_artifact)
         session.flush()
         session.add(SourceAsset(
             id="global-subtitle-asset", artifact_id="global-subtitle-source",
+            workspace_id=global_artifact.workspace_id,
             display_name="Global subtitle source", kind="srt",
         ))
         session.add(ArtifactEdge(
@@ -835,8 +884,10 @@ def test_symlink_at_legacy_subtitle_path_remains_blocked(harness):
     target.write_text("preserved symlink target")
     path.symlink_to(target)
     with database.session() as session:
+        ownership = resolve_artifact_ownership(session, session_id=record.id)
         session.add(Artifact(
             id="legacy-symlink", session_id=record.id, kind="srt", role="transcription",
+            workspace_id=ownership.workspace_id, project_id=ownership.project_id,
             relative_path=relative,
             metadata_json={
                 "text_origin": "imported_subtitles", "imported_source_hash": "a" * 64,
@@ -860,8 +911,10 @@ def test_foreign_artifact_alias_for_legacy_subtitle_blocks_purge(harness):
     owned_file, source_hash = _legacy_subtitle(harness, record)
     alias = f"sessions/{record.id}//imported-subtitles/{source_hash}.srt"
     with database.session() as session:
+        ownership = resolve_artifact_ownership(session, session_id=foreign.id)
         session.add(Artifact(
             id="foreign-subtitle-artifact", session_id=foreign.id, kind="srt", role="source",
+            workspace_id=ownership.workspace_id, project_id=ownership.project_id,
             relative_path=alias,
         ))
     _trashed(harness, record)
@@ -900,7 +953,12 @@ def test_shared_source_file_and_record_survive(harness):
     file.write_text("shared")
     _artifact(harness, record, file, "shared-artifact")
     with database.session() as session:
-        session.add(SourceAsset(id="source", artifact_id="shared-artifact", display_name="source", kind="text"))
+        artifact = session.get(Artifact, "shared-artifact")
+        session.add(SourceAsset(
+            id="source", artifact_id="shared-artifact",
+            workspace_id=artifact.workspace_id,
+            display_name="source", kind="text",
+        ))
         session.flush()
         session.add(SessionSource(session_id=other.id, source_asset_id="source"))
     _trashed(harness, record)
@@ -919,15 +977,25 @@ def test_shared_voice_sample_artifact_survives_session_purge(harness):
     file = folder / "voice-sample.wav"
     file.write_bytes(b"voice sample bytes")
     with database.session() as session:
-        session.add(Artifact(
+        artifact_ownership = resolve_artifact_ownership(session, session_id=record.id)
+        artifact = Artifact(
             id="voice-sample-artifact", session_id=record.id, kind="audio", role="voice_sample",
+            workspace_id=artifact_ownership.workspace_id,
+            project_id=artifact_ownership.project_id,
             relative_path=file.relative_to(paths.root).as_posix(),
-        ))
+        )
+        session.add(artifact)
         session.flush()
-        voice = Voice(name="Purge retained voice sample")
+        voice = Voice(
+            workspace_id=initial_personal_workspace(session).id,
+            name="Purge retained voice sample",
+        )
         session.add(voice)
         session.flush()
-        sample = VoiceSample(voice_id=voice.id, artifact_id="voice-sample-artifact")
+        sample = VoiceSample(
+            voice_id=voice.id, workspace_id=voice.workspace_id,
+            artifact_id="voice-sample-artifact",
+        )
         session.add(sample)
         session.flush()
         voice_id = voice.id
@@ -955,6 +1023,7 @@ def test_legacy_shared_source_path_survives_without_artifact_fk(harness):
     file.write_text("shared")
     with database.session() as session:
         session.add(SourceAsset(id="legacy-source", artifact_id=None,
+                                workspace_id=initial_personal_workspace(session).id,
                                 display_name="source", kind="text", external_path=str(file)))
     _trashed(harness, record)
     preview = purge.preview(record.id)
@@ -971,10 +1040,18 @@ def test_shared_artifact_dot_alias_keeps_canonical_file(harness):
     file = folder / "shared.txt"
     file.write_text("retain")
     with database.session() as session:
-        session.add(Artifact(id="dot-artifact", session_id=record.id, kind="text",
-                             relative_path=f"sessions/{record.storage_key}/./shared.txt"))
+        ownership = resolve_artifact_ownership(session, session_id=record.id)
+        artifact = Artifact(id="dot-artifact", session_id=record.id,
+                            workspace_id=ownership.workspace_id,
+                            project_id=ownership.project_id, kind="text",
+                            relative_path=f"sessions/{record.storage_key}/./shared.txt")
+        session.add(artifact)
         session.flush()
-        session.add(SourceAsset(id="dot-source", artifact_id="dot-artifact", display_name="source", kind="text"))
+        session.add(SourceAsset(
+            id="dot-source", artifact_id="dot-artifact",
+            workspace_id=artifact.workspace_id,
+            display_name="source", kind="text",
+        ))
     _trashed(harness, record)
     preview = purge.preview(record.id)
     assert preview["retained_shared_count"] == 1 and preview["owned_file_count"] == 0
@@ -991,9 +1068,16 @@ def test_external_path_keeps_file_with_owned_dot_alias(harness):
     file = folder / "shared.txt"
     file.write_text("retain")
     with database.session() as session:
-        session.add(Artifact(id="dot-artifact", session_id=record.id, kind="text",
+        ownership = resolve_artifact_ownership(session, session_id=record.id)
+        session.add(Artifact(id="dot-artifact", session_id=record.id,
+                             workspace_id=ownership.workspace_id,
+                             project_id=ownership.project_id, kind="text",
                              relative_path=f"sessions/{record.storage_key}/./shared.txt"))
-        session.add(SourceAsset(id="external-source", display_name="source", kind="text", external_path=str(file)))
+        session.add(SourceAsset(
+            id="external-source", display_name="source", kind="text",
+            workspace_id=initial_personal_workspace(session).id,
+            external_path=str(file),
+        ))
     _trashed(harness, record)
     preview = purge.preview(record.id)
     assert preview["retained_shared_count"] == 1 and preview["owned_file_count"] == 0
@@ -1047,7 +1131,10 @@ def test_unfinished_job_and_cross_session_edge_block(harness):
     _artifact(harness, record, first, "first")
     _artifact(harness, other, second, "second")
     with database.session() as session:
-        session.add(Job(kind="test", session_id=record.id, status="queued"))
+        ownership = job_creation_ownership(session, session_id=record.id)
+        session.add(Job(kind="test", session_id=record.id,
+                        workspace_id=ownership.workspace_id,
+                        project_id=ownership.project_id, status="queued"))
         session.add(ArtifactEdge(parent_artifact_id="first", child_artifact_id="second"))
     _trashed(harness, record)
     preview = purge.preview(record.id)
@@ -1072,15 +1159,22 @@ def test_incoming_foreign_provenance_does_not_block_owned_artifact_purge(harness
     global_file.write_text("global input")
     _artifact(harness, record, derived_file, "owned-derived")
     with database.session() as session:
+        global_ownership = resolve_artifact_ownership(session)
+        foreign_ownership = resolve_artifact_ownership(session, session_id=other.id)
         session.add_all([
             Artifact(id="global-input", session_id=None, kind="text", role="source",
+                     workspace_id=global_ownership.workspace_id,
                      relative_path=global_file.relative_to(paths.root).as_posix()),
             Artifact(id="foreign-input", session_id=other.id, kind="text", role="source",
+                     workspace_id=foreign_ownership.workspace_id,
+                     project_id=foreign_ownership.project_id,
                      relative_path=foreign_file.relative_to(paths.root).as_posix()),
         ])
         session.flush()
+        global_artifact = session.get(Artifact, "global-input")
         session.add(SourceAsset(
             id="global-source", artifact_id="global-input", display_name="global input", kind="text",
+            workspace_id=global_artifact.workspace_id,
         ))
         session.add_all([
             ArtifactEdge(parent_artifact_id="global-input", child_artifact_id="owned-derived"),
@@ -1136,10 +1230,13 @@ def test_reference_impact_batches_preserve_late_shared_and_foreign_edge_guards(h
     foreign, foreign_folder = _session(harness, "late foreign child")
     owned_count = 502
     with database.session() as session:
+        artifact_ownership = resolve_artifact_ownership(session, session_id=record.id)
         session.add_all([
             Artifact(
                 id=f"batch-owned-{index:04d}",
                 session_id=record.id,
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="text",
                 role="test",
                 relative_path=(folder / f"artifact-{index:04d}.txt").relative_to(paths.root).as_posix(),
@@ -1157,12 +1254,19 @@ def test_reference_impact_batches_preserve_late_shared_and_foreign_edge_guards(h
         shared_path = folder / f"artifact-{int(shared_id.rsplit('-', 1)[1]):04d}.txt"
         foreign_parent_path = folder / f"artifact-{int(foreign_parent_id.rsplit('-', 1)[1]):04d}.txt"
         foreign_child_path = foreign_folder / "foreign-child.txt"
+        shared_artifact = session.get(Artifact, shared_id)
         session.add(SourceAsset(
             id="late-batch-source-asset", artifact_id=shared_id,
             display_name="Late shared artifact", kind="text",
+            workspace_id=shared_artifact.workspace_id,
         ))
+        foreign_child_ownership = resolve_artifact_ownership(
+            session, session_id=foreign.id
+        )
         session.add(Artifact(
             id="late-batch-foreign-child", session_id=foreign.id, kind="text", role="test",
+            workspace_id=foreign_child_ownership.workspace_id,
+            project_id=foreign_child_ownership.project_id,
             relative_path=foreign_child_path.relative_to(paths.root).as_posix(),
         ))
         session.flush()
@@ -1224,7 +1328,12 @@ def test_active_job_still_blocks_purge_with_stale_output_assembly(harness, statu
             id="stale-assembly-with-active-job", session_id=record.id,
             status="stale", settings_json={},
         ))
-        session.add(Job(id="active-job", kind="test", session_id=record.id, status=status))
+        ownership = job_creation_ownership(session, session_id=record.id)
+        session.add(Job(
+            id="active-job", kind="test", session_id=record.id,
+            workspace_id=ownership.workspace_id, project_id=ownership.project_id,
+            status=status,
+        ))
     _trashed(harness, record)
     preview = purge.preview(record.id)
     assert preview["blockers"] == [f"unfinished:jobs:{status}"]
@@ -1346,7 +1455,7 @@ def test_stopped_partial_generation_and_interrupted_agent_can_be_purged(harness)
     assert purge.purge(record.id, preview["revision"], preview["impact_token"])["state"] == "complete"
 
 
-def test_upgrade_keeps_existing_trash_without_a_deletion_deadline(harness):
+def test_upgrade_keeps_existing_trash_without_a_deletion_deadline(tmp_path):
     from pathlib import Path
 
     from alembic import command
@@ -1354,20 +1463,30 @@ def test_upgrade_keeps_existing_trash_without_a_deletion_deadline(harness):
 
     from pandrator.web.database import sqlite_url
 
-    database, paths, _sessions, purge = harness
-    record, _folder = _session(harness)
-    _trashed(harness, record)
-    database.dispose()
+    paths = DataPaths(tmp_path).ensure()
     config = Config()
     config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations"))
     config.set_main_option("sqlalchemy.url", sqlite_url(paths.database))
-    command.downgrade(config, "0049_segment_count_index")
-    upgrade_database(paths.database)
-    assert purge.policy() == {"days": None, "revision": 0}
-    assert purge.preview(record.id)["scheduled_delete_at"] is None
-    assert purge.sweep()["attempted"] == 0
-    with database.session() as session:
-        assert session.get(SessionRecord, record.id).trashed_at is not None
+    command.upgrade(config, "0049_segment_count_index")
+    database = Database(paths.database)
+    try:
+        with database.session() as session:
+            record = SessionRecord(
+                id="old-trash", storage_key="old-trash", name="Old trashed project",
+                status="trashed", trashed_at=utcnow(),
+            )
+            session.add(record)
+        database.dispose()
+        upgrade_database(paths.database)
+        purge = SessionPurgeService(database, paths)
+        assert purge.policy() == {"days": None, "revision": 0}
+        assert purge.preview(record.id)["scheduled_delete_at"] is None
+        assert purge.sweep()["attempted"] == 0
+        with database.session() as session:
+            retained = session.get(SessionRecord, record.id)
+            assert retained is not None and retained.trashed_at is not None
+    finally:
+        database.dispose()
 
 
 def test_http_policy_preview_and_confirmed_purge_contract(tmp_path):
@@ -1395,7 +1514,7 @@ def test_http_policy_preview_and_confirmed_purge_contract(tmp_path):
         assert client.post(path + "/purge", json={**body, "expected_revision": 0}, headers=headers).status_code == 409
         response = client.post(path + "/purge", json=body, headers=headers)
         assert response.status_code == 200 and response.get_json() == {"state": "complete"}
-        assert client.post(path + "/purge", json=body, headers=headers).get_json() == {"state": "complete"}
+        assert client.post(path + "/purge", json=body, headers=headers).status_code == 404
         assert client.get(path).status_code == 404
     finally:
         app.extensions["pandrator"]["database"].dispose()
@@ -1581,7 +1700,12 @@ def test_shared_artifact_in_upload_storage_blocks_purge(harness):
     file.write_text("shared")
     _artifact(harness, record, file, "upload-shared-artifact")
     with database.session() as session:
-        session.add(SourceAsset(id="upload-source", artifact_id="upload-shared-artifact", display_name="source", kind="text"))
+        artifact = session.get(Artifact, "upload-shared-artifact")
+        session.add(SourceAsset(
+            id="upload-source", artifact_id="upload-shared-artifact",
+            workspace_id=artifact.workspace_id,
+            display_name="source", kind="text",
+        ))
     _trashed(harness, record)
     preview = purge.preview(record.id)
     assert "shared_upload_storage" in preview["blockers"]
@@ -1656,7 +1780,7 @@ def test_activity_lock_allows_settings_and_trash_but_blocks_purge_during_stream(
     outcomes = []
 
     class BoundedStream(io.BytesIO):
-        def read(self, size=-1):
+        def read(self, size: int | None = -1) -> bytes:
             reading.set()
             assert release.wait(8), "test stream was not released"
             return super().read(size)

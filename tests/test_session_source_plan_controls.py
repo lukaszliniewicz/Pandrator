@@ -190,7 +190,7 @@ class SessionSourcePlanControlTests(unittest.TestCase):
         self.prepare()
         self.assertEqual(self.change(None, preview=preview).status_code, 409)
         with self.services.database.session() as session:
-            session.add(m.Job(kind="noop", session_id=self.sid, status="queued"))
+            self.services.jobs.enqueue_in_session(session, "noop", {}, session_id=self.sid)
         self.assertEqual(self.change(None).status_code, 409)
         self.assertIsNotNone(
             self.client.get(self.base + "/sources/status").get_json()["primary"]

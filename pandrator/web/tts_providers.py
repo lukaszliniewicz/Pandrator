@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import socket
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from collections.abc import Mapping as Mapping
 from collections.abc import Sequence as Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from contextvars import copy_context
 from dataclasses import replace
 from threading import Lock, RLock
 from typing import Any
@@ -40,6 +41,8 @@ from pandrator.logic.tts_provider_profiles import (
 )
 from pandrator.runtime import DataPaths as DataPaths
 
+from .access.contracts import AccessDenied
+from .accounts.actor_authorization import ActorAuthorizationDenied
 from .credentials import (
     TTS_SERVICE_ENVS as TTS_SERVICE_ENVS,
 )
@@ -94,6 +97,7 @@ from .manager_proxy import ManagerProxyError as ManagerProxyError
 from .models import AppSetting as AppSetting
 from .models import Artifact as Artifact
 from .settings_policy import BUILTIN_DEFAULTS as BUILTIN_DEFAULTS
+from .speech_catalogue_access import CatalogueChanged
 from .tts_catalogue_projection import (
     _LIVE_LANGUAGE_NATIVE_ROUTES as _LIVE_LANGUAGE_NATIVE_ROUTES,
 )
@@ -323,7 +327,14 @@ class LegacyTtsAdapter:
         mode: str | None = None,
         voice_id: str | None = None,
         api_key: str = "",
+        before_io: Callable[[], None] | None = None,
+        allow_environment_credentials: bool = True,
     ) -> str:
+        provider_options: dict[str, Any] = {}
+        if before_io is not None:
+            provider_options["before_io"] = before_io
+        if not allow_environment_credentials:
+            provider_options["allow_environment_credentials"] = False
         return tts_handler.upload_speaker_voice(
             wav_file_path,
             base_url=base_url,
@@ -332,6 +343,7 @@ class LegacyTtsAdapter:
             mode=mode,
             voice_id=voice_id,
             api_key=api_key,
+            **provider_options,
         )
 
     def delete_voice(
@@ -341,12 +353,20 @@ class LegacyTtsAdapter:
         base_url: str,
         service: str,
         api_key: str = "",
+        before_io: Callable[[], None] | None = None,
+        allow_environment_credentials: bool = True,
     ) -> bool:
+        provider_options: dict[str, Any] = {}
+        if before_io is not None:
+            provider_options["before_io"] = before_io
+        if not allow_environment_credentials:
+            provider_options["allow_environment_credentials"] = False
         return tts_handler.delete_speaker_voice(
             voice_id,
             base_url=base_url,
             service=service,
             api_key=api_key,
+            **provider_options,
         )
 
 
@@ -369,6 +389,7 @@ class GoogleTtsAdapter(LegacyTtsAdapter):
 
     def enrich_catalog(
         self, service: dict[str, Any], *, api_key: str = "",
+        before_io: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if not self._native_endpoint(service):
             return {}
@@ -383,7 +404,14 @@ class GoogleTtsAdapter(LegacyTtsAdapter):
             return {}
         try:
             if vertex:
-                token, project = tts_handler._vertex_access_token({**service, "api_key": api_key})
+                if before_io is not None:
+                    token, project = tts_handler._vertex_access_token(
+                        {**service, "api_key": api_key}, before_io=before_io
+                    )
+                else:
+                    token, project = tts_handler._vertex_access_token(
+                        {**service, "api_key": api_key}
+                    )
                 endpoint = (
                     "https://aiplatform.googleapis.com/v1beta1/projects/"
                     f"{quote(project, safe='')}/locations/global/voices"
@@ -392,7 +420,14 @@ class GoogleTtsAdapter(LegacyTtsAdapter):
             else:
                 endpoint = "https://generativelanguage.googleapis.com/v1beta/voices"
                 headers = {"x-goog-api-key": api_key}
-            voices = get_google_voice_catalog(endpoint, headers=headers, vertex=vertex)
+            if before_io is not None:
+                voices = get_google_voice_catalog(
+                    endpoint, headers=headers, vertex=vertex, before_io=before_io
+                )
+            else:
+                voices = get_google_voice_catalog(endpoint, headers=headers, vertex=vertex)
+        except (AccessDenied, ActorAuthorizationDenied, CatalogueChanged):
+            raise
         except Exception:  # noqa: BLE001 - discovery must not disable synthesis or expose credentials
             return {
                 "voice_catalogue_warning": "Google voice discovery failed. The saved and prebuilt voices remain available; check credentials and refresh to load additional voices.",
@@ -1426,7 +1461,7 @@ class TtsProviderRegistry:
                 for item in wave:
                     if is_cancelled():
                         break
-                    futures.append(executor.submit(synthesize_one, item))
+                    futures.append(executor.submit(copy_context().run, synthesize_one, item))
                 wave_results = [future.result() for future in futures]
             for result in wave_results:
                 if result is not None:
@@ -1517,10 +1552,15 @@ class TtsProviderRegistry:
         service: dict[str, Any],
         *,
         api_key: str = "",
+        before_io: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         service_id = self._service_adapter_id(service)
         try:
-            changes = self.get(service_id).enrich_catalog(service, api_key=api_key)
+            adapter = self.get(service_id)
+            if isinstance(adapter, GoogleTtsAdapter) and before_io is not None:
+                changes = adapter.enrich_catalog(service, api_key=api_key, before_io=before_io)
+            else:
+                changes = adapter.enrich_catalog(service, api_key=api_key)
             from pandrator.logic.speech_performance import decorate_service_capabilities
 
             effective = {**service, **changes}
@@ -1530,6 +1570,8 @@ class TtsProviderRegistry:
                 "generation_prompt_models": effective["generation_prompt_models"],
             })
             return changes
+        except (AccessDenied, ActorAuthorizationDenied, CatalogueChanged):
+            raise
         except TtsProviderError:
             raise
         except ValueError as error:

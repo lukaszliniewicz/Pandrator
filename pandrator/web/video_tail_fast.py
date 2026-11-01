@@ -40,6 +40,12 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+from pandrator.logic.media_input_policy import (
+    CONCAT_MEMBER_OPTIONS,
+    GENERATED_CONCAT_INPUT_OPTIONS,
+    LOCAL_MEDIA_INPUT_OPTIONS,
+)
+
 logger = logging.getLogger(__name__)
 
 _FF_PREFIX = ["-nostdin", "-hide_banner", "-v", "warning", "-y"]
@@ -80,6 +86,23 @@ _HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
 
 class _Ineligible(Exception):
     """Raised when the source is valid media but not fast-path eligible."""
+
+
+class _BeforeIOFailure(Exception):
+    """Carry a caller access error past media-fallback exception handlers."""
+
+    def __init__(self, original: BaseException):
+        super().__init__("before_io callback failed")
+        self.original = original
+
+
+def _call_before_io(before_io: Callable[[], None] | None) -> None:
+    if before_io is None:
+        return
+    try:
+        before_io()
+    except BaseException as error:
+        raise _BeforeIOFailure(error) from None
 
 
 def _check_cancelled(cancel_event: threading.Event) -> None:
@@ -153,9 +176,16 @@ def _level_name(raw: object) -> str | None:
     return f"{level // 10}.{level % 10}"
 
 
-def _run_probe(ffprobe: str, args: list[str], cancel_event: threading.Event) -> dict:
+def _run_probe(
+    ffprobe: str,
+    args: list[str],
+    cancel_event: threading.Event,
+    *,
+    before_io: Callable[[], None] | None = None,
+) -> dict:
     """Run a bounded ffprobe read and return parsed JSON."""
     _check_cancelled(cancel_event)
+    _call_before_io(before_io)
     try:
         completed = subprocess.run(
             [ffprobe, *args],
@@ -183,7 +213,13 @@ def _run_probe(ffprobe: str, args: list[str], cancel_event: threading.Event) -> 
     return payload
 
 
-def _probe_streams(ffprobe: str, source: Path, cancel_event: threading.Event) -> tuple[dict, dict]:
+def _probe_streams(
+    ffprobe: str,
+    source: Path,
+    cancel_event: threading.Event,
+    *,
+    before_io: Callable[[], None] | None = None,
+) -> tuple[dict, dict]:
     payload = _run_probe(
         ffprobe,
         [
@@ -193,9 +229,11 @@ def _probe_streams(ffprobe: str, source: Path, cancel_event: threading.Event) ->
             "-show_format",
             "-of",
             "json",
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             str(source),
         ],
         cancel_event,
+        before_io=before_io,
     )
     streams = payload.get("streams") or []
     if not isinstance(streams, list):
@@ -400,7 +438,9 @@ def _color_args(info: dict) -> list[str]:
     return args
 
 
-def _framemd5_rows(path: Path) -> list[tuple[str, str]]:
+def _framemd5_rows(
+    path: Path, *, before_io: Callable[[], None] | None = None
+) -> list[tuple[str, str]]:
     """Parse ``framemd5`` output into (pts, hash) pairs, skipping comments.
 
     Only presentation timestamps and decoded hashes are compared: the
@@ -408,6 +448,7 @@ def _framemd5_rows(path: Path) -> list[tuple[str, str]]:
     bridge the seam, while pixels and timestamps must stay bit-identical.
     """
     rows: list[tuple[str, str]] = []
+    _call_before_io(before_io)
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line or line.startswith("#"):
             continue
@@ -416,6 +457,17 @@ def _framemd5_rows(path: Path) -> list[tuple[str, str]]:
             continue
         rows.append((parts[2], parts[-1]))
     return rows
+
+
+def _run_authorized_command(
+    run_command: Callable[[list[str], threading.Event], None],
+    command: list[str],
+    cancel_event: threading.Event,
+    *,
+    before_io: Callable[[], None] | None,
+) -> None:
+    _call_before_io(before_io)
+    run_command(command, cancel_event)
 
 
 def try_fast_video_tail(
@@ -427,6 +479,7 @@ def try_fast_video_tail(
     ffmpeg_executable: str,
     cancel_event: threading.Event,
     run_command: Callable[[list[str], threading.Event], None],
+    before_io: Callable[[], None] | None = None,
 ) -> bool:
     """Extend ``source`` video with a frozen tail via stream copy.
 
@@ -434,6 +487,8 @@ def try_fast_video_tail(
     ``destination``. Returns False when the source is unsupported or the fast
     attempt failed, so the caller falls back to the existing full encode.
     Cancellation (``cancel_event`` set or ``InterruptedError``) propagates.
+    ``before_io``, when supplied, runs before every probe, FFmpeg command,
+    content read/write, and destination promotion; its exceptions propagate.
     """
     source = Path(source)
     destination = Path(destination)
@@ -473,7 +528,7 @@ def try_fast_video_tail(
 
         ffprobe = _ffprobe_for_ffmpeg(ffmpeg_executable)
         try:
-            stream, _fmt = _probe_streams(ffprobe, source, cancel_event)
+            stream, _fmt = _probe_streams(ffprobe, source, cancel_event, before_io=before_io)
             info = _eligible_info(stream)
             tail_frames, tail_duration = _tail_plan(fps_hint, info["fps"])
         except _Ineligible as error:
@@ -494,10 +549,12 @@ def try_fast_video_tail(
 
         # 1. Stream-copy the original encoded video body (no audio; the
         #    caller muxes audio separately).
-        run_command(
+        _run_authorized_command(
+            run_command,
             [
                 ffmpeg_executable,
                 *_FF_PREFIX,
+                *LOCAL_MEDIA_INPUT_OPTIONS,
                 "-i",
                 str(source),
                 "-map",
@@ -510,6 +567,7 @@ def try_fast_video_tail(
                 str(body_path),
             ],
             cancel_event,
+            before_io=before_io,
         )
         _check_cancelled(cancel_event)
 
@@ -521,7 +579,8 @@ def try_fast_video_tail(
         #    the full recording.
         extract_start = max(0.0, video_end - window)
         extract_len = (video_end - extract_start) + 0.25
-        run_command(
+        _run_authorized_command(
+            run_command,
             [
                 ffmpeg_executable,
                 *_FF_PREFIX,
@@ -531,6 +590,7 @@ def try_fast_video_tail(
                 f"{extract_start:.6f}",
                 "-t",
                 f"{extract_len:.6f}",
+                *LOCAL_MEDIA_INPUT_OPTIONS,
                 "-i",
                 str(source),
                 "-map",
@@ -546,6 +606,7 @@ def try_fast_video_tail(
                 str(frame_path),
             ],
             cancel_event,
+            before_io=before_io,
         )
         _check_cancelled(cancel_event)
         expected_raw = width * height * 3 // 2
@@ -558,7 +619,8 @@ def try_fast_video_tail(
 
         # 3. Encode the short still clip with source-compatible metadata and
         #    no B-frames so the stream-copy seam cannot reorder.
-        run_command(
+        _run_authorized_command(
+            run_command,
             [
                 ffmpeg_executable,
                 *_FF_PREFIX,
@@ -599,6 +661,7 @@ def try_fast_video_tail(
                 str(tail_path),
             ],
             cancel_event,
+            before_io=before_io,
         )
         _check_cancelled(cancel_event)
 
@@ -606,11 +669,13 @@ def try_fast_video_tail(
         #    The list references the fixed relative filenames alongside it,
         #    so user paths with spaces/quotes/backslashes never enter the
         #    concat script at all; every other path travels as argv.
+        _call_before_io(before_io)
         list_path.write_text(
-            f"ffconcat version 1.0\nfile {body_path.name}\nfile {tail_path.name}\n",
+            f"ffconcat version 1.0\nfile {body_path.name}\n{CONCAT_MEMBER_OPTIONS}file {tail_path.name}\n{CONCAT_MEMBER_OPTIONS}",
             encoding="utf-8",
         )
-        run_command(
+        _run_authorized_command(
+            run_command,
             [
                 ffmpeg_executable,
                 *_FF_PREFIX,
@@ -618,6 +683,7 @@ def try_fast_video_tail(
                 "concat",
                 "-safe",
                 "0",
+                *GENERATED_CONCAT_INPUT_OPTIONS,
                 "-i",
                 str(list_path),
                 "-map",
@@ -630,12 +696,15 @@ def try_fast_video_tail(
                 str(output_tmp),
             ],
             cancel_event,
+            before_io=before_io,
         )
         _check_cancelled(cancel_event)
 
         # 5. Efficient validation (never a full decode of a long recording).
         try:
-            out_stream, _out_fmt = _probe_streams(ffprobe, output_tmp, cancel_event)
+            out_stream, _out_fmt = _probe_streams(
+                ffprobe, output_tmp, cancel_event, before_io=before_io
+            )
         except _Ineligible as error:
             return fail(f"joined output unreadable: {error}")
         if str(out_stream.get("codec_name") or "").lower() not in {"h264", "avc"}:
@@ -696,9 +765,11 @@ def try_fast_video_tail(
                     f"{seam_start:.6f}%{seam_end:.6f}",
                     "-of",
                     "json",
+                    *LOCAL_MEDIA_INPUT_OPTIONS,
                     str(output_tmp),
                 ],
                 cancel_event,
+                before_io=before_io,
             )
         except _Ineligible as error:
             return fail(f"seam packet probe failed: {error}")
@@ -746,7 +817,8 @@ def try_fast_video_tail(
             return fail("source is too short for frame preservation check.")
         src_md5 = track(scratch_dir / ".tailfast-src.md5")
         out_md5 = track(scratch_dir / ".tailfast-out.md5")
-        run_command(
+        _run_authorized_command(
+            run_command,
             [
                 ffmpeg_executable,
                 *_FF_PREFIX,
@@ -756,6 +828,7 @@ def try_fast_video_tail(
                 f"{frozen_start:.6f}",
                 "-t",
                 f"{frozen_len:.6f}",
+                *LOCAL_MEDIA_INPUT_OPTIONS,
                 "-i",
                 str(source),
                 "-map",
@@ -768,9 +841,11 @@ def try_fast_video_tail(
                 str(src_md5),
             ],
             cancel_event,
+            before_io=before_io,
         )
         _check_cancelled(cancel_event)
-        run_command(
+        _run_authorized_command(
+            run_command,
             [
                 ffmpeg_executable,
                 *_FF_PREFIX,
@@ -780,6 +855,7 @@ def try_fast_video_tail(
                 f"{frozen_start:.6f}",
                 "-t",
                 f"{frozen_len:.6f}",
+                *LOCAL_MEDIA_INPUT_OPTIONS,
                 "-i",
                 str(output_tmp),
                 "-map",
@@ -792,11 +868,12 @@ def try_fast_video_tail(
                 str(out_md5),
             ],
             cancel_event,
+            before_io=before_io,
         )
         _check_cancelled(cancel_event)
         try:
-            src_rows = _framemd5_rows(src_md5)
-            out_rows = _framemd5_rows(out_md5)
+            src_rows = _framemd5_rows(src_md5, before_io=before_io)
+            out_rows = _framemd5_rows(out_md5, before_io=before_io)
         except OSError:
             return fail("frame hash comparison produced no output.")
         if not src_rows or len(src_rows) != len(out_rows):
@@ -807,7 +884,8 @@ def try_fast_video_tail(
         # 5d. Strict local decode around the seam only.
         strict_start = max(0.0, video_end - _STRICT_WINDOW_BEFORE)
         strict_len = (video_end - strict_start) + tail_duration + (_STRICT_WINDOW_AFTER_PAD)
-        run_command(
+        _run_authorized_command(
+            run_command,
             [
                 ffmpeg_executable,
                 *_FF_PREFIX,
@@ -820,6 +898,7 @@ def try_fast_video_tail(
                 "-err_detect",
                 "explode",
                 "-xerror",
+                *LOCAL_MEDIA_INPUT_OPTIONS,
                 "-i",
                 str(output_tmp),
                 "-map",
@@ -830,9 +909,11 @@ def try_fast_video_tail(
                 "-",
             ],
             cancel_event,
+            before_io=before_io,
         )
         _check_cancelled(cancel_event)
 
+        _call_before_io(before_io)
         _remove_quietly(destination)
         os.replace(output_tmp, destination)
         intermediates = [path for path in intermediates if path != output_tmp]
@@ -844,6 +925,9 @@ def try_fast_video_tail(
             tail_duration,
         )
         return True
+    except _BeforeIOFailure as failure:
+        cleanup()
+        raise failure.original from None
     except InterruptedError:
         cleanup()
         raise

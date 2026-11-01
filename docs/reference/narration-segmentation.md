@@ -3,9 +3,10 @@
 Choose the TTS model before segmenting an audiobook. Pandrator groups complete
 sentences within a model-specific budget. Ordinary paragraphs stay separate;
 short, confidently recognised dialogue turns can share a narration block.
-Chapter and scene boundaries remain separate. These targets leave roughly 10%
-below the reviewed application ceiling;
-they are starting policies, not measured acoustic maxima for every checkpoint,
+Chapter and scene boundaries remain separate. Most targets leave roughly 10%
+below the reviewed application ceiling; Qwen uses a direct 350-character target
+to reduce memory use.
+These are starting policies, not measured acoustic maxima for every checkpoint,
 language, voice, or speaking style. Short paragraphs can remain shorter.
 
 ## Change the length in the UI
@@ -13,8 +14,8 @@ language, voice, or speaking style. Short paragraphs can remain shorter.
 Open an audiobook project, select **Advanced**, and find **Length of new narration
 blocks** in **Speech plan**. **Automatic · model default** displays the current
 model target. Select **Custom limit**, enter the maximum characters, and click
-**Save length**. Run **Segment narration** again and prepare a new speech plan to
-apply it. Existing reviewed plans and recordings keep their boundaries.
+**Save narration settings**. Run **Segment narration** again and prepare a new
+speech plan to apply it. Existing reviewed plans and recordings keep their boundaries.
 
 Custom limits can exceed automatic targets. Actual model input and output limits
 still apply. Irodori requests that cannot be shown to fit its text window fail
@@ -50,12 +51,29 @@ ornaments and chapter markers stop grouping. Empty EPUB metadata wrappers do not
 create scene gaps.
 
 Packing keeps complete sentences in source order until the next sentence would
-exceed a budget. An individually oversized sentence is split first: natural
+exceed a budget. That sentence starts a new block and counting begins again.
+An individually oversized sentence still uses the existing fallback: natural
 punctuation is preferred, then conjunctions, then a whitespace fallback for Latin
 text. Candidate splits aim for balanced parts, rather than a full block followed
 by a tiny tail. Closing quotes stay with their punctuation; numeric commas are
 not clause boundaries. CJK text requires a natural boundary and reports an error
 if none fits. Existing chapter-title exemptions still apply.
+
+**Sentence packing** is available beside the length controls and in **Segment
+narration → Settings**. **Automatic** prefers whole sentences when the effective
+segment limit is at or above **Whole-sentence threshold**, which defaults to
+**300 characters** and accepts 1–8,192. Below the threshold, the existing compact
+packing remains available. **Prefer whole sentences** and **Allow clause packing**
+override the automatic threshold in either direction.
+
+Whole-sentence packing keeps the pieces of an oversized sentence separate from
+neighbouring sentences. Early tokenizer cuts inside a sentence, including at a
+semicolon, are joined before checking that sentence against the budgets.
+It does not let that sentence exceed the character,
+word or tokenizer budget: the existing clause and whitespace fallback still
+applies. Allow clause packing can combine those pieces with neighbouring
+sentences when they fit. All modes retain the existing paragraph, chapter and
+scene boundaries.
 
 ## Added silence and playback
 
@@ -111,7 +129,11 @@ introduce speaker identities, character proposals, delivery directions or vocal
 events. Existing authored controls are preserved. Read each tool's returned next
 actions for claiming, submitting and reviewing the revision.
 
-## audio.cpp 0.9.2 defaults
+For sentence packing, patch `audiobook_sentence_packing` with `auto`, `sentences`
+or `clauses`, and `audiobook_sentence_packing_threshold` with an integer from 1
+through 8,192. These settings apply to newly prepared audiobook narration.
+
+## audio.cpp 0.9.2-drama3-base-small defaults
 
 The following are automatic audiobook targets in characters for ordinary Latin
 script text. Language-specific targets are listed below. Quantizations of the
@@ -134,16 +156,18 @@ preference, not necessarily a hard model input limit.
 | `firered_audio` | 270 | Not a fixed request character default |
 | `fireredtts3` | 540 | 600 |
 | `fish_audio` | 270 | 200 |
+| `fish_drama3` | 540 | 128 |
 | `glm_tts` | 270 | Not a fixed request character default |
 | `higgs_audio_tts` | 921 | 1024 |
 | `index_tts2` | 270 | Not a fixed request character default |
 | `inflect_v2` | 252 | 280 |
 | `irodori_tts` | 72 | Not a fixed request character default |
 | `kitten_tts` | 360 | 400 |
-| `kitten_tts2` | 342 | 380 |
+| `kitten_tts2` | 540 | 380 |
 | `kokoro_tts` | 216 | 240 |
 | `kugelaudio` | 270 | 300 |
 | `lfm2_audio` | 180 | 200 |
+| `plapre` | 270 | 300 |
 | `magpie_tts` | 270 | 300 |
 | `maya1` | 270 | 300 |
 | `miotts` | 270 | Not a fixed request character default |
@@ -157,7 +181,7 @@ preference, not necessarily a hard model input limit.
 | `outetts` | 230 | 256 |
 | `piper_tts` | 252 | 280 |
 | `pocket_tts` | 180 | Not a fixed request character default |
-| `qwen3_tts` | 1,800 | 8192 |
+| `qwen3_tts` | 350 | 8192 |
 | `sanotts` | 252 | 280 |
 | `soprano_tts` | 180 | 200 |
 | `sopro_tts` | 270 | Not a fixed request character default |
@@ -174,7 +198,17 @@ they are not text tokens. Pocket uses an explicit character override; its native
 50-text-token fallback otherwise also splits at sentence boundaries. Confucius'
 native 80-token splitter is replaced by the framework character path.
 
-Qwen uses 450 characters for Chinese, Japanese, and Korean; VoxCPM uses 450;
+Drama 3 and Kitten TTS 2 use a 600-character application ceiling before the shared
+reserve, independently of GPU memory. Their native 128- and 380-character defaults
+are configurable splitting preferences. Drama's default output budget is 1,024
+acoustic frames (about 48 seconds); its prompt, references and history must also
+fit the configured context. Kitten retains its enforced 1,000-character chunk
+ceiling. Plapre stays at 270: its default 500 audio tokens represent 20 seconds,
+and upstream warns that forcing longer text into one chunk can omit speech.
+These policies do not establish measured maximum durations.
+
+Drama 3 uses 270 characters for Chinese, Japanese, and Korean.
+Qwen also uses 350 characters for Chinese, Japanese, and Korean; VoxCPM uses 450;
 Breeze 324; Higgs 270; MOSS Local 450; and MOSS Nano 72. Supertonic uses 108 for
 Japanese and Korean. Confucius uses 72 for Chinese, Japanese, and Korean.
 Korean Chatterbox uses 63: its default 384 speech tokens allow only about
@@ -184,7 +218,7 @@ expand to a three-byte metaspace marker, and the request guard reserves BOS and
 the v3 prefix within the 256-token checkpoint window. This conservative bound
 can reject text that a full tokenizer would compress more efficiently.
 
-Explicitly lower Qwen and Breeze output budgets reduce their automatic character
+Explicitly lower Qwen, Breeze and Drama 3 output budgets reduce their automatic character
 targets. A smaller saved `text_chunk_size` also reduces automatic preparation
 (except Confucius, whose default setting has different units). Custom mode
 keeps the chosen character count; final request guards still apply.
@@ -216,6 +250,7 @@ With other families, model-native context checks and output ceilings still apply
 Use a representative multi-sentence audition before preparing a long book,
 especially after changing language, speed, reference audio, or output budgets.
 
-Sources: [pinned model specs](https://github.com/0xShug0/audio.cpp/tree/0097d365a00b52a6991ad7618f0a04e8d2935e47/model_specs),
+Sources: [pinned model specs](https://github.com/0xShug0/audio.cpp/tree/507495611b22dc4590e0e5609e05e8096384e33f/model_specs),
+[Plapre long-text guidance](https://github.com/0xShug0/audio.cpp/blob/507495611b22dc4590e0e5609e05e8096384e33f/docs/models/plapre.md),
 [framework splitter](https://github.com/0xShug0/audio.cpp/blob/0097d365a00b52a6991ad7618f0a04e8d2935e47/src/framework/text/chunking.cpp),
 [Voxtral guidance](https://docs.mistral.ai/studio/audio/text_to_speech/speech).

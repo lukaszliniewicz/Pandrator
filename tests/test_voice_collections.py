@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url, upgrade_database
 from pandrator.web.models import Voice
+from pandrator.web.projects.identity import initial_personal_workspace
 from pandrator.web.voice_catalog_schemas import (
     VoiceCollectionCreate,
     VoiceCollectionUpdate,
@@ -30,7 +31,10 @@ def _database(tmp_path: Path) -> Database:
 
 
 def _managed_voice(session, name: str = "Narrator") -> Voice:
-    voice = Voice(name=name)
+    voice = Voice(
+        workspace_id=initial_personal_workspace(session).id,
+        name=name,
+    )
     session.add(voice)
     session.flush()
     return voice
@@ -176,14 +180,13 @@ def test_duplicate_normalized_collection_name_and_missing_collection(
 
 def test_migration_preserves_existing_voice_rows(tmp_path: Path) -> None:
     database_path = tmp_path / "legacy.sqlite3"
-    upgrade_database(database_path)
     config = Config()
     config.set_main_option(
         "script_location",
         str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"),
     )
     config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
-    command.downgrade(config, "0047_performance_plans")
+    command.upgrade(config, "0047_performance_plans")
     with sqlite3.connect(database_path) as connection:
         connection.execute(
             "INSERT INTO voices (id, name, metadata_json, revision, created_at, updated_at) "

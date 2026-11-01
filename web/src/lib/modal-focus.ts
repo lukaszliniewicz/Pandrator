@@ -22,6 +22,7 @@ function focusableChildren(node: HTMLElement) {
     (element) => {
       const style = getComputedStyle(element);
       return (
+        !element.closest('[inert], [hidden], [aria-hidden="true"]') &&
         !element.hidden &&
         element.getAttribute('aria-hidden') !== 'true' &&
         element.getClientRects().length > 0 &&
@@ -101,8 +102,28 @@ export const modalFocus: Action<HTMLElement, ModalFocusOptions | undefined> = (
       node.removeEventListener('keydown', handleKeydown);
       if (!hadTabIndex) node.removeAttribute('tabindex');
       queueMicrotask(() => {
-        if (returnFocus?.isConnected)
-          returnFocus.focus({ preventScroll: true });
+        if (
+          !returnFocus?.isConnected ||
+          returnFocus.getClientRects().length === 0
+        )
+          return;
+        const active = document.activeElement;
+        const currentModal =
+          active instanceof HTMLElement
+            ? active.closest(
+                'dialog[open], [role="dialog"][aria-modal="true"], [role="alertdialog"]'
+              )
+            : null;
+        // A new dialog or a search result may have deliberately taken focus.
+        if (
+          active !== returnFocus &&
+          currentModal &&
+          currentModal !== node &&
+          !currentModal.contains(node) &&
+          active !== currentModal
+        )
+          return;
+        returnFocus.focus({ preventScroll: true });
       });
     }
   };

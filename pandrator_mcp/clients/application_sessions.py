@@ -262,6 +262,7 @@ class ApplicationSessionMethods(ApplicationRequests):
         idempotency_key: str,
         interface_mode: Literal["simple", "advanced"] = "simple",
         multilingual_setup: Any = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         return self._request_json(
             "/api/v1/sessions",
@@ -274,6 +275,7 @@ class ApplicationSessionMethods(ApplicationRequests):
                 "target_language": target_language,
                 "workflow_preset": workflow_preset,
                 "included_stages": list(included_stages),
+                **({"workspace_id": workspace_id} if workspace_id is not None else {}),
                 **(
                     {
                         "multilingual_setup": multilingual_setup.model_dump(mode="json")

@@ -3,6 +3,7 @@
   import VoiceCatalogLibrary from './VoiceCatalogLibrary.svelte';
   import type { CatalogVoice } from './voice-library-api';
   import { modalFocus } from './modal-focus';
+  import { appState } from './app-state.svelte';
 
   let {
     onclose,
@@ -10,6 +11,8 @@
     initialService = '',
     initialModel = '',
     initialVoice = '',
+    workspaceId,
+    sessionId,
     castingLabel = '',
     onselect,
     onvoicepublished
@@ -19,11 +22,17 @@
     initialService?: string;
     initialModel?: string;
     initialVoice?: string;
+    workspaceId?: string;
+    sessionId?: string;
     castingLabel?: string;
     onselect?: (voice: CatalogVoice) => void;
     onvoicepublished?: (providerVoiceId: string) => void;
   } = $props();
-  let library: VoiceCatalogLibrary;
+  let library = $state<VoiceCatalogLibrary>();
+  const selectedWorkspaceId = $derived(
+    workspaceId ??
+      (sessionId ? undefined : (appState.activeWorkspaceId ?? undefined))
+  );
   function close() {
     if (library) library.requestClose(onclose);
     else onclose();
@@ -60,16 +69,20 @@
       >
     </header>
     <div class="modal-scroll min-h-0 flex-1 p-4 sm:p-6">
-      <VoiceCatalogLibrary
-        bind:this={library}
-        {initialView}
-        {initialService}
-        {initialModel}
-        {initialVoice}
-        embedded
-        {onselect}
-        {onvoicepublished}
-      />
+      {#key `${appState.contentKey}:${selectedWorkspaceId ?? ''}:${sessionId ?? ''}`}
+        <VoiceCatalogLibrary
+          bind:this={library}
+          {initialView}
+          {initialService}
+          {initialModel}
+          {initialVoice}
+          workspaceId={selectedWorkspaceId}
+          {sessionId}
+          embedded
+          {onselect}
+          {onvoicepublished}
+        />
+      {/key}
     </div>
   </div>
 </div>

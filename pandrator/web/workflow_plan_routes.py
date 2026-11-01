@@ -11,6 +11,7 @@ from .schemas import (
     WorkflowPlanCreateRequest,
     WorkflowPlanExecuteRequest,
 )
+from .subtitle_selection import SubtitleSelectionUnavailable
 from .workflow_plans import WorkflowPlanError
 
 MAXIMUM_PLAN_REQUEST_BYTES = 512 * 1024
@@ -36,7 +37,7 @@ def register_workflow_plan_routes(
         )
 
     @app.post("/api/v1/sessions/<session_id>/workflow-plans")
-    @context.guards.require_scope("app.read")
+    @context.guards.require_scope("app.run")
     def workflow_plan_create(session_id: str):
         if (
             request.content_length is not None
@@ -78,6 +79,8 @@ def register_workflow_plan_routes(
             )
         except WorkflowPlanError as error:
             return plan_error(error)
+        except SubtitleSelectionUnavailable as error:
+            return error_response(error.code, str(error), 422)
         except ValueError as error:
             return error_response(
                 "validation_error",
@@ -97,6 +100,8 @@ def register_workflow_plan_routes(
         assert principal is not None
         try:
             plan = plans.get(plan_id, principal=principal)
+        except KeyError:
+            return error_response("not_found", "Workflow execution plan not found.", 404)
         except WorkflowPlanError as error:
             return plan_error(error)
         g.audit_plan_id = plan_id
@@ -134,6 +139,8 @@ def register_workflow_plan_routes(
                 accepted_confirmations=payload.accepted_confirmations,
                 idempotency_key=request.headers.get("Idempotency-Key"),
             )
+        except KeyError:
+            return error_response("not_found", "Workflow execution plan not found.", 404)
         except ValueError as error:
             return error_response(
                 "idempotency_key_required",

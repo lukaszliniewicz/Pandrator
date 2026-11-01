@@ -13,6 +13,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from ..cancellable_process import ProcessCancelled
+from ..model_acquisition import require_model_acquisition
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ def ensure_asset(
         return existing
     target = cache_path(asset, settings)
     target.parent.mkdir(parents=True, exist_ok=True)
+    require_model_acquisition()
     temporary_path: Path | None = None
     headers = {"Accept": "application/octet-stream", "User-Agent": "Pandrator/Qwen3-ASR"}
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")

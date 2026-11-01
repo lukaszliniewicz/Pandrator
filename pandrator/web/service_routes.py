@@ -2,23 +2,46 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import wraps
 from typing import Any
 
 import requests
 from flask import jsonify, request
+from sqlalchemy import select
 from werkzeug.datastructures import MultiDict
 
 from pandrator.logic.audio_cpp_catalogue import catalogue_page
 from pandrator.logic.model_catalogue import catalogue_page as model_catalogue_page
 from pandrator.logic.tts_service_identity import normalize_service_id
 
+from .access.contracts import ProjectNotFound, WorkspaceNotFound
+from .access.job_policy import JobNotFound
+from .access.session_policy import SessionNotFound
+from .access.speech_preview_policy import require_preview_replay, require_preview_workspace
+from .access.workspace_policy import WorkspaceAction
+from .accounts.execution_actor import execution_actor_scope
+from .credential_identity import credential_namespace
 from .domain_blueprints import DomainBlueprints
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
+from .models import ApiIdempotency
 from .route_context import RouteContext
 from .schemas import TtsEndpointDiscoveryRequest, TtsVoicePreviewRequest
+from .speech_catalogue_access import (
+    CatalogueChanged,
+    SpeechFence,
+    SpeechScopeInvalid,
+    require_speech_access,
+    scope_identifier,
+)
+from .speech_catalogue_projection import (
+    approved_tts_payload,
+    public_configuration,
+    summary_tts_payload,
+)
+from .voice_provider_settings import capture_voice_provider_settings, check_voice_provider_settings
 from .xtts_model_proxy import (
     _XTTS_MODEL_BUNDLE_FILENAME_SET,
     _XTTS_MODEL_UPLOAD_TIMEOUT_SECONDS,
@@ -157,65 +180,191 @@ def register_service_routes(
     mutation_idempotency_key = idempotency.require_key
     idempotency_failure = idempotency.failure
     replay_idempotency = idempotency.replay
-    inspect_voice_idempotency = idempotency.inspect
 
-    @app.get("/api/v1/services/tts")
-    @require_auth
-    def tts_services():
-        from .tts_providers import TTS_CATALOGUE_VIEWS, TtsCatalogueServiceNotFoundError
+    def speech_errors(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            except CatalogueChanged as error:
+                return error_response("catalogue_changed", str(error), 409)
+            except (WorkspaceNotFound, ProjectNotFound, SessionNotFound):
+                return error_response("not_found", "Speech workspace not found.", 404)
+            except SpeechScopeInvalid as error:
+                return error_response("validation_error", str(error), 422)
 
-        view = str(request.args.get("view", "full") or "full").strip().lower()
-        if view not in TTS_CATALOGUE_VIEWS:
+        return wrapped
+
+    def passive_refresh_error():
+        if request.args.get("refresh", "").strip().lower() in {"1", "true", "yes"}:
             return error_response(
-                "validation_error",
-                "view must be 'full' or 'compact'.",
-                422,
+                "catalogue_refresh_requires_post", "Use POST to refresh the speech catalogue.", 409
             )
-        try:
-            selection = _tts_service_selection(request.args)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
-        try:
-            payload, revision = tts_catalogue.snapshot(
-                refresh=request.args.get("refresh", "").lower() in {"1", "true", "yes"},
-                view=view,
-                service_ids=selection,
+        return None
+
+    def capture_tts(
+        *, action=WorkspaceAction.READ, refresh=False, admin=False, revisions=False, sessions=True
+    ):
+        if not sessions and "session_id" in request.args:
+            raise SpeechScopeInvalid("Session scope is only available for catalogue reads.")
+        actual_context = context.guards.access_context()
+        with database.snapshot_session() as db_session:
+            access = require_speech_access(
+                db_session,
+                actual_context,
+                request.args.get("workspace_id"),
+                session_id=request.args.get("session_id") if sessions else None,
+                action=action,
+                refresh=refresh,
+                admin=admin,
             )
-        except TtsCatalogueServiceNotFoundError as error:
-            return error_response("tts_service_not_found", str(error), 404)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
+            settings = tts_catalogue._settings(
+                db_session=db_session, workspace_id=access.workspace.id
+            )
+            allow_host_adc = credential_namespace(
+                db_session, workspace_id=access.workspace.id
+            ).host_credentials_allowed
+        original_action = (
+            action
+            if action is not WorkspaceAction.READ
+            else WorkspaceAction.MANAGE_READ
+            if access.configuration
+            else WorkspaceAction.READ
+        )
+        fence = SpeechFence(
+            database,
+            actual_context,
+            access.workspace.id,
+            original_action,
+            refresh=refresh,
+            admin=admin or access.legacy_manager,
+            revisions=(settings[1], settings[3]) if revisions else None,
+            expected_host_credentials=allow_host_adc,
+        )
+        return access, settings, fence, allow_host_adc
+
+    def finish_catalogue(payload, revision, access, fence):
+        fence()
+        if access.configuration and not access.legacy_manager:
+            payload = public_configuration(payload)
+        payload.update(access.metadata())
         response = jsonify(payload)
         response.headers["ETag"] = f'"{revision}"'
         return response
 
-    @app.get("/api/v1/services/tts/<service_id>")
-    @require_auth
-    def tts_service_detail(service_id: str):
+    def catalogue_response(service_id=None, *, refresh=False):
         from .tts_providers import (
+            TTS_CATALOGUE_VIEWS,
             TtsCatalogueModelNotFoundError,
             TtsCatalogueServiceNotFoundError,
         )
 
+        error = passive_refresh_error() if not refresh else None
+        if error is not None:
+            return error
         try:
-            selected_models = _tts_model_selection(request.args)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
-        try:
-            payload, revision = tts_catalogue.service_detail(
-                service_id,
-                refresh=request.args.get("refresh", "").lower() in {"1", "true", "yes"},
-                models=selected_models,
+            view = str(request.args.get("view", "full") or "full").strip().lower()
+            summary = view == "summary"
+            if summary and service_id is not None:
+                raise ValueError("Summary view is only available for TTS collections.")
+            if view not in (*TTS_CATALOGUE_VIEWS, "summary"):
+                raise ValueError("view must be 'full', 'compact' or 'summary'.")
+            selection = _tts_service_selection(request.args) if service_id is None else None
+            models = _tts_model_selection(request.args) if service_id is not None else None
+            access, settings, fence, allow_host_adc = capture_tts(
+                action=WorkspaceAction.MANAGE if refresh else WorkspaceAction.READ,
+                refresh=refresh,
+                revisions=refresh,
+                sessions=not refresh,
             )
+            options = {
+                "refresh": refresh,
+                "workspace_id": access.workspace.id,
+                "settings_snapshot": settings,
+                "allow_host_adc": allow_host_adc,
+                "approved_only": not refresh if summary else not access.configuration,
+                "before_io": fence if refresh else None,
+            }
+            if service_id is None:
+                payload, revision = tts_catalogue.snapshot(
+                    view="compact" if summary else view, service_ids=selection, **options
+                )
+                if summary:
+                    if refresh:
+                        observed = {}
+                        for service in payload.get("services", []):
+                            state: dict[str, Any] = {
+                                key: value
+                                for key, value in service.items()
+                                if (key in {"online", "available"} and type(value) is bool)
+                                or (key == "health_checked_at" and isinstance(value, str))
+                            }
+                            catalogue = service.get("catalogue")
+                            if isinstance(catalogue, dict):
+                                state["catalogue"] = {
+                                    key: value
+                                    for key, value in catalogue.items()
+                                    if (key == "complete" and type(value) is bool)
+                                    or (
+                                        key in {"source", "scope", "service_id", "checked_at"}
+                                        and (value is None or isinstance(value, str))
+                                    )
+                                }
+                            observed[service["id"]] = state
+                        payload = approved_tts_payload(payload)
+                        for service in payload.get("services", []):
+                            service.update(observed.get(service.get("id"), {}))
+                    payload = summary_tts_payload(payload)
+            else:
+                payload, revision = tts_catalogue.service_detail(
+                    service_id, models=models, allow_refresh_fallback=False, **options
+                )
+            return finish_catalogue(payload, revision, access, fence)
         except TtsCatalogueServiceNotFoundError as error:
             return error_response("tts_service_not_found", str(error), 404)
         except TtsCatalogueModelNotFoundError as error:
             return error_response("tts_model_not_found", str(error), 404)
+        except CatalogueChanged:
+            raise
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
-        response = jsonify(payload)
-        response.headers["ETag"] = f'"{revision}"'
-        return response
+
+    def live_scope(action):
+        def decorate(function):
+            @wraps(function)
+            def wrapped(*args, **kwargs):
+                captured = capture_tts(action=action, admin=True, sessions=False)
+                response = function(*args, _speech=captured, **kwargs)
+                captured[2]()
+                return response
+
+            return wrapped
+
+        return decorate
+
+    @app.get("/api/v1/services/tts")
+    @require_auth
+    @speech_errors
+    def tts_services():
+        return catalogue_response()
+
+    @app.get("/api/v1/services/tts/<service_id>")
+    @require_auth
+    @speech_errors
+    def tts_service_detail(service_id: str):
+        return catalogue_response(service_id)
+
+    @app.post("/api/v1/services/tts/refresh")
+    @require_auth
+    @speech_errors
+    def tts_services_refresh():
+        return catalogue_response(refresh=True)
+
+    @app.post("/api/v1/services/tts/<service_id>/refresh")
+    @require_auth
+    @speech_errors
+    def tts_service_refresh(service_id: str):
+        return catalogue_response(service_id, refresh=True)
 
     @app.get("/api/v1/services/audio-cpp/catalogue")
     @require_auth
@@ -251,22 +400,56 @@ def register_service_routes(
 
     @app.get("/api/v1/services/stt")
     @require_auth
+    @speech_errors
     def stt_services():
-        from .stt_providers import stt_catalogue_snapshot
+        from .stt_providers import stt_catalogue_settings_in_session, stt_catalogue_snapshot
 
-        payload, revision = stt_catalogue_snapshot(database, paths)
-        response = jsonify(payload)
-        response.headers["ETag"] = f'"{revision}"'
-        return response
+        error = passive_refresh_error()
+        if error is not None:
+            return error
+        actual_context = context.guards.access_context()
+        with database.snapshot_session() as db_session:
+            access = require_speech_access(
+                db_session,
+                actual_context,
+                request.args.get("workspace_id"),
+                session_id=request.args.get("session_id"),
+            )
+            settings = stt_catalogue_settings_in_session(
+                db_session, workspace_id=access.workspace.id
+            )
+        fence = SpeechFence(
+            database,
+            actual_context,
+            access.workspace.id,
+            WorkspaceAction.MANAGE_READ if access.configuration else WorkspaceAction.READ,
+        )
+        payload, revision = stt_catalogue_snapshot(
+            database,
+            paths,
+            workspace_id=access.workspace.id,
+            settings_snapshot=settings,
+            approved_only=not access.configuration,
+        )
+        return finish_catalogue(payload, revision, access, fence)
 
     @app.get("/api/v1/services/tts/xtts/models")
     @require_auth
-    def xtts_models_list():
-        catalogue, _revision = tts_catalogue.snapshot()
+    @speech_errors
+    @live_scope(WorkspaceAction.MANAGE_READ)
+    def xtts_models_list(*, _speech):
+        access, settings, fence, allow_host_adc = _speech
+        catalogue, _revision = tts_catalogue.snapshot(
+            workspace_id=access.workspace.id,
+            settings_snapshot=settings,
+            allow_host_adc=allow_host_adc,
+            before_io=fence,
+        )
         endpoint_base, endpoint_error = _xtts_service_endpoint_base(catalogue)
         if endpoint_error:
             return error_response("xtts_service_unavailable", endpoint_error, 503)
         try:
+            fence()
             wrapper_response = requests.get(
                 _xtts_models_endpoint(endpoint_base),
                 headers={
@@ -321,6 +504,7 @@ def register_service_routes(
         lifecycle_supported = bool(items) and all(item["lifecycle_supported"] for item in items)
         wrapper: dict[str, str] | None = None
         try:
+            fence()
             health_response = requests.get(
                 _xtts_health_endpoint(endpoint_base),
                 headers={
@@ -358,7 +542,9 @@ def register_service_routes(
 
     @app.post("/api/v1/services/tts/xtts/models")
     @require_auth
-    def xtts_model_upload():
+    @speech_errors
+    @live_scope(WorkspaceAction.MANAGE)
+    def xtts_model_upload(*, _speech):
         if set(request.form.keys()) != {"model_id"}:
             return error_response(
                 "validation_error",
@@ -398,12 +584,19 @@ def register_service_routes(
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
 
-        catalogue, _revision = tts_catalogue.snapshot()
+        access, settings, fence, allow_host_adc = _speech
+        catalogue, _revision = tts_catalogue.snapshot(
+            workspace_id=access.workspace.id,
+            settings_snapshot=settings,
+            allow_host_adc=allow_host_adc,
+            before_io=fence,
+        )
         endpoint_base, endpoint_error = _xtts_service_endpoint_base(catalogue)
         if endpoint_error:
             return error_response("xtts_service_unavailable", endpoint_error, 503)
 
         try:
+            fence()
             wrapper_response = requests.post(
                 _xtts_models_endpoint(endpoint_base),
                 data=body,
@@ -499,15 +692,24 @@ def register_service_routes(
 
     @app.delete("/api/v1/services/tts/xtts/models/<path:model_id>")
     @require_auth
-    def xtts_model_delete(model_id: str):
+    @speech_errors
+    @live_scope(WorkspaceAction.MANAGE)
+    def xtts_model_delete(model_id: str, *, _speech):
         model_id_error = _xtts_model_id_error(model_id)
         if model_id_error:
             return error_response("validation_error", model_id_error, 422)
-        catalogue, _revision = tts_catalogue.snapshot()
+        access, settings, fence, allow_host_adc = _speech
+        catalogue, _revision = tts_catalogue.snapshot(
+            workspace_id=access.workspace.id,
+            settings_snapshot=settings,
+            allow_host_adc=allow_host_adc,
+            before_io=fence,
+        )
         endpoint_base, endpoint_error = _xtts_service_endpoint_base(catalogue)
         if endpoint_error:
             return error_response("xtts_service_unavailable", endpoint_error, 503)
         try:
+            fence()
             wrapper_response = requests.delete(
                 _xtts_models_endpoint(endpoint_base, model_id),
                 headers={
@@ -573,121 +775,234 @@ def register_service_routes(
 
     @app.post("/api/v1/services/tts/discover")
     @require_auth
+    @speech_errors
     def tts_service_discover():
         from pandrator.logic import tts_handler
         from pandrator.logic.tts_endpoint_discovery import discover_tts_endpoint
 
-        payload = TtsEndpointDiscoveryRequest.model_validate(request.get_json(silent=True) or {})
-        api_key = str(payload.api_key or "").strip() or tts_catalogue.discovery_api_key(
-            payload.service_id
+        from .credentials import resolve_provider_credential
+        from .tts_providers import TtsCatalogueServiceNotFoundError
+
+        access, settings, fence, _allow_host_adc = capture_tts(
+            action=WorkspaceAction.MANAGE, refresh=True, admin=True, sessions=False
         )
+        payload = TtsEndpointDiscoveryRequest.model_validate(request.get_json(silent=True) or {})
+        api_key = str(payload.api_key or "").strip()
+        if not api_key and payload.service_id:
+            fence = replace(fence, revisions=(settings[1], settings[3]))
+            fence()
+            try:
+                rows, _manager = tts_catalogue._base_services(
+                    settings[0],
+                    settings[2],
+                    selected=[normalize_service_id(payload.service_id)],
+                    before_io=fence,
+                )
+            except TtsCatalogueServiceNotFoundError:
+                return error_response("tts_service_not_found", "TTS service not found.", 404)
+            saved = rows[0]
+            if str(saved.get("api_base") or "").rstrip("/") != str(payload.base_url).rstrip("/"):
+                return error_response(
+                    "validation_error",
+                    "Saved credentials require the configured service endpoint.",
+                    422,
+                )
+            fence()
+            service_id, key_env, reference = tts_catalogue._credential_details(saved)
+            credential = resolve_provider_credential(
+                database,
+                paths,
+                service_id,
+                reference,
+                fallback_environment_variable=key_env,
+                workspace_id=access.workspace.id,
+            )
+            api_key = credential.resolved_value()
+        fence()
         result = discover_tts_endpoint(payload.base_url, api_key=api_key)
         result["models"] = tts_handler.normalize_tts_model_catalog(
-            payload.service_id,
-            result.get("models") or [],
+            payload.service_id, result.get("models") or []
         )
+        fence()
         return jsonify(result), 200 if result.get("success") else 422
 
     @app.post("/api/v1/services/tts/<service_id>/preview")
     @require_auth
+    @speech_errors
     def tts_voice_preview(service_id: str):
+        from .speech_input_contracts import SpeechInputOwner
+        from .speech_inputs import (
+            capture_speech_input,
+            cleanup_unpublished_speech_input,
+            prepare_speech_input,
+            publish_speech_input,
+        )
+
+        if "session_id" in request.args:
+            return error_response("validation_error", "Session scope is not available for this preview.", 422)
+        try:
+            preview_workspace = scope_identifier(request.args.get("workspace_id"))
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         payload = TtsVoicePreviewRequest.model_validate(request.get_json(silent=True) or {})
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
         idempotency_payload = {
             "service_id": service_id,
-            "request": payload.model_dump(mode="json"),
+            # Existing receipts predate the optional managed selector.
+            "request": payload.model_dump(
+                mode="json", exclude={"voice_id"} if payload.voice_id is None else set()
+            ),
         }
-        replay = inspect_voice_idempotency(
-            "ttsVoicePreview",
-            idempotency_key,
-            idempotency_payload,
-        )
-        if replay is not None:
-            return replay
-        try:
-            settings = tts_catalogue.preview_settings(
-                service_id,
-                model=payload.model,
-                voice=payload.voice,
-                language=payload.language,
-                generation_prompt=payload.generation_prompt,
-                seed=payload.seed,
-                preserve_blank_voice=(
-                    "voice" in payload.model_fields_set and not payload.voice.strip()
-                ),
+        access = context.guards.access_context()
+
+        def scoped_principal(db_session, workspace_id):
+            if idempotency_key is None:
+                return None
+            principal = idempotency.principal()
+            if not credential_namespace(db_session, workspace_id).legacy_host_access:
+                principal = replace(
+                    principal,
+                    subject=f"workspace:{workspace_id}:user:{access.actor.user_id}",
+                )
+            return principal
+
+        def checked_replay(db_session, workspace_id, reservation):
+            if reservation.record.resource_kind != "job" or not reservation.record.resource_id:
+                raise JobNotFound()
+            require_preview_replay(
+                db_session, access, reservation.record.resource_id, workspace_id=workspace_id
             )
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
-        if settings is None:
-            return error_response("not_found", "TTS service not found.", 404)
-        preview_context = {
-            "directions": {
-                "source": (
-                    "inherited" if payload.generation_prompt is None
-                    else "custom" if payload.generation_prompt.strip()
-                    else "cleared"
-                ),
-                "present": bool(
-                    str(settings.get("generation_prompt") or "").strip()
-                    or str(settings.get("openai_audio_instructions") or "").strip()
-                ),
-            },
-        }
-        resource_keys = [
-            f"service:tts:{normalize_service_id(settings.get('preview_service_id') or service_id)}"
-        ]
-        if idempotency_key is not None:
-            try:
-                with database.immediate_session() as db_session:
-                    try:
-                        reservation = services.idempotency.begin(
-                            db_session,
-                            principal=idempotency.principal(),
-                            operation_id="ttsVoicePreview",
-                            idempotency_key=idempotency_key,
-                            payload=idempotency_payload,
-                        )
-                    except (
-                        IdempotencyConflict,
-                        IdempotencyInProgress,
-                        ValueError,
-                    ) as error:
-                        return idempotency_failure(error)
-                    replay = replay_idempotency(reservation)
+            saved = reservation.response
+            if saved is not None:
+                body, _status = saved
+                legacy = credential_namespace(db_session, workspace_id).legacy_host_access
+                if (not legacy and body.get("workspace_id") != workspace_id) or (
+                    "workspace_id" in body and body["workspace_id"] != workspace_id
+                ):
+                    raise JobNotFound()
+            return reservation
+
+        def existing_replay(db_session, workspace_id, principal):
+            if principal is None:
+                return None
+            # Prove the saved resource before digest/expiry/response disclosure.
+            existing = db_session.execute(
+                select(ApiIdempotency.resource_kind, ApiIdempotency.resource_id).where(
+                    ApiIdempotency.principal_subject == principal.subject,
+                    ApiIdempotency.operation_id == "ttsVoicePreview",
+                    ApiIdempotency.idempotency_key == idempotency_key,
+                )
+            ).one_or_none()
+            if existing is None:
+                return None
+            if existing.resource_kind != "job" or not existing.resource_id:
+                raise JobNotFound()
+            require_preview_replay(
+                db_session, access, existing.resource_id, workspace_id=workspace_id
+            )
+            reservation = services.idempotency.replay_if_present(
+                db_session, principal=principal, operation_id="ttsVoicePreview",
+                idempotency_key=idempotency_key, payload=idempotency_payload,
+            )
+            return checked_replay(db_session, workspace_id, reservation) if reservation is not None else None
+
+        def enqueue(db_session, workspace_id, principal, settings, revisions, speech_input):
+            reservation = None
+            if principal is not None:
+                reservation = services.idempotency.begin(
+                    db_session, principal=principal, operation_id="ttsVoicePreview",
+                    idempotency_key=idempotency_key, payload=idempotency_payload,
+                )
+                if reservation.replayed:
+                    return None, checked_replay(db_session, workspace_id, reservation)
+            resource_keys = [
+                f"service:tts:{normalize_service_id(settings.get('preview_service_id') or service_id)}"
+            ]
+            with execution_actor_scope(access.actor):
+                job = jobs.enqueue_in_session(
+                    db_session, "tts.preview",
+                    {"text": payload.text, "settings": settings, "workspace_id": workspace_id,
+                     "speech_input": speech_input, **revisions},
+                    workspace_id=workspace_id, max_attempts=1, resource_keys=resource_keys,
+                )
+            result = _job_payload(job)
+            result["workspace_id"] = workspace_id
+            result["preview"] = {"directions": {
+                "source": "inherited" if payload.generation_prompt is None else "custom" if payload.generation_prompt.strip() else "cleared",
+                "present": bool(str(settings.get("generation_prompt") or "").strip()
+                                or str(settings.get("openai_audio_instructions") or "").strip()),
+            }}
+            if reservation is not None:
+                services.idempotency.complete(
+                    db_session, reservation, response=result, status_code=202,
+                    resource_kind="job", resource_id=job.id,
+                )
+            return result, None
+
+        prepared = None
+        adopted = False
+        try:
+            with database.immediate_session() as db_session:
+                workspace_id = require_preview_workspace(db_session, access, preview_workspace)
+                principal = scoped_principal(db_session, workspace_id)
+                replay = existing_replay(db_session, workspace_id, principal)
+                if replay is not None:
+                    return replay_idempotency(replay)
+                settings = tts_catalogue.preview_settings(
+                    service_id, model=payload.model, voice=payload.voice, language=payload.language,
+                    generation_prompt=payload.generation_prompt, seed=payload.seed,
+                    preserve_blank_voice=("voice" in payload.model_fields_set and not payload.voice.strip()),
+                    workspace_id=workspace_id, db_session=db_session,
+                )
+                if settings is None:
+                    return error_response("not_found", "TTS service not found.", 404)
+                revisions = capture_voice_provider_settings(db_session, workspace_id)
+                capture = capture_speech_input(
+                    db_session, paths, settings, owner=SpeechInputOwner(workspace_id), voice_id=payload.voice_id,
+                )
+                if not capture.requires_files:
+                    result, replay = enqueue(
+                        db_session, workspace_id, principal, capture.settings, revisions, None,
+                    )
                     if replay is not None:
-                        return replay
-                    job = jobs.enqueue_in_session(
-                        db_session,
-                        "tts.preview",
-                        {"text": payload.text, "settings": settings},
-                        max_attempts=2,
-                        resource_keys=resource_keys,
-                    )
-                    result = _job_payload(job)
-                    result["preview"] = preview_context
-                    services.idempotency.complete(
-                        db_session,
-                        reservation,
-                        response=result,
-                        status_code=202,
-                        resource_kind="job",
-                        resource_id=job.id,
-                    )
-            except (
-                IdempotencyConflict,
-                IdempotencyInProgress,
-                ValueError,
-            ) as error:
-                return idempotency_failure(error)
+                        return replay_idempotency(replay)
+                    return jsonify(result), 202
+
+            def before_io():
+                with database.snapshot_session() as db_session:
+                    current_workspace = require_preview_workspace(db_session, access, preview_workspace)
+                    if current_workspace != workspace_id:
+                        raise WorkspaceNotFound()
+                    check_voice_provider_settings(db_session, revisions, workspace_id)
+
+            prepared = prepare_speech_input(database, paths, capture, before_io=before_io)
+            with database.immediate_session() as db_session:
+                current_workspace = require_preview_workspace(db_session, access, preview_workspace)
+                if current_workspace != workspace_id:
+                    raise WorkspaceNotFound()
+                current_principal = scoped_principal(db_session, workspace_id)
+                if principal != current_principal:
+                    raise ValueError("Workspace credentials changed. Submit the audition again.")
+                replay = existing_replay(db_session, workspace_id, current_principal)
+                if replay is not None:
+                    return replay_idempotency(replay)
+                check_voice_provider_settings(db_session, revisions, workspace_id)
+                # Source/file identity is rechecked by this persistence leaf;
+                # protected byte reads/copies have already finished outside it.
+                speech_input = publish_speech_input(db_session, paths, capture, prepared)
+                result, replay = enqueue(
+                    db_session, workspace_id, current_principal, capture.settings, revisions, speech_input,
+                )
+                if replay is not None:
+                    raise RuntimeError("The audition receipt changed inside its writer.")
+            adopted = True
             return jsonify(result), 202
-        job = jobs.enqueue(
-            "tts.preview",
-            {"text": payload.text, "settings": settings},
-            max_attempts=2,
-            resource_keys=resource_keys,
-        )
-        result = _job_payload(job)
-        result["preview"] = preview_context
-        return jsonify(result), 202
+        except KeyError:
+            return error_response("not_found", "Speech workspace or work not found.", 404)
+        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+            return idempotency_failure(error)
+        finally:
+            if prepared is not None and not adopted:
+                cleanup_unpublished_speech_input(database, prepared)

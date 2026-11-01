@@ -61,45 +61,51 @@ def archive_members(path: Path) -> tuple[list[str], bytes]:
     raise ValueError(f"{path.name}: expected a .whl or .tar.gz distribution")
 
 
-def validate_members(path: Path, names: list[str]) -> None:
-    rejected: list[str] = []
+def is_private_archive_member(raw_name: str) -> bool:
+    """Identify private or unsafe paths using archive-relative member names."""
     internal_architecture_files = {
         "backend_architecture.md",
         "frontend_architecture.md",
         "installer_manager_architecture.md",
     }
 
-    for raw_name in names:
-        normalized = raw_name.replace("\\", "/")
-        member = PurePosixPath(normalized)
-        lowered_parts = tuple(part.lower() for part in member.parts)
-        lowered_name = member.name.lower()
+    member = PurePosixPath(raw_name.replace("\\", "/"))
+    lowered_parts = tuple(part.lower() for part in member.parts)
+    lowered_name = member.name.lower()
 
-        unsafe = (
-            member.is_absolute()
-            or ".." in member.parts
-            or "tmp" in lowered_parts
-            or any(part in {".local-notes", "review-notes", "reviews"} for part in lowered_parts)
-            or lowered_name == "release-acceptance.md"
-            or lowered_name == "agents.md"
-            or "__pycache__" in lowered_parts
-            or lowered_name.endswith((".pyc", ".pyo"))
-        )
-        internal_markdown = lowered_name.endswith(".md") and (
-            "plan" in lowered_name
-            or lowered_name in internal_architecture_files
-            or any(
-                lowered_parts[index : index + 2] == ("docs", "qualification")
-                for index in range(max(0, len(lowered_parts) - 1))
-            )
-        )
-        private_documentation = any(
-            lowered_parts[index] == "docs"
-            and lowered_parts[index + 1] in {"development", "plans", "research", "reports"}
+    unsafe = (
+        member.is_absolute()
+        or ".." in member.parts
+        or "tmp" in lowered_parts
+        or any(part in {".local-notes", "review-notes", "reviews"} for part in lowered_parts)
+        or lowered_name == "release-acceptance.md"
+        or lowered_name == "agents.md"
+        or "__pycache__" in lowered_parts
+        or lowered_name.endswith((".pyc", ".pyo"))
+        or any(part == ".env" or part.startswith(".env.") for part in lowered_parts)
+    )
+    internal_markdown = lowered_name.endswith(".md") and (
+        "plan" in lowered_name
+        or lowered_name in internal_architecture_files
+        or any(
+            lowered_parts[index : index + 2] == ("docs", "qualification")
             for index in range(max(0, len(lowered_parts) - 1))
         )
-        if unsafe or internal_markdown or private_documentation:
-            rejected.append(normalized)
+    )
+    private_documentation = any(
+        lowered_parts[index] == "docs"
+        and lowered_parts[index + 1] in {"development", "plans", "research", "reports"}
+        for index in range(max(0, len(lowered_parts) - 1))
+    )
+    return unsafe or internal_markdown or private_documentation
+
+
+def validate_members(path: Path, names: list[str]) -> None:
+    rejected = [
+        raw_name.replace("\\", "/")
+        for raw_name in names
+        if is_private_archive_member(raw_name)
+    ]
 
     if rejected:
         preview = "\n  ".join(rejected[:20])

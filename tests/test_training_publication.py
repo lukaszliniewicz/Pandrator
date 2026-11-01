@@ -58,6 +58,7 @@ class NativeTraining:
         else:
             with self.database.session() as session:
                 run = TrainingRun(
+                    workspace_id=self.source.workspace_id,
                     model_name=model_name,
                     source_artifact_id=self.source.id,
                     source_text_artifact_id=self.transcript.id,
@@ -74,13 +75,15 @@ class NativeTraining:
                         resource_keys=["training:xtts", "gpu:default"],
                     )
                     run.job_id = job.id
-        self.payload = {**inputs, "training_id": self.training_id}
         if durable:
             job = self.queue.claim("qualification-worker", lease_seconds=300)
             assert job is not None
             self.job_id = job.id
             self.generation = job.lease_generation
+            self.payload = dict(job.payload_json)
             self.payload.update(_job_id=job.id, _lease_generation=job.lease_generation)
+        else:
+            self.payload = {**inputs, "training_id": self.training_id}
         return self.payload
 
     def make_bundle(self, model_name=None):
@@ -173,7 +176,7 @@ class NativeTraining:
 
 
 @pytest.fixture
-def native(tmp_path):
+def native(tmp_path, host_execution_actor, host_model_acquisition):
     harness = NativeTraining(tmp_path)
     try:
         yield harness

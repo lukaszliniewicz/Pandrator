@@ -139,8 +139,22 @@ class FilesystemTaskHandler(
     """Executes only manager-generated task kinds; no raw API command exists."""
 
     @staticmethod
-    def _release_runtime_specs(layout: WorkspaceLayout) -> tuple[ManagedProcessSpec, ...]:
-        return pandrator_runtime_specs(layout)
+    def _release_runtime_specs(
+        execution: OperationTaskContext,
+    ) -> tuple[ManagedProcessSpec, ...]:
+        exposure = load_network_configuration(
+            execution.context.layout,
+            environment=execution.context.environment,
+        ).application
+        return pandrator_runtime_specs(
+            execution.context.layout,
+            exposure=exposure,
+            preferences={
+                key: value
+                for key, value in execution.context.environment.items()
+                if key == "PANDRATOR_WORKER_COUNT"
+            },
+        )
 
     @staticmethod
     def _application_runtime_specs(
@@ -154,7 +168,14 @@ class FilesystemTaskHandler(
         return pandrator_runtime_specs(
             execution.context.layout,
             exposure=exposure,
-            preferences=preferences,
+            preferences={
+                **{
+                    key: value
+                    for key, value in execution.context.environment.items()
+                    if key == "PANDRATOR_WORKER_COUNT"
+                },
+                **preferences,
+            },
         )
 
     @staticmethod

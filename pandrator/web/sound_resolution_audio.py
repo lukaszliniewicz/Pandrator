@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -57,30 +57,45 @@ def _original_rate(path: Path) -> tuple[int, int]:
 
 
 def normalize_take(
-    item: WorkItem, destination: Path, settings: dict[str, Any], cancel_event: threading.Event
+    item: WorkItem, destination: Path, settings: dict[str, Any], cancel_event: threading.Event,
+    *, before_io: Callable[[], None] | None = None,
 ) -> None:
     assert item.path is not None
+    if before_io is not None:
+        before_io()
     _normalize_part(
         AudioAssemblyPart(item.path, 0),
         destination,
         AudioEncodingSettings(sample_rate_hz=16000, channels=1),
         ffmpeg_executable=str(settings.get("ffmpeg_executable") or "ffmpeg"),
         cancel_event=cancel_event,
+        **({"before_io": before_io} if before_io is not None else {}),
     )
 
 
 def align_take(
-    item: WorkItem, settings: dict[str, Any], workdir: Path, cancel_event: threading.Event
+    item: WorkItem, settings: dict[str, Any], workdir: Path, cancel_event: threading.Event,
+    *, before_io: Callable[[], None] | None = None,
 ) -> AlignedBookText:
     assert item.path is not None and item.transcript is not None and item.identity is not None
+    if before_io is not None:
+        before_io()
     runtime = {**settings, "original_language": item.language} if item.language else settings
     if item.identity["engine"] == "crispasr":
         executable = crispasr.resolve_executable(str(runtime.get("crispasr_executable") or ""))
         backend = str(runtime.get("stt_compute_backend") or "auto")
         with native_audio_cpp_guard([executable, "--backend", backend], cancel_event):
-            return align_book_text(item.path, item.transcript, runtime, workdir, cancel_event)
+            if before_io is not None:
+                before_io()
+            return align_book_text(
+                item.path, item.transcript, runtime, workdir, cancel_event,
+                **({"before_io": before_io} if before_io is not None else {}),
+            )
     # Qwen's native invocation owns the reentrant audio.cpp guard.
-    return align_book_text(item.path, item.transcript, runtime, workdir, cancel_event)
+    return align_book_text(
+        item.path, item.transcript, runtime, workdir, cancel_event,
+        **({"before_io": before_io} if before_io is not None else {}),
+    )
 
 
 def resolve_boundary(
@@ -90,6 +105,7 @@ def resolve_boundary(
     workdir: Path,
     settings: dict[str, Any],
     cancel_event: threading.Event,
+    *, before_io: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     assert item.transcript is not None and item.path is not None
     anchor = item.anchor
@@ -110,6 +126,8 @@ def resolve_boundary(
     if len(owners) != 1 or alignment_key(item.transcript[quote_end : words[owners[0]].end_char]):
         return {"status": "needs_placement", "reason": "quote_word_boundary_ambiguous"}
     owner = owners[0]
+    if before_io is not None:
+        before_io()
     original_rate, original_frames = _original_rate(item.path)
     if anchor["kind"] == "after_word" and item.playback.get("mode") == "overlay":
         take_frame = min(original_frames, (words[owner].end_ms * original_rate + 500) // 1000)
@@ -123,12 +141,16 @@ def resolve_boundary(
     rate = 16000
     estimate = round(words[owner].end_ms * rate / 1000)
     next_start = round(words[owner + 1].start_ms * rate / 1000) if owner + 1 < len(words) else None
+    if before_io is not None:
+        before_io()
     first, crop, rate, total_frames = _wav_window(normalized, estimate)
     if next_start is None:
         next_start = total_frames
     if crop.size == 0:
         return {"status": "needs_placement", "reason": "empty_analysis_crop"}
     crop_path = workdir / f"crop-{item.cue_id}.wav"
+    if before_io is not None:
+        before_io()
     with wave.open(str(crop_path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
@@ -142,12 +164,19 @@ def resolve_boundary(
         "crispasr_vad_min_silence_ms": 80,
         "crispasr_vad_speech_pad_ms": 30,
     }
+    if before_io is not None:
+        before_io()
     executable = crispasr.resolve_executable(str(vad_settings.get("crispasr_executable") or ""))
     vad_path = workdir / f"vad-{item.cue_id}.json"
     with native_audio_cpp_guard([executable, "--backend", "cpu"], cancel_event):
+        if before_io is not None:
+            before_io()
         result_path = crispasr.run_vad_export(
-            crop_path, vad_path, vad_settings, executable=executable, cancel_event=cancel_event
+            crop_path, vad_path, vad_settings, executable=executable, cancel_event=cancel_event,
+            **({"before_io": before_io} if before_io is not None else {}),
         )
+    if before_io is not None:
+        before_io()
     spans = parse_vad_export(result_path, duration_ms=round(len(crop) * 1000 / rate))
     speech = [
         (

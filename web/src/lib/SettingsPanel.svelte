@@ -11,6 +11,7 @@
     TriangleAlert
   } from '@lucide/svelte';
   import { sessionApi } from './domain-api';
+  import { appState } from './app-state.svelte';
   import { getTtsServiceDetail } from './tts-catalogue-cache';
   import type { SettingsPayload, TtsService, VoiceRecord } from './api-models';
   import { onMount } from 'svelte';
@@ -56,6 +57,9 @@
     onpersisted?: (payload: SettingsPayload) => void | Promise<void>;
   } = $props();
   let payload = $state<SettingsPayload | null>(null);
+  const canManageDefaults = $derived(
+    appState.canManageWorkspace(payload?.workspace_id)
+  );
   let override = $state<Record<string, unknown>>({});
   let advanced = $state(false);
   let saving = $state(false);
@@ -64,6 +68,8 @@
     text: [
       'enable_sentence_splitting',
       'max_sentence_length',
+      'audiobook_sentence_packing',
+      'audiobook_sentence_packing_threshold',
       'enable_sentence_appending',
       'audiobook_dialogue_flow',
       'enable_nemo_normalization',
@@ -318,7 +324,11 @@
     modelDetailLoading = Boolean(key);
     if (!key) return;
     const [serviceId, model] = JSON.parse(key) as [string, string];
-    void getTtsServiceDetail(serviceId, { models: model, force: retry > 0 })
+    void getTtsServiceDetail(serviceId, {
+      sessionId,
+      models: model,
+      force: retry > 0
+    })
       .then((detail) => {
         if (request === modelDetailRequest) modelDetail = detail.service;
       })
@@ -477,7 +487,7 @@
   onMount(() => {
     if (section === 'tts')
       void voiceApi
-        .list<VoiceRecord>()
+        .list<VoiceRecord>({ sessionId })
         .then((result) => {
           localVoices = result.items;
         })
@@ -675,6 +685,8 @@
           [
             'enable_sentence_splitting',
             'max_sentence_length',
+            'audiobook_sentence_packing',
+            'audiobook_sentence_packing_threshold',
             'enable_sentence_appending',
             'enable_nemo_normalization',
             'normalize_all_caps',
@@ -799,7 +811,7 @@
         {}
       );
       override = {};
-      message = 'Reverted to application defaults.';
+      message = 'Reverted to workspace defaults.';
       await onpersisted?.(payload);
     } catch (caught) {
       message = errorMessage(caught);
@@ -808,6 +820,7 @@
     }
   }
   async function saveAsDefaults() {
+    if (!canManageDefaults) return;
     if (modelTuningError) return;
     saving = true;
     message = '';
@@ -818,11 +831,18 @@
               Object.entries(override).filter(([key]) => !providerSetting(key))
             )
           : override;
-      const defaults = await sessionApi.defaults(section);
-      await sessionApi.saveDefaults(section, defaults.revision, {
-        ...(defaults.value ?? {}),
-        ...promoted
-      });
+      const defaults = await sessionApi.defaults(section, { sessionId });
+      if (!defaults.can_manage || !defaults.workspace_id)
+        throw new Error('Workspace managers can change these defaults.');
+      await sessionApi.saveDefaults(
+        section,
+        defaults.revision,
+        {
+          ...(defaults.value ?? {}),
+          ...promoted
+        },
+        defaults.workspace_id
+      );
       payload = await sessionApi.saveSettings(
         sessionId,
         section,
@@ -834,7 +854,7 @@
         )
       );
       override = { ...payload.override };
-      message = 'Saved as application defaults.';
+      message = 'Saved as workspace defaults.';
       await onpersisted?.(payload);
     } catch (caught) {
       message = errorMessage(caught);
@@ -876,14 +896,17 @@
     class="tool"><RotateCcw size={14} /> Revert to defaults</button
   ><button
     onclick={saveAsDefaults}
-    disabled={!payload ||
+    disabled={!canManageDefaults ||
+      !payload ||
       saving ||
       deepLResearchConflict ||
       Boolean(modelTuningError) ||
       !Object.keys(override).length}
-    title={deepLResearchConflict
-      ? 'Resolve the translation backend and web research conflict first.'
-      : ''}
+    title={!canManageDefaults
+      ? 'Workspace managers can change shared defaults.'
+      : deepLResearchConflict
+        ? 'Resolve the translation backend and web research conflict first.'
+        : ''}
     class="tool"><Save size={14} /> Save as defaults</button
   ><button
     onclick={save}
@@ -1184,6 +1207,7 @@
         {#each visible as [key, fallback]}
           <div>
             {#if section === 'tts' && key === 'service'}<TtsServiceSelect
+                {sessionId}
                 compact
                 value={String(value(key, fallback) ?? '')}
                 onloaded={(services) => {

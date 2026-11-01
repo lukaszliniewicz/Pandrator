@@ -24,10 +24,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
-RUNTIME_VERSION = "0.9.2"
+RUNTIME_VERSION = "0.9.2-drama3-base-small"
 SCHEMA_VERSION = 1
-SOURCE_URL = "https://github.com/0xShug0/audio.cpp/tree/v0.9.2/model_specs"
-GITHUB_DOCS_BASE = "https://github.com/0xShug0/audio.cpp/blob/v0.9.2/"
+SOURCE_URL = f"https://github.com/0xShug0/audio.cpp/tree/v{RUNTIME_VERSION}/model_specs"
+GITHUB_DOCS_BASE = f"https://github.com/0xShug0/audio.cpp/blob/v{RUNTIME_VERSION}/"
 HF_BASE = "https://huggingface.co"
 MAX_SMALL_FILE_BYTES = 16 * 1024 * 1024
 LEGACY_SMALL_FILE_BYTES = 1 * 1024 * 1024
@@ -643,6 +643,16 @@ def build_snapshot(
                     )
         public["availability"] = availability
         output_packages.append(public)
+
+    # The new Kitten exports replaced a package ID used by saved projects.
+    # Keep that reviewed package at its original immutable weight revision;
+    # the new native loader was checked against the exact old Q8 GGUF.
+    package_ids = {package["id"] for package in output_packages}
+    if "kitten_tts2_q8_v2" in package_ids and "kitten_tts2_q8_0" not in package_ids:
+        legacy = json.loads(
+            Path(__file__).with_name("audio_cpp_legacy_packages.json").read_text(encoding="utf-8")
+        )
+        output_packages.extend(legacy["packages"])
 
     return {
         "schema_version": SCHEMA_VERSION,

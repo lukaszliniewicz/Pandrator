@@ -17,6 +17,7 @@ class ListArtifactsInput(ToolInput):
 
 class ProviderStatusInput(ToolInput):
     include_disabled: bool = True
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=80, strict=True)
 
 
 __all__ = ["ListArtifactsInput", "ProviderStatusInput", "VoiceCatalogInput"]

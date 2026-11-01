@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
-async function setup(page: Page) {
+async function setup(page: Page, annotationWorkspace = false) {
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
@@ -167,18 +167,23 @@ async function setup(page: Page) {
     }
   );
   await page.goto(`/sessions/${sid}`);
-  const panel = page
-    .getByRole('region', { name: 'Speech plan', exact: true })
-    .locator('details')
-    .filter({
-      has: page.locator('summary').filter({ hasText: /^Speakers and delivery/ })
-    })
-    .first();
-  await panel.locator('summary').first().click();
-  await panel
-    .getByRole('button', { name: 'Create manual draft', exact: true })
-    .click();
-  await expect(panel.getByLabel('Block delivery direction')).toBeVisible();
+  const panel = page.getByRole('region', {
+    name: 'Annotation workspace',
+    exact: true
+  });
+  if (annotationWorkspace) {
+    await page
+      .getByRole('link', { name: 'Annotate & review', exact: true })
+      .click();
+    await panel
+      .getByRole('button', { name: 'Create manual draft', exact: true })
+      .click();
+    await expect(panel.getByLabel('Block delivery direction')).toBeVisible();
+    await panel
+      .locator('summary')
+      .filter({ hasText: /^Generation defaults/ })
+      .click();
+  }
   return { panel, writes: () => writes, sid, csrf };
 }
 
@@ -187,7 +192,7 @@ test('one XML draft survives refresh, view changes, navigation and save; preview
 }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  const { panel, writes } = await setup(page);
+  const { panel, writes } = await setup(page, true);
   await expect(panel.getByLabel('Emotion', { exact: true })).toHaveValue(
     'reserved'
   );
@@ -195,15 +200,18 @@ test('one XML draft survives refresh, view changes, navigation and save; preview
     .getByLabel('Block delivery direction')
     .fill('Quietly, with restraint.');
   await panel
-    .getByLabel('General speech direction')
+    .getByRole('textbox', { name: 'General speech direction', exact: true })
     .fill('Warm, steady narration.');
   await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(panel.getByLabel('Block delivery direction')).toHaveValue(
     'Quietly, with restraint.'
   );
-  await expect(panel.getByLabel('General speech direction')).toHaveValue(
-    'Warm, steady narration.'
-  );
+  await expect(
+    panel.getByRole('textbox', {
+      name: 'General speech direction',
+      exact: true
+    })
+  ).toHaveValue('Warm, steady narration.');
   await panel
     .locator('summary')
     .filter({ hasText: /^XML annotation/ })
@@ -236,7 +244,7 @@ test('one XML draft survives refresh, view changes, navigation and save; preview
   ).toBeVisible();
   await page.getByRole('button', { name: 'Stay here', exact: true }).click();
   await panel
-    .getByRole('button', { name: 'Save block directions', exact: true })
+    .getByRole('button', { name: 'Save block annotations', exact: true })
     .click();
   expect(writes()).toBe(1);
   await expect(
@@ -253,9 +261,12 @@ test('one XML draft survives refresh, view changes, navigation and save; preview
       .filter({ hasText: /^XML annotation/ })
       .click();
   await expect(xml).toHaveValue(/<dialogue><speaker g="male">/);
-  await expect(panel.getByLabel('General speech direction')).toHaveValue(
-    'Warm, steady narration.'
-  );
+  await expect(
+    panel.getByRole('textbox', {
+      name: 'General speech direction',
+      exact: true
+    })
+  ).toHaveValue('Warm, steady narration.');
   expect(errors).toEqual([]);
   await page.screenshot({
     path: test.info().outputPath('pandrator-generation-controls-desktop.png'),
@@ -516,14 +527,25 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
     path: test.info().outputPath('pandrator-generation-controls-narrow.png')
   });
   await character.getByLabel('Identity notes').fill('An unsaved change.');
+  await page.getByRole('button', { name: /^simple$/i, exact: true }).click();
+  await expect(
+    page
+      .getByRole('alert')
+      .filter({ hasText: 'Finish or close the open editor' })
+  ).toBeVisible();
+  await expect(character.getByLabel('Identity notes')).toHaveValue(
+    'An unsaved change.'
+  );
   await header
     .getByRole('combobox', { name: 'Project section' })
     .selectOption(`/sessions/${sid}/text`);
   const guard = page.getByRole('dialog', {
-    name: 'Save your changes before leaving?'
+    name: 'Keep your cast changes?'
   });
   await expect(guard).toBeVisible();
-  await guard.getByRole('button', { name: 'Stay here', exact: true }).click();
+  await guard
+    .getByRole('button', { name: 'Keep editing', exact: true })
+    .click();
   await expect(page).toHaveURL(`/sessions/${sid}`);
   await expect(
     header.getByRole('combobox', { name: 'Project section' })
@@ -534,9 +556,7 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
   await header
     .getByRole('combobox', { name: 'Project section' })
     .selectOption(`/sessions/${sid}/text`);
-  await guard
-    .getByRole('button', { name: 'Discard and continue', exact: true })
-    .click();
+  await guard.getByRole('button', { name: 'Discard', exact: true }).click();
   await expect(page).toHaveURL(`/sessions/${sid}/text`);
   const unchanged = await (
     await page.request.get(`/api/v1/sessions/${sid}/generation-controls`)
@@ -550,15 +570,16 @@ test('leaving a section can save character, direction and generation-default dra
   page
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const { panel, sid, writes } = await setup(page);
-  const cast = await openAudiobookCast(page);
+  const { panel, sid, writes } = await setup(page, true);
+  const cast = panel.getByTestId('cast-disclosure');
+  await cast.locator('summary').first().click();
   await cast.getByRole('button', { name: 'Add speaker', exact: true }).click();
   await cast
     .locator('article')
     .getByLabel('Speaker name', { exact: true })
     .fill('Alice');
   await panel
-    .getByLabel('General speech direction', { exact: true })
+    .getByRole('textbox', { name: 'General speech direction', exact: true })
     .fill('Read with warmth.');
   await panel
     .getByLabel('Block delivery direction', { exact: true })

@@ -168,10 +168,10 @@ test('comparison opens selected captions across separate revision-1 documents an
     .click();
   const review = page.getByRole('dialog', { name: 'Compare and refine' });
   await expect(
-    review.getByText('Editing translation v2 · en · Selected project captions')
+    review.getByText('Editing translation r1 · en · Selected project captions')
   ).toBeVisible();
   await expect.poll(() => requests).toEqual([['translation-v2']]);
-  await review.getByText('Find, filter & compare', { exact: true }).click();
+  await review.getByRole('button', { name: /^Tools/ }).click();
   await review.getByLabel('Add a comparison').selectOption('translation-v1');
   await review.getByRole('button', { name: 'Add', exact: true }).click();
   await review
@@ -179,7 +179,7 @@ test('comparison opens selected captions across separate revision-1 documents an
     .selectOption('translation-v1');
   await expect(
     review.getByText(
-      'Editing translation v1 · en · Different from selected project captions'
+      'Editing translation r1 · en · Different from selected project captions'
     )
   ).toBeVisible();
   expect(selected).toBe('translation-v2');
@@ -188,20 +188,25 @@ test('comparison opens selected captions across separate revision-1 documents an
   await page.screenshot({
     path: testInfo.outputPath('caption-revision-context.png')
   });
+  await page.keyboard.press('Escape');
+  await expect(
+    review.getByRole('dialog', { name: 'Tools', exact: true })
+  ).toBeHidden();
+  await expect(review).toBeVisible();
   await review.getByRole('button', { name: 'Close subtitle review' }).click();
   selected = 'translation-v1';
   await page
     .getByRole('button', { name: 'Compare subtitles', exact: true })
     .click();
   await expect(
-    review.getByText('Editing translation v1 · en · Selected project captions')
+    review.getByText('Editing translation r1 · en · Selected project captions')
   ).toBeVisible();
   await review.getByRole('button', { name: 'Close subtitle review' }).click();
   selected = 'translation-v2';
   await page.goto(`/sessions/${session.id}/text?review=translation-v1`);
   await expect(
     review.getByText(
-      'Editing translation v1 · en · Different from selected project captions'
+      'Editing translation r1 · en · Different from selected project captions'
     )
   ).toBeVisible();
   expect(mutations).toEqual([]);

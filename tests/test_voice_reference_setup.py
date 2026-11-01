@@ -7,6 +7,7 @@ from unittest import mock
 
 from sqlalchemy import func, select
 
+from pandrator.web.accounts.execution_actor import HostActor, execution_actor_scope
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import Artifact, Job, Voice, VoiceSample
@@ -35,6 +36,7 @@ class VoiceReferenceSetupTests(unittest.TestCase):
     def _headers(self, key=None):
         return {"X-CSRF-Token": self.csrf, **({"Idempotency-Key": key} if key else {})}
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def _designed(self):
         extension = self.app.extensions["pandrator"]
         voice = self.client.post(
@@ -179,7 +181,14 @@ class VoiceReferenceSetupTests(unittest.TestCase):
             replacement_path.write_bytes(silent_wav())
             replacement = extension["artifacts"].register(replacement_path, kind="audio", role="voice_sample")
             with extension["database"].session() as session:
-                sample = VoiceSample(voice_id=voice["id"], artifact_id=replacement.id, transcript="Updated reviewed words.", transcript_reviewed=True)
+                voice_workspace_id = session.get(Voice, voice["id"]).workspace_id
+                sample = VoiceSample(
+                    voice_id=voice["id"],
+                    workspace_id=voice_workspace_id,
+                    artifact_id=replacement.id,
+                    transcript="Updated reviewed words.",
+                    transcript_reviewed=True,
+                )
                 session.add(sample)
                 session.flush()
                 stored = session.get(Voice, voice["id"])
@@ -228,7 +237,14 @@ class VoiceReferenceSetupTests(unittest.TestCase):
         newer_path.write_bytes(silent_wav())
         newer = extension["artifacts"].register(newer_path, kind="audio", role="voice_sample")
         with extension["database"].session() as session:
-            session.add(VoiceSample(voice_id=voice["id"], artifact_id=newer.id))
+            voice_workspace_id = session.get(Voice, voice["id"]).workspace_id
+            session.add(
+                VoiceSample(
+                    voice_id=voice["id"],
+                    workspace_id=voice_workspace_id,
+                    artifact_id=newer.id,
+                )
+            )
             stored = session.get(Voice, voice["id"])
             stored.revision += 1
             revision = stored.revision
@@ -293,7 +309,14 @@ class VoiceReferenceSetupTests(unittest.TestCase):
         newer_path.write_bytes(silent_wav())
         newer = extension["artifacts"].register(newer_path, kind="audio", role="voice_sample")
         with extension["database"].session() as session:
-            session.add(VoiceSample(voice_id=voice["id"], artifact_id=newer.id))
+            voice_workspace_id = session.get(Voice, voice["id"]).workspace_id
+            session.add(
+                VoiceSample(
+                    voice_id=voice["id"],
+                    workspace_id=voice_workspace_id,
+                    artifact_id=newer.id,
+                )
+            )
             stored = session.get(Voice, voice["id"])
             stored.revision += 1
             revision = stored.revision

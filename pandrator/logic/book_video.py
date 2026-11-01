@@ -19,6 +19,7 @@ from .book_settings import BOOK_DEFAULTS, validate_book_settings
 from .cancellable_process import ProcessCancelled, run_cancellable
 from .dubbing.text_units import subtitle_units
 from .dubbing.video_muxing import escape_ffmpeg_subtitles_filter_path
+from .media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +245,7 @@ def render_book_video(
     duration_ms: int,
     progress: Callable[[float, str | None], None],
     cancel_event: threading.Event,
+    before_io: Callable[[], None] | None = None,
 ) -> None:
     from .dubbing_handler import resolve_ffmpeg_for_burned_subtitles
 
@@ -252,18 +254,26 @@ def render_book_video(
         raise InterruptedError("Video-book export canceled.")
     if start_ms < 0 or duration_ms <= 0:
         raise ValueError("Video-book audio range must have positive duration.")
+    if before_io is not None:
+        before_io()
     ffmpeg = resolve_ffmpeg_for_burned_subtitles()
     if not ffmpeg:
         raise RuntimeError(
             "Video books require FFmpeg with the subtitles/libass filter. Install the bundled FFmpeg, or export subtitles separately."
         )
     options = {**BOOK_DEFAULTS, **settings}
+    if before_io is not None:
+        before_io()
     with tempfile.TemporaryDirectory(prefix=".book-video-", dir=destination.parent) as directory:
         root = Path(directory)
         ass = root / "passages.ass"
         fonts = root / "fonts"
         fonts.mkdir()
+        if before_io is not None:
+            before_io()
         shutil.copyfile(layout.font_path, fonts / layout.font_path.name)
+        if before_io is not None:
+            before_io()
         write_book_ass(cues, ass, options, layout, title)
         filter_value = f"subtitles=filename='{escape_ffmpeg_subtitles_filter_path(str(ass))}':fontsdir='{escape_ffmpeg_subtitles_filter_path(str(fonts))}'"
         duration = f"{duration_ms / 1000:.3f}"
@@ -279,6 +289,7 @@ def render_book_video(
             f"color=c={options['book_background']}:s={layout.width}x{layout.height}:r=24:d={duration}",
             "-ss",
             f"{start_ms / 1000:.3f}",
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             "-i",
             str(audio_path),
             "-map",
@@ -308,6 +319,8 @@ def render_book_video(
             str(destination),
         ]
         progress(0.7, "Rendering the video book")
+        if before_io is not None:
+            before_io()
         try:
             run_cancellable(
                 command, cancel_event=cancel_event, check=True, capture_output=True, text=True

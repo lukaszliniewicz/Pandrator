@@ -139,6 +139,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
     def _attach(self, artifact, role, kind):
         with self.database.session() as session:
             asset = SourceAsset(
+                workspace_id=session.get_one(Artifact, artifact.id).workspace_id,
                 artifact_id=artifact.id,
                 display_name=artifact.relative_path,
                 kind=kind,

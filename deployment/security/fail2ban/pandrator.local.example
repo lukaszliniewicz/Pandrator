@@ -1,0 +1,15 @@
+[pandrator]
+# Enable only after testing the filter and verifying restored client addresses.
+enabled = false
+filter = pandrator-auth
+logpath = /var/log/pandrator/security.jsonl
+backend = auto
+port = http,https
+usedns = no
+maxretry = 5
+findtime = 300
+bantime = 600
+ignoreip = 127.0.0.0/8 ::1
+
+# This host-firewall profile is for direct client connections to the web server.
+# With Cloudflare or another upstream proxy, use an appropriate proxy/edge enforcement action.

@@ -12,6 +12,8 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import Mock, patch
 
+import pytest
+
 from pandrator.logic import dubbing_handler
 from pandrator.logic.dubbing import crispasr, srt_utils, stt_backends, transcription
 
@@ -56,6 +58,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertNotIn("-of", command)
         self.assertIn("-f", command)
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_windows_prefetch_downloads_selected_model_atomically(self):
         requested = {}
 
@@ -203,6 +206,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertNotIn("--vad-model", command)
         opener.assert_not_called()
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_windows_prefetch_downloads_the_vad_companion(self):
         class Download(io.BytesIO):
             headers: ClassVar[dict[str, str]] = {"Content-Length": "9"}
@@ -227,6 +231,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             self.assertEqual(path, Path(cache_dir) / "ggml-silero-v6.2.0.bin")
             self.assertEqual(path.read_bytes(), b"vad-model")
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_windows_prefetch_downloads_the_default_moss_ctc_aligner(self):
         class Download(io.BytesIO):
             headers: ClassVar[dict[str, str]] = {"Content-Length": "7"}
@@ -333,6 +338,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             str(vad_model_path),
         )
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_local_crispasr_honors_cancel_event(self):
         cancel_event = threading.Event()
         timer = threading.Timer(0.1, cancel_event.set)
@@ -606,6 +612,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
                     require_words_per_segment=True,
                 )
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_moss_ctc_alignment_crops_with_padding_and_preserves_speaker(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -685,6 +692,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         self.assertEqual(result.version, "0.8.20")
         self.assertEqual(result.compute_backends, ("vulkan", "cpu"))
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_transcribe_source_writes_srt_and_word_metadata(self):
         commands = []
 
@@ -957,6 +965,7 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             self.assertEqual(cloud.call_args.args[0], str(source))
             self.assertEqual(result.engine, "azure_mai_transcribe_2")
 
+    @pytest.mark.usefixtures("host_model_acquisition")
     def test_missing_full_json_is_a_hard_failure(self):
         def fake_run(command, **_kwargs):
             output_base = Path(command[command.index("-of") + 1])

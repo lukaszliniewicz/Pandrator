@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     AudioTake,
@@ -23,6 +24,7 @@ from pandrator.web.models import (
     Job,
     OutputAssembly,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.workspace import GenerationService, RevisionConflict, stable_hash
 
 
@@ -111,14 +113,21 @@ class GenerationTopologyTests(unittest.TestCase):
                 "risk_flags": [],
             }
             segments[1].status = "completed"
+            artifact_ownership = resolve_artifact_ownership(
+                session, session_id=self.session_id
+            )
             first_artifact = Artifact(
                 session_id=self.session_id,
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="audio",
                 role="generation_take",
                 relative_path="sessions/topology/first.wav",
             )
             second_artifact = Artifact(
                 session_id=self.session_id,
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
                 kind="audio",
                 role="generation_take",
                 relative_path="sessions/topology/second.wav",
@@ -165,14 +174,21 @@ class GenerationTopologyTests(unittest.TestCase):
                 generation_run_id=run.id,
                 status="completed",
             )
+            job_ownership = job_creation_ownership(
+                session, session_id=self.session_id
+            )
             queued_job = Job(
                 kind="generation.assemble",
                 session_id=self.session_id,
+                workspace_id=job_ownership.workspace_id,
+                project_id=job_ownership.project_id,
                 status="queued",
             )
             running_job = Job(
                 kind="generation.assemble",
                 session_id=self.session_id,
+                workspace_id=job_ownership.workspace_id,
+                project_id=job_ownership.project_id,
                 status="running",
                 lease_owner="topology-test-worker",
                 lease_generation=1,

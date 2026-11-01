@@ -5,9 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import inspect, select
 
-from pandrator.web.database import Database, upgrade_database
+from pandrator.web.database import Database, sqlite_url, upgrade_database
 from pandrator.web.generation_audio_versions import (
     audio_version_summary,
     audio_version_take_ids,
@@ -19,10 +21,10 @@ from pandrator.web.generation_audio_versions import (
 )
 from pandrator.web.generation_controls import save_generation_controls
 from pandrator.web.generation_edit_audio import selection_guard
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     AudioTake,
-    Base,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationRun,
@@ -32,6 +34,8 @@ from pandrator.web.models import (
     SessionRecord,
 )
 from pandrator.web.output_assembly_lifecycle import mark_output_assemblies_stale
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.projects.identity import create_session_project
 from pandrator.web.settings_policy import RevisionConflict
 from pandrator.web.workflow_generation_finalization import finalize_generation_run
 from pandrator.web.workflow_generation_publication import (
@@ -44,12 +48,11 @@ from pandrator.web.workspace import GenerationService
 @pytest.fixture
 def rig(tmp_path):
     path = tmp_path / "test.sqlite3"
+    upgrade_database(path)
     database = Database(path)
-    Base.metadata.create_all(database.engine)
     with database.session() as session:
         record = SessionRecord(name="Recast fixture")
-        session.add(record)
-        session.flush()
+        create_session_project(session, record)
         plan = GenerationPlan(session_id=record.id)
         session.add(plan)
         session.flush()
@@ -58,7 +61,14 @@ def rig(tmp_path):
         session.flush()
         plan.active_revision_id = revision.id
         root = GenerationRun(session_id=record.id, plan_revision_id=revision.id, status="completed")
-        job = Job(kind="generation", session_id=record.id, status="running")
+        job_ownership = job_creation_ownership(session, session_id=record.id)
+        job = Job(
+            workspace_id=job_ownership.workspace_id,
+            project_id=job_ownership.project_id,
+            kind="generation",
+            session_id=record.id,
+            status="running",
+        )
         session.add_all([root, job])
         session.flush()
         run = GenerationRun(
@@ -71,10 +81,19 @@ def rig(tmp_path):
         session.add_all([run, *segments])
         session.flush()
         takes = []
+        artifact_ownership = resolve_artifact_ownership(
+            session, session_id=record.id
+        )
         for i, segment in enumerate(segments):
             audio = tmp_path / f"baseline-{i}.wav"
             audio.write_bytes(b"retained audio bytes")
-            artifact = Artifact(session_id=record.id, kind="audio", relative_path=audio.name)
+            artifact = Artifact(
+                workspace_id=artifact_ownership.workspace_id,
+                project_id=artifact_ownership.project_id,
+                session_id=record.id,
+                kind="audio",
+                relative_path=audio.name,
+            )
             session.add(artifact)
             session.flush()
             take = AudioTake(generation_segment_id=segment.id, generation_run_id=root.id,
@@ -100,7 +119,16 @@ def _initialize(session, rig):
 
 def _produced(session, rig, segment_id=None, applied=True):
     segment_id = segment_id or rig.segments[0]
-    artifact = Artifact(session_id=rig.session_id, kind="audio", relative_path=f"generated-{segment_id}.wav")
+    artifact_ownership = resolve_artifact_ownership(
+        session, session_id=rig.session_id
+    )
+    artifact = Artifact(
+        workspace_id=artifact_ownership.workspace_id,
+        project_id=artifact_ownership.project_id,
+        session_id=rig.session_id,
+        kind="audio",
+        relative_path=f"generated-{segment_id}.wav",
+    )
     session.add(artifact)
     session.flush()
     if applied:
@@ -133,11 +161,23 @@ def test_migration_upgrades_fresh_and_existing_0052_database(tmp_path):
     upgrade_database(path)
     database = Database(path)
     try:
-        with database.engine.begin() as connection:
-            connection.exec_driver_sql("ALTER TABLE generation_runs DROP COLUMN audio_version_json")
-            connection.exec_driver_sql(
-                "UPDATE alembic_version SET version_num = '0052_translation_project_operations'"
-            )
+        config = Config()
+        config.set_main_option(
+            "script_location",
+            str(
+                Path(__file__).resolve().parents[1]
+                / "pandrator"
+                / "web"
+                / "migrations"
+            ),
+        )
+        config.set_main_option("sqlalchemy.url", sqlite_url(path))
+        command.downgrade(config, "0052_translation_project_operations")
+        columns_before_upgrade = {
+            item["name"]
+            for item in inspect(database.engine).get_columns("generation_runs")
+        }
+        assert "audio_version_json" not in columns_before_upgrade
         upgrade_database(path)
         columns = {item["name"] for item in inspect(database.engine).get_columns("generation_runs")}
         assert "audio_version_json" in columns
@@ -312,7 +352,16 @@ def test_publication_records_produced_manifest_without_overwriting_manual_select
         selected = session.get(AudioTake, rig.takes[0])
         expected = selection_guard(selected)
         selected.revision += 1
-        artifact = Artifact(session_id=rig.session_id, kind="audio", relative_path="published.wav")
+        artifact_ownership = resolve_artifact_ownership(
+            session, session_id=rig.session_id
+        )
+        artifact = Artifact(
+            workspace_id=artifact_ownership.workspace_id,
+            project_id=artifact_ownership.project_id,
+            session_id=rig.session_id,
+            kind="audio",
+            relative_path="published.wav",
+        )
 
         class Registry:
             def register_in_session(self, database_session, *_args, **_kwargs):
@@ -370,7 +419,12 @@ def test_recast_copy_publication_retains_alternative_and_respects_adoption_races
                                      cast={"narrator": {"voice": "Later casting"}})
         elif race == "selection":
             original.revision += 1
+        artifact_ownership = resolve_artifact_ownership(
+            session, session_id=rig.session_id
+        )
         artifact = Artifact(
+            workspace_id=artifact_ownership.workspace_id,
+            project_id=artifact_ownership.project_id,
             session_id=rig.session_id, kind="audio", relative_path="copy-replacement.wav",
             metadata_json={"synthesized_text": source.text},
         )

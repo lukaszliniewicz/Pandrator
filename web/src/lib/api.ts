@@ -1,4 +1,5 @@
 import type { components, paths } from './api.generated';
+import { projectLinkApiPath, projectLinkHeaders } from './project-link-context';
 
 type ApiPath = keyof paths;
 type HttpMethod = 'get' | 'put' | 'post' | 'delete' | 'patch';
@@ -191,8 +192,11 @@ export async function apiResponse(path: string, init: RequestInit = {}) {
   if (csrfToken && isMutation) {
     headers.set('X-CSRF-Token', csrfToken);
   }
+  projectLinkHeaders(headers, isMutation);
   const body = serializeBody(init.body, headers);
-  const url = path.startsWith('/api/v1') ? path : `/api/v1${path}`;
+  const url = projectLinkApiPath(
+    path.startsWith('/api/v1') ? path : `/api/v1${path}`
+  );
   const request = {
     ...init,
     method,
@@ -255,8 +259,11 @@ export function apiJsonUpload<T>(
   if (csrfToken && isMutation) {
     headers.set('X-CSRF-Token', csrfToken);
   }
+  projectLinkHeaders(headers, isMutation);
   const body = serializeBody(init.body, headers);
-  const url = path.startsWith('/api/v1') ? path : `/api/v1${path}`;
+  const url = projectLinkApiPath(
+    path.startsWith('/api/v1') ? path : `/api/v1${path}`
+  );
 
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -350,17 +357,28 @@ export async function exchangeBootstrapToken(token: string) {
 export async function uploadManagedFile(
   file: File,
   sessionId?: string,
-  onProgress?: (fraction: number) => void
+  onProgress?: (fraction: number) => void,
+  workspaceId?: string,
+  options: { attachToSession?: boolean } = {}
 ) {
   if (file.size <= 32 * 1024 * 1024) {
     const form = new FormData();
     if (sessionId) form.set('session_id', sessionId);
+    if (workspaceId) form.set('workspace_id', workspaceId);
+    if (options.attachToSession === false)
+      form.set('attach_to_session', 'false');
     form.set('file', file);
     const result = await typedApiJson<
       '/api/v1/uploads',
       'post',
       Record<string, unknown>
-    >('/api/v1/uploads', 'post', { body: form });
+    >('/api/v1/uploads', 'post', {
+      body: form,
+      query: new URLSearchParams({
+        ...(sessionId ? { session_id: sessionId } : {}),
+        ...(workspaceId ? { workspace_id: workspaceId } : {})
+      })
+    });
     onProgress?.(1);
     return result;
   }
@@ -374,6 +392,10 @@ export async function uploadManagedFile(
       size_bytes: file.size,
       mime_type: file.type || null,
       session_id: sessionId || null,
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
+      ...(options.attachToSession === false
+        ? { attach_to_session: false }
+        : {}),
       sha256: null,
       chunk_size: 8 * 1024 * 1024
     }

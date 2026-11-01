@@ -18,6 +18,7 @@ from .dubbing.video_muxing import (
     build_replace_video_audio_command,
     escape_ffmpeg_subtitles_filter_path,
 )
+from .media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BUNDLED_FFMPEG_CANDIDATES = (
@@ -464,6 +465,7 @@ def extract_audio_for_manual_correction(video_file: str, session_dir: str) -> st
     ffmpeg_command = [
         "ffmpeg",
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         video_file,
         "-vn",

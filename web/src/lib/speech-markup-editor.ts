@@ -126,16 +126,8 @@ export function markupSummary(xml: string): string[] {
   }
 }
 
-/** Wrap a selected range of spoken text; metadata never contributes offsets. */
-export function markSpokenRange(
-  xml: string,
-  start: number,
-  end: number,
-  speaker: string,
-  category: string
-) {
-  if (end <= start) throw new Error('Select the spoken words to mark first.');
-  const doc = readMarkup(xml);
+/** DOM offsets use UTF-16, matching the selection API of the source textarea. */
+function spokenNodes(root: Node) {
   const nodes: { node: Text; start: number; end: number }[] = [];
   let offset = 0;
   function walk(node: Node) {
@@ -150,7 +142,13 @@ export function markSpokenRange(
       offset += size;
     } else for (const child of Array.from(node.childNodes)) walk(child);
   }
-  walk(doc.documentElement);
+  walk(root);
+  return nodes;
+}
+
+function spokenRange(doc: Document, start: number, end: number) {
+  if (start >= end) throw new Error('Select some spoken words first.');
+  const nodes = spokenNodes(doc.documentElement);
   const first = nodes.find((item) => start >= item.start && start < item.end);
   const last = nodes.find((item) => end > item.start && end <= item.end);
   if (!first || !last)
@@ -160,23 +158,53 @@ export function markSpokenRange(
   const range = doc.createRange();
   range.setStart(first.node, start - first.start);
   range.setEnd(last.node, end - last.start);
-  if (
-    first.node.parentElement?.closest('speaker,narrator') ||
-    last.node.parentElement?.closest('speaker,narrator')
-  ) {
-    throw new Error(
-      'This selection already has a speaker. Edit its assignment in XML or select unassigned words.'
-    );
-  }
+  return { range, first, last, nodes };
+}
+
+/** Wrap unassigned words, or change the assignment of a complete existing turn. */
+export function markSpokenRange(
+  xml: string,
+  start: number,
+  end: number,
+  speaker: string,
+  category: string
+) {
+  const doc = readMarkup(xml);
+  const { range, first, last, nodes } = spokenRange(doc, start, end);
+  const existing = first.node.parentElement?.closest(
+    'dialogue,narrator,speaker'
+  );
+  const lastExisting = last.node.parentElement?.closest(
+    'dialogue,narrator,speaker'
+  );
   const wrapper = doc.createElement(
     speaker === '__narrator' ? 'narrator' : 'dialogue'
   );
-  try {
-    range.surroundContents(wrapper);
-  } catch {
-    throw new Error(
-      'Select words within one existing region; this selection crosses a markup boundary.'
-    );
+  if (existing || lastExisting) {
+    const region = existing?.closest('dialogue,narrator') ?? existing;
+    const regionNodes = nodes.filter((item) => region?.contains(item.node));
+    if (
+      !region ||
+      !region.contains(last.node) ||
+      start !== regionNodes[0]?.start ||
+      end !== regionNodes.at(-1)?.end
+    )
+      throw new Error(
+        'Select the complete marked turn to change its speaker, or select unassigned words.'
+      );
+    // An explicit whole-turn reassignment keeps wording and nested directions.
+    while (region.firstChild) wrapper.appendChild(region.firstChild);
+    for (const old of Array.from(wrapper.querySelectorAll('speaker')))
+      old.replaceWith(...Array.from(old.childNodes));
+    region.replaceWith(wrapper);
+  } else {
+    try {
+      range.surroundContents(wrapper);
+    } catch {
+      throw new Error(
+        'Select words within one existing region; this selection crosses a markup boundary.'
+      );
+    }
   }
   if (speaker !== '__narrator' && (speaker || category !== 'unspecified')) {
     const voice = doc.createElement('speaker');
@@ -186,4 +214,58 @@ export function markSpokenRange(
     wrapper.appendChild(voice);
   }
   return new XMLSerializer().serializeToString(doc.documentElement);
+}
+
+/** Phrase directions may sit inside an existing speaker or narrator region. */
+export function directSpokenRange(
+  xml: string,
+  start: number,
+  end: number,
+  instruction: string
+) {
+  if (!instruction.trim())
+    throw new Error('Add a direction for the selected words first.');
+  const doc = readMarkup(xml);
+  const { range } = spokenRange(doc, start, end);
+  const span = doc.createElement('span');
+  try {
+    range.surroundContents(span);
+  } catch {
+    throw new Error(
+      'Select words within one speaker or phrase; this selection crosses a markup boundary.'
+    );
+  }
+  const direction = doc.createElement('ins');
+  direction.textContent = instruction.trim();
+  span.insertBefore(direction, span.firstChild);
+  return new XMLSerializer().serializeToString(doc.documentElement);
+}
+
+/** Safe, renderable text runs; annotation metadata is never spoken text. */
+export function annotatedTextRuns(xml: string) {
+  if (!xml) return [];
+  try {
+    const root = readMarkup(xml).documentElement;
+    return spokenNodes(root).map(({ node, start, end }) => {
+      const parent = node.parentElement;
+      const owner = parent?.closest('speaker,narrator');
+      const direction =
+        parent?.closest('span')?.querySelector(':scope > ins')?.textContent ??
+        '';
+      return {
+        text: node.textContent ?? '',
+        start,
+        end,
+        direction,
+        speaker:
+          owner?.tagName === 'narrator'
+            ? '__narrator'
+            : (owner?.getAttribute('ref') ?? owner?.getAttribute('n') ?? ''),
+        category: owner?.getAttribute('g') ?? 'unspecified',
+        dialogue: Boolean(parent?.closest('dialogue'))
+      };
+    });
+  } catch {
+    return [];
+  }
 }

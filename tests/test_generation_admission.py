@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from sqlalchemy import func, select
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database
@@ -18,13 +19,14 @@ from pandrator.web.generation_admission import (
     run_generation_admission,
 )
 from pandrator.web.job_execution import current_job_lease
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.jobs import JobQueue, Worker
 from pandrator.web.models import (
-    AppSetting,
     GenerationPlan,
     GenerationRun,
     Job,
     SessionSetting,
+    WorkspaceSetting,
     utcnow,
 )
 from pandrator.web.workspace import GenerationService
@@ -324,8 +326,11 @@ class GenerationAdmissionTests(unittest.TestCase):
             lease_generation=claim.lease_generation,
         )
         with self.database.immediate_session() as session:
+            ownership = job_creation_ownership(session, session_id=self.session_id)
             unrelated = Job(
                 kind="generation.run", session_id=self.session_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
                 payload_json={"generation_run_id": marker["generation_run_id"]},
             )
             session.add(unrelated)
@@ -450,9 +455,15 @@ class GenerationAdmissionTests(unittest.TestCase):
     def test_global_defaults_revision_change_after_admission_creates_no_child(self):
         admission_id = self.admit().get_json()["job_id"]
         with self.database.immediate_session() as session:
-            setting = session.get(AppSetting, "defaults.tts")
+            workspace_id = initial_personal_workspace(session).id
+            setting = session.get(WorkspaceSetting, (workspace_id, "defaults.tts"))
             if setting is None:
-                session.add(AppSetting(key="defaults.tts", value_json={}, revision=1))
+                session.add(WorkspaceSetting(
+                    workspace_id=workspace_id,
+                    key="defaults.tts",
+                    value_json={},
+                    revision=1,
+                ))
             else:
                 setting.revision += 1
         claim = self.claimed(admission_id)

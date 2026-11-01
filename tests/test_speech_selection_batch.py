@@ -177,12 +177,16 @@ def test_sound_xml_batch_writes_one_version_preserving_other_cues(case, monkeypa
     first_id, second_id, third_id = case["segment_ids"]
     first_cue, second_cue, kept_cue = (str(uuid.uuid4()) for _ in range(3))
     with services["database"].session() as session:
+        from pandrator.web.accounts.identity import initial_personal_workspace
+
         artifact = m.Artifact(
+            workspace_id=initial_personal_workspace(session).id,
             kind="audio", role="sound.original", relative_path="bell.wav", content_hash="bell",
         )
         session.add(artifact)
         session.flush()
         variant = m.SoundVariant(
+            workspace_id=artifact.workspace_id,
             artifact_id=artifact.id, state="ready", duration_seconds=1.0,
             provenance_json={"display_name": "Bell"},
         )

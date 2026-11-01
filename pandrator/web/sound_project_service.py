@@ -9,6 +9,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
 from .artifacts import ArtifactService
 from .database import Database
 from .models import GenerationPlan, GenerationPlanRevision, GenerationSegment
@@ -55,6 +57,7 @@ class ProjectSoundService:
         ):
             raise ValueError("segment_ids must contain at most 100 segment IDs.")
         with self.database.snapshot_session() as session:
+            require_current_session_access(session, session_id, ProjectAction.READ)
             _record, plan, active = current_header(session, session_id)
             header = plan_header(session_id, plan, active)
             if plan is None:
@@ -72,6 +75,7 @@ class ProjectSoundService:
             }
 
     def _editable(self, session: Session, session_id: str, expected_revision: int):
+        require_current_session_access(session, session_id, ProjectAction.EDIT)
         record, plan, active = current_header(session, session_id)
         assert_revision(plan, expected_revision)
         if plan is not None and plan.speech_plan_revision_id != active:
@@ -83,7 +87,7 @@ class ProjectSoundService:
     ) -> dict[str, Any]:
         request = SoundCueCreate.model_validate(payload)
         record, old, active = self._editable(session, session_id, request.expected_revision)
-        require_variant(session, request.variant_id)
+        require_variant(session, request.variant_id, session_id=session_id)
         anchor, playback, status = normalize_placement(
             session, request.anchor, request.playback, record.workflow_kind, active
         )
@@ -110,7 +114,7 @@ class ProjectSoundService:
         if cue is None:
             raise KeyError(logical_cue_id)
         if request.variant_id is not None:
-            require_variant(session, request.variant_id)
+            require_variant(session, request.variant_id, session_id=session_id)
             cue["variant_id"] = request.variant_id
         if request.anchor is not None or request.playback is not None:
             original_anchor = deepcopy(cue["anchor_json"])
@@ -191,6 +195,7 @@ class ProjectSoundService:
     def snapshot_in_session(
         self, session: Session, session_id: str, *, revision: int | None = None
     ) -> dict[str, Any]:
+        require_current_session_access(session, session_id, ProjectAction.READ)
         _record, latest, active = current_header(session, session_id)
         if revision is None:
             plan = latest
@@ -229,6 +234,7 @@ class ProjectSoundService:
         new_speech_plan_revision_id: str,
         boundary_mapping: dict[tuple[str, str], str | None],
     ) -> dict[str, Any] | None:
+        require_current_session_access(session, session_id, ProjectAction.EDIT)
         return rebase_sound_plan(
             session,
             session_id,
@@ -244,6 +250,8 @@ class ProjectSoundService:
         source_segment_map: dict[str, str],
         carry_media_assets: bool = True,
     ) -> dict[str, Any]:
+        require_current_session_access(session, source_id, ProjectAction.READ)
+        require_current_session_access(session, target_id, ProjectAction.EDIT)
         return clone_sound_plan(
             session,
             source_id,

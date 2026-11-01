@@ -9,7 +9,7 @@ import wave
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import regex
 
@@ -17,6 +17,7 @@ from .cancellable_process import run_cancellable
 from .dubbing import crispasr, qwen_alignment
 from .dubbing.caption_alignment import parse_ctc_words
 from .dubbing.languages import normalize_language_code
+from .media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 
 IDENTITY_VERSION = 1
 
@@ -324,6 +325,7 @@ def align_book_text(
     cancel_event: threading.Event,
     *,
     runner=None,
+    before_io: Callable[[], None] | None = None,
 ) -> AlignedBookText:
     """Align an exact transcript/audio pair; normalization never alters its source."""
     qwen_alignment.check_cancelled(cancel_event)
@@ -337,31 +339,39 @@ def align_book_text(
     if qwen and len(text) > 16000:
         raise ValueError("Qwen book alignment requires at most 16000 transcript characters")
     work_dir = Path(work_dir)
+    if before_io is not None:
+        before_io()
     work_dir.mkdir(parents=True, exist_ok=True)
     normalized = work_dir / "book-alignment.wav"
     if Path(audio_path).resolve() == normalized.resolve():
         raise ValueError("Alignment scratch audio must differ from the source")
+    normalization_command = [
+        str(settings.get("ffmpeg_executable") or "ffmpeg"),
+        "-nostdin",
+        "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
+        "-i",
+        str(audio_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        str(normalized),
+    ]
+    if before_io is not None:
+        before_io()
     run_cancellable(
-        [
-            str(settings.get("ffmpeg_executable") or "ffmpeg"),
-            "-nostdin",
-            "-y",
-            "-i",
-            str(audio_path),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-c:a",
-            "pcm_s16le",
-            str(normalized),
-        ],
+        normalization_command,
         cancel_event=cancel_event,
         check=True,
         capture_output=True,
     )
     qwen_alignment.check_cancelled(cancel_event)
+    if before_io is not None:
+        before_io()
     with wave.open(str(normalized), "rb") as wav:
         if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate(), wav.getcomptype()) != (
             1,
@@ -376,8 +386,13 @@ def align_book_text(
     if qwen and duration > qwen_alignment.MAX_AUDIO_SECONDS:
         raise ValueError("Qwen book alignment requires audio of at most 300 seconds")
     transcript = work_dir / "book-alignment.txt"
+    if before_io is not None:
+        before_io()
     transcript.write_text(text, encoding="utf-8")
-    payload = (runner or crispasr.run_ctc_alignment)(
+    ctc_runner = runner or crispasr.run_ctc_alignment
+    if before_io is not None:
+        before_io()
+    payload = ctc_runner(
         normalized,
         transcript,
         work_dir / "book-alignment.json",

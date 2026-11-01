@@ -12,6 +12,8 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from pandrator.logic.llm_handler import (
     ChatCompletionResult,
     chat_completion_with_metadata,
@@ -204,8 +206,15 @@ def _parse_response(
     return xmls, [dict(proposal) for proposal in proposals]
 
 
-def _controls_snapshot(database: Any, session_id: str) -> dict[str, Any]:
+def _controls_snapshot(
+    database: Any,
+    session_id: str,
+    *,
+    before_data_access: Callable[[Session], None] | None = None,
+) -> dict[str, Any]:
     with database.immediate_session() as session:
+        if before_data_access is not None:
+            before_data_access(session)
         return get_generation_controls(session, session_id)
 
 
@@ -214,6 +223,8 @@ def _normalize_source_markup(
     session_id: str,
     texts: Sequence[str],
     source_markup: Mapping[str, str],
+    *,
+    before_data_access: Callable[[Session], None] | None = None,
 ) -> dict[str, str]:
     """Canonicalize source markup once against current controls and clean text."""
 
@@ -221,7 +232,14 @@ def _normalize_source_markup(
         return {}
     from .generation_cast_runtime import remap_markup
 
-    controls = _controls_snapshot(database, session_id)
+    if before_data_access is None:
+        controls = _controls_snapshot(database, session_id)
+    else:
+        controls = _controls_snapshot(
+            database,
+            session_id,
+            before_data_access=before_data_access,
+        )
     characters = list(controls.get("characters") or [])
     normalized: dict[str, str] = {}
     for unit_id, text in enumerate(texts, start=1):
@@ -254,8 +272,11 @@ def _commit_batch(
     source_markup: Mapping[str, str] | None,
     mode: str,
     origin: str,
+    before_data_access: Callable[[Session], None] | None = None,
 ) -> list[str]:
     with database.immediate_session() as session:
+        if before_data_access is not None:
+            before_data_access(session)
         controls = merge_character_proposals(
             session,
             session_id,
@@ -292,6 +313,8 @@ def annotate_speech_units(
     cancel_event: Any,
     source_markup: dict[str, str] | None = None,
     on_usage: Callable[[ChatCompletionResult], None] | None = None,
+    completion_func: Callable[..., ChatCompletionResult] | None = None,
+    before_data_access: Callable[[Session], None] | None = None,
 ) -> list[str]:
     """Annotate speech units and return canonical XML in input order.
 
@@ -305,17 +328,40 @@ def annotate_speech_units(
     normalized_texts = [str(text) for text in texts]
     if not normalized_texts:
         return []
+    guard_exception: Exception | None = None
+    if before_data_access is None:
+        unit_guard = None
+    else:
+
+        def guarded_data_access(session: Session) -> None:
+            nonlocal guard_exception
+            try:
+                before_data_access(session)
+            except Exception as error:
+                guard_exception = error
+                raise
+
+        unit_guard = guarded_data_access
     source_markup = {
         str(key): value
         for key, value in (source_markup or {}).items()
         if isinstance(value, str)
     }
-    source_markup = _normalize_source_markup(
-        database,
-        session_id,
-        normalized_texts,
-        source_markup,
-    )
+    if unit_guard is None:
+        source_markup = _normalize_source_markup(
+            database,
+            session_id,
+            normalized_texts,
+            source_markup,
+        )
+    else:
+        source_markup = _normalize_source_markup(
+            database,
+            session_id,
+            normalized_texts,
+            source_markup,
+            before_data_access=unit_guard,
+        )
     usage = OptimizationUsage()
 
     # Off mode never starts a model request, but still validates and preserves
@@ -357,7 +403,14 @@ def annotate_speech_units(
         for attempt in range(2):
             if _cancelled(cancel_event):
                 return []
-            controls = _controls_snapshot(database, session_id)
+            if unit_guard is None:
+                controls = _controls_snapshot(database, session_id)
+            else:
+                controls = _controls_snapshot(
+                    database,
+                    session_id,
+                    before_data_access=unit_guard,
+                )
             request = {
                 "mode": requested_mode,
                 "character_revision": int(controls.get("revision") or 0),
@@ -395,19 +448,27 @@ def annotate_speech_units(
                 system_prompt += (
                     f"\nCorrect the previous validation error: {last_error}"
                 )
-            response = chat_completion_with_metadata(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": "Annotate these speech units:\n"
-                        + json.dumps(request, ensure_ascii=False),
-                    },
-                ],
-                model_name=model_name,
-                llm_settings=llm_settings,
-                cancel_event=cancel_event,
-            )
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": "Annotate these speech units:\n"
+                    + json.dumps(request, ensure_ascii=False),
+                },
+            ]
+            if completion_func is None:
+                response = chat_completion_with_metadata(
+                    messages=messages,
+                    model_name=model_name,
+                    llm_settings=llm_settings,
+                    cancel_event=cancel_event,
+                )
+            else:
+                response = completion_func(
+                    messages=messages,
+                    model_name=model_name,
+                    llm_settings=llm_settings,
+                )
             if isinstance(response, str):
                 response = ChatCompletionResult(content=response)
             usage.add(response)
@@ -421,17 +482,24 @@ def annotate_speech_units(
                     batch,
                     mode=requested_mode,
                 )
+                commit_options: dict[str, Any] = {
+                    "source_markup": source_markup,
+                    "mode": requested_mode,
+                    "origin": "speech-structure-analysis",
+                }
+                if unit_guard is not None:
+                    commit_options["before_data_access"] = unit_guard
                 committed = _commit_batch(
                     database,
                     session_id,
                     batch,
                     xmls,
                     proposals,
-                    source_markup=source_markup,
-                    mode=requested_mode,
-                    origin="speech-structure-analysis",
+                    **commit_options,
                 )
             except (TypeError, ValueError) as error:
+                if error is guard_exception:
+                    raise
                 last_error = str(error)
                 if attempt == 1:
                     raise ValueError(

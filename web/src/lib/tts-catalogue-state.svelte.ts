@@ -1,15 +1,15 @@
 import type {
   TtsCatalogue,
   TtsCompactCatalogue,
-  TtsService,
   VoiceRecord
 } from './api-models';
-import { sessionApi } from './domain-api';
+import type { SpeechCatalogueScope } from './speech-catalogue-api';
 import { errorMessage } from './errors';
 import {
   getTtsCompactCatalogue,
   getTtsServiceDetail,
-  getVoiceLibrary
+  getVoiceLibrary,
+  speechCatalogueKey
 } from './tts-catalogue-cache';
 
 type CatalogueLoad = {
@@ -31,13 +31,16 @@ export class TtsCatalogueState {
   private request = 0;
   private voiceRequest = 0;
   private disposed = false;
-  private discoveryRequests = new Map<string, number>();
+  private loadedScope = '';
   private serviceRequests = new Map<string, Promise<void>>();
+
+  constructor(
+    private readonly getScope: () => SpeechCatalogueScope = () => ({})
+  ) {}
 
   invalidate() {
     this.request++;
     this.voiceRequest++;
-    this.discoveryRequests.clear();
     this.serviceRequests.clear();
     this.checkingServices = [];
     this.voicesLoading = false;
@@ -48,7 +51,9 @@ export class TtsCatalogueState {
   }
 
   async load(force = false): Promise<CatalogueLoad | undefined> {
-    if (this.loaded && !force) {
+    const scope = this.getScope();
+    const scopeKey = speechCatalogueKey(scope);
+    if (this.loaded && this.loadedScope === scopeKey && !force) {
       if (!this.voicesLoaded && !this.voicesLoading)
         void this.reloadVoices(false).catch(() => undefined);
       return;
@@ -57,12 +62,22 @@ export class TtsCatalogueState {
     this.serviceRequests.clear();
     this.checkingServices = [];
     this.serviceErrors = {};
-    const isCurrent = () => !this.disposed && request === this.request;
+    if (this.loadedScope !== scopeKey) {
+      this.loaded = false;
+      this.catalogue = { services: [] };
+      this.voices = [];
+      this.voicesLoaded = false;
+    }
+    this.loadedScope = scopeKey;
+    const isCurrent = () =>
+      !this.disposed &&
+      request === this.request &&
+      speechCatalogueKey(this.getScope()) === scopeKey;
     this.error = '';
     // Saved references should not hold the provider/model controls hostage.
     void this.reloadVoices(force).catch(() => undefined);
     try {
-      const services = await getTtsCompactCatalogue(force, force);
+      const services = await getTtsCompactCatalogue(false, force, scope);
       if (!isCurrent()) return;
       this.catalogue = services;
       return { catalogue: services, current: isCurrent };
@@ -73,15 +88,18 @@ export class TtsCatalogueState {
 
   async reloadVoices(force = true) {
     const catalogueRequest = this.request;
+    const scope = this.getScope();
+    const scopeKey = speechCatalogueKey(scope);
     const request = ++this.voiceRequest;
     const isCurrent = () =>
       !this.disposed &&
       catalogueRequest === this.request &&
-      request === this.voiceRequest;
+      request === this.voiceRequest &&
+      speechCatalogueKey(this.getScope()) === scopeKey;
     this.voicesLoading = true;
     this.voiceError = '';
     try {
-      const voices = await getVoiceLibrary(force);
+      const voices = await getVoiceLibrary(force, scope);
       if (!isCurrent()) return;
       this.voices = voices.items ?? [];
       this.voicesLoaded = true;
@@ -98,13 +116,22 @@ export class TtsCatalogueState {
 
   /** Refresh just the selected provider; ordinary opening keeps cached models visible. */
   refreshService(serviceId: string): Promise<void> {
+    if (!this.catalogue.can_refresh || !this.catalogue.workspace_id)
+      return Promise.resolve();
     const pending = this.serviceRequests.get(serviceId);
     if (pending) return pending;
     const request = this.request;
-    const isCurrent = () => !this.disposed && request === this.request;
+    const scopeKey = speechCatalogueKey(this.getScope());
+    const isCurrent = () =>
+      !this.disposed &&
+      request === this.request &&
+      speechCatalogueKey(this.getScope()) === scopeKey;
     this.checkingServices = [...this.checkingServices, serviceId];
     this.serviceErrors = { ...this.serviceErrors, [serviceId]: '' };
-    const task = getTtsServiceDetail(serviceId, { refresh: true })
+    const task = getTtsServiceDetail(serviceId, {
+      refresh: true,
+      workspaceId: this.catalogue.workspace_id
+    })
       .then(({ service }) => {
         if (!isCurrent()) return;
         this.catalogue = {
@@ -137,54 +164,5 @@ export class TtsCatalogueState {
     if (!load.current()) return false;
     this.loaded = true;
     return true;
-  }
-
-  async discover(service: TtsService | undefined) {
-    if (!service?.api_base) return;
-    // Native Google catalogues are refreshed by the catalogue API with their
-    // own credentials and per-model voice metadata.
-    if (
-      ['gemini', 'vertex_ai'].includes(service.id) &&
-      service.supports_dynamic_catalog
-    )
-      return;
-    const catalogueRequest = this.request;
-    const request = (this.discoveryRequests.get(service.id) ?? 0) + 1;
-    this.discoveryRequests.set(service.id, request);
-    try {
-      const discovered = await sessionApi.discoverTts(
-        service.api_base,
-        service.id
-      );
-      if (
-        !discovered?.success ||
-        this.disposed ||
-        catalogueRequest !== this.request ||
-        this.discoveryRequests.get(service.id) !== request ||
-        !this.catalogue.services.some(
-          (item) => item.id === service.id && item.api_base === service.api_base
-        )
-      )
-        return;
-      const services = this.catalogue.services.map((item) =>
-        item.id === service.id
-          ? {
-              ...item,
-              models: Array.from(
-                new Set([...(discovered.models ?? []), ...(item.models ?? [])])
-              ),
-              voices: Array.from(
-                new Set([...(discovered.voices ?? []), ...(item.voices ?? [])])
-              ),
-              live_voices: Array.from(new Set(discovered.voices ?? [])),
-              online: true,
-              available: true
-            }
-          : item
-      );
-      this.catalogue = { ...this.catalogue, services };
-    } catch {
-      /* A reachable service may not expose catalogue routes. */
-    }
   }
 }

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Sequence
 
+from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+
 
 class MediaProcessCancelled(RuntimeError):
     """Raised when a media subprocess is stopped by a job cancellation."""
@@ -225,6 +227,7 @@ def probe_audio_stream(
     result = run_media_process(
         [
             resolve_ffprobe_executable(ffprobe_executable),
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             "-v",
             "error",
             "-select_streams",
@@ -292,6 +295,7 @@ def find_first_audible_seconds(
         [
             resolve_ffmpeg_executable(ffmpeg_executable),
             "-hide_banner",
+            *LOCAL_MEDIA_INPUT_OPTIONS,
             "-i",
             str(source),
             "-t",

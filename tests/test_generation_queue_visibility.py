@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from sqlalchemy import event, select
 
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import Job, QuickTranscription, ResourceClaim, utcnow
 
 
@@ -28,6 +29,11 @@ def _seed_waiting_pair(
     )
     waiter = Job(kind="tts.preview", resource_keys_json=[requested_key])
     with case.database.session() as session:
+        ownership = job_creation_ownership(session, session_id=blocker.session_id)
+        blocker.workspace_id = ownership.workspace_id
+        blocker.project_id = ownership.project_id
+        waiter.workspace_id = ownership.workspace_id
+        waiter.project_id = ownership.project_id
         session.add_all([blocker, waiter])
         session.flush()
         claim = ResourceClaim(
@@ -62,6 +68,9 @@ def test_queued_replacement_reports_live_session_export_only():
             blocker = Job(kind="export.variant", session_id=case.session_id,
                           status="running", lease_expires_at=utcnow() + timedelta(minutes=1),
                           progress_detail="Extending final frame")
+            ownership = job_creation_ownership(session, session_id=blocker.session_id)
+            blocker.workspace_id = ownership.workspace_id
+            blocker.project_id = ownership.project_id
             session.add(blocker)
             session.flush()
             blocker_id = blocker.id
@@ -284,6 +293,9 @@ def test_waiting_for_jobs_uses_one_query_and_skips_query_without_candidates():
         )
         no_resource = Job(kind="tts.preview")
         with case.database.session() as session:
+            ownership = job_creation_ownership(session, session_id=no_resource.session_id)
+            no_resource.workspace_id = ownership.workspace_id
+            no_resource.project_id = ownership.project_id
             session.add(no_resource)
             session.flush()
             waiter_records = list(

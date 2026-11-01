@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -32,7 +33,7 @@ from pandrator_mcp.tools.session_purge import (
 
 
 @pytest.fixture
-def fixture(tmp_path):
+def fixture(tmp_path, monkeypatch):
     paths = DataPaths(tmp_path).ensure()
     upgrade_database(paths.database)
     database = Database(paths.database)
@@ -54,6 +55,10 @@ def fixture(tmp_path):
             return SimpleNamespace(subject="test-owner")
 
         @staticmethod
+        def access_context():
+            return None
+
+        @staticmethod
         def error_response(code, message, status, details=None):
             return jsonify({"code": code, "message": message, "details": details}), status
 
@@ -61,9 +66,17 @@ def fixture(tmp_path):
         database=database, paths=paths, jobs=queue,
         idempotency=IdempotencyService(database, SecretRedactor(database)),
     )
-    register_session_purge_job_routes(
-        app, SimpleNamespace(services=services, guards=Guards())
-    )
+    # This legacy fixture isolates durable protocol under trusted None context.
+    # Named-user authorization runs against real guards in test_purge_workspace_http.
+    def trusted_job(unit, _context, identifier):
+        record = unit.get(Job, identifier)
+        if record is None:
+            raise KeyError(identifier)
+        return record
+
+    monkeypatch.setattr("pandrator.web.session_purge_job_routes.require_job_access", trusted_job)
+    route_context: Any = SimpleNamespace(services=services, guards=Guards())
+    register_session_purge_job_routes(app, route_context)
     yield SimpleNamespace(
         paths=paths, database=database, queue=queue, purge=purge,
         record=trashed, app=app, handlers=purge_job_handlers(database, paths),
@@ -336,6 +349,7 @@ def test_mcp_admission_default_and_explicit_legacy_path():
     runtime.require_application.return_value = application
 
     inspection = preview_session_deletion(runtime, PreviewSessionDeletionInput(session_id="s"))
+    assert inspection.work is not None
     assert inspection.work.id == "inspection-1"
     assert inspection.result["idempotency_key"].startswith("purge-inspection:")
     assert inspection.next_actions[0].arguments["work_id"] == "inspection-1"
@@ -345,6 +359,7 @@ def test_mcp_admission_default_and_explicit_legacy_path():
     )
     first = delete_session_permanently(runtime, arguments)
     second = delete_session_permanently(runtime, arguments)
+    assert first.work is not None
     assert first.work.id == "deletion-1"
     assert first.result["idempotency_key"] == second.result["idempotency_key"]
     assert application.admit_session_purge.call_args.kwargs["idempotency_key"] == first.result["idempotency_key"]

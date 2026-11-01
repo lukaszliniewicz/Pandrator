@@ -1,8 +1,8 @@
 <script lang="ts">
+  import { projectLinkUrl } from './project-link-context';
   import { errorMessage } from './errors';
   import {
     ChevronLeft,
-    ChevronDown,
     ChevronRight,
     CircleHelp,
     Columns3,
@@ -10,6 +10,7 @@
     LoaderCircle,
     Merge,
     Play,
+    Pause,
     Plus,
     RefreshCw,
     Save,
@@ -48,8 +49,9 @@
   import TextDiff from './TextDiff.svelte';
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
-  import { modalFocus } from './modal-focus';
-  import WorkspaceMaximizeButton from './WorkspaceMaximizeButton.svelte';
+  import { createSubtitleReviewIndex } from './subtitle-review-index';
+  import ReviewWorkspace from './ReviewWorkspace.svelte';
+  import UnsavedChangesDialog from './UnsavedChangesDialog.svelte';
 
   const PAGE_SIZE = 50;
 
@@ -85,6 +87,7 @@
   let staleDraft = $state<Payload | null>(null);
   let permitNavigation = false;
   let pendingSave: { signature: string; key: string } | undefined;
+  let lastEditorField: HTMLInputElement | HTMLTextAreaElement | null = null;
   const dirty = $derived(
     Boolean(payload && baseline && reviewContent(payload) !== baseline)
   );
@@ -92,7 +95,13 @@
     reviewDraftKey(sessionId, reviewPrimaryArtifactId || primaryArtifactId)
   );
 
-  function checkpoint() {
+  function checkpoint(event?: Event) {
+    const field = event?.currentTarget;
+    if (
+      field instanceof HTMLInputElement ||
+      field instanceof HTMLTextAreaElement
+    )
+      lastEditorField = field;
     if (!payload || loading || saving) return;
     const snapshot = cloneReview(payload);
     if (reviewContent(undoHistory.at(-1) ?? null) === reviewContent(snapshot))
@@ -110,6 +119,16 @@
     splitInspection = null;
   }
 
+  function openEvidence(item: Segment) {
+    if (!item.id) return;
+    const key = `${editArtifactId}:${item.id}`;
+    if (!(key in evidenceReasons))
+      evidenceReasons[key] =
+        item.review_note ||
+        'The cue is semantically inconsistent with the surrounding utterance.';
+    evidencePanelSegmentId = item.id;
+    toolsOpen = true;
+  }
   function requestLeave(action = onclose) {
     if (saving) return;
     if (dirty) pendingLeave = action;
@@ -135,8 +154,9 @@
   }
 
   beforeNavigate((navigation) => {
-    if (!dirty || permitNavigation) return;
+    if ((!dirty && !saving) || permitNavigation) return;
     navigation.cancel();
+    if (saving) return;
     if (!navigation.willUnload && navigation.to?.url) {
       const target = navigation.to.url;
       requestLeave(() => {
@@ -163,6 +183,34 @@
   let splitStartsTurn = $state(false);
   let splitError = $state('');
   let reviewTime = $state(0);
+  let mediaPlaying = $state(false);
+  $effect(() => {
+    const player = playbackElement();
+    if (!player) return;
+    const update = () => {
+      mediaPlaying = !player.paused && !player.ended;
+      reviewTime = player.currentTime * 1000;
+    };
+    update();
+    for (const name of ['play', 'pause', 'ended', 'timeupdate'])
+      player.addEventListener(name, update);
+    return () => {
+      for (const name of ['play', 'pause', 'ended', 'timeupdate'])
+        player.removeEventListener(name, update);
+    };
+  });
+  async function toggleSourcePlayback() {
+    const player = playbackElement();
+    if (!player) return;
+    stopCuePreview();
+    if (!player.paused) player.pause();
+    else
+      try {
+        await player.play();
+      } catch (caught) {
+        cuePlaybackError = errorMessage(caught);
+      }
+  }
   function playbackElement() {
     return sourceIsVideo && previewMode !== 'audio'
       ? videoPreview
@@ -182,7 +230,9 @@
   let cuePreviewFrame: number | null = null;
   let cuePreviewEnd = 0;
   let tourOpen = $state(false);
+  let toolsOpen = $state(false);
   let maximized = $state(false);
+  let evidenceReasons = $state<Record<string, string>>({});
   let pageIndex = $state(0);
   let rowsViewport = $state<HTMLDivElement>();
   let evidenceRecords = $state<SubtitleEvidenceRecord[]>([]);
@@ -208,6 +258,9 @@
   const columns = $derived(payload?.columns ?? []);
   const editColumn = $derived(
     columns.find((column) => column.artifact_id === editArtifactId)
+  );
+  const editableIndex = $derived(
+    createSubtitleReviewIndex(editColumn?.segments ?? [])
   );
   const editMode = $derived(payload?.edit_mode ?? 'display');
   const passages = $derived(editColumn?.logical_passages ?? []);
@@ -305,8 +358,9 @@
   function evidenceFor(segment: Segment) {
     return evidenceRecords.filter(
       (record) =>
-        record.source_artifact_id === editArtifactId &&
-        record.cue_id === segment.ordinal + 1
+        segment.evidence_ids?.includes(evidenceId(record)) ||
+        (record.source_artifact_id === editArtifactId &&
+          record.cue_id === segment.ordinal + 1)
     );
   }
 
@@ -334,7 +388,11 @@
   async function loadEvidence(artifactId: string) {
     evidenceArtifactId = artifactId;
     try {
-      const result = await sessionApi.subtitleEvidence(sessionId, artifactId);
+      const result = await sessionApi.subtitleEvidence(
+        sessionId,
+        artifactId,
+        true
+      );
       if (evidenceArtifactId === artifactId) evidenceRecords = result.items;
     } catch (caught) {
       if (evidenceArtifactId === artifactId) error = errorMessage(caught);
@@ -391,17 +449,9 @@
     segment.review_note = '';
   }
 
-  function catalogRecord(artifactId: string) {
-    return catalog?.items.find((item) => item.artifact_id === artifactId);
-  }
-
   function columnLabel(value: ReviewColumn | CatalogItem) {
-    const record =
-      'artifact_id' in value ? catalogRecord(value.artifact_id) : undefined;
     const stage = value.stage.replaceAll('_', ' ');
-    const version = record?.version
-      ? `v${record.version}`
-      : `r${value.revision}`;
+    const version = `r${value.revision}`;
     const language = value.language ? ` · ${value.language}` : '';
     return `${stage} ${version}${language}`;
   }
@@ -446,17 +496,11 @@
   }
 
   function canonicalSegment(segment: Segment) {
-    const records = editColumn?.segments;
-    return (
-      records?.find((candidate) => sameSegment(candidate, segment)) ?? segment
-    );
+    return editableIndex.canonical(segment);
   }
 
   function stageIndex(segment: Segment) {
-    const records = editColumn?.segments;
-    return (
-      records?.findIndex((candidate) => sameSegment(candidate, segment)) ?? -1
-    );
+    return editableIndex.indexOf(segment);
   }
 
   function replaceInRows(segment: Segment, replacements: Segment[]) {
@@ -526,7 +570,8 @@
   async function load(
     artifactIds = [reviewPrimaryArtifactId],
     refreshCatalog = false,
-    mode?: 'display' | 'passages'
+    mode?: 'display' | 'passages',
+    savedArtifactId?: string
   ) {
     const remembered = payload ? undefined : readReviewDraft(draftKey);
     loading = true;
@@ -541,6 +586,10 @@
           : Promise.resolve(catalog)
       ]);
       if (mode) nextPayload.edit_mode = mode;
+      if (savedArtifactId) {
+        editArtifactId = savedArtifactId;
+        reviewPrimaryArtifactId = nextPayload.primary_artifact_id;
+      }
       pristinePayload = cloneReview(nextPayload);
       baseline = reviewContent(nextPayload);
       if (remembered && sameReviewSource(remembered.payload, nextPayload)) {
@@ -552,15 +601,17 @@
         payload = cloneReview(nextPayload);
       }
       catalog = nextCatalog;
-      pageIndex = 0;
+      if (!savedArtifactId) pageIndex = 0;
       if (
         !nextPayload.columns.some(
           (column) => column.artifact_id === editArtifactId
         )
       )
         editArtifactId = nextPayload.primary_artifact_id;
+      return true;
     } catch (caught) {
       error = errorMessage(caught);
+      return false;
     } finally {
       loading = false;
     }
@@ -764,6 +815,7 @@
   }
 
   async function navigateSearchMatch(match: TextSearchMatch) {
+    toolsOpen = false;
     if (diffView) diffView = false;
     if (changedOnly) changedOnly = false;
     const target = editColumn?.segments[match.itemIndex];
@@ -976,6 +1028,15 @@
     if (pendingSave?.signature !== signature)
       pendingSave = { signature, key: crypto.randomUUID() };
     const saveKey = pendingSave.key;
+    const savedPage = pageIndex;
+    const savedScroll = rowsViewport?.scrollTop ?? 0;
+    const focus = lastEditorField?.isConnected
+      ? {
+          key: lastEditorField.dataset.reviewFocus,
+          start: lastEditorField.selectionStart,
+          end: lastEditorField.selectionEnd
+        }
+      : undefined;
     saving = true;
     error = '';
     try {
@@ -1035,16 +1096,34 @@
       const nextIds = selectedArtifactIds.map((artifactId) =>
         artifactId === previousId ? result.artifact_id : artifactId
       );
-      if (reviewPrimaryArtifactId === previousId)
-        reviewPrimaryArtifactId = result.artifact_id;
-      editArtifactId = result.artifact_id;
       forgetReviewDraft(reviewDraftKey(sessionId, previousId));
-      payload = null;
-      baseline = '';
+      // Retain the editor and search component while loading the new revision.
+      // Switching its artifact before the payload arrived used to unmount both.
+      if (!(await load(nextIds, true, mode, result.artifact_id))) {
+        error = `The revision was saved, but refreshing failed. Retry Save to reload the same result. ${error}`;
+        return false;
+      }
       undoHistory = [];
       staleDraft = null;
-      await load(nextIds, true, mode);
       pendingSave = undefined;
+      saving = false;
+      pageIndex = Math.min(savedPage, pageCount - 1);
+      await tick();
+      rowsViewport?.scrollTo({ top: savedScroll });
+      const field = focus?.key
+        ? Array.from(
+            rowsViewport?.querySelectorAll<
+              HTMLInputElement | HTMLTextAreaElement
+            >('[data-review-focus]') ?? []
+          ).find((candidate) => candidate.dataset.reviewFocus === focus.key)
+        : undefined;
+      field?.focus({ preventScroll: true });
+      if (
+        field instanceof HTMLTextAreaElement &&
+        focus?.start !== null &&
+        focus?.end !== null
+      )
+        field.setSelectionRange(focus?.start ?? 0, focus?.end ?? 0);
       onsaved();
       return true;
     } catch (caught) {
@@ -1155,264 +1234,177 @@
   });
 </script>
 
-<div
-  class:maximized
-  class="review-overlay fixed inset-0 z-50 bg-black/45 p-3 backdrop-blur-sm sm:p-6"
-  role="presentation"
+<ReviewWorkspace
+  closeLabel="Close subtitle review"
+  titleId="review-title"
+  onclose={() => requestLeave()}
+  busy={saving}
+  bind:toolsOpen
+  bind:maximized
+  toolsTitle="Tools"
+  toolsSummary={`${columns.length}/4 revisions${changedOnly ? ' · changed' : ''}${needsReviewOnly ? ' · needs review' : ''}${diffView ? ' · diff' : ''}`}
 >
-  <div
-    use:modalFocus={{ onclose: () => requestLeave() }}
-    class="surface mx-auto flex h-full max-w-[96rem] flex-col overflow-hidden rounded-[1.5rem]"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="review-title"
-  >
-    <header
-      class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7"
-    >
-      <div>
-        <h2
-          id="review-title"
-          class="mt-1 flex items-center gap-2 text-xl font-semibold"
-        >
-          <Columns3 size={20} /> Compare and refine
-        </h2>
-        {#if editColumn}<p class="muted mt-2 text-sm">
-            Editing {columnLabel(editColumn)}
-            {#if selectedArtifactId}
-              · {editArtifactId === selectedArtifactId
-                ? 'Selected project captions'
-                : 'Different from selected project captions'}
-            {/if}
-          </p>{/if}
-      </div>
-      <div class="flex min-w-0 flex-wrap items-center justify-end gap-2">
-        <span class="muted text-xs" role="status"
-          >{dirty ? 'Unsaved changes' : 'Saved revision'}</span
+  {#snippet header()}
+    <div>
+      <h2
+        id="review-title"
+        class="flex items-center gap-2 text-lg font-semibold"
+      >
+        <Columns3 size={20} /> Compare and refine
+      </h2>
+      {#if editColumn}<p class="muted mt-1 text-xs">
+          Editing {columnLabel(editColumn)}
+          {#if selectedArtifactId}
+            · {editArtifactId === selectedArtifactId
+              ? 'Selected project captions'
+              : 'Different from selected project captions'}
+          {/if}
+        </p>{/if}
+    </div>
+    <div class="flex min-w-0 flex-wrap items-center justify-end gap-2">
+      <span class="muted text-xs" role="status"
+        >{dirty ? 'Unsaved changes' : 'Saved revision'}</span
+      >
+      <button
+        onclick={undo}
+        disabled={!undoHistory.length || saving}
+        class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm disabled:opacity-40"
+        ><Undo2 size={16} /> Undo</button
+      >
+      <button
+        onclick={save}
+        disabled={saving || !editColumn}
+        class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
+        ><Save size={16} />
+        {saving ? 'Saving…' : 'Save revision'}</button
+      >
+    </div>
+  {/snippet}
+  {#snippet tools()}
+    <div class="space-y-4">
+      <div class="grid gap-3" aria-label="Subtitle comparisons and filters">
+        <label class="min-w-0 text-xs font-semibold">
+          Editable revision
+          <select
+            value={editArtifactId}
+            onchange={(event) =>
+              changeEditableArtifact(event.currentTarget.value)}
+            class="mt-1 w-full min-w-0 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+            aria-label="Subtitle artifact to edit"
+            >{#each columns as column}<option value={column.artifact_id}
+                >{columnLabel(column)}</option
+              >{/each}</select
+          >
+          <span class="muted mt-1 block max-w-80 font-normal">
+            This chooses what you edit. Project output selection stays
+            unchanged.
+          </span>
+        </label>
+        <button
+          onclick={toggleChangedOnly}
+          aria-pressed={changedOnly}
+          class:active={changedOnly}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+          ><Filter size={16} /> Changed only</button
         >
         <button
-          onclick={undo}
-          disabled={!undoHistory.length || saving}
-          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm disabled:opacity-40"
-          ><Undo2 size={16} /> Undo</button
+          onclick={toggleNeedsReviewOnly}
+          aria-pressed={needsReviewOnly}
+          class:active={needsReviewOnly}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+          ><CircleHelp size={16} /> Needs review
+          {#if needsReviewCount}<span
+              class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.65rem] tabular-nums text-amber-700"
+              >{needsReviewCount}</span
+            >{/if}</button
         >
         <button
-          onclick={() => (tourOpen = true)}
+          onclick={() => (diffView = !diffView)}
+          aria-pressed={diffView}
+          class:active={diffView}
           class="rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
-          >Review tour</button
+          >Diff view</button
         >
-        <button
-          onclick={save}
-          disabled={saving || !editColumn}
-          class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
-          ><Save size={16} />
-          {saving ? 'Saving…' : 'Save revision'}</button
-        >
-        <WorkspaceMaximizeButton
-          {maximized}
-          ontoggle={() => (maximized = !maximized)}
-        />
-        <button
-          onclick={() => requestLeave()}
-          aria-label="Close subtitle review"
-          class="rounded-xl border border-[var(--line)] p-2"
-          ><X size={18} /></button
-        >
-      </div>
-    </header>
-    <details class="review-tools border-b border-[var(--line)]">
-      <summary
-        class="flex cursor-pointer list-none items-center gap-3 px-5 py-3 text-sm sm:px-7"
-      >
-        <span
-          class="grid size-8 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
-          ><Filter size={16} /></span
-        >
-        <span class="min-w-0 flex-1">
-          <strong class="block">Find, filter & compare</strong>
-          <span class="muted mt-0.5 block text-xs font-normal"
-            >Search the editable revision, focus on changes, or compare any
-            subtitle revisions.</span
+        <label class="min-w-0 text-xs font-semibold">
+          Add a comparison
+          <select
+            bind:value={comparisonChoice}
+            disabled={selectedArtifactIds.length >= 4 || comparisonLoading}
+            class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal disabled:opacity-50"
           >
-        </span>
-        {#if changedOnly || needsReviewOnly || diffView}<span
-            class="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[.68rem] font-semibold text-[var(--accent)]"
-            >Active</span
-          >{/if}
-        <span class="muted shrink-0 text-xs tabular-nums"
-          >{selectedArtifactIds.length}/4</span
-        >
-        <span class="review-tools-chevron muted shrink-0"
-          ><ChevronDown size={17} /></span
-        >
-      </summary>
-      <div class="space-y-3 border-t border-[var(--line)] px-5 py-4 sm:px-7">
-        <div
-          class="flex flex-wrap items-end gap-3"
-          aria-label="Subtitle comparisons and filters"
-        >
-          <label class="min-w-56 text-xs font-semibold">
-            Editable revision
-            <select
-              value={editArtifactId}
-              onchange={(event) =>
-                changeEditableArtifact(event.currentTarget.value)}
-              class="mt-1 w-full min-w-0 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
-              aria-label="Subtitle artifact to edit"
-              >{#each columns as column}<option value={column.artifact_id}
-                  >{columnLabel(column)}</option
-                >{/each}</select
-            >
-            <span class="muted mt-1 block max-w-80 font-normal">
-              This chooses what you edit. Project output selection stays
-              unchanged.
-            </span>
-          </label>
-          <button
-            onclick={toggleChangedOnly}
-            aria-pressed={changedOnly}
-            class:active={changedOnly}
-            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
-            ><Filter size={16} /> Changed only</button
-          >
-          <button
-            onclick={toggleNeedsReviewOnly}
-            aria-pressed={needsReviewOnly}
-            class:active={needsReviewOnly}
-            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
-            ><CircleHelp size={16} /> Needs review
-            {#if needsReviewCount}<span
-                class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.65rem] tabular-nums text-amber-700"
-                >{needsReviewCount}</span
-              >{/if}</button
-          >
-          <button
-            onclick={() => (diffView = !diffView)}
-            aria-pressed={diffView}
-            class:active={diffView}
-            class="rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
-            >Diff view</button
-          >
-          <label class="min-w-56 flex-1 text-xs font-semibold sm:max-w-lg">
-            Add a comparison
-            <select
-              bind:value={comparisonChoice}
-              disabled={selectedArtifactIds.length >= 4 || comparisonLoading}
-              class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal disabled:opacity-50"
-            >
-              <option value="">Choose any subtitle revision…</option>
-              {#each comparisonStages as stage}
-                {@const stageOptions = comparisonOptions.filter(
-                  (item) => item.stage === stage
-                )}
-                {#if stageOptions.length}
-                  <optgroup label={comparisonGroupLabel(stage)}>
-                    {#each stageOptions as item (item.artifact_id)}
-                      <option value={item.artifact_id}
-                        >{columnLabel(item)} · {item.segment_count} cues</option
-                      >
-                    {/each}
-                  </optgroup>
-                {/if}
-              {/each}
-            </select>
-          </label>
-          <button
-            onclick={addComparison}
-            disabled={!comparisonChoice ||
-              selectedArtifactIds.length >= 4 ||
-              comparisonLoading}
-            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-40"
-          >
-            <Plus size={15} />
-            {comparisonLoading ? 'Loading…' : 'Add'}
-          </button>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          {#each columns as column (column.artifact_id)}
-            <span
-              class="inline-flex max-w-full items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-xs"
-            >
-              <span class="truncate">{columnLabel(column)}</span>
-              {#if column.artifact_id !== reviewPrimaryArtifactId}
-                <button
-                  onclick={() => removeComparison(column.artifact_id)}
-                  aria-label={`Remove ${columnLabel(column)} from comparison`}
-                  class="rounded-full p-0.5 hover:bg-[var(--paper)]"
-                >
-                  <X size={12} />
-                </button>
-              {:else}
-                <span class="font-semibold text-[var(--accent)]">Primary</span>
+            <option value="">Choose any subtitle revision…</option>
+            {#each comparisonStages as stage}
+              {@const stageOptions = comparisonOptions.filter(
+                (item) => item.stage === stage
+              )}
+              {#if stageOptions.length}
+                <optgroup label={comparisonGroupLabel(stage)}>
+                  {#each stageOptions as item (item.artifact_id)}
+                    <option value={item.artifact_id}
+                      >{columnLabel(item)} · {item.segment_count} cues</option
+                    >
+                  {/each}
+                </optgroup>
               {/if}
-            </span>
-          {/each}
-        </div>
-        {#if editColumn && editMode === 'display'}<SearchReplaceBar
-            texts={editableTexts}
-            onreplace={applySearchReplacements}
-            onnavigate={navigateSearchMatch}
-            label={`${editStage.replaceAll('_', ' ')} segments`}
-          />{/if}
-      </div>
-    </details>
-    {#if pendingLeave}<div
-        use:modalFocus={{ onclose: () => (pendingLeave = null) }}
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="draft-leave-title"
-        class="mx-5 my-3 rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 sm:mx-7"
-      >
-        <h3 id="draft-leave-title" class="font-semibold">Save your changes?</h3>
-        <p class="muted mt-1 text-sm">
-          Saving creates a new revision. A failed save keeps this draft open.
-        </p>
-        <div class="mt-3 flex flex-wrap gap-2">
-          <button
-            onclick={saveAndLeave}
-            disabled={saving}
-            class="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white"
-            >{saving ? 'Saving…' : 'Save'}</button
-          >
-          <button
-            onclick={discardAndLeave}
-            disabled={saving}
-            class="rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
-            >Discard</button
-          >
-          <button
-            onclick={() => (pendingLeave = null)}
-            disabled={saving}
-            class="rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
-            >Cancel</button
-          >
-        </div>
-      </div>{/if}
-    {#if staleDraft}<details
-        class="mx-5 my-3 rounded-xl border border-amber-500/40 p-4 sm:mx-7"
-      >
-        <summary class="font-semibold"
-          >The source changed. Your previous draft is retained.</summary
-        >
-        <p class="muted mt-2 text-sm">
-          Review the retained text below against the current revision before
-          copying changes. It has not been applied to the new source.
-        </p>
-        <pre
-          class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-xs">{staleDraft.columns
-            .flatMap((column) => column.segments.map((segment) => segment.text))
-            .join('\n\n')}</pre>
+            {/each}
+          </select>
+        </label>
         <button
-          onclick={() => {
-            staleDraft = null;
-            forgetReviewDraft(draftKey);
-          }}
-          class="mt-2 rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
-          >Discard retained draft</button
+          onclick={addComparison}
+          disabled={!comparisonChoice ||
+            selectedArtifactIds.length >= 4 ||
+            comparisonLoading}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-40"
         >
-      </details>{/if}
+          <Plus size={15} />
+          {comparisonLoading ? 'Loading…' : 'Add'}
+        </button>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        {#each columns as column (column.artifact_id)}
+          <span
+            class="inline-flex max-w-full items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2.5 py-1 text-xs"
+          >
+            <span class="truncate">{columnLabel(column)}</span>
+            {#if column.artifact_id !== reviewPrimaryArtifactId}
+              <button
+                onclick={() => removeComparison(column.artifact_id)}
+                aria-label={`Remove ${columnLabel(column)} from comparison`}
+                class="rounded-full p-0.5 hover:bg-[var(--paper)]"
+              >
+                <X size={12} />
+              </button>
+            {:else}
+              <span class="font-semibold text-[var(--accent)]">Primary</span>
+            {/if}
+          </span>
+        {/each}
+      </div>
+      {#if editColumn && editMode === 'display'}<SearchReplaceBar
+          texts={editableTexts}
+          disabled={saving}
+          onreplace={applySearchReplacements}
+          onnavigate={navigateSearchMatch}
+          label={`${editStage.replaceAll('_', ' ')} segments`}
+        />{/if}
+    </div>
+    <div class="mt-4 space-y-3">
+      <p class="muted text-xs">
+        {editMode === 'passages'
+          ? 'Edit spoken text, timing and speaker here. Saving rebuilds display cues inside each passage’s timing window using the current subtitle limits.'
+          : 'Display cues control subtitle presentation. Edit a combined cue’s spoken text and speaker in Spoken passages.'}
+      </p>
+      <button
+        onclick={() => {
+          toolsOpen = false;
+          tourOpen = true;
+        }}
+        class="rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+        >Review tour</button
+      >
+    </div>
     {#if sourceMediaArtifactId || sourceMediaError}<div
-        class="border-b border-[var(--line)] px-5 py-3 sm:px-7"
+        class="mt-5 border-t border-[var(--line)] pt-4"
       >
         {#if sourceIsVideo && !sourceMediaError}
           <div
@@ -1460,7 +1452,7 @@
                   videoPlaybackError =
                     'This file loaded audio but no playable video.';
               }}
-              src={sourceAudioUrl}
+              src={projectLinkUrl(sourceAudioUrl)}
               controls
               preload="metadata"
               class="max-h-80 w-full rounded-xl bg-black"
@@ -1470,7 +1462,7 @@
             >
               <track
                 kind="captions"
-                src={captionsUrl}
+                src={projectLinkUrl(captionsUrl)}
                 srclang={editColumn?.language || 'en'}
                 label="Selected subtitle revision"
                 default
@@ -1483,7 +1475,7 @@
             </p>
           </div>{:else if sourceAudioUrl}<AudioPlayer
             bind:element={audioPreview}
-            src={sourceAudioUrl}
+            src={projectLinkUrl(sourceAudioUrl)}
             label="Source audio preview"
           />{:else if sourceAudioPreparing}<div
             class="muted flex items-center gap-2 text-xs"
@@ -1533,99 +1525,48 @@
             {cuePlaybackError}
           </p>{/if}
       </div>{/if}
-    {#if splitSegment}<div
-        class="mx-5 mt-4 rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 sm:mx-7"
+    {#if editColumn && evidencePanelSegmentId}{@const item =
+        editColumn.segments.find(
+          (segment) => segment.id === evidencePanelSegmentId
+        )}{#if item}{#key `${editArtifactId}:${item.id}`}<SubtitleEvidencePanel
+            {sessionId}
+            bind:reason={evidenceReasons[`${editArtifactId}:${item.id}`]}
+            sourceArtifactId={editArtifactId}
+            segment={item}
+            records={evidenceFor(item)}
+            onupdated={updateEvidence}
+            onaccept={(candidate, requestId) =>
+              useEvidenceCandidate(item, candidate, requestId)}
+            ondelete={() => removeSegment(item)}
+            onuncertain={(note, requestId) =>
+              markSegmentUncertain(item, note, requestId)}
+            onclear={() => clearSegmentUncertainty(item)}
+          />{/key}{/if}{/if}
+  {/snippet}
+  {#snippet notices()}
+    {#if staleDraft}<details
+        class="mx-5 my-3 rounded-xl border border-amber-500/40 p-4 sm:mx-7"
       >
-        <div class="flex items-center justify-between">
-          <strong class="text-sm">Split at a source-word boundary</strong
-          ><button
-            onclick={() => (splitSegment = null)}
-            aria-label="Close split preview"><X size={16} /></button
-          >
-        </div>
-        {#if splitLoading}<p class="muted mt-2 text-xs" role="status">
-            Checking word timing…
-          </p>{/if}
-        {#if splitError}<p class="mt-2 text-xs text-red-500" role="alert">
-            {splitError}
-          </p>{/if}
-        {#if splitInspection?.boundaries.length}<label
-            class="mt-3 block text-xs"
-            >Boundary<select
-              bind:value={selectedSplitBoundary}
-              onchange={chooseSplitBoundary}
-              class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] p-2"
-              ><option value="">Choose a verified boundary</option
-              >{#each splitInspection.boundaries as anchor}<option
-                  value={anchor.id}
-                  >{anchor.left_text} | {anchor.right_text} · {(
-                    anchor.left_end_ms / 1000
-                  ).toFixed(2)}s</option
-                >{/each}</select
-            ></label
-          >{/if}
-        {#if splitInspection?.next_offset != null}<button
-            class="mt-2 text-xs underline"
-            onclick={() =>
-              splitSegment &&
-              inspectSplit(splitSegment, splitInspection?.next_offset ?? 0)}
-            >More boundaries</button
-          >{/if}
-        {#if selectedSplitBoundary}<div class="mt-3 grid gap-3 sm:grid-cols-2">
-            <label class="text-xs"
-              >First part<textarea
-                bind:value={splitLeft}
-                class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
-                rows="3"></textarea></label
-            ><label class="text-xs"
-              >Second part<textarea
-                bind:value={splitRight}
-                class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
-                rows="3"></textarea></label
-            >
-          </div>
-          <label class="muted mt-2 flex items-center gap-2 text-xs"
-            ><input type="checkbox" bind:checked={splitStartsTurn} /> Second part
-            starts a new utterance</label
-          ><button
-            onclick={applySplit}
-            disabled={!splitLeft.trim() || !splitRight.trim()}
-            class="mt-3 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
-            >Apply split</button
-          >{/if}
-      </div>{/if}
-    {#if editColumn}<div
-        class="mx-5 mt-4 flex flex-wrap items-center gap-3 sm:mx-7"
-      >
-        <div
-          class="flex gap-1 rounded-lg border border-[var(--line)] p-1"
-          aria-label="Subtitle edit view"
+        <summary class="font-semibold"
+          >The source changed. Your previous draft is retained.</summary
         >
-          <button
-            type="button"
-            class="rounded-md px-3 py-1.5 text-sm"
-            class:bg-[var(--accent-soft)]={editMode === 'display'}
-            aria-pressed={editMode === 'display'}
-            disabled={saving}
-            onclick={() => changeEditMode('display')}>Display cues</button
-          >
-          <button
-            type="button"
-            class="rounded-md px-3 py-1.5 text-sm"
-            class:bg-[var(--accent-soft)]={editMode === 'passages'}
-            aria-pressed={editMode === 'passages'}
-            disabled={saving ||
-              !editColumn.composition_hash ||
-              !passages.length}
-            onclick={() => changeEditMode('passages')}>Spoken passages</button
-          >
-        </div>
-        <p class="muted text-xs">
-          {editMode === 'passages'
-            ? 'Edit spoken text, timing and speaker here. Saving rebuilds display cues inside each passage’s timing window using the current subtitle limits.'
-            : 'Display cues control subtitle presentation. Edit a combined cue’s spoken text and speaker in Spoken passages.'}
+        <p class="muted mt-2 text-sm">
+          Review the retained text below against the current revision before
+          copying changes. It has not been applied to the new source.
         </p>
-      </div>{/if}
+        <pre
+          class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-xs">{staleDraft.columns
+            .flatMap((column) => column.segments.map((segment) => segment.text))
+            .join('\n\n')}</pre>
+        <button
+          onclick={() => {
+            staleDraft = null;
+            forgetReviewDraft(draftKey);
+          }}
+          class="mt-2 rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
+          >Discard retained draft</button
+        >
+      </details>{/if}
     {#if error}<div
         class="mx-5 mt-4 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm sm:mx-7"
       >
@@ -1637,342 +1578,20 @@
         Side-by-side diff is read-only. Turn off <strong>Diff view</strong> to edit
         cue text or timing.
       </div>{/if}
-    <div
-      bind:this={rowsViewport}
-      inert={saving || Boolean(pendingLeave)}
-      class="min-h-0 flex-1 overflow-auto"
-    >
-      {#if loading}<div class="grid h-full place-items-center">
-          <div class="section-label animate-pulse">
-            Aligning subtitle lineage…
-          </div>
-        </div>
-      {:else if editMode === 'passages'}
-        <div class="grid gap-3 p-5 sm:p-7">
-          {#each pagedPassages as passage (passage.id)}
-            <section
-              class="rounded-xl border border-[var(--line)] p-4"
-              aria-label={`Spoken passage ${passage.id}`}
-            >
-              <div class="mb-3 flex items-center justify-between gap-3">
-                <strong class="text-sm">Spoken passage {passage.id}</strong>
-                <button
-                  type="button"
-                  class="text-xs font-semibold"
-                  onclick={() => setPassageDeleted(passage, !passage.deleted)}
-                  >{passage.deleted
-                    ? 'Restore passage'
-                    : 'Delete passage'}</button
-                >
-              </div>
-              {#if passage.deleted}<p class="muted text-sm">
-                  Deleted in this draft. Restore it here or use Undo.
-                </p>{:else}
-                <div class="mb-3 grid gap-3 sm:grid-cols-3">
-                  <label class="text-xs"
-                    >Spoken start (ms)<input
-                      type="number"
-                      min="0"
-                      bind:value={passage.start_ms}
-                      onfocus={checkpoint}
-                      onbeforeinput={checkpoint}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
-                    /></label
-                  >
-                  <label class="text-xs"
-                    >Spoken end (ms)<input
-                      type="number"
-                      min="1"
-                      bind:value={passage.end_ms}
-                      onfocus={checkpoint}
-                      onbeforeinput={checkpoint}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
-                    /></label
-                  >
-                  <label class="text-xs"
-                    >Speaker<input
-                      bind:value={passage.speaker}
-                      onfocus={checkpoint}
-                      onbeforeinput={checkpoint}
-                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
-                    /></label
-                  >
-                </div>
-                <label class="text-xs"
-                  >Spoken text<textarea
-                    rows="3"
-                    bind:value={passage.text}
-                    onfocus={checkpoint}
-                    onbeforeinput={checkpoint}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
-                  ></textarea></label
-                >
-                <label class="mt-2 flex items-center gap-2 text-xs"
-                  ><input
-                    type="checkbox"
-                    bind:checked={passage.starts_new_turn}
-                    onchange={checkpoint}
-                  /> Start a new utterance here</label
-                >
-                <label class="mt-3 block text-xs"
-                  >Review note<textarea
-                    rows="2"
-                    bind:value={passage.review_note}
-                    onfocus={checkpoint}
-                    onbeforeinput={checkpoint}
-                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
-                  ></textarea></label
-                >
-                <label class="mt-2 flex items-center gap-2 text-xs"
-                  ><input
-                    type="checkbox"
-                    checked={passage.review_state === 'uncertain'}
-                    onchange={(event) => {
-                      checkpoint();
-                      passage.review_state = event.currentTarget.checked
-                        ? 'uncertain'
-                        : 'clear';
-                    }}
-                  /> Needs another check</label
-                >
-              {/if}
-            </section>
-          {/each}
-        </div>
-      {:else if !visibleRows.length}<div class="grid h-full place-items-center">
-          <p class="muted">No comparable subtitle rows are available.</p>
-        </div>
-      {:else}
-        <table class="w-full min-w-[66rem] border-collapse text-sm">
-          <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]"
-            ><tr
-              ><th
-                class="w-32 border-b border-r border-[var(--line)] p-3 text-left"
-                >Timing</th
-              >{#each columns as column (column.artifact_id)}<th
-                  class="border-b border-r border-[var(--line)] p-3 text-left capitalize last:border-r-0"
-                  ><span class="block">{column.stage.replaceAll('_', ' ')}</span
-                  ><span
-                    class="muted mt-0.5 block text-[.68rem] font-normal normal-case"
-                    >{columnLabel(column)}</span
-                  ></th
-                >{/each}</tr
-            ></thead
-          >
-          <tbody
-            >{#each pagedRows as row}<tr
-                class:changed={row.changed}
-                class="align-top"
-                ><td
-                  class="muted border-b border-r border-[var(--line)] p-3 font-mono text-xs"
-                  >{(row.start_ms / 1000).toFixed(2)}<br />→ {(
-                    row.end_ms / 1000
-                  ).toFixed(2)}</td
-                >
-                {#each columns as column (column.artifact_id)}<td
-                    class="border-b border-r border-[var(--line)] p-3 last:border-r-0"
-                    >{#if diffView && column.artifact_id === previousColumn(row)?.artifact_id}<TextDiff
-                        before={previousColumnText(row)}
-                        after={stageText(row, editArtifactId)}
-                        view="before"
-                      />{:else if diffView && column.artifact_id === editArtifactId}<TextDiff
-                        before={previousColumnText(row)}
-                        after={stageText(row, editArtifactId)}
-                        view="after"
-                      />{:else}<div class="space-y-3">
-                        {#each row.cells[column.artifact_id] ?? [] as segment}{@const item =
-                            column.artifact_id === editArtifactId
-                              ? canonicalSegment(segment)
-                              : segment}
-                          <div
-                            class:needs-review={column.artifact_id ===
-                              editArtifactId && segmentNeedsReview(item)}
-                            class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-2.5"
-                            class:playing-cue={reviewTime >= item.start_ms &&
-                              reviewTime < item.end_ms}
-                          >
-                            {#if column.artifact_id === editArtifactId && segmentNeedsReview(item)}<div
-                                class="mb-2 flex items-start gap-2 rounded-lg bg-amber-500/10 px-2 py-1.5 text-[.65rem] text-amber-800"
-                              >
-                                <CircleHelp size={13} class="mt-0.5 shrink-0" />
-                                <span class="min-w-0 flex-1">
-                                  <strong>Needs review</strong>
-                                  {#if item.review_note}<span class="ml-1"
-                                      >{item.review_note}</span
-                                    >{/if}
-                                </span>
-                              </div>{/if}
-                            {#if item.turn_id && stageIndex(item) > 0 && editColumn?.segments[stageIndex(item) - 1]?.turn_id !== item.turn_id}<p
-                                class="muted mb-2 text-xs font-semibold"
-                              >
-                                New utterance
-                              </p>{/if}
-                            {#if column.artifact_id === editArtifactId}<label
-                                class="muted mb-2 flex items-center gap-2 text-xs"
-                                ><input
-                                  type="checkbox"
-                                  onchange={checkpoint}
-                                  bind:checked={item.starts_new_turn}
-                                  disabled={!canEdit(
-                                    item,
-                                    'start_new_utterance'
-                                  )}
-                                /> Start a new utterance here</label
-                              >{/if}
-                            {#if column.artifact_id === editArtifactId && item.edit_capabilities?.reason}
-                              <p class="muted mb-2 text-xs" role="note">
-                                {item.edit_capabilities.reason}
-                              </p>
-                              <details class="muted mb-2 text-xs">
-                                <summary class="cursor-pointer"
-                                  >Spoken passage context</summary
-                                >
-                                {#each item.owned_passages ?? [] as passage (passage.id)}
-                                  <p class="mt-2 whitespace-pre-wrap">
-                                    <strong
-                                      >{speakerLabel(passage.speaker) ||
-                                        'Unassigned speaker'}</strong
-                                    >
-                                    · {passage.start_ms}–{passage.end_ms} ms<br
-                                    />{passage.text}
-                                  </p>
-                                {/each}
-                              </details>
-                            {/if}
-                            {#if column.artifact_id === editArtifactId && canEdit(item, 'speaker')}
-                              <label class="muted mb-2 block text-xs"
-                                >Speaker
-                                <input
-                                  type="text"
-                                  onfocus={checkpoint}
-                                  onbeforeinput={checkpoint}
-                                  bind:value={item.speaker}
-                                  placeholder="Unassigned"
-                                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
-                                />
-                              </label>
-                            {:else if speakerLabel(item.speaker)}<div
-                                class="mb-2"
-                              >
-                                <span
-                                  class="inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-semibold text-[var(--muted)]"
-                                  >{speakerLabel(item.speaker)}</span
-                                >
-                              </div>{/if}
-                            {#if column.artifact_id === editArtifactId}<div
-                                class="mb-2 grid grid-cols-2 gap-2"
-                              >
-                                <label class="muted text-[.68rem]"
-                                  >Start ms<input
-                                    type="number"
-                                    onfocus={checkpoint}
-                                    onbeforeinput={checkpoint}
-                                    disabled={!canEdit(item, 'display_timing')}
-                                    bind:value={item.start_ms}
-                                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
-                                  /></label
-                                ><label class="muted text-[.68rem]"
-                                  >End ms<input
-                                    type="number"
-                                    onfocus={checkpoint}
-                                    onbeforeinput={checkpoint}
-                                    disabled={!canEdit(item, 'display_timing')}
-                                    bind:value={item.end_ms}
-                                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
-                                  /></label
-                                >
-                              </div>
-                              <textarea
-                                onfocus={checkpoint}
-                                onbeforeinput={checkpoint}
-                                readonly={!canEdit(item, 'text')}
-                                aria-label="Subtitle text"
-                                bind:value={item.text}
-                                data-subtitle-search-index={searchIndex(item)}
-                                rows="3"
-                                class="w-full resize-y rounded-lg border border-[var(--line)] bg-transparent p-2 leading-relaxed"
-                              ></textarea>
-                              <div class="mt-2 flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onclick={() => previewSegment(item)}
-                                  disabled={!sourceAudioUrl ||
-                                    !playbackElement()}
-                                  title={sourceAudioUrl && playbackElement()
-                                    ? 'Play this cue from the source recording'
-                                    : 'Source audio is still being prepared'}
-                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
-                                  ><Play size={13} /> Play</button
-                                ><button
-                                  onclick={() => inspectSplit(item)}
-                                  disabled={!item.id ||
-                                    splitLoading ||
-                                    !canEdit(item, 'split')}
-                                  title={canEdit(item, 'split')
-                                    ? 'Choose a verified word boundary'
-                                    : item.edit_capabilities?.reason}
-                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"
-                                  ><Scissors size={13} /> Split</button
-                                ><button
-                                  onclick={() => mergeNext(item)}
-                                  disabled={!canMergeNext(item)}
-                                  title={mergeTitle(item)}
-                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
-                                  ><Merge size={13} /> Merge next</button
-                                ><button
-                                  onclick={() => removeSegment(item)}
-                                  disabled={!canEdit(item, 'delete')}
-                                  title={item.edit_capabilities?.reason}
-                                  class="flex items-center gap-1 rounded-lg border border-red-400/40 px-2 py-1 text-xs text-red-500"
-                                  ><Trash2 size={13} /> Delete</button
-                                >
-                                <button
-                                  onclick={() =>
-                                    (evidencePanelSegmentId =
-                                      evidencePanelSegmentId === item.id
-                                        ? ''
-                                        : (item.id ?? ''))}
-                                  disabled={!item.id}
-                                  aria-expanded={evidencePanelSegmentId ===
-                                    item.id}
-                                  class:active={evidencePanelSegmentId ===
-                                    item.id}
-                                  class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
-                                  title={item.id
-                                    ? 'Re-transcribe a bounded clip around this cue'
-                                    : 'Save this new cue before requesting audio evidence'}
-                                  ><CircleHelp size={13} /> Recheck audio</button
-                                >
-                              </div>{:else}<p
-                                class="whitespace-pre-wrap leading-relaxed"
-                              >
-                                {item.text}
-                              </p>{/if}
-                            {#if column.artifact_id === editArtifactId && evidencePanelSegmentId === item.id}<SubtitleEvidencePanel
-                                {sessionId}
-                                sourceArtifactId={editArtifactId}
-                                segment={item}
-                                records={evidenceFor(item)}
-                                onupdated={updateEvidence}
-                                onaccept={(candidate, requestId) =>
-                                  useEvidenceCandidate(
-                                    item,
-                                    candidate,
-                                    requestId
-                                  )}
-                                ondelete={() => removeSegment(item)}
-                                onuncertain={(note, requestId) =>
-                                  markSegmentUncertain(item, note, requestId)}
-                                onclear={() => clearSegmentUncertainty(item)}
-                              />{/if}
-                          </div>{/each}
-                      </div>{/if}</td
-                  >{/each}
-              </tr>{/each}</tbody
-          >
-        </table>
-      {/if}
-    </div>
+    {#if sourceAudioPreparing}<p role="status" class="muted px-4 py-1 text-xs">
+        Preparing media preview… <button
+          class="underline"
+          onclick={() => (toolsOpen = true)}>Show media controls</button
+        >
+      </p>{/if}
+    {#if cuePlaybackError || videoPlaybackError}<p
+        role="alert"
+        class="px-4 py-1 text-xs text-red-600"
+      >
+        {cuePlaybackError || videoPlaybackError}
+      </p>{/if}
+  {/snippet}
+  {#snippet footer()}
     {#if !loading && (editMode === 'passages' ? passages.length : visibleRows.length) > PAGE_SIZE}<nav
         class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] px-5 py-3 text-xs sm:px-7"
         aria-label="Subtitle review pages"
@@ -2004,21 +1623,455 @@
           >
         </div>
       </nav>{/if}
+  {/snippet}
+  {#if splitSegment}<div
+      class="mx-5 mt-4 rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 sm:mx-7"
+    >
+      <div class="flex items-center justify-between">
+        <strong class="text-sm">Split at a source-word boundary</strong><button
+          onclick={() => (splitSegment = null)}
+          aria-label="Close split preview"><X size={16} /></button
+        >
+      </div>
+      {#if splitLoading}<p class="muted mt-2 text-xs" role="status">
+          Checking word timing…
+        </p>{/if}
+      {#if splitError}<p class="mt-2 text-xs text-red-500" role="alert">
+          {splitError}
+        </p>{/if}
+      {#if splitInspection?.boundaries.length}<label class="mt-3 block text-xs"
+          >Boundary<select
+            bind:value={selectedSplitBoundary}
+            onchange={chooseSplitBoundary}
+            class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] p-2"
+            ><option value="">Choose a verified boundary</option
+            >{#each splitInspection.boundaries as anchor}<option
+                value={anchor.id}
+                >{anchor.left_text} | {anchor.right_text} · {(
+                  anchor.left_end_ms / 1000
+                ).toFixed(2)}s</option
+              >{/each}</select
+          ></label
+        >{/if}
+      {#if splitInspection?.next_offset != null}<button
+          class="mt-2 text-xs underline"
+          onclick={() =>
+            splitSegment &&
+            inspectSplit(splitSegment, splitInspection?.next_offset ?? 0)}
+          >More boundaries</button
+        >{/if}
+      {#if selectedSplitBoundary}<div class="mt-3 grid gap-3 sm:grid-cols-2">
+          <label class="text-xs"
+            >First part<textarea
+              bind:value={splitLeft}
+              class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+              rows="3"></textarea></label
+          ><label class="text-xs"
+            >Second part<textarea
+              bind:value={splitRight}
+              class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+              rows="3"></textarea></label
+          >
+        </div>
+        <label class="muted mt-2 flex items-center gap-2 text-xs"
+          ><input type="checkbox" bind:checked={splitStartsTurn} /> Second part starts
+          a new utterance</label
+        ><button
+          onclick={applySplit}
+          disabled={!splitLeft.trim() || !splitRight.trim()}
+          class="mt-3 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+          >Apply split</button
+        >{/if}
+    </div>{/if}
+  {#if editColumn}<div
+      class="flex flex-wrap items-center gap-2 border-b border-[var(--line)] px-3 py-1"
+    >
+      <div
+        class="flex gap-1 rounded-lg border border-[var(--line)] p-1"
+        aria-label="Subtitle edit view"
+      >
+        <button
+          type="button"
+          class="rounded-md px-3 py-1 text-xs"
+          class:bg-[var(--accent-soft)]={editMode === 'display'}
+          aria-pressed={editMode === 'display'}
+          disabled={saving}
+          onclick={() => changeEditMode('display')}>Display cues</button
+        >
+        <button
+          type="button"
+          class="rounded-md px-3 py-1 text-xs"
+          class:bg-[var(--accent-soft)]={editMode === 'passages'}
+          aria-pressed={editMode === 'passages'}
+          disabled={saving || !editColumn.composition_hash || !passages.length}
+          onclick={() => changeEditMode('passages')}>Spoken passages</button
+        >
+      </div>
+    </div>{/if}
+  {#if sourceAudioUrl}<div
+      class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-3 py-1 text-xs"
+      aria-label="Source playback"
+    >
+      <button
+        class="btn btn-sm btn-secondary"
+        onclick={() => void toggleSourcePlayback()}
+        aria-label={mediaPlaying
+          ? 'Pause source playback'
+          : 'Play source playback'}
+        >{#if mediaPlaying}<Pause size={14} /> Pause{:else}<Play size={14} /> Play{/if}</button
+      >
+      <span class="muted tabular-nums"
+        >Source · {(reviewTime / 1000).toFixed(1)}s</span
+      >
+      <button
+        class="font-semibold text-[var(--accent)]"
+        onclick={() => (toolsOpen = true)}
+        >{sourceIsVideo
+          ? 'Show video & controls'
+          : 'Show audio controls'}</button
+      >
+    </div>{/if}
+  <div
+    bind:this={rowsViewport}
+    data-review-rows
+    inert={saving || loading || Boolean(pendingLeave)}
+    class="min-h-0 flex-1 overflow-auto"
+  >
+    {#if loading && !payload}<div class="grid h-full place-items-center">
+        <div class="section-label animate-pulse">
+          Aligning subtitle lineage…
+        </div>
+      </div>
+    {:else if editMode === 'passages'}
+      <div class="grid gap-3 p-5 sm:p-7">
+        {#each pagedPassages as passage (passage.id)}
+          <section
+            class="rounded-xl border border-[var(--line)] p-4"
+            aria-label={`Spoken passage ${passage.id}`}
+          >
+            <div class="mb-3 flex items-center justify-between gap-3">
+              <strong class="text-sm">Spoken passage {passage.id}</strong>
+              <button
+                type="button"
+                class="text-xs font-semibold"
+                onclick={() => setPassageDeleted(passage, !passage.deleted)}
+                >{passage.deleted
+                  ? 'Restore passage'
+                  : 'Delete passage'}</button
+              >
+            </div>
+            {#if passage.deleted}<p class="muted text-sm">
+                Deleted in this draft. Restore it here or use Undo.
+              </p>{:else}
+              <div class="mb-3 grid gap-3 sm:grid-cols-3">
+                <label class="text-xs"
+                  >Spoken start (ms)<input
+                    type="number"
+                    min="0"
+                    data-review-focus={`passage-${passage.id}-start_ms`}
+                    bind:value={passage.start_ms}
+                    onfocus={checkpoint}
+                    onbeforeinput={checkpoint}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                  /></label
+                >
+                <label class="text-xs"
+                  >Spoken end (ms)<input
+                    type="number"
+                    min="1"
+                    data-review-focus={`passage-${passage.id}-end_ms`}
+                    bind:value={passage.end_ms}
+                    onfocus={checkpoint}
+                    onbeforeinput={checkpoint}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                  /></label
+                >
+                <label class="text-xs"
+                  >Speaker<input
+                    data-review-focus={`passage-${passage.id}-speaker`}
+                    bind:value={passage.speaker}
+                    onfocus={checkpoint}
+                    onbeforeinput={checkpoint}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                  /></label
+                >
+              </div>
+              <label class="text-xs"
+                >Spoken text<textarea
+                  rows="3"
+                  data-review-focus={`passage-${passage.id}-text`}
+                  bind:value={passage.text}
+                  onfocus={checkpoint}
+                  onbeforeinput={checkpoint}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                ></textarea></label
+              >
+              <label class="mt-2 flex items-center gap-2 text-xs"
+                ><input
+                  type="checkbox"
+                  bind:checked={passage.starts_new_turn}
+                  onchange={checkpoint}
+                /> Start a new utterance here</label
+              >
+              <label class="mt-3 block text-xs"
+                >Review note<textarea
+                  rows="2"
+                  data-review-focus={`passage-${passage.id}-review_note`}
+                  bind:value={passage.review_note}
+                  onfocus={checkpoint}
+                  onbeforeinput={checkpoint}
+                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                ></textarea></label
+              >
+              <label class="mt-2 flex items-center gap-2 text-xs"
+                ><input
+                  type="checkbox"
+                  checked={passage.review_state === 'uncertain'}
+                  onchange={(event) => {
+                    checkpoint();
+                    passage.review_state = event.currentTarget.checked
+                      ? 'uncertain'
+                      : 'clear';
+                  }}
+                /> Needs another check</label
+              >
+            {/if}
+          </section>
+        {/each}
+      </div>
+    {:else if !visibleRows.length}<div class="grid h-full place-items-center">
+        <p class="muted">No comparable subtitle rows are available.</p>
+      </div>
+    {:else}
+      <table class="w-full min-w-[66rem] border-collapse text-sm">
+        <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]"
+          ><tr
+            ><th
+              class="w-32 border-b border-r border-[var(--line)] p-3 text-left"
+              >Timing</th
+            >{#each columns as column (column.artifact_id)}<th
+                class="border-b border-r border-[var(--line)] p-3 text-left capitalize last:border-r-0"
+                ><span class="block">{column.stage.replaceAll('_', ' ')}</span
+                ><span
+                  class="muted mt-0.5 block text-[.68rem] font-normal normal-case"
+                  >{columnLabel(column)}</span
+                ></th
+              >{/each}</tr
+          ></thead
+        >
+        <tbody
+          >{#each pagedRows as row}<tr
+              class:changed={row.changed}
+              class="align-top"
+              ><td
+                class="muted border-b border-r border-[var(--line)] p-3 font-mono text-xs"
+                >{(row.start_ms / 1000).toFixed(2)}<br />→ {(
+                  row.end_ms / 1000
+                ).toFixed(2)}</td
+              >
+              {#each columns as column (column.artifact_id)}<td
+                  class="border-b border-r border-[var(--line)] p-3 last:border-r-0"
+                  >{#if diffView && column.artifact_id === previousColumn(row)?.artifact_id}<TextDiff
+                      before={previousColumnText(row)}
+                      after={stageText(row, editArtifactId)}
+                      view="before"
+                    />{:else if diffView && column.artifact_id === editArtifactId}<TextDiff
+                      before={previousColumnText(row)}
+                      after={stageText(row, editArtifactId)}
+                      view="after"
+                    />{:else}<div class="space-y-3">
+                      {#each row.cells[column.artifact_id] ?? [] as segment}{@const item =
+                          column.artifact_id === editArtifactId
+                            ? canonicalSegment(segment)
+                            : segment}
+                        <div
+                          class:needs-review={column.artifact_id ===
+                            editArtifactId && segmentNeedsReview(item)}
+                          class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-2.5"
+                          class:playing-cue={reviewTime >= item.start_ms &&
+                            reviewTime < item.end_ms}
+                        >
+                          {#if column.artifact_id === editArtifactId && segmentNeedsReview(item)}<div
+                              class="mb-2 flex items-start gap-2 rounded-lg bg-amber-500/10 px-2 py-1.5 text-[.65rem] text-amber-800"
+                            >
+                              <CircleHelp size={13} class="mt-0.5 shrink-0" />
+                              <span class="min-w-0 flex-1">
+                                <strong>Needs review</strong>
+                                {#if item.review_note}<span class="ml-1"
+                                    >{item.review_note}</span
+                                  >{/if}
+                              </span>
+                            </div>{/if}
+                          {#if item.turn_id && stageIndex(item) > 0 && editColumn?.segments[stageIndex(item) - 1]?.turn_id !== item.turn_id}<p
+                              class="muted mb-2 text-xs font-semibold"
+                            >
+                              New utterance
+                            </p>{/if}
+                          {#if column.artifact_id === editArtifactId}<label
+                              class="muted mb-2 flex items-center gap-2 text-xs"
+                              ><input
+                                type="checkbox"
+                                onchange={checkpoint}
+                                bind:checked={item.starts_new_turn}
+                                disabled={!canEdit(item, 'start_new_utterance')}
+                              /> Start a new utterance here</label
+                            >{/if}
+                          {#if column.artifact_id === editArtifactId && item.edit_capabilities?.reason}
+                            <p class="muted mb-2 text-xs" role="note">
+                              {item.edit_capabilities.reason}
+                            </p>
+                            <details class="muted mb-2 text-xs">
+                              <summary class="cursor-pointer"
+                                >Spoken passage context</summary
+                              >
+                              {#each item.owned_passages ?? [] as passage (passage.id)}
+                                <p class="mt-2 whitespace-pre-wrap">
+                                  <strong
+                                    >{speakerLabel(passage.speaker) ||
+                                      'Unassigned speaker'}</strong
+                                  >
+                                  · {passage.start_ms}–{passage.end_ms} ms<br
+                                  />{passage.text}
+                                </p>
+                              {/each}
+                            </details>
+                          {/if}
+                          {#if column.artifact_id === editArtifactId && canEdit(item, 'speaker')}
+                            <label class="muted mb-2 block text-xs"
+                              >Speaker
+                              <input
+                                type="text"
+                                onfocus={checkpoint}
+                                onbeforeinput={checkpoint}
+                                data-review-focus={`cue-${stageIndex(item)}-speaker`}
+                                bind:value={item.speaker}
+                                placeholder="Unassigned"
+                                class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
+                              />
+                            </label>
+                          {:else if speakerLabel(item.speaker)}<div
+                              class="mb-2"
+                            >
+                              <span
+                                class="inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-semibold text-[var(--muted)]"
+                                >{speakerLabel(item.speaker)}</span
+                              >
+                            </div>{/if}
+                          {#if column.artifact_id === editArtifactId}<div
+                              class="mb-2 grid grid-cols-2 gap-2"
+                            >
+                              <label class="muted text-[.68rem]"
+                                >Start ms<input
+                                  type="number"
+                                  onfocus={checkpoint}
+                                  onbeforeinput={checkpoint}
+                                  disabled={!canEdit(item, 'display_timing')}
+                                  data-review-focus={`cue-${stageIndex(item)}-start_ms`}
+                                  bind:value={item.start_ms}
+                                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
+                                /></label
+                              ><label class="muted text-[.68rem]"
+                                >End ms<input
+                                  type="number"
+                                  onfocus={checkpoint}
+                                  onbeforeinput={checkpoint}
+                                  disabled={!canEdit(item, 'display_timing')}
+                                  data-review-focus={`cue-${stageIndex(item)}-end_ms`}
+                                  bind:value={item.end_ms}
+                                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
+                                /></label
+                              >
+                            </div>
+                            <textarea
+                              onfocus={checkpoint}
+                              onbeforeinput={checkpoint}
+                              readonly={!canEdit(item, 'text')}
+                              aria-label="Subtitle text"
+                              data-review-focus={`cue-${stageIndex(item)}-text`}
+                              bind:value={item.text}
+                              data-subtitle-search-index={searchIndex(item)}
+                              rows="3"
+                              class="w-full resize-y rounded-lg border border-[var(--line)] bg-transparent p-2 leading-relaxed"
+                            ></textarea>
+                            <div class="mt-2 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onclick={() => previewSegment(item)}
+                                disabled={!sourceAudioUrl || !playbackElement()}
+                                title={sourceAudioUrl && playbackElement()
+                                  ? 'Play this cue from the source recording'
+                                  : sourceAudioPreparing
+                                    ? 'Source audio is still being prepared'
+                                    : !sourceMediaArtifactId
+                                      ? 'Attach a recording to play this cue'
+                                      : sourceAudioError ||
+                                        'Source audio is unavailable'}
+                                class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+                                ><Play size={13} /> Play</button
+                              ><button
+                                onclick={() => inspectSplit(item)}
+                                disabled={!item.id ||
+                                  splitLoading ||
+                                  !canEdit(item, 'split')}
+                                title={canEdit(item, 'split')
+                                  ? 'Choose a verified word boundary'
+                                  : item.edit_capabilities?.reason}
+                                class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"
+                                ><Scissors size={13} /> Split</button
+                              ><button
+                                onclick={() => mergeNext(item)}
+                                disabled={!canMergeNext(item)}
+                                title={mergeTitle(item)}
+                                class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+                                ><Merge size={13} /> Merge next</button
+                              ><button
+                                onclick={() => removeSegment(item)}
+                                disabled={!canEdit(item, 'delete')}
+                                title={item.edit_capabilities?.reason}
+                                class="flex items-center gap-1 rounded-lg border border-red-400/40 px-2 py-1 text-xs text-red-500"
+                                ><Trash2 size={13} /> Delete</button
+                              >
+                              <button
+                                onclick={() => openEvidence(item)}
+                                disabled={!item.id}
+                                aria-expanded={evidencePanelSegmentId ===
+                                  item.id}
+                                class:active={evidencePanelSegmentId ===
+                                  item.id}
+                                class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+                                title={item.id
+                                  ? 'Re-transcribe a bounded clip around this cue'
+                                  : 'Save this new cue before requesting audio evidence'}
+                                ><CircleHelp size={13} /> Recheck audio</button
+                              >
+                            </div>{:else}<p
+                              class="whitespace-pre-wrap leading-relaxed"
+                            >
+                              {item.text}
+                            </p>{/if}
+                        </div>{/each}
+                    </div>{/if}</td
+                >{/each}
+            </tr>{/each}</tbody
+        >
+      </table>
+    {/if}
   </div>
-</div>
-<GuidedTour tourId="subtitle-review" steps={tourSteps} bind:open={tourOpen} />
+  <GuidedTour tourId="subtitle-review" steps={tourSteps} bind:open={tourOpen} />
+</ReviewWorkspace>
+{#if pendingLeave}<UnsavedChangesDialog
+    onsave={saveAndLeave}
+    ondiscard={discardAndLeave}
+    oncancel={() => (pendingLeave = null)}
+    busy={saving}
+    {error}
+    description="Saving creates a new revision. A failed save keeps this draft open."
+  />{/if}
 
 <style>
   .playing-cue {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
-  }
-  .review-overlay.maximized {
-    padding: 0;
-  }
-  .review-overlay.maximized > :global([role='dialog']) {
-    max-width: none;
-    border-radius: 0;
   }
   tr.changed > td {
     background: color-mix(in srgb, var(--accent-soft) 22%, transparent);
@@ -2030,19 +2083,5 @@
   button.active {
     color: var(--accent);
     background: var(--accent-soft);
-  }
-  .review-tools summary::-webkit-details-marker {
-    display: none;
-  }
-  .review-tools-chevron {
-    transition: transform 160ms ease;
-  }
-  .review-tools[open] .review-tools-chevron {
-    transform: rotate(180deg);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .review-tools-chevron {
-      transition: none;
-    }
   }
 </style>

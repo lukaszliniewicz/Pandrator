@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     ArtifactEdge,
@@ -115,13 +116,17 @@ class WebSessionForkTests(unittest.TestCase):
                     },
                 )
             )
-            session.add(
-                Job(
-                    kind="export.create",
-                    session_id=self.record["id"],
-                    status="succeeded",
-                )
+            job = Job(
+                kind="export.create",
+                session_id=self.record["id"],
+                status="succeeded",
             )
+            ownership = job_creation_ownership(
+                session, session_id=self.record["id"]
+            )
+            job.workspace_id = ownership.workspace_id
+            job.project_id = ownership.project_id
+            session.add(job)
 
     def tearDown(self):
         self.database.dispose()

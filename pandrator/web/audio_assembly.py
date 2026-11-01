@@ -13,6 +13,9 @@ from typing import Any, BinaryIO, Callable, Iterable, cast
 
 from pydub import AudioSegment
 
+from pandrator.logic.local_audio_decode import load_local_audio_segment
+from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+
 from .media_process import (
     MediaProcessCancelled,
     MediaProcessError,
@@ -195,10 +198,13 @@ def preferred_pcm_format(
     *,
     ffprobe_executable: str | None = None,
     cancel_event: threading.Event | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> tuple[int, int]:
     """Choose a stable PCM target from the first take without decoding it."""
 
     source = Path(path)
+    if before_io is not None:
+        before_io()
     try:
         with wave.open(str(source), "rb") as reader:
             if reader.getcomptype() == "NONE":
@@ -208,6 +214,8 @@ def preferred_pcm_format(
                     return sample_rate, channels
     except (EOFError, OSError, wave.Error):
         pass
+    if before_io is not None:
+        before_io()
     info = probe_audio_stream(
         source,
         ffprobe_executable=ffprobe_executable,
@@ -338,6 +346,7 @@ def _normalize_part(
     *,
     ffmpeg_executable: str,
     cancel_event: threading.Event | None,
+    before_io: Callable[[], None] | None = None,
 ) -> None:
     command: list[str] = [
         ffmpeg_executable,
@@ -346,6 +355,7 @@ def _normalize_part(
         "-loglevel",
         "error",
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(part.path),
         "-map",
@@ -370,6 +380,8 @@ def _normalize_part(
             str(destination),
         ]
     )
+    if before_io is not None:
+        before_io()
     run_media_process(command, cancel_event=cancel_event)
 
 
@@ -397,8 +409,11 @@ def _copy_direct_pcm_wav(
     encoding: AudioEncodingSettings,
     cancel_event: threading.Event | None,
     internal_silences: tuple[AudioSilenceInsertion, ...] = (),
+    before_io: Callable[[], None] | None = None,
 ) -> int | None:
     copied = 0
+    if before_io is not None:
+        before_io()
     try:
         reader_context = wave.open(str(source), "rb")
     except (EOFError, OSError, wave.Error):
@@ -437,6 +452,7 @@ def _copy_normalized_wav(
     encoding: AudioEncodingSettings,
     cancel_event: threading.Event | None,
     internal_silences: tuple[AudioSilenceInsertion, ...] = (),
+    before_io: Callable[[], None] | None = None,
 ) -> int:
     copied = _copy_direct_pcm_wav(
         source,
@@ -444,6 +460,7 @@ def _copy_normalized_wav(
         encoding=encoding,
         cancel_event=cancel_event,
         internal_silences=internal_silences,
+        before_io=before_io,
     )
     if copied is None:
         raise MediaProcessError(
@@ -465,6 +482,7 @@ def _encoding_command(
         "-loglevel",
         "error",
         "-y",
+        *LOCAL_MEDIA_INPUT_OPTIONS,
         "-i",
         str(timeline),
         "-map",
@@ -495,7 +513,10 @@ def _assemble_streaming(
     ffmpeg_executable: str,
     cancel_event: threading.Event | None,
     progress: Callable[[float, str], None] | None,
+    before_io: Callable[[], None] | None = None,
 ) -> AudioAssemblyResult:
+    if before_io is not None:
+        before_io()
     destination.parent.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
     encoding = plan.encoding
@@ -509,9 +530,13 @@ def _assemble_streaming(
     part_end_frames: list[int] = []
     total_frames = 0
 
+    if before_io is not None:
+        before_io()
     with tempfile.TemporaryDirectory(prefix=".assembly-stream-", dir=work_dir) as temporary:
         temporary_path = Path(temporary)
         timeline = temporary_path / "timeline.wav"
+        if before_io is not None:
+            before_io()
         with wave.open(str(timeline), "wb") as writer:
             writer.setnchannels(encoding.channels)
             writer.setsampwidth(encoding.sample_width_bytes)
@@ -542,6 +567,7 @@ def _assemble_streaming(
                         encoding=encoding,
                         cancel_event=cancel_event,
                         internal_silences=part.internal_silences,
+                        before_io=before_io,
                     )
                 if copied_frames is None:
                     normalized = temporary_path / f"part-{index + 1:06d}.wav"
@@ -551,6 +577,7 @@ def _assemble_streaming(
                         encoding,
                         ffmpeg_executable=ffmpeg_executable,
                         cancel_event=cancel_event,
+                        before_io=before_io,
                     )
                     copied_frames = _copy_normalized_wav(
                         normalized,
@@ -558,6 +585,7 @@ def _assemble_streaming(
                         encoding=encoding,
                         cancel_event=cancel_event,
                         internal_silences=part.internal_silences,
+                        before_io=before_io,
                     )
                     normalized.unlink(missing_ok=True)
                 part_durations.append(
@@ -588,6 +616,8 @@ def _assemble_streaming(
         else:
             if progress is not None:
                 progress(0.8, f"Encoding {encoding.output_format.upper()} output")
+            if before_io is not None:
+                before_io()
             run_media_process(
                 _encoding_command(ffmpeg_executable, timeline, encoded, encoding),
                 cancel_event=cancel_event,
@@ -596,6 +626,8 @@ def _assemble_streaming(
             progress(0.95, "Finalizing assembled audio")
         if cancel_event is not None and cancel_event.is_set():
             raise MediaProcessCancelled("Audio assembly was canceled.")
+        if before_io is not None:
+            before_io()
         os.replace(encoded, destination)
 
     return AudioAssemblyResult(
@@ -616,6 +648,7 @@ def _assemble_pydub(
     *,
     cancel_event: threading.Event | None,
     progress: Callable[[float, str], None] | None,
+    before_io: Callable[[], None] | None = None,
 ) -> AudioAssemblyResult:
     """Compatibility path matching the pre-Phase-3 in-memory behavior."""
 
@@ -642,8 +675,10 @@ def _assemble_pydub(
         part_start_frames.append(int(combined.frame_count()))
         for chapter_index in chapters_by_part.get(index, ()):
             chapter_starts[chapter_index] = len(combined)
+        if before_io is not None:
+            before_io()
         audio = (
-            AudioSegment.from_file(part.path)
+            load_local_audio_segment(part.path)
             .set_frame_rate(encoding.sample_rate_hz)
             .set_channels(encoding.channels)
             .set_sample_width(encoding.sample_width_bytes)
@@ -657,7 +692,7 @@ def _assemble_pydub(
             chunks = []
             previous = 0
             for offset, silence_frames in (*offsets, (int(audio.frame_count()), 0)):
-                chunks.append(audio.raw_data[previous * audio.frame_width:offset * audio.frame_width])
+                chunks.append(cast(bytes, audio.raw_data)[previous * audio.frame_width:offset * audio.frame_width])
                 chunks.append(b"\0" * (silence_frames * audio.frame_width))
                 previous = offset
             audio = audio._spawn(b"".join(chunks))
@@ -678,9 +713,13 @@ def _assemble_pydub(
         raise MediaProcessCancelled("Audio assembly was canceled.")
     with tempfile.TemporaryDirectory(prefix=".assembly-pydub-", dir=destination.parent) as temporary:
         encoded = Path(temporary) / f"encoded.{encoding.output_format}"
+        if before_io is not None:
+            before_io()
         export_audio(combined, encoded, encoding.output_format, encoding.bitrate)
         if cancel_event is not None and cancel_event.is_set():
             raise MediaProcessCancelled("Audio assembly was canceled.")
+        if before_io is not None:
+            before_io()
         os.replace(encoded, destination)
     return AudioAssemblyResult(
         duration_ms=len(combined),
@@ -703,9 +742,12 @@ def assemble_audio_plan(
     ffmpeg_executable: str | None = None,
     cancel_event: threading.Event | None = None,
     progress: Callable[[float, str], None] | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> AudioAssemblyResult:
     """Render a metadata-only plan with bounded memory and atomic replacement."""
 
+    if before_io is not None:
+        before_io()
     output = Path(destination)
     output.parent.mkdir(parents=True, exist_ok=True)
     selected_backend = resolve_assembly_backend(backend)
@@ -715,6 +757,7 @@ def assemble_audio_plan(
             output,
             cancel_event=cancel_event,
             progress=progress,
+            before_io=before_io,
         )
     return _assemble_streaming(
         plan,
@@ -723,6 +766,7 @@ def assemble_audio_plan(
         ffmpeg_executable=resolve_ffmpeg_executable(ffmpeg_executable),
         cancel_event=cancel_event,
         progress=progress,
+        before_io=before_io,
     )
 
 

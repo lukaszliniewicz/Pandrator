@@ -44,6 +44,8 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "enable_sentence_splitting": True,
         "max_sentence_length": 200,
         "audiobook_chunking": "model",
+        "audiobook_sentence_packing": "auto",
+        "audiobook_sentence_packing_threshold": 300,
         "audiobook_dialogue_flow": "auto",
         "enable_sentence_appending": True,
         "remove_diacritics": False,
@@ -357,7 +359,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "video_tail_extension_policy": "ask",
         "subtitle_mode": "none",
         "subtitle_text_source": "current",
-        "subtitle_selection": "translation",
+        "subtitle_selection": "auto",
         "subtitle_format": "srt",
         "video_transcode": False,
         "burn_video_encoder": "libx264",
@@ -482,7 +484,12 @@ def adapt_runtime_settings(section: str, values: dict[str, Any], _service_config
             result.get("service") or result.get("tts_service") or ""
         ).strip()
         selected = (
-            tts_handler.get_service_config(result, selected_value, _service_config_cache)
+            tts_handler.get_service_config(
+                result,
+                selected_value,
+                _service_config_cache,
+                _fields=frozenset({"id", "api_base"}),
+            )
             if selected_value
             else None
         )
@@ -851,8 +858,8 @@ def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
 
 
 def validate_subtitle_text_source(value: object) -> str:
-    if not isinstance(value, str) or value not in ("current", "generation_run"):
-        raise ValueError("subtitle_text_source must be current or generation_run.")
+    if not isinstance(value, str) or value not in ("current", "generation_run", "selected_artifact"):
+        raise ValueError("subtitle_text_source must be current, generation_run, or selected_artifact.")
     return value
 
 
@@ -864,6 +871,10 @@ def validate_output_settings(value: dict[str, Any]) -> None:
         raise ValueError("video_tail_extension_policy must be ask or extend.")
     if "subtitle_text_source" in value:
         validate_subtitle_text_source(value["subtitle_text_source"])
+    if "subtitle_selection" in value:
+        from .subtitle_selection import normalize_subtitle_selection
+
+        normalize_subtitle_selection(value["subtitle_selection"])
     from pandrator.logic.book_settings import validate_book_settings
 
     validate_book_settings(value)

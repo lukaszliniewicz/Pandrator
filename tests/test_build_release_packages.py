@@ -2,13 +2,14 @@ import sys
 import unittest
 from pathlib import Path
 
-# Add the repository root and scripts directory to sys.path to allow importing build_release_packages
+# Add the repository root to sys.path to allow importing repository scripts.
 repo_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo_root))
-sys.path.insert(0, str(repo_root / "scripts"))
 
-import audit_python_distributions  # noqa: E402 -- sys.path above exposes repository scripts.
-import build_release_packages  # noqa: E402 -- sys.path above exposes repository scripts.
+from scripts import (  # noqa: E402 -- sys.path above exposes repository scripts.
+    audit_python_distributions,
+    build_release_packages,
+)
 
 
 class BuildReleasePackagesTests(unittest.TestCase):

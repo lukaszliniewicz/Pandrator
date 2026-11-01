@@ -1,5 +1,6 @@
 import { apiJson } from './api';
 import { ResourceState } from './resource-state.svelte';
+import { folderMembershipSourceId } from './project-library';
 import type {
   ProjectFolderRecord,
   ProjectFolderSnapshot
@@ -11,6 +12,20 @@ export class ProjectFoldersStore {
     memberships: []
   });
   private readonly retryKeys = new Map<string, string>();
+
+  constructor(readonly workspaceId: string | null = null) {}
+
+  private path(path: string) {
+    return this.workspaceId
+      ? `${path}?workspace_id=${encodeURIComponent(this.workspaceId)}`
+      : path;
+  }
+
+  private scoped<T extends ProjectFolderSnapshot>(snapshot: T): T {
+    if (this.workspaceId && snapshot.workspace_id !== this.workspaceId)
+      throw new Error('The folder response belongs to a different workspace.');
+    return snapshot;
+  }
 
   get value() {
     return this.resource.value;
@@ -24,7 +39,10 @@ export class ProjectFoldersStore {
 
   load(force = false) {
     return this.resource.load(
-      () => apiJson<ProjectFolderSnapshot>('/project-folders'),
+      async () =>
+        this.scoped(
+          await apiJson<ProjectFolderSnapshot>(this.path('/project-folders'))
+        ),
       { force }
     );
   }
@@ -41,15 +59,18 @@ export class ProjectFoldersStore {
       this.retryKeys.set(signature, key);
     }
     try {
-      const result = await apiJson<T>(path, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          'Idempotency-Key': key
-        },
-        body: JSON.stringify(body)
-      });
+      const result = this.scoped(
+        await apiJson<T>(this.path(path), {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': key
+          },
+          body: JSON.stringify(body)
+        })
+      );
       const snapshot = {
+        workspace_id: result.workspace_id,
         items: result.items,
         memberships: result.memberships
       };
@@ -96,8 +117,14 @@ export class ProjectFoldersStore {
   }
 
   assign(projectId: string, folderIds: string[], snapshot = this.value) {
+    if (
+      snapshot.workspace_id &&
+      this.value.workspace_id &&
+      snapshot.workspace_id !== this.value.workspace_id
+    )
+      throw new Error('Reload this project in its current workspace.');
     const current = snapshot.memberships
-      .filter((item) => item.project_id === projectId)
+      .filter((item) => folderMembershipSourceId(item) === projectId)
       .map((item) => item.folder_id);
     const union = new Set([...current, ...folderIds]);
     const revisions = Object.fromEntries(

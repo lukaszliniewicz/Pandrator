@@ -17,6 +17,10 @@ from sqlalchemy import select
 from pandrator.logic import audio_cpp_sfx
 from pandrator.runtime import DataPaths
 
+from .access.contracts import ProjectAction
+from .access.sound_generation_policy import require_sound_generation_access
+from .access.sound_library_policy import require_sound_library_workspace
+from .accounts.execution_actor import UserActor, current_execution_actor
 from .artifacts import ArtifactService
 from .database import Database
 from .jobs import JobQueue
@@ -49,7 +53,6 @@ def run_generate(
 ) -> dict[str, Any]:
     """Generate privately, then publish only while the current lease is valid."""
     lease = _lease(payload)
-    settings = runtime_settings(settings_provider)
     candidate_id = str(payload.get("candidate_id") or "")
     request = payload.get("request")
     identity = payload.get("runtime_identity")
@@ -66,7 +69,9 @@ def run_generate(
     if kind not in {"sound", "music"}:
         raise ValueError("Canonical sound generation request has no valid kind.")
     with database.immediate_session() as session:
+        require_sound_generation_access(session, payload)
         job, candidate = _require_job(session, payload, lease, cancel_event)
+        attempt_workspace_id = candidate.workspace_id
         if candidate.fingerprint != audio_cpp_sfx.generation_fingerprint(
             canonical_request, identity
         ):
@@ -75,12 +80,28 @@ def run_generate(
             if not _artifact_is_present(session, paths, candidate):
                 raise RuntimeError("The already-published sound artifact is missing or invalid.")
             result = _result(job, candidate)
-            if not isinstance(job.result_json, dict) or job.result_json.get("candidate_id") != candidate.id:
+            if (
+                not isinstance(job.result_json, dict)
+                or job.result_json.get("candidate_id") != candidate.id
+            ):
                 job.result_json = result
             return result
         if candidate.state != "queued":
             raise RuntimeError("Sound candidate is no longer eligible for generation.")
 
+    settings = runtime_settings(settings_provider)
+    before_io: Callable[[], None] | None = None
+    if type(current_execution_actor.get()) is UserActor:
+
+        def require_current_run() -> None:
+            with database.snapshot_session() as session:
+                require_sound_library_workspace(
+                    session, ProjectAction.RUN, workspace_id=attempt_workspace_id
+                )
+
+        before_io = require_current_run
+    if before_io is not None:
+        before_io()
     current_identity = audio_cpp_sfx.request_runtime_identity(settings, canonical_request)
     if current_identity != identity:
         raise RuntimeError(
@@ -100,13 +121,19 @@ def run_generate(
             fraction = min(1.0, max(0.0, fraction))
             progress(0.1 + 0.7 * fraction, f"{phase}: {completed}/{total}")
 
+        if before_io is not None:
+            before_io()
+        native_options = {"before_io": before_io} if before_io is not None else {}
         properties = audio_cpp_sfx.generate_sound(
             canonical_request,
             output_path,
             settings=settings,
             cancel_event=cancel_event,
             progress=native_progress,
+            **native_options,
         )
+        if before_io is not None:
+            before_io()
         if cancel_event.is_set():
             raise RuntimeError("Sound generation was canceled before publication.")
         output_stat = output_path.lstat()
@@ -117,6 +144,7 @@ def run_generate(
         registration = artifacts.prepare_registration(output_path, calculate_hash=True)
 
         with database.immediate_session() as session:
+            require_sound_generation_access(session, payload)
             job, candidate = _require_job(session, payload, lease, cancel_event)
             if candidate.fingerprint != audio_cpp_sfx.generation_fingerprint(
                 canonical_request, identity
@@ -124,7 +152,9 @@ def run_generate(
                 raise RuntimeError("Sound candidate changed before publication.")
             if candidate.state == "ready":
                 if not _artifact_is_present(session, paths, candidate):
-                    raise RuntimeError("The already-published sound artifact is missing or invalid.")
+                    raise RuntimeError(
+                        "The already-published sound artifact is missing or invalid."
+                    )
                 assert output_identity is not None
                 _remove_if_same(output_path, output_identity)
                 return _result(job, candidate)
@@ -160,6 +190,7 @@ def run_generate(
                     kind="audio",
                     role="sound.original",
                     session_id=None,
+                    workspace_id=candidate.workspace_id,
                     calculate_hash=False,
                     metadata={
                         "provider": "audio_cpp",
@@ -186,6 +217,7 @@ def run_generate(
             session.flush()
             # This is the publication fence: no DB state is committed after a
             # stale lease, cancellation, or competing worker wins ownership.
+            require_sound_generation_access(session, payload)
             _require_job(session, payload, lease, cancel_event)
 
         publication_committed = True

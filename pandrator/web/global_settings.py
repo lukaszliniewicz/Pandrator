@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from pandrator.logic.tts_provider_switch import (
     normalize_tts_voice_aliases,
     prepare_tts_provider_switch,
 )
 from pandrator.runtime import DataPaths
+from pandrator.web.accounts.identity import initial_personal_workspace
 
+from .access.contracts import AccessContext
 from .credentials import (
     contains_inline_secret,
     prepare_stt_settings_for_storage,
@@ -17,7 +21,19 @@ from .credentials import (
     redact_inline_secrets,
 )
 from .database import Database
-from .models import AppSetting, AppSettingHistory, utcnow
+from .models import (
+    AppSetting,
+    AppSettingHistory,
+    WorkspaceSetting,
+    WorkspaceSettingHistory,
+    utcnow,
+)
+from .settings_access import SettingsScopeInvalid, require_settings_access
+from .settings_identity import (
+    HOST_SETTING_KEYS,
+    settings_workspace_id,
+    workspace_setting_in_workspace,
+)
 from .settings_policy import (
     BUILTIN_DEFAULTS,
     SETTING_SECTIONS,
@@ -44,11 +60,37 @@ class GlobalSettingsService:
         self.database = database
         self.paths = paths
 
-    def defaults(self, section: str) -> dict[str, Any]:
+    def defaults(
+        self,
+        section: str,
+        *,
+        workspace_id: str | None = None,
+        access_context: AccessContext | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         if section not in SETTING_SECTIONS:
             raise KeyError(section)
-        with self.database.session() as session:
-            record = session.get(AppSetting, f"defaults.{section}")
+        with self.database.snapshot_session() as session:
+            if access_context is None and session_id is not None:
+                raise SettingsScopeInvalid("Session scope requires an access context.")
+            authority = (
+                require_settings_access(
+                    session,
+                    access_context,
+                    f"defaults.{section}",
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                )
+                if access_context is not None
+                else None
+            )
+            actual_workspace_id = settings_workspace_id(
+                session,
+                workspace_id=authority.workspace_id if authority is not None else workspace_id,
+            )
+            record = workspace_setting_in_workspace(
+                session, actual_workspace_id, f"defaults.{section}"
+            )
             value = (
                 dict(record.value_json or {})
                 if record and isinstance(record.value_json, dict)
@@ -58,7 +100,9 @@ class GlobalSettingsService:
             if section == "stt":
                 value, _ = split_legacy_stt_settings(value, reject_conflicts=False)
             elif section == "subtitles":
-                legacy = session.get(AppSetting, "defaults.stt")
+                legacy = workspace_setting_in_workspace(
+                    session, actual_workspace_id, "defaults.stt"
+                )
                 _, legacy_subtitles = split_legacy_stt_settings(
                     dict(legacy.value_json or {}) if legacy else {},
                     reject_conflicts=False,
@@ -71,18 +115,48 @@ class GlobalSettingsService:
                 "value": value,
                 "effective": {**BUILTIN_DEFAULTS[section], **value},
                 "revision": revision,
+                **(authority.metadata() if authority is not None else {}),
             }
         )
 
-    def get(self, setting_key: str) -> dict[str, Any]:
-        with self.database.session() as session:
-            record = session.get(AppSetting, setting_key)
+    def get(
+        self,
+        setting_key: str,
+        *,
+        workspace_id: str | None = None,
+        access_context: AccessContext | None = None,
+    ) -> dict[str, Any]:
+        with self.database.snapshot_session() as session:
+            authority = (
+                require_settings_access(
+                    session, access_context, setting_key, workspace_id=workspace_id
+                )
+                if access_context is not None
+                else None
+            )
+            actual_workspace_id = settings_workspace_id(
+                session,
+                workspace_id=authority.workspace_id if authority is not None else workspace_id,
+            )
+            if setting_key in HOST_SETTING_KEYS:
+                self._require_host_scope(session, actual_workspace_id)
+                record = session.get(AppSetting, setting_key)
+            else:
+                record = workspace_setting_in_workspace(session, actual_workspace_id, setting_key)
             if record is None:
                 raise KeyError(setting_key)
-            return self._payload(record)
+            return {
+                **self._payload(record),
+                **(authority.metadata() if authority is not None else {}),
+            }
 
     @staticmethod
-    def _payload(record: AppSetting) -> dict[str, Any]:
+    def _require_host_scope(session: Session, workspace_id: str) -> None:
+        if workspace_id != initial_personal_workspace(session).id:
+            raise ValueError("Host settings are only available in the initial personal workspace.")
+
+    @staticmethod
+    def _payload(record: AppSetting | WorkspaceSetting) -> dict[str, Any]:
         return {
             "key": record.key,
             "value": redact_inline_secrets(record.value_json),
@@ -95,12 +169,31 @@ class GlobalSettingsService:
         setting_key: str,
         value: Any,
         revision_token: str,
+        *,
+        workspace_id: str | None = None,
+        access_context: AccessContext | None = None,
     ) -> dict[str, Any]:
         """Preserve create tokens and optimistic replacement under the writer."""
         if not setting_key or len(setting_key) > 120:
             raise ValueError("Invalid setting key.")
         with self.database.immediate_session() as session:
-            record = session.get(AppSetting, setting_key)
+            authority = (
+                require_settings_access(
+                    session, access_context, setting_key, workspace_id=workspace_id, write=True
+                )
+                if access_context is not None
+                else None
+            )
+            actual_workspace_id = settings_workspace_id(
+                session,
+                workspace_id=authority.workspace_id if authority is not None else workspace_id,
+            )
+            is_host_setting = setting_key in HOST_SETTING_KEYS
+            if is_host_setting:
+                self._require_host_scope(session, actual_workspace_id)
+                record = session.get(AppSetting, setting_key)
+            else:
+                record = workspace_setting_in_workspace(session, actual_workspace_id, setting_key)
             if record is None:
                 if revision_token not in {"", "0", "*"}:
                     raise SettingPreconditionError(
@@ -130,6 +223,7 @@ class GlobalSettingsService:
                     self.paths,
                     value,
                     record.value_json if record is not None else {},
+                    workspace_id=actual_workspace_id,
                 )
                 if setting_key == "services.tts"
                 else prepare_stt_settings_for_storage(
@@ -138,6 +232,7 @@ class GlobalSettingsService:
                     self.paths,
                     value,
                     record.value_json if record is not None else {},
+                    workspace_id=actual_workspace_id,
                 )
                 if setting_key == "services.stt"
                 else value
@@ -150,7 +245,9 @@ class GlobalSettingsService:
                 )
                 validate_stt_replacement(prepared_value, previous_stt)
                 migrate_legacy_subtitle_settings(
-                    session, {**previous_subtitles, **incoming_subtitles}
+                    session,
+                    {**previous_subtitles, **incoming_subtitles},
+                    workspace_id=actual_workspace_id,
                 )
             if setting_key == "defaults.audio":
                 validate_audio_pause_settings(prepared_value)
@@ -191,19 +288,39 @@ class GlobalSettingsService:
                     "API keys and other credentials must be saved in provider settings."
                 )
             if record is None:
-                record = AppSetting(key=setting_key, value_json=prepared_value, revision=1)
+                record = (
+                    AppSetting(key=setting_key, value_json=prepared_value, revision=1)
+                    if is_host_setting
+                    else WorkspaceSetting(
+                        workspace_id=actual_workspace_id,
+                        key=setting_key,
+                        value_json=prepared_value,
+                        revision=1,
+                    )
+                )
                 session.add(record)
             else:
-                session.add(
+                history = (
                     AppSettingHistory(
                         key=record.key,
                         value_json=record.value_json,
                         revision=record.revision,
                     )
+                    if is_host_setting
+                    else WorkspaceSettingHistory(
+                        workspace_id=actual_workspace_id,
+                        key=record.key,
+                        value_json=record.value_json,
+                        revision=record.revision,
+                    )
                 )
+                session.add(history)
                 record.value_json = prepared_value
                 record.revision += 1
                 record.updated_at = utcnow()
             session.flush()
-            result = self._payload(record)
+            result = {
+                **self._payload(record),
+                **(authority.metadata() if authority is not None else {}),
+            }
         return result

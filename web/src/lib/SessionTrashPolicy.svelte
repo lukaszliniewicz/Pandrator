@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { apiJson } from './api';
+  import { appState } from './app-state.svelte';
   import { errorMessage } from './errors';
   type Policy = { revision: number; days: number | null };
   let policy = $state<Policy | null>(null);
@@ -9,6 +10,9 @@
   let busy = $state(false);
   let error = $state('');
   let message = $state('');
+  const canManage = $derived(
+    appState.isAdministrator && appState.principal?.scopes.includes('app.write')
+  );
   const dirty = $derived(
     policy &&
       (enabled !== (policy.days !== null) || (enabled && days !== policy.days))
@@ -24,7 +28,7 @@
     }
   }
   async function save() {
-    if (!policy) return;
+    if (!policy || !canManage) return;
     busy = true;
     error = message = '';
     try {
@@ -59,7 +63,7 @@
   {#if error}<p role="alert" class="mt-3 text-sm text-red-600">
       {error} <button class="underline" onclick={load}>Reload policy</button>
     </p>{/if}
-  {#if policy}
+  {#if policy && canManage}
     <fieldset disabled={busy} class="mt-4 space-y-3">
       <label class="flex items-center gap-2 text-sm"
         ><input type="checkbox" bind:checked={enabled} />Automatically delete
@@ -88,6 +92,12 @@
         >{busy ? 'Saving…' : 'Save Trash policy'}</button
       >
     </fieldset>
+  {:else if policy}<p class="muted mt-4 text-sm">
+      {policy.days === null
+        ? 'Automatic deletion is off.'
+        : `Projects moved to Trash are scheduled for deletion after ${policy.days} days.`}
+      Changing this policy requires an Administrator with write access.
+    </p>
   {:else if !error}<p class="muted mt-3 text-sm">Loading Trash policy…</p>{/if}
   {#if message}<p role="status" class="muted mt-3 text-sm">{message}</p>{/if}
 </section>

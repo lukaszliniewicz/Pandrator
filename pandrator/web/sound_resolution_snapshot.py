@@ -15,9 +15,13 @@ from pandrator.logic.book_timing import alignment_identity
 from pandrator.logic.sound_boundary_refinement import BOUNDARY_REFINEMENT_VERSION
 from pandrator.runtime import DataPaths
 
+from .access.sound_execution_policy import (
+    require_sound_input_access,
+    require_sound_processing_session,
+)
 from .models import Artifact, AudioTake, GenerationSegment
 from .settings_policy import RevisionConflict
-from .sound_project_commands import assert_revision, latest_cues
+from .sound_project_commands import assert_revision, latest_cues, validate_sound_cue_workspaces
 from .sound_project_queries import current_header
 from .sound_resolution_freshness import active_rows, current_ready
 from .workspace_settings import WorkspaceSettingsService
@@ -99,6 +103,7 @@ def capture(
 ) -> SoundResolutionSnapshot:
     if type(expected_revision) is not int or expected_revision < 1:
         raise ValueError("expected_revision must be a positive integer.")
+    require_sound_processing_session(session, session_id)
     record, plan, active = current_header(session, session_id)
     assert_revision(plan, expected_revision)
     if plan is None or not active or plan.speech_plan_revision_id != active:
@@ -106,6 +111,7 @@ def capture(
     if record.trashed_at is not None or record.status == "purging":
         raise ValueError("Restore the session before resolving sound cues.")
     cues = latest_cues(session, plan)
+    validate_sound_cue_workspaces(session, session_id, cues)
     word_cues = {
         cue["logical_id"]: cue for cue in cues if cue["anchor_json"].get("kind") in WORD_KINDS
     }
@@ -170,6 +176,10 @@ def capture(
         if reason is None and len(takes) != 1:
             reason = "missing_active_take" if not takes else "ambiguous_active_take"
         take = takes[0] if len(takes) == 1 else None
+        if take is not None and take.artifact_id:
+            require_sound_input_access(
+                session, session_id, take.artifact_id, session_bound=True
+            )
         artifact = (
             session.get(Artifact, take.artifact_id)
             if take is not None and take.artifact_id

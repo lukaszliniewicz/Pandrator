@@ -238,7 +238,7 @@ def test_cancellation_prevents_download_and_execution(tmp_path):
         )
 
 
-def test_cache_download_checks_digest_and_reuses_verified_file(tmp_path, monkeypatch):
+def test_cache_download_checks_digest_and_reuses_verified_file(tmp_path, monkeypatch, host_model_acquisition):
     data = b"GGUF-test-model"
     monkeypatch.setattr(qwen, "MODEL_SIZE", len(data))
     monkeypatch.setattr(qwen, "MODEL_SHA256", hashlib.sha256(data).hexdigest())
@@ -251,7 +251,7 @@ def test_cache_download_checks_digest_and_reuses_verified_file(tmp_path, monkeyp
     assert opener.call_count == 1
 
 
-def test_partial_or_corrupt_download_never_replaces_cached_model(tmp_path, monkeypatch):
+def test_partial_or_corrupt_download_never_replaces_cached_model(tmp_path, monkeypatch, host_model_acquisition):
     monkeypatch.setattr(qwen, "MODEL_SIZE", 30)
     monkeypatch.setattr(qwen, "MODEL_SHA256", "0" * 64)
     settings = {"qwen_aligner_cache_dir": str(tmp_path)}

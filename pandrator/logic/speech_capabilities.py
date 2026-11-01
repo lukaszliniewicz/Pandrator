@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-CAPABILITY_VERSION = "2026-10-16.1"
+CAPABILITY_VERSION = "2026-10-19.1"
 
 _FISH_EVENTS = {
     "pause": "pause",
@@ -20,6 +20,13 @@ _FISH_EVENTS = {
     "inhale": "inhale",
     "exhale": "exhale",
     "clear_throat": "clearing throat",
+}
+_DRAMA3_EVENTS = {
+    "pause": "pause",
+    "laugh": "laughs",
+    "sigh": "sighs",
+    "gasp": "gasps",
+    "clear_throat": "clears throat",
 }
 _GEMINI38_EVENTS = {
     "pause": "short pause",
@@ -335,6 +342,22 @@ def capabilities_for_model(
             "Voxtral uses its embedded preset voices; cloning, voice design, "
             "delivery instructions and speed controls are unavailable in this runtime."
         )
+    elif audio_cpp and (
+        family == "fish_drama3" or normalized.startswith("fish_drama3_")
+    ):
+        profile.update(
+            status="documented",
+            dialect="fish_drama3",
+            instructions="inline",
+            instruction_scope=["request", "span"],
+            emotion={"mode": "open_description", "tags": []},
+            event_tags=dict(_DRAMA3_EVENTS),
+        )
+        profile["notes"].append(
+            "Drama 3 uses bracketed directions and vocal events, and paired phrase tags. "
+            "Delivery and pause lengths remain model-interpreted. Cast voices render as "
+            "separate parts; native multi-speaker dialogue, take history and infill are unavailable."
+        )
     elif (
         audio_cpp
         and (family in {"fish_audio", "fish_audio_s2"} or "fish_audio_s2" in normalized)
@@ -562,6 +585,12 @@ def capabilities_for_model(
     if profile["dialect"] == "fish_s2":
         profile["recommended_instruction_scope"] = "request"
         profile["notes"].append("Whole-segment directions are recommended. Phrase cues are best effort and can be ignored or continue beyond the marked words; reset cues are not closing tags.")
+    if profile["dialect"] == "fish_drama3":
+        profile.update(
+            native_instruction_scope=["request", "span"],
+            phrase_instruction_transport="scoped_inline",
+            phrase_instruction_reliability="best_effort",
+        )
     if profile["dialect"] == "gemini":
         profile.update(
             phrase_instruction_transport="inline_hint",

@@ -8,6 +8,7 @@ import json
 import logging
 import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from io import TextIOWrapper
 from pathlib import Path
@@ -18,7 +19,6 @@ import pytest
 from flask.testing import FlaskClient
 from sqlalchemy import event, select
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 from werkzeug.test import TestResponse
 
@@ -92,34 +92,66 @@ def row_inventory(harness: Harness) -> tuple[list[dict[str, Any]], list[dict[str
 def test_summary_filters_artifacts_before_limit_and_keeps_diagnostics(harness: Harness):
     source = harness.directory / "reviewed.srt"
     source.write_text("1\n00:00:00,000 --> 00:00:01,000\nText.\n")
-    selected = harness.artifacts.register(source, kind="srt", role="correction",
-        session_id=harness.session_id, metadata={"language": "en",
+    selected = harness.artifacts.register(
+        source,
+        kind="srt",
+        role="correction",
+        session_id=harness.session_id,
+        metadata={
+            "language": "en",
             "subtitle_diagnostics": {"final": {"cue_count": 1}},
-            "logical_passages": {"large": "x" * 9_000_000}})
+            "logical_passages": {"large": "x" * 9_000_000},
+        },
+    )
     later = harness.directory / "later.txt"
     later.write_text("Later unrelated artifact")
     harness.artifacts.register(later, kind="txt", role="unrelated", session_id=harness.session_id)
-    response = harness.client.get("/api/v1/artifacts", query_string={
-        "session_id": harness.session_id, "role": "correction", "kind": "srt",
-        "view": "summary", "limit": 1})
+    response = harness.client.get(
+        "/api/v1/artifacts",
+        query_string={
+            "session_id": harness.session_id,
+            "role": "correction",
+            "kind": "srt",
+            "view": "summary",
+            "limit": 1,
+        },
+    )
     assert response.status_code == 200
     assert len(response.data) < 2000
     item = response.get_json()["items"][0]
     assert item["id"] == selected.id
     assert item["content_hash"] == selected.content_hash
-    assert item["metadata_json"] == {"language": "en", "subtitle_diagnostics": {"final": {"cue_count": 1}}}
+    assert item["metadata_json"] == {
+        "language": "en",
+        "subtitle_diagnostics": {"final": {"cue_count": 1}},
+    }
     assert "relative_path" not in item
 
 
-def test_workflow_summary_drops_large_artifact_bodies_before_http_encoding(harness: Harness, monkeypatch):
+def test_workflow_summary_drops_large_artifact_bodies_before_http_encoding(
+    harness: Harness, monkeypatch
+):
     workflows = harness.client.application.extensions["pandrator"]["workflows"]
-    full = {"session_id": harness.session_id, "revision": 3, "sources": [], "stages": [{
-        "key": "translate", "status": "completed", "selected_artifact_id": "a",
-        "selection_revision": 5, "artifact": {"id": "a", "content_hash": "h",
-            "metadata_json": {"logical_passages": "x" * 9_000_000}},
-        "artifacts": [{"id": "a", "version": 3, "metadata_json": {"large": "x" * 1000}}],
-    }]}
-    monkeypatch.setattr(workflows, "snapshot", lambda session_id: full)
+    full = {
+        "session_id": harness.session_id,
+        "revision": 3,
+        "sources": [],
+        "stages": [
+            {
+                "key": "translate",
+                "status": "completed",
+                "selected_artifact_id": "a",
+                "selection_revision": 5,
+                "artifact": {
+                    "id": "a",
+                    "content_hash": "h",
+                    "metadata_json": {"logical_passages": "x" * 9_000_000},
+                },
+                "artifacts": [{"id": "a", "version": 3, "metadata_json": {"large": "x" * 1000}}],
+            }
+        ],
+    }
+    monkeypatch.setattr(workflows, "snapshot", lambda session_id, **_kwargs: full)
     response = harness.client.get(f"/api/v1/sessions/{harness.session_id}/workflow?view=summary")
     assert response.status_code == 200
     assert len(response.data) < 2000
@@ -128,7 +160,10 @@ def test_workflow_summary_drops_large_artifact_bodies_before_http_encoding(harne
     assert stage["selection_revision"] == 5
     assert stage["artifact"] == {"id": "a", "content_hash": "h"}
     assert len(full["stages"][0]["artifact"]["metadata_json"]["logical_passages"]) == 9_000_000
-    assert harness.client.get(f"/api/v1/sessions/{harness.session_id}/workflow?view=bogus").status_code == 422
+    assert (
+        harness.client.get(f"/api/v1/sessions/{harness.session_id}/workflow?view=bogus").status_code
+        == 422
+    )
 
 
 def file_inventory(directory: Path) -> dict[str, bytes]:
@@ -409,6 +444,7 @@ def test_review_file_ownership_at_native_registration_failure_boundaries(
     real_prepare = harness.artifacts.prepare_registration
     real_register = harness.artifacts.register_in_session
     real_session = harness.database.session
+    real_immediate = harness.database.immediate_session
     preparation_failed = False
 
     def is_destination(path: Path) -> bool:
@@ -462,16 +498,15 @@ def test_review_file_ownership_at_native_registration_failure_boundaries(
 
             event.listen(native_connection, "commit", reject_commit, once=True)
             listeners.append((native_connection, "commit", reject_commit))
-        else:
-
-            def fail_after_commit(committed_session: Session) -> None:
-                assert committed_session is session
-                events.append({"boundary": "native_after_commit", "same_session": True})
-                raise fault
-
-            event.listen(session, "after_commit", fail_after_commit, once=True)
-            listeners.append((session, "after_commit", fail_after_commit))
         return artifact
+
+    @contextmanager
+    def fail_after_publication(**kwargs: Any) -> Iterator[Session]:
+        # Inject after the immediate transaction's actual connection commit.
+        with real_immediate(**kwargs) as session:
+            yield session
+        events.append({"boundary": "native_after_commit", "same_session": True})
+        raise fault
 
     def cleanup_session() -> Any:
         if preparation_failed:
@@ -497,6 +532,8 @@ def test_review_file_ownership_at_native_registration_failure_boundaries(
                 seams.setattr(harness.artifacts, "prepare_registration", prepare_destination)
             if case in {"registration_flush", "connection_commit", "after_commit"}:
                 seams.setattr(harness.artifacts, "register_in_session", register_destination)
+            if case == "after_commit":
+                seams.setattr(harness.database, "immediate_session", fail_after_publication)
             if case == "collision":
                 seams.setattr(artifact_routes, "new_id", lambda: "fixed-fixture-id")
             if case == "inspection_failure":
@@ -566,11 +603,7 @@ def test_review_file_ownership_at_native_registration_failure_boundaries(
         if case == "normal":
             assert raised is None and status == 201 and result is not None
         else:
-            assert isinstance(raised, InvalidRequestError)
-            assert str(raised) == (
-                "This session is in 'committed' state; no further SQL can be emitted within this transaction."
-            )
-            assert raised.__context__ is fault
+            assert raised is fault
             assert sum(item["boundary"] == "native_after_commit" for item in events) == 1
         assert len(after_rows[0]) == 2 and len(after_rows[1]) == 1 and len(added_files) == 1
         child = next(row for row in after_rows[0] if row["id"] != source.id)

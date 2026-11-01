@@ -9,16 +9,18 @@ from unittest.mock import patch
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
-    AppSetting,
     Artifact,
     Job,
     OutcomePlan,
     SessionRecord,
     SessionSetting,
     TranslationProjectBranch,
+    WorkspaceSetting,
 )
 from pandrator.web.settings_policy import RevisionConflict
 from pandrator.web.translation_projects import (
@@ -165,7 +167,8 @@ class TranslationProjectServiceTests(unittest.TestCase):
 
     def test_explicit_carry_freezes_effective_global_custom_limits(self):
         with self.database.session() as db:
-            db.add(AppSetting(key="defaults.subtitles", value_json={
+            workspace_id = initial_personal_workspace(db).id
+            db.add(WorkspaceSetting(workspace_id=workspace_id, key="defaults.subtitles", value_json={
                 "max_chars_per_line": 42, "max_cps": 15, "max_lines": 1}))
         settings = WorkspaceSettingsService(self.database)
         source_effective = settings.get(self.source.id, "subtitles")["effective"]
@@ -181,7 +184,8 @@ class TranslationProjectServiceTests(unittest.TestCase):
         carried_sid = branches[1]["session_id"]
         self.assertEqual(source_effective, settings.get(carried_sid, "subtitles")["override"])
         with self.database.session() as db:
-            db.get(AppSetting, "defaults.subtitles").value_json = {
+            workspace_id = initial_personal_workspace(db).id
+            db.get(WorkspaceSetting, (workspace_id, "defaults.subtitles")).value_json = {
                 "max_chars_per_line": 38, "max_cps": 18}
         carried = settings.get(carried_sid, "subtitles")
         self.assertFalse(carried["effective"]["language_defaults"])
@@ -223,7 +227,11 @@ class TranslationProjectServiceTests(unittest.TestCase):
             self.assertTrue(db.get(SessionSetting, (second, "translation")).value_json["enabled"])
             self.assertEqual(result["id"], get_session_project(db, first)["project"]["id"])
             self.assertEqual(result["id"], get_project(db, result["id"])["project"]["id"])
-            db.add(Job(kind="dubbing.translate", session_id=first, status="queued"))
+            job = Job(kind="dubbing.translate", session_id=first, status="queued")
+            ownership = job_creation_ownership(db, session_id=first)
+            job.workspace_id = ownership.workspace_id
+            job.project_id = ownership.project_id
+            db.add(job)
         with self.database.session() as db:
             branches = get_project(db, result["id"])["project"]["branches"]
             self.assertEqual(["running", "ready"], [row["translation_status"] for row in branches])
@@ -409,6 +417,11 @@ class TranslationProjectServiceTests(unittest.TestCase):
                 status="queued",
                 payload_json={"retained": True},
             )
+            ownership = job_creation_ownership(
+                db, session_id=existing_record.id
+            )
+            retained_job.workspace_id = ownership.workspace_id
+            retained_job.project_id = ownership.project_id
             db.add(retained_job)
 
         self.sessions.update(
@@ -446,14 +459,16 @@ class TranslationProjectServiceTests(unittest.TestCase):
             branch_record = db.get(SessionRecord, branch_id)
             original_branch_name = branch_record.name
             original_source_name = db.get(SessionRecord, self.source.id).name
-            db.add(
-                Job(
-                    kind="translation.test",
-                    session_id=branch_id,
-                    status="completed",
-                    payload_json={"retained": True},
-                )
+            job = Job(
+                kind="translation.test",
+                session_id=branch_id,
+                status="completed",
+                payload_json={"retained": True},
             )
+            ownership = job_creation_ownership(db, session_id=branch_id)
+            job.workspace_id = ownership.workspace_id
+            job.project_id = ownership.project_id
+            db.add(job)
         with self.database.session() as db:
             before_settings = {
                 (row.session_id, row.section): (row.value_json, row.revision)

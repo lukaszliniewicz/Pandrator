@@ -127,16 +127,107 @@ class AudiobookChunkingIntegrationTests(unittest.TestCase):
         effective = preprocess.call_args.args[1]
         self.assertEqual("en", effective["language"])
         self.assertEqual("XTTS", effective["tts_service"])
-        self.assertEqual(1800, effective["max_sentence_length"])
+        self.assertEqual(350, effective["max_sentence_length"])
         self.assertEqual("qwen3_tts", result["segmentation_budget"]["profile"])
-        self.assertEqual(1800, result["segmentation_budget"]["target_chars"])
+        self.assertEqual(350, result["segmentation_budget"]["target_chars"])
+
+    def test_prepare_text_uses_captured_sentence_packing_settings(self):
+        self._register_clean_text("The captured packing policy must win.")
+        workspace = WorkspaceSettingsService(self.database)
+        saved = workspace.update(
+            self.session.id,
+            "text",
+            0,
+            {
+                "audiobook_sentence_packing": "sentences",
+                "audiobook_sentence_packing_threshold": 351,
+            },
+        )
+        queued = WorkflowService(self.database, self.jobs).run_stage(
+            self.session.id,
+            "prepare_text",
+        )
+        payload = json.loads(json.dumps(queued.payload_json))
+
+        workspace.update(
+            self.session.id,
+            "text",
+            saved["revision"],
+            {
+                "audiobook_sentence_packing": "clauses",
+                "audiobook_sentence_packing_threshold": 900,
+            },
+        )
+
+        with mock.patch(
+            "pandrator.logic.text_preprocessor.preprocess_text",
+            return_value=[{"original_sentence": "The captured packing policy must win."}],
+        ) as preprocess:
+            self.handlers.prepare_text(
+                payload,
+                self.progress,
+                threading.Event(),
+            )
+
+        effective = preprocess.call_args.args[1]
+        self.assertEqual("sentences", effective["audiobook_sentence_packing"])
+        self.assertEqual(351, effective["audiobook_sentence_packing_threshold"])
+
+    def test_effective_sentence_packing_policy_reaches_real_preparation(self):
+        first = "A lantern warmed the small kitchen while rain tapped on the old windows through the quiet evening."
+        oversized = (
+            "The travelers followed a narrow track through the valley, carrying provisions and maps while "
+            "the last light faded behind the hills, and they continued carefully along the winding road "
+            "as the evening air grew colder; after sunset they reached a village beside the river, where "
+            "warm windows shone above the stone bridge and a welcoming host prepared a room before the "
+            "heavy clouds gathered over the fields."
+        )
+        last = "The river passed beneath the stone bridge and disappeared beyond the fields."
+        text = " ".join((first, oversized, last))
+        source = self._register_clean_text(text, filename="sentence-packing.txt")
+        base = {
+            "audiobook_chunking": "model",
+            # The effective Qwen target, rather than this ignored manual value,
+            # must determine when automatic sentence packing takes effect.
+            "max_sentence_length": 900,
+            "enable_sentence_appending": True,
+            "enable_nemo_normalization": False,
+            "normalize_all_caps": False,
+            "_audiobook_tts_settings": self._qwen_settings(language="en"),
+        }
+        for policy, threshold, isolated in (
+            ("auto", 350, True),
+            ("auto", 351, False),
+            ("sentences", 900, True),
+            ("clauses", 1, False),
+        ):
+            with self.subTest(policy=policy, threshold=threshold):
+                result, _artifact, rows = self._prepare(source, {
+                    **base,
+                    "audiobook_sentence_packing": policy,
+                    "audiobook_sentence_packing_threshold": threshold,
+                })
+                blocks = [row["original_sentence"] for row in rows]
+                self.assertEqual(350, result["segmentation_budget"]["target_chars"])
+                self.assertTrue(all(len(block) <= 350 for block in blocks))
+                self.assertEqual(self._words(text), self._words(" ".join(blocks)))
+                self.assertEqual("yes", rows[-1]["paragraph"])
+                if isolated:
+                    self.assertEqual(first, blocks[0])
+                    self.assertEqual(last, blocks[-1])
+                    self.assertTrue(all(row.get("split_part") is not None for row in rows[1:-1]))
+                else:
+                    self.assertEqual(2, len(blocks))
+                    self.assertTrue(blocks[0].startswith(first + " "))
+                    self.assertTrue(blocks[-1].endswith(" " + last))
 
     def test_model_budget_groups_paragraphs_and_manual_mode_keeps_two_hundred(self):
         sentence = (
-            "The narrator carries the story through a quiet room while every "
-            "careful phrase settles gently around the listening reader steady "
-            "steady steady steady steady steady steady steady."
+            "Every evening, the quiet reader follows the narrator through the village, "
+            "where familiar voices gather around the kitchen fire."
         )
+        self.assertGreaterEqual(len(sentence), 120)
+        self.assertLessEqual(len(sentence), 145)
         text = "\n\n".join((" ".join([sentence] * 8),) * 2)
         source = self._register_clean_text(text, filename="long-paragraphs.txt")
         base_settings = {
@@ -154,11 +245,14 @@ class AudiobookChunkingIntegrationTests(unittest.TestCase):
             {**base_settings, "audiobook_chunking": "model"},
         )
         model_lengths = [len(row["original_sentence"]) for row in model_rows]
-        self.assertEqual(1800, model_result["segmentation_budget"]["target_chars"])
-        self.assertEqual(2, len(model_rows))
+        self.assertEqual(350, model_result["segmentation_budget"]["target_chars"])
+        self.assertEqual(8, len(model_rows))
         self.assertGreater(min(model_lengths), 200)
-        self.assertLessEqual(max(model_lengths), 1800)
-        self.assertEqual(["yes", "yes"], [row["paragraph"] for row in model_rows])
+        self.assertLessEqual(max(model_lengths), 350)
+        self.assertEqual(
+            ["no", "no", "no", "yes"] * 2,
+            [row["paragraph"] for row in model_rows],
+        )
         self.assertEqual(
             self._words(text),
             self._words(" ".join(row["original_sentence"] for row in model_rows)),
@@ -174,6 +268,7 @@ class AudiobookChunkingIntegrationTests(unittest.TestCase):
         )
         manual_lengths = [len(row["original_sentence"]) for row in manual_rows]
         self.assertEqual(200, manual_result["segmentation_budget"]["target_chars"])
+        self.assertEqual(16, len(manual_rows))
         self.assertGreater(len(manual_rows), len(model_rows))
         self.assertLessEqual(max(manual_lengths), 200)
         self.assertEqual(

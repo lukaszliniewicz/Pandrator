@@ -368,6 +368,10 @@ def register_generation_execution_tools(
         voice_id: Annotated[NativeNullableString, Field(max_length=100)] = None,
         voice: Annotated[NativeNullableString, Field(max_length=100)] = None,
         language: Annotated[NativeNullableString, Field(max_length=20)] = None,
+        clear_voice_override: Annotated[
+            bool,
+            Field(description="Set true to inherit the project voice. Leave voice and voice_id unset; null by itself keeps the existing value."),
+        ] = False,
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Update a generation segment's text or voice override with revision guard."""
@@ -386,6 +390,7 @@ def register_generation_execution_tools(
                 voice_id=voice_id,
                 voice=voice,
                 language=language,
+                clear_voice_override=clear_voice_override,
             ),
         ), response_mode)
 

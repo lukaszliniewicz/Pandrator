@@ -17,6 +17,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.generation_audio_identity import (
     IDENTITY_KEY,
     AudioIdentityContext,
+    plan_audio_identities,
 )
 from pandrator.web.models import (
     Artifact,
@@ -28,6 +29,7 @@ from pandrator.web.models import (
     VoiceSample,
     utcnow,
 )
+from pandrator.web.projects.identity import initial_personal_workspace
 from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 
 
@@ -449,8 +451,10 @@ class GenerationAudioIdentityTests(unittest.TestCase):
             role="voice_sample",
             session_id=session_id,
         )
+        assert sample_one.workspace_id is not None
         with self.database.session() as session:
             voice = Voice(
+                workspace_id=sample_one.workspace_id,
                 name="Display voice",
                 metadata_json={
                     "providers": {"openai": {"voice_id": "provider-voice", "status": "ready"}}
@@ -459,6 +463,7 @@ class GenerationAudioIdentityTests(unittest.TestCase):
             session.add(voice)
             session.flush()
             sample = VoiceSample(
+                workspace_id=voice.workspace_id,
                 voice_id=voice.id,
                 artifact_id=sample_one.id,
                 transcript="sample",
@@ -487,19 +492,35 @@ class GenerationAudioIdentityTests(unittest.TestCase):
         session_id, _revision_id, segment_ids = self._create_case()
         samples = []
         with self.database.session() as session:
-            voice = Voice(name="Linked voice", metadata_json={"providers": {"audio_cpp": {
-                "resource_kind": "linked_reference", "status": "ready", "voice_id": "linked-voice",
-            }}})
+            voice = Voice(
+                workspace_id=initial_personal_workspace(session).id,
+                name="Linked voice",
+                metadata_json={
+                    "providers": {
+                        "audio_cpp": {
+                            "resource_kind": "linked_reference",
+                            "status": "ready",
+                            "voice_id": "linked-voice",
+                        }
+                    }
+                },
+            )
             session.add(voice)
             session.flush()
             voice_id = voice.id
+            voice_workspace_id = voice.workspace_id
         for index in range(2):
             artifact = self.services["artifacts"].register(
                 self._wave_path(f"sample-{index}"), kind="audio", role=f"voice_sample_{index}", session_id=session_id,
             )
             with self.database.session() as session:
-                sample = VoiceSample(voice_id=voice_id, artifact_id=artifact.id,
-                                    created_at=utcnow() - timedelta(days=1-index))
+                assert artifact.workspace_id == voice_workspace_id
+                sample = VoiceSample(
+                    workspace_id=voice_workspace_id,
+                    voice_id=voice_id,
+                    artifact_id=artifact.id,
+                    created_at=utcnow() - timedelta(days=1-index),
+                )
                 session.add(sample)
                 session.flush()
                 samples.append(sample.id)
@@ -515,20 +536,32 @@ class GenerationAudioIdentityTests(unittest.TestCase):
             artifact = session.get(Artifact, old.artifact_id)
             artifact.content_hash = "different-unused-sample-hash"
         prepared = self.generation.prepare_start(session_id, run_override=override, stale_only=True)
-        self.assertEqual(segment_ids[1:], prepared["requested_segment_ids"])
-        after = self.handlers.prepare_audio_cpp_voice_reference(snapshot["tts"])
-        self.assertEqual(before["audio_cpp_voice_ref_hash"], after["audio_cpp_voice_ref_hash"])
-        # A changed effective reference is rejected even if the display voice
-        # and provider ID are unchanged, including between queue and execution.
+        try:
+            self.assertEqual(segment_ids[1:], prepared["requested_segment_ids"])
+            after = self.handlers.prepare_audio_cpp_voice_reference(snapshot["tts"])
+            self.assertEqual(before["audio_cpp_voice_ref_hash"], after["audio_cpp_voice_ref_hash"])
+        finally:
+            self.generation.cleanup_prepared_start(prepared)
+        # A queued run retains its admitted reference. Later library edits
+        # change current compatibility while its frozen identities stay stable.
         queued = self._start_stale(session_id, override)
         with self.database.session() as session:
             newest = session.get(VoiceSample, samples[1])
             newest.transcript = "A changed reviewed reference"
             newest.transcript_reviewed = True
-        with patch.object(self.handlers.tts_providers, "synthesize") as synthesize:
-            with self.assertRaisesRegex(ValueError, "voice reference changed"):
-                self.handlers.run_generation({"generation_run_id": queued["id"]}, lambda *_: None, threading.Event())
-            synthesize.assert_not_called()
+        live_snapshot = self._resolved(session_id, override)
+        with self.database.session() as session:
+            run = session.get_one(GenerationRun, queued["id"])
+            frozen = run.settings_snapshot_json
+            self.assertIsNotNone(frozen["tts"]["_project_speech_input"])
+            frozen_identities = plan_audio_identities(session, run.plan_revision_id, frozen)
+            self.assertEqual(frozen["generation_audio_identities"], frozen_identities)
+            live_identities = plan_audio_identities(session, run.plan_revision_id, live_snapshot)
+            for segment_id in segment_ids:
+                self.assertNotEqual(
+                    frozen_identities[segment_id]["source_voice_reference_hash"],
+                    live_identities[segment_id]["voice_reference_hash"],
+                )
 
     def test_output_settings_do_not_change_reuse(self):
         session_id, _revision_id, segment_ids = self._create_case()
@@ -963,8 +996,9 @@ class GenerationAudioIdentityTests(unittest.TestCase):
         calls = []
         changed = False
 
-        def mutate_segment_language(settings):
+        def mutate_segment_language(settings, *, workspace_id):
             nonlocal changed
+            assert workspace_id
             if not changed:
                 changed = True
                 with self.database.session() as session:
@@ -1001,6 +1035,76 @@ class GenerationAudioIdentityTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual([], calls)
 
+
+    def test_attempt_catalogue_reuse_keeps_identity_checks_fresh_and_isolated(self):
+        from pandrator.web.generation_controls import save_generation_controls
+
+        override = {
+            "tts": {
+                "service": "gemini",
+                "model": "gemini-2.5-flash-tts",
+                "voice": "Kore",
+                "casting_enabled": True,
+            }
+        }
+
+        def start_case(name):
+            session_id, _revision_id, segment_ids = self._create_case(
+                [{"text": "A narrated line.", "speaker": "Narrator"}], name=name
+            )
+            with self.database.session() as session:
+                save_generation_controls(
+                    session, session_id, expected_revision=0, characters=[],
+                    cast={"narrator": {"voice": "Kore"}},
+                )
+            return self.generation.start(session_id, run_override=override), segment_ids[0]
+
+        started, segment_id = start_case("attempt-catalogue-first")
+        checks = []
+        calls = []
+        original_init = AudioIdentityContext.__init__
+
+        def observe_identity(identity, *args, **kwargs):
+            original_init(identity, *args, **kwargs)
+            if kwargs.get("_service_config_cache") is not None:
+                checks.append((identity, kwargs["_service_config_cache"]))
+
+        def synthesize(*_args, **_kwargs):
+            calls.append("synthesized")
+            if len(calls) == 1:
+                with self.database.session() as session:
+                    session.get(GenerationSegment, segment_id).language = "pl"
+            return AudioSegment.silent(duration=20)
+
+        with (
+            patch.object(AudioIdentityContext, "__init__", new=observe_identity),
+            patch.object(self.handlers.tts_providers, "synthesis_capabilities",
+                return_value=TtsCapabilities(batch_synthesis=False, streaming_batch=False)),
+            patch.object(self.handlers.tts_providers, "synthesize", side_effect=synthesize),
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during generation"):
+                self.handlers.run_generation(
+                    {"generation_run_id": started["id"]}, lambda *_args: None,
+                    threading.Event(),
+                )
+            self.assertEqual(["synthesized"], calls)
+            self.assertGreaterEqual(len(checks), 2)
+            self.assertEqual(len(checks), len({id(identity) for identity, _cache in checks}))
+            first_cache = checks[0][1]
+            self.assertTrue(all(cache is first_cache for _identity, cache in checks))
+            with self.database.session() as session:
+                self.assertEqual([], list(session.scalars(select(AudioTake).where(
+                    AudioTake.generation_segment_id == segment_id))))
+            checks.clear()
+            next_run, _next_segment_id = start_case("attempt-catalogue-next")
+            completed = self.handlers.run_generation(
+                {"generation_run_id": next_run["id"]}, lambda *_args: None,
+                threading.Event(),
+            )
+            self.assertEqual("completed", completed["status"])
+            self.assertGreaterEqual(len(checks), 2)
+            self.assertTrue(all(cache is checks[0][1] for _identity, cache in checks))
+            self.assertIsNot(first_cache, checks[0][1])
 
     def test_enabling_casting_stales_earlier_takes(self):
         from pandrator.web.generation_audio_identity import take_reuse_reason
@@ -1186,7 +1290,7 @@ class GenerationAudioIdentityTests(unittest.TestCase):
         from copy import deepcopy
 
         from pandrator.web.generation_cast_runtime import (
-            _binding_key,
+            cast_resolution_key,
             freeze_cast_snapshot,
             resolve_binding,
         )
@@ -1228,7 +1332,7 @@ class GenerationAudioIdentityTests(unittest.TestCase):
                 "voice_binding"
             ] = other
             frozen["generation_control_snapshot"]["resolved_bindings"][
-                _binding_key(other)
+                cast_resolution_key(other, f"segment:{segment_ids[1]}", schema_version=2)
             ] = resolve_binding(session, other, settings)
             context = AudioIdentityContext(session, frozen)
             segments = {

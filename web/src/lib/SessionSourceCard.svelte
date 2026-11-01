@@ -11,6 +11,7 @@
     LoaderCircle
   } from '@lucide/svelte';
   import AddSourceDialog from './AddSourceDialog.svelte';
+  import { appState } from './app-state.svelte';
   import ArtifactPreview from './ArtifactPreview.svelte';
   import { apiJson } from './api';
   import { errorMessage } from './errors';
@@ -448,7 +449,7 @@
         <button class="btn" disabled={busy} onclick={() => (pending = null)}
           >Cancel</button
         >
-        {#if pending.role === 'primary'}<button
+        {#if pending.role === 'primary' && !appState.projectLink}<button
             class="btn"
             disabled={busy}
             onclick={() => void startNewSession()}

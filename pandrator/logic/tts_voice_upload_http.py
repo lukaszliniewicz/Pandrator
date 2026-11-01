@@ -2,6 +2,7 @@
 
 import logging
 import os
+from collections.abc import Callable
 from contextlib import ExitStack
 
 import requests
@@ -66,6 +67,7 @@ def _upload_speaker_voice_openai_compatible(
     prompt_text: str | None = None,
     mode: str | None = None,
     voice_id: str | None = None,
+    before_io: Callable[[], None] | None = None,
 ) -> str:
     wav_file_paths = _normalize_upload_wav_paths(wav_file_path)
     normalized_base_url = _normalize_base_url(base_url, fallback_base_url)
@@ -78,6 +80,17 @@ def _upload_speaker_voice_openai_compatible(
     resolved_voice_id = (
         str(voice_id or fallback_voice_name).strip() or fallback_voice_name
     )
+    before_io_error: Exception | None = None
+
+    def invoke_before_io() -> None:
+        nonlocal before_io_error
+        if before_io is None:
+            return
+        try:
+            before_io()
+        except Exception as error:
+            before_io_error = error
+            raise
 
     try:
         # Preferred path: ecosystem voice endpoint (/v1/audio/voices).
@@ -122,9 +135,11 @@ def _upload_speaker_voice_openai_compatible(
                 if normalized_mode:
                     form_data["mode"] = normalized_mode
 
+                request_headers = _openai_auth_headers(api_key)
+                invoke_before_io()
                 response = requests.post(
                     upload_voice_url,
-                    headers=_openai_auth_headers(api_key),
+                    headers=request_headers,
                     files=files_payload,
                     data=form_data,
                     timeout=120,
@@ -182,9 +197,11 @@ def _upload_speaker_voice_openai_compatible(
                     if normalized_mode:
                         form_data["mode"] = normalized_mode
 
+                    request_headers = _openai_auth_headers(api_key)
+                    invoke_before_io()
                     response = requests.post(
                         upload_url,
-                        headers=_openai_auth_headers(api_key),
+                        headers=request_headers,
                         files=files,
                         data=form_data,
                         timeout=120,
@@ -238,8 +255,12 @@ def _upload_speaker_voice_openai_compatible(
 
         raise RuntimeError(f"Could not upload speaker voice to {service_name} server.")
     except requests.exceptions.RequestException as e:
+        if e is before_io_error:
+            raise
         raise RuntimeError(
             f"Failed uploading voice to {service_name} server {normalized_base_url}: {e}"
         ) from e
     except OSError as e:
+        if e is before_io_error:
+            raise
         raise RuntimeError(f"Could not read WAV file for upload: {e}") from e

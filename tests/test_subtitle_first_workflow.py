@@ -16,6 +16,7 @@ from pandrator.logic.dubbing.llm_translation import TranslationResult
 from pandrator.web.api import create_app
 from pandrator.web.artifact_selection import selected_artifacts
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     AudioTake,
@@ -30,6 +31,7 @@ from pandrator.web.models import (
     SessionSource,
     SessionStageSelection,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.subtitle_sources import parse_subtitle_source
 
 SRT = "1\n00:00:01,000 --> 00:00:03,000\nThese meetings, these interfaith circles.\n\n2\n00:00:04,000 --> 00:00:06,000\nSomething that can help.\n"
@@ -155,7 +157,7 @@ class SubtitleFirstWorkflowTests(unittest.TestCase):
                 output_path=str(path),
             )
 
-        def fixture_llm_settings(settings, stage):
+        def fixture_llm_settings(settings, stage, *, session_id=None):
             model_key = "correction_model" if stage == "correction" else "translation_model"
             return {
                 **settings,
@@ -478,6 +480,9 @@ class SubtitleFirstWorkflowTests(unittest.TestCase):
             segments=[{"text": "A preserved speech block.", "source_segment_ids": ["cue-1"]}],
         )
         with self.database.session() as session:
+            ownership = resolve_artifact_ownership(
+                session, session_id=session_id
+            )
             segment = session.scalar(
                 select(GenerationSegment).where(
                     GenerationSegment.plan_revision_id == plan["active_revision_id"]
@@ -485,6 +490,8 @@ class SubtitleFirstWorkflowTests(unittest.TestCase):
             )
             correction = Artifact(
                 session_id=session_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
                 kind="txt",
                 role="correction",
                 relative_path=f"sessions/{session_id}/history/correction.txt",
@@ -492,12 +499,16 @@ class SubtitleFirstWorkflowTests(unittest.TestCase):
             )
             raw_take_artifact = Artifact(
                 session_id=session_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
                 kind="audio",
                 role="generation_take",
                 relative_path=f"sessions/{session_id}/history/raw-take.wav",
             )
             word_timing = Artifact(
                 session_id=session_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
                 kind="json",
                 role="media_edit_word_timestamps",
                 relative_path=f"sessions/{session_id}/history/word-timestamps.json",
@@ -507,6 +518,8 @@ class SubtitleFirstWorkflowTests(unittest.TestCase):
             session.flush()
             aligned = Artifact(
                 session_id=session_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
                 kind="srt",
                 role="transcription",
                 relative_path=f"sessions/{session_id}/history/aligned.srt",
@@ -677,7 +690,11 @@ class SubtitleFirstWorkflowTests(unittest.TestCase):
                     media_a["artifact_id"],
                 )
                 with self.database.session() as session:
-                    session.add(Job(kind="dubbing.transcribe", session_id=session_id, status=job_status))
+                    ownership = job_creation_ownership(session, session_id=session_id)
+                    job = Job(kind="dubbing.transcribe", session_id=session_id, status=job_status)
+                    job.workspace_id = ownership.workspace_id
+                    job.project_id = ownership.project_id
+                    session.add(job)
                     session.flush()
                     timing = session.get(SessionSetting, (session_id, "_recording_timing_review"))
                     timing_before = (timing.revision, dict(timing.value_json or {}))

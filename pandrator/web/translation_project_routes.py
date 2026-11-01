@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 from flask import jsonify, request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 from sqlalchemy.exc import IntegrityError
 
+from .access.contracts import AccessContext, ProjectAction
+from .access.session_policy import require_session_access
+from .access.translation_project_policy import require_translation_project_access
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .project_readiness import enrich_project_payload
 from .settings_policy import RevisionConflict
@@ -167,7 +171,8 @@ def translation_project_paths() -> dict:
 
 
 def register_translation_project_routes(
-    app, services, require_auth, error_response, principal
+    app, services, require_auth, error_response, principal,
+    *, access_context: Callable[[], AccessContext],
 ) -> None:
     def failure(error: Exception):
         if isinstance(error, KeyError):
@@ -199,7 +204,23 @@ def register_translation_project_routes(
             raise ValueError("view must be full or compact.")
         return view == "compact"
 
-    def mutate(resource_id: str, operation_id: str, payload: dict, action):
+    def authorize(db, resource_id, *, session_resource, action):
+        guard = require_session_access if session_resource else require_translation_project_access
+        guard(db, access_context(), resource_id, action)
+
+    def project_response(db, resource_id, *, session_resource, compact=False):
+        if session_resource:
+            reader = get_compact_session_project if compact else get_session_project
+            result = reader(db, resource_id, paths=services.paths)
+        else:
+            reader = get_compact_project if compact else get_project
+            result = reader(db, resource_id)
+        return result if compact else enrich_project_payload(services, result, session=db)
+
+    def mutate(
+        resource_id: str, operation_id: str, payload: dict, action,
+        *, session_resource: bool = False,
+    ):
         try:
             key = services.idempotency.validate_key(request.headers.get("Idempotency-Key"))
         except ValueError as error:
@@ -208,6 +229,10 @@ def register_translation_project_routes(
         committed = False
         try:
             with services.database.immediate_session() as db:
+                authorize(
+                    db, resource_id, session_resource=session_resource,
+                    action=ProjectAction.EDIT,
+                )
                 reservation = services.idempotency.begin(
                     db,
                     principal=principal(),
@@ -231,11 +256,24 @@ def register_translation_project_routes(
                         resource_id=result["project"]["id"],
                     )
             committed = True
-            response = jsonify(enrich_project_payload(services, result))
+            # Response enrichment reads current state outside the short writer.
+            # Recheck access in that snapshot, including on a receipt replay.
+            with services.database.snapshot_session() as db:
+                authorize(
+                    db, resource_id, session_resource=session_resource,
+                    action=ProjectAction.READ,
+                )
+                response = jsonify(project_response(
+                    db, resource_id, session_resource=session_resource,
+                ))
             response.status_code = status
             if replayed:
                 response.headers["Idempotency-Replayed"] = "true"
             return response
+        except PermissionError:
+            # PermissionError is also an OSError; preserve the common 403
+            # authorization response instead of labeling it a missing file.
+            raise
         except (
             KeyError,
             ValueError,
@@ -257,12 +295,9 @@ def register_translation_project_routes(
     def session_translation_project(session_id):
         try:
             compact = compact_view()
-            with (services.database.snapshot_session() if compact else services.database.session()) as db:
-                if compact:
-                    result = get_compact_session_project(db, session_id, paths=services.paths)
-                else:
-                    result = get_session_project(db, session_id, paths=services.paths)
-            return jsonify(result if compact else enrich_project_payload(services, result))
+            with services.database.snapshot_session() as db:
+                authorize(db, session_id, session_resource=True, action=ProjectAction.READ)
+                return jsonify(project_response(db, session_id, session_resource=True, compact=compact))
         except (KeyError, ValueError, RevisionConflict) as error:
             return failure(error)
 
@@ -281,6 +316,7 @@ def register_translation_project_routes(
                 session_forks=services.session_forks,
                 created_directories=directories,
             ),
+            session_resource=True,
         )
 
     @app.get("/api/v1/translation-projects/<project_id>")
@@ -288,9 +324,9 @@ def register_translation_project_routes(
     def translation_project_get(project_id):
         try:
             compact = compact_view()
-            with (services.database.snapshot_session() if compact else services.database.session()) as db:
-                result = get_compact_project(db, project_id) if compact else get_project(db, project_id)
-            return jsonify(result if compact else enrich_project_payload(services, result))
+            with services.database.snapshot_session() as db:
+                authorize(db, project_id, session_resource=False, action=ProjectAction.READ)
+                return jsonify(project_response(db, project_id, session_resource=False, compact=compact))
         except (KeyError, ValueError, RevisionConflict) as error:
             return failure(error)
 

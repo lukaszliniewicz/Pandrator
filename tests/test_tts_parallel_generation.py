@@ -1,6 +1,7 @@
 import threading
 import time
 import unittest
+from collections.abc import Generator
 from unittest.mock import Mock, patch
 
 from pandrator.logic import tts_handler
@@ -62,6 +63,106 @@ class ParallelTtsGenerationTests(unittest.TestCase):
 
         self.assertEqual(["0", "1", "2", "3"], [item.id for item in results])
 
+    def test_parallel_preserves_execution_context_at_native_http_boundary(self):
+        import requests
+
+        from pandrator.logic.model_acquisition import (
+            model_acquisition_scope,
+            model_inference_uses_prepared_endpoint,
+        )
+        from pandrator.logic.native_speech_http import NativeSpeechPostOptions, post_native_speech
+        from pandrator.logic.tts_io_policy import (
+            tts_environment_credentials_allowed,
+            tts_host_adc_allowed,
+            tts_io_scope,
+        )
+        from pandrator.web.accounts.execution_actor import (
+            HostActor,
+            current_execution_actor,
+            execution_actor_scope,
+        )
+        from pandrator.web.job_execution import JobLease, current_job_lease
+
+        registry = TtsProviderRegistry()
+        actor = HostActor("pandrator-cli")
+        lease: JobLease = {"job_id": "synthetic-parallel-job", "owner_id": "worker", "lease_generation": 1}
+        barrier = threading.Barrier(2)
+        calls = []
+
+        def proof():
+            self.assertEqual(actor, current_execution_actor.get())
+            self.assertEqual(lease, current_job_lease.get())
+            self.assertFalse(tts_environment_credentials_allowed())
+            self.assertFalse(tts_host_adc_allowed())
+            self.assertTrue(model_inference_uses_prepared_endpoint())
+
+        def post(url, **options):
+            proof()
+            self.assertEqual("https://parallel.invalid/speech", url)
+            self.assertIs(options["allow_redirects"], False)
+            barrier.wait(timeout=3)
+            calls.append(options["json"]["input"])
+            response = requests.Response()
+            response.status_code = 200
+            return response
+
+        def synthesize(text, _settings, **_options):
+            def options() -> NativeSpeechPostOptions:
+                return {"headers": {}, "timeout": 3, "json": {"input": text}}
+
+            response = post_native_speech(
+                "https://parallel.invalid/speech", request_label="Parallel fixture",
+                request_options=options,
+            )
+            self.assertEqual(200, response.status_code)
+            return text
+
+        token = current_job_lease.set(lease)
+        try:
+            with (
+                execution_actor_scope(actor),
+                model_acquisition_scope(None, inference_authorizer=lambda: False),
+                tts_io_scope(proof, allow_environment_credentials=False, allow_host_adc=False),
+                patch.object(registry, "synthesize", side_effect=synthesize),
+                patch.object(requests, "post", side_effect=post),
+            ):
+                results = list(registry.synthesize_batch(self._items(4), batch_size=2))
+        finally:
+            current_job_lease.reset(token)
+        self.assertEqual([f"text-{i}" for i in range(4)], [item.audio for item in results])
+        self.assertCountEqual([f"text-{i}" for i in range(4)], calls)
+        self.assertIsNone(current_execution_actor.get())
+
+    def test_parallel_denies_revoked_io_before_native_send(self):
+        import requests
+
+        from pandrator.logic.native_speech_http import NativeSpeechPostOptions, post_native_speech
+        from pandrator.logic.tts_io_policy import tts_io_scope
+
+        registry = TtsProviderRegistry()
+
+        def denied():
+            raise PermissionError("Synthetic authority was revoked")
+
+        def synthesize(text, _settings, **_options):
+            def options() -> NativeSpeechPostOptions:
+                return {"headers": {}, "timeout": 3, "json": {"input": text}}
+
+            post_native_speech(
+                "https://parallel.invalid/speech", request_label="Parallel denial",
+                request_options=options,
+            )
+            return text
+
+        with (
+            tts_io_scope(denied, allow_environment_credentials=False, allow_host_adc=False),
+            patch.object(registry, "synthesize", side_effect=synthesize),
+            patch.object(requests, "post", return_value=requests.Response()) as send,
+        ):
+            results = list(registry.synthesize_batch(self._items(2), batch_size=2))
+        send.assert_not_called()
+        self.assertTrue(all(item.audio is None and item.error is not None for item in results))
+
     def test_parallel_batches_project_one_item_failure_without_losing_other_results(
         self,
     ):
@@ -79,6 +180,7 @@ class ParallelTtsGenerationTests(unittest.TestCase):
         self.assertEqual("text-0", results[0].audio)
         self.assertIsNone(results[1].audio)
         self.assertIsInstance(results[1].error, TtsProviderError)
+        assert results[1].error is not None
         self.assertEqual("synthesize", results[1].error.operation)
         self.assertEqual("text-2", results[2].audio)
 
@@ -118,6 +220,7 @@ class ParallelTtsGenerationTests(unittest.TestCase):
         with patch.object(registry, "synthesize", side_effect=synthesize):
             batch = registry.synthesize_batch(self._items(4), batch_size=2)
             self.assertEqual("0", next(batch).id)
+            assert isinstance(batch, Generator)
             batch.close()
 
         self.assertEqual({"text-0", "text-1"}, set(calls))

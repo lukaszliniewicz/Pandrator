@@ -25,6 +25,53 @@ from ..schemas.generation import (
 )
 from ..work_mapping import application_work_reference
 
+_RETAINED_VOICE_BINDING_DEFAULTS: dict[str, str | None] = {
+    "voice_id": None,
+    "voice": "",
+    "voice_description": "",
+    "service": None,
+    "model": None,
+}
+_RETAINED_VOICE_NULLABLE_BINDING_FIELDS = frozenset(
+    {"voice_id", "service", "model"}
+)
+
+
+def _retained_voice_projection(segment: dict[str, Any]) -> dict[str, Any] | None:
+    """Copy only the public saved voice choice, never its retained material."""
+
+    if "retained_voice" not in segment:
+        return None
+    retained = segment["retained_voice"]
+    if not isinstance(retained, dict):
+        return None
+    binding_value = retained.get("binding")
+    if not isinstance(binding_value, dict):
+        return None
+
+    binding: dict[str, str | None] = {}
+    for field, default in _RETAINED_VOICE_BINDING_DEFAULTS.items():
+        value = binding_value.get(field, default)
+        if field in _RETAINED_VOICE_NULLABLE_BINDING_FIELDS:
+            if value is not None and type(value) is not str:
+                return None
+        elif type(value) is not str:
+            return None
+        binding[field] = value
+
+    public: dict[str, str] = {}
+    for field in ("display_name", "adapter", "model"):
+        value = retained.get(field)
+        if type(value) is not str:
+            return None
+        public[field] = value
+    return {
+        "binding": binding,
+        "display_name": public["display_name"],
+        "adapter": public["adapter"],
+        "model": public["model"],
+    }
+
 
 def _generation_timeout_actions(error, arguments, *, tool: str) -> None:
     if arguments.admission:
@@ -48,6 +95,7 @@ def _generation_operation_action(work_id: str) -> NextAction:
 
 def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
     takes = segment.get("takes") or []
+    retained_voice = _retained_voice_projection(segment)
     safe_takes = [
         {
             "id": str(t.get("id") or ""),
@@ -92,6 +140,7 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
         **({"history_take_id": segment["history_take_id"]} if "history_take_id" in segment else {}),
         **({"effective_take": segment["effective_take"]} if "effective_take" in segment else {}),
         "takes": safe_takes,
+        **({"retained_voice": retained_voice} if retained_voice is not None else {}),
     }
 
 
@@ -111,7 +160,11 @@ def _generation_segment_update_projection(segment: dict[str, Any]) -> dict[str, 
         "voice",
         "language",
     )
-    return {field: segment[field] for field in fields if field in segment}
+    result = {field: segment[field] for field in fields if field in segment}
+    retained_voice = _retained_voice_projection(segment)
+    if retained_voice is not None:
+        result["retained_voice"] = retained_voice
+    return result
 
 
 def list_generation_segments(
@@ -317,6 +370,9 @@ def update_generation_segment(
         changes["voice"] = arguments.voice
     if arguments.language is not None:
         changes["language"] = arguments.language
+    if arguments.clear_voice_override:
+        changes["voice"] = None
+        changes["voice_id"] = None
 
     result = application.update_generation_segment(
         arguments.segment_id,

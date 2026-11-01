@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from functools import wraps
 from typing import Any
 
 from flask import jsonify, request
@@ -10,7 +11,12 @@ from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
 
+from .access.contracts import AccessDenied, ProjectNotFound, WorkspaceNotFound
+from .access.session_policy import SessionNotFound
+from .access.workspace_policy import WorkspaceAccess, WorkspaceAction
+from .accounts.actor_authorization import ActorAuthorizationDenied
 from .credentials import (
+    _HOST_CREDENTIAL_REQUIRED,
     AUXILIARY_CREDENTIALS,
     DEFAULT_PROVIDER_ENVS,
     auxiliary_credential_key,
@@ -35,6 +41,13 @@ from .database import Database
 from .domain_blueprints import DomainBlueprints
 from .http_serialization import model_payload as _model_dict
 from .models import Provider, ProviderModel, utcnow
+from .provider_access import (
+    ProviderScopeInvalid,
+    member_model_catalogue,
+    member_provider_catalogue,
+    require_provider_workspace,
+)
+from .provider_identity import model_in_namespace, provider_in_namespace, provider_namespace
 from .route_context import RouteContext
 from .schemas import (
     CredentialUpdate,
@@ -75,6 +88,8 @@ def _provider_model_payload(record: ProviderModel) -> dict[str, Any]:
 
 
 def _provider_payload(provider: Provider, database: Database, paths: DataPaths) -> dict[str, Any]:
+    if not provider.workspace_id:
+        raise ValueError("The provider has no stored workspace ownership.")
     payload = _model_dict(
         provider,
         (
@@ -106,6 +121,7 @@ def _provider_payload(provider: Provider, database: Database, paths: DataPaths) 
             provider.secret_ref,
             fallback_environment_variable=fallback_env,
             shared=share_credential,
+            workspace_id=provider.workspace_id,
         )
     )
     payload["credential_backend"] = credential_backend(provider.secret_ref)
@@ -120,13 +136,63 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
     error_response = context.guards.error_response
     require_auth = context.guards.require_auth
 
+    def management_allowed(access: WorkspaceAccess) -> bool:
+        return (
+            WorkspaceAction.MANAGE in access.allowed_actions
+            and "app.credentials.write" in context.guards.access_context().actor.scopes
+        )
+
+    def scope(
+        db_session, *, action=WorkspaceAction.READ, catalogue=False, run=False, workspace_id=None
+    ):
+        access = require_provider_workspace(
+            db_session,
+            context.guards.access_context(),
+            request.args.get("workspace_id") if workspace_id is None else workspace_id,
+            action=action,
+            session_id=request.args.get("session_id") if catalogue else None,
+            run=run,
+        )
+        return provider_namespace(db_session, workspace_id=access.id), access
+
+    def scoped_errors(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            except (WorkspaceNotFound, SessionNotFound, ProjectNotFound):
+                return error_response("not_found", "Provider workspace not found.", 404)
+            except ProviderScopeInvalid as error:
+                return error_response("validation_error", str(error), 422)
+
+        return wrapped
+
     @app.get("/api/v1/providers")
     @require_auth
+    @scoped_errors
     def provider_list():
-        with database.session() as db_session:
-            providers = list(db_session.scalars(select(Provider).order_by(Provider.label)).all())
+        with database.snapshot_session() as db_session:
+            namespace, access = scope(db_session, catalogue=True)
+            if WorkspaceAction.MANAGE_READ in access.allowed_actions:
+                providers = list(
+                    db_session.scalars(
+                        select(Provider)
+                        .where(Provider.workspace_id == namespace.workspace_id)
+                        .order_by(Provider.label)
+                    )
+                )
+                items = [_provider_payload(item, database, paths) for item in providers]
+            else:
+                items = member_provider_catalogue(db_session, namespace.workspace_id)
             return jsonify(
-                {"items": [_provider_payload(item, database, paths) for item in providers]}
+                {
+                    "items": items,
+                    "workspace_id": namespace.workspace_id,
+                    "can_manage": management_allowed(access),
+                    "credential_backends": ["database", "environment", "keyring", "file"]
+                    if namespace.host_credentials_allowed
+                    else ["database"],
+                }
             )
 
     @app.get("/api/v1/credential-backends")
@@ -143,6 +209,7 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
 
     @app.post("/api/v1/providers")
     @require_auth
+    @scoped_errors
     def provider_create():
         payload = ProviderCreate.model_validate(request.get_json(silent=True) or {})
         try:
@@ -161,8 +228,16 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         try:
-            with database.session() as db_session:
+            with database.immediate_session() as db_session:
+                namespace, _access = scope(db_session, action=WorkspaceAction.MANAGE)
+                if (
+                    payload.secret_ref
+                    and not namespace.host_credentials_allowed
+                    and credential_backend(payload.secret_ref) in {"environment", "keyring", "file"}
+                ):
+                    raise ValueError(_HOST_CREDENTIAL_REQUIRED)
                 provider = Provider(
+                    workspace_id=namespace.workspace_id,
                     kind=payload.kind,
                     provider_key=payload.provider_key,
                     label=payload.label,
@@ -192,9 +267,12 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                         backend=payload.credential_backend or "database",
                         locator=payload.credential_reference or "",
                         secret_value=payload.api_key or "",
+                        workspace_id=namespace.workspace_id,
                     )
                     provider.secret_ref = configured.reference
                 db_session.flush()
+        except (ProviderScopeInvalid, AccessDenied, ActorAuthorizationDenied):
+            raise
         except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
             return error_response("credential_unavailable", str(error), 422)
         result = _provider_payload(provider, database, paths)
@@ -202,6 +280,7 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
 
     @app.patch("/api/v1/providers/<provider_id>")
     @require_auth
+    @scoped_errors
     def provider_update(provider_id: str):
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
@@ -213,8 +292,9 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                 428,
             )
         payload = ProviderUpdate.model_validate(request.get_json(silent=True) or {})
-        with database.session() as db_session:
-            provider = db_session.get(Provider, provider_id)
+        with database.immediate_session() as db_session:
+            namespace, _access = scope(db_session, action=WorkspaceAction.MANAGE)
+            provider = provider_in_namespace(db_session, provider_id, namespace)
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
             if provider.revision != expected_revision:
@@ -264,6 +344,12 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                     "The legacy secret_ref uses an unsupported credential scheme.",
                     422,
                 )
+            if (
+                changes.get("secret_ref")
+                and not namespace.host_credentials_allowed
+                and credential_backend(changes["secret_ref"]) in {"environment", "keyring", "file"}
+            ):
+                return error_response("credential_unavailable", _HOST_CREDENTIAL_REQUIRED, 422)
             previous_retained = False
             configured_reference = None
             configured_reference_changed = False
@@ -289,6 +375,7 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                         locator=requested_locator or "",
                         secret_value=submitted_key,
                         delete_previous=delete_previous,
+                        workspace_id=namespace.workspace_id,
                     )
                 except (
                     OSError,
@@ -309,6 +396,7 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                             db_session,
                             current_reference,
                             preserve_shared=False,
+                            workspace_id=namespace.workspace_id,
                         )
                     except RuntimeError as error:
                         db_session.rollback()
@@ -329,12 +417,14 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
 
     @app.delete("/api/v1/providers/<provider_id>")
     @require_auth
+    @scoped_errors
     def provider_delete(provider_id: str):
         replacement_id = str(
             (request.get_json(silent=True) or {}).get("replacement_model_record_id") or ""
         )
-        with database.session() as db_session:
-            provider = db_session.get(Provider, provider_id)
+        with database.immediate_session() as db_session:
+            namespace, _access = scope(db_session, action=WorkspaceAction.MANAGE)
+            provider = provider_in_namespace(db_session, provider_id, namespace)
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
             active = db_session.scalar(
@@ -345,7 +435,9 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
             )
             if active is not None:
                 replacement = (
-                    db_session.get(ProviderModel, replacement_id) if replacement_id else None
+                    model_in_namespace(db_session, replacement_id, namespace)
+                    if replacement_id
+                    else None
                 )
                 if replacement is None or replacement.provider_id == provider_id:
                     return error_response(
@@ -362,25 +454,33 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                         provider.secret_ref
                         or database_reference(provider_credential_key(provider.id))
                     ),
+                    workspace_id=namespace.workspace_id,
                 )
             except RuntimeError as error:
+                db_session.rollback()
                 return error_response("credential_unavailable", str(error), 422)
             db_session.delete(provider)
         return "", 204
 
     @app.post("/api/v1/providers/<provider_id>/models")
     @require_auth
+    @scoped_errors
     def model_create(provider_id: str):
         payload = ModelCreate.model_validate(request.get_json(silent=True) or {})
         try:
             validate_provider_options(payload.options)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
-        with database.session() as db_session:
-            if db_session.get(Provider, provider_id) is None:
+        with database.immediate_session() as db_session:
+            namespace, _access = scope(db_session, action=WorkspaceAction.MANAGE)
+            if provider_in_namespace(db_session, provider_id, namespace) is None:
                 return error_response("not_found", "Provider not found.", 404)
             if payload.is_default:
-                for existing in db_session.scalars(select(ProviderModel)):
+                for existing in db_session.scalars(
+                    select(ProviderModel)
+                    .join(Provider, Provider.id == ProviderModel.provider_id)
+                    .where(Provider.workspace_id == namespace.workspace_id)
+                ):
                     existing.is_default = False
             model = ProviderModel(
                 provider_id=provider_id,
@@ -405,16 +505,19 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
 
     @app.post("/api/v1/providers/<provider_id>/test")
     @require_auth
+    @scoped_errors
     def provider_test(provider_id: str):
         from pandrator.logic.llm_handler import chat_completion_with_metadata
 
         from .provider_settings import build_llm_settings
 
         payload = ProviderTestRequest.model_validate(request.get_json(silent=True) or {})
-        with database.session() as db_session:
-            provider = db_session.get(Provider, provider_id)
+        with database.snapshot_session() as db_session:
+            namespace, _access = scope(db_session, action=WorkspaceAction.MANAGE, run=True)
+            provider = provider_in_namespace(db_session, provider_id, namespace)
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
+            expected_revision = provider.revision
             selected = payload.model_id or db_session.scalar(
                 select(ProviderModel.model_id).where(
                     ProviderModel.provider_id == provider_id,
@@ -439,15 +542,47 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                 )
         try:
             settings, model_name = build_llm_settings(
-                database, paths, requested_model=selected, requested_provider_id=provider_id
+                database,
+                paths,
+                requested_model=selected,
+                requested_provider_id=provider_id,
+                workspace_id=namespace.workspace_id,
             )
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
+        with database.snapshot_session() as db_session:
+            current_namespace, _current_access = scope(
+                db_session,
+                action=WorkspaceAction.MANAGE,
+                run=True,
+                workspace_id=namespace.workspace_id,
+            )
+            current = provider_in_namespace(db_session, provider_id, current_namespace)
+            if current is None:
+                return error_response("not_found", "Provider not found.", 404)
+            if current.revision != expected_revision:
+                return error_response(
+                    "revision_conflict", "The provider changed in another client.", 409
+                )
         result = chat_completion_with_metadata(
             messages=[{"role": "user", "content": "Reply with exactly OK."}],
             model_name=model_name,
             llm_settings=settings,
         )
+        with database.snapshot_session() as db_session:
+            current_namespace, _current_access = scope(
+                db_session,
+                action=WorkspaceAction.MANAGE,
+                run=True,
+                workspace_id=namespace.workspace_id,
+            )
+            current = provider_in_namespace(db_session, provider_id, current_namespace)
+            if current is None:
+                return error_response("not_found", "Provider not found.", 404)
+            if current.revision != expected_revision:
+                return error_response(
+                    "revision_conflict", "The provider changed in another client.", 409
+                )
         if not result.content:
             return error_response(
                 "provider_test_failed",
@@ -466,21 +601,40 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
 
     @app.get("/api/v1/providers/<provider_id>/models")
     @require_auth
+    @scoped_errors
     def model_list(provider_id: str):
-        with database.session() as db_session:
-            if db_session.get(Provider, provider_id) is None:
-                return error_response("not_found", "Provider not found.", 404)
-            records = list(
-                db_session.scalars(
-                    select(ProviderModel)
-                    .where(ProviderModel.provider_id == provider_id)
-                    .order_by(ProviderModel.model_id)
-                ).all()
+        with database.snapshot_session() as db_session:
+            namespace, access = scope(db_session, catalogue=True)
+            config = WorkspaceAction.MANAGE_READ in access.allowed_actions
+            statement = select(Provider.id).where(
+                Provider.id == provider_id, Provider.workspace_id == namespace.workspace_id
             )
-            return jsonify({"items": [_provider_model_payload(item) for item in records]})
+            if not config:
+                statement = statement.where(Provider.enabled.is_(True))
+            if db_session.scalar(statement) is None:
+                return error_response("not_found", "Provider not found.", 404)
+            if config:
+                records = list(
+                    db_session.scalars(
+                        select(ProviderModel)
+                        .where(ProviderModel.provider_id == provider_id)
+                        .order_by(ProviderModel.model_id)
+                    )
+                )
+                items = [_provider_model_payload(item) for item in records]
+            else:
+                items = member_model_catalogue(db_session, provider_id, namespace.workspace_id)
+            return jsonify(
+                {
+                    "items": items,
+                    "workspace_id": namespace.workspace_id,
+                    "can_manage": management_allowed(access),
+                }
+            )
 
     @app.patch("/api/v1/providers/<provider_id>/models/<model_record_id>")
     @require_auth
+    @scoped_errors
     def model_update(provider_id: str, model_record_id: str):
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
@@ -492,8 +646,11 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                 428,
             )
         payload = ModelUpdate.model_validate(request.get_json(silent=True) or {})
-        with database.session() as db_session:
-            model = db_session.get(ProviderModel, model_record_id)
+        with database.immediate_session() as db_session:
+            namespace, _access = scope(db_session, action=WorkspaceAction.MANAGE)
+            model = model_in_namespace(
+                db_session, model_record_id, namespace, provider_id=provider_id
+            )
             if model is None or model.provider_id != provider_id:
                 return error_response("not_found", "Model not found.", 404)
             if model.revision != expected_revision:
@@ -515,7 +672,11 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                 except ValueError as error:
                     return error_response("validation_error", str(error), 422)
             if changes.pop("is_default", False):
-                for existing in db_session.scalars(select(ProviderModel)):
+                for existing in db_session.scalars(
+                    select(ProviderModel)
+                    .join(Provider, Provider.id == ProviderModel.provider_id)
+                    .where(Provider.workspace_id == namespace.workspace_id)
+                ):
                     existing.is_default = existing.id == model.id
                 changes["is_active"] = True
             if "input_modalities" in changes:
@@ -535,17 +696,21 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
 
     @app.delete("/api/v1/providers/<provider_id>/models/<model_record_id>")
     @require_auth
+    @scoped_errors
     def model_delete(provider_id: str, model_record_id: str):
         body = request.get_json(silent=True) or {}
         replacement_record_id = str(body.get("replacement_model_record_id") or "")
         replacement_model_id = str(body.get("replacement_model_id") or "")
-        with database.session() as db_session:
-            model = db_session.get(ProviderModel, model_record_id)
+        with database.immediate_session() as db_session:
+            namespace, _access = scope(db_session, action=WorkspaceAction.MANAGE)
+            model = model_in_namespace(
+                db_session, model_record_id, namespace, provider_id=provider_id
+            )
             if model is None or model.provider_id != provider_id:
                 return error_response("not_found", "Model not found.", 404)
             if model.is_default:
                 replacement = (
-                    db_session.get(ProviderModel, replacement_record_id)
+                    model_in_namespace(db_session, replacement_record_id, namespace)
                     if replacement_record_id
                     else None
                 )
@@ -569,16 +734,19 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
 
     @app.post("/api/v1/providers/<provider_id>/models/refresh")
     @require_auth
+    @scoped_errors
     def model_refresh(provider_id: str):
         from pandrator.logic.llm_handler import discover_provider_models
 
-        with database.session() as db_session:
-            provider = db_session.get(Provider, provider_id)
+        with database.snapshot_session() as db_session:
+            namespace, _access = scope(db_session, action=WorkspaceAction.MANAGE, run=True)
+            provider = provider_in_namespace(db_session, provider_id, namespace)
             if provider is None:
                 return error_response("not_found", "Provider not found.", 404)
-            existing = list(
+            expected_revision = provider.revision
+            existing_ids = list(
                 db_session.scalars(
-                    select(ProviderModel).where(ProviderModel.provider_id == provider_id)
+                    select(ProviderModel.model_id).where(ProviderModel.provider_id == provider_id)
                 ).all()
             )
             fallback_env = str(
@@ -590,25 +758,58 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                 (provider.options_json or {}).get("is_custom")
                 or profile_id in {"custom-openai", "lm-studio", "ollama"}
             )
-            credential = resolve_provider_credential(
-                database,
-                paths,
-                provider.provider_key,
-                provider.secret_ref,
-                fallback_environment_variable=fallback_env,
-                shared=share_credential,
+        credential = resolve_provider_credential(
+            database,
+            paths,
+            provider.provider_key,
+            provider.secret_ref,
+            fallback_environment_variable=fallback_env,
+            shared=share_credential,
+            workspace_id=namespace.workspace_id,
+        )
+        with database.snapshot_session() as db_session:
+            current_namespace, _current_access = scope(
+                db_session,
+                action=WorkspaceAction.MANAGE,
+                run=True,
+                workspace_id=namespace.workspace_id,
             )
-            discovery = discover_provider_models(
-                {
-                    "provider": provider.provider_key,
-                    "api_base": provider.base_url,
-                    "api_key_env": credential.environment_variable,
-                    "api_key": credential.value,
-                    "models": [item.model_id for item in existing],
-                }
+            current = provider_in_namespace(db_session, provider_id, current_namespace)
+            if current is None:
+                return error_response("not_found", "Provider not found.", 404)
+            if current.revision != expected_revision:
+                return error_response(
+                    "revision_conflict", "The provider changed in another client.", 409
+                )
+        discovery = discover_provider_models(
+            {
+                "provider": provider.provider_key,
+                "api_base": provider.base_url,
+                "api_key_env": credential.environment_variable,
+                "api_key": credential.value,
+                "models": existing_ids,
+            }
+        )
+        detected = list(discovery.models) if discovery.source != "preserved" else []
+        with database.immediate_session() as db_session:
+            namespace, _access = scope(
+                db_session,
+                action=WorkspaceAction.MANAGE,
+                run=True,
+                workspace_id=namespace.workspace_id,
             )
-            detected = list(discovery.models) if discovery.source != "preserved" else []
-            known = {item.model_id for item in existing}
+            current = provider_in_namespace(db_session, provider_id, namespace)
+            if current is None:
+                return error_response("not_found", "Provider not found.", 404)
+            if current.revision != expected_revision:
+                return error_response(
+                    "revision_conflict", "The provider changed in another client.", 409
+                )
+            known = set(
+                db_session.scalars(
+                    select(ProviderModel.model_id).where(ProviderModel.provider_id == provider_id)
+                ).all()
+            )
             added = []
             for model_id in detected:
                 if model_id in known:
@@ -637,11 +838,24 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
 
     @app.get("/api/v1/credentials")
     @require_auth
+    @scoped_errors
     def credential_list():
-        return jsonify({"items": auxiliary_profiles(database, paths)})
+        with database.snapshot_session() as db_session:
+            namespace, access = scope(db_session, action=WorkspaceAction.MANAGE_READ)
+        return jsonify(
+            {
+                "items": auxiliary_profiles(database, paths, workspace_id=namespace.workspace_id),
+                "workspace_id": namespace.workspace_id,
+                "can_manage": management_allowed(access),
+                "credential_backends": ["database", "environment", "keyring", "file"]
+                if namespace.host_credentials_allowed
+                else ["database"],
+            }
+        )
 
     @app.put("/api/v1/credentials/<credential_id>")
     @require_auth
+    @scoped_errors
     def credential_update(credential_id: str):
         profile = next(
             (item for item in AUXILIARY_CREDENTIALS if item["id"] == credential_id),
@@ -666,8 +880,11 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
         key = auxiliary_credential_key(credential_id)
         configured = None
         try:
-            with database.session() as db_session:
-                references = auxiliary_reference_map(db_session)
+            with database.immediate_session() as db_session:
+                namespace, _access = scope(db_session, action=WorkspaceAction.MANAGE)
+                references = auxiliary_reference_map(
+                    db_session, workspace_id=namespace.workspace_id
+                )
                 current_reference = references.get(
                     credential_id,
                     database_reference(key),
@@ -677,8 +894,11 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                         db_session,
                         current_reference,
                         preserve_shared=False,
+                        workspace_id=namespace.workspace_id,
                     )
-                    set_auxiliary_reference(db_session, credential_id, None)
+                    set_auxiliary_reference(
+                        db_session, credential_id, None, workspace_id=namespace.workspace_id
+                    )
                 else:
                     configured = configure_credential_reference(
                         db_session,
@@ -691,16 +911,22 @@ def register_provider_routes(app: DomainBlueprints, context: RouteContext) -> No
                         locator=payload.credential_reference or "",
                         secret_value=submitted_key,
                         delete_previous=payload.delete_previous_credential,
+                        workspace_id=namespace.workspace_id,
                     )
                     set_auxiliary_reference(
                         db_session,
                         credential_id,
                         configured.reference,
+                        workspace_id=namespace.workspace_id,
                     )
+        except (ProviderScopeInvalid, AccessDenied, ActorAuthorizationDenied):
+            raise
         except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
             return error_response("credential_unavailable", str(error), 422)
         updated = next(
-            item for item in auxiliary_profiles(database, paths) if item["id"] == credential_id
+            item
+            for item in auxiliary_profiles(database, paths, workspace_id=namespace.workspace_id)
+            if item["id"] == credential_id
         )
         if configured is not None:
             updated["previous_credential_retained"] = configured.previous_credential_retained

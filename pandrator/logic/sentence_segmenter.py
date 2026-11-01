@@ -6,13 +6,20 @@ import threading
 from importlib import import_module
 from typing import TYPE_CHECKING, cast
 
+from .model_acquisition import ModelAcquisitionDenied
+from .sentence_segmenter_assets import (
+    WTPSPLIT_MODEL as WTPSPLIT_MODEL,
+)
+from .sentence_segmenter_assets import (
+    resolve_sentence_segmenter_assets,
+)
+
 if TYPE_CHECKING:
     from typing import Any
 
     from numpy import floating
     from numpy.typing import NDArray
 
-WTPSPLIT_MODEL = "sat-12l-sm"
 WTPSPLIT_THRESHOLD = 0.05
 WTPSPLIT_BOUNDARY_THRESHOLD = 0.25
 _PARAGRAPH_BOUNDARY_RE = re.compile(r"\r?\n+")
@@ -34,9 +41,15 @@ def _create_segmenter():
     if _ONNX_RUNTIME_IMPORT_ERROR is not None:
         raise RuntimeError(f"ONNX Runtime could not be loaded: {_ONNX_RUNTIME_IMPORT_ERROR}")
 
+    assets = resolve_sentence_segmenter_assets()
     from wtpsplit_lite import SaT
 
-    return SaT(WTPSPLIT_MODEL, ort_providers=["CPUExecutionProvider"])
+    return SaT(
+        assets.model_directory,
+        tokenizer_name_or_path=assets.tokenizer_path,
+        hub_prefix=None,
+        ort_providers=["CPUExecutionProvider"],
+    )
 
 
 def _get_segmenter():
@@ -50,6 +63,9 @@ def _get_segmenter():
 
         try:
             _SEGMENTER = _create_segmenter()
+        except ModelAcquisitionDenied as exc:
+            logging.debug("wtpsplit-lite sentence segmentation is unavailable: %s", exc)
+            return None
         except Exception as exc:
             _SEGMENTER_FAILED = True
             logging.warning("wtpsplit-lite sentence segmentation is unavailable: %s", exc)

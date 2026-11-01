@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from .artifacts import ArtifactService
     from .database import Database
+    from .provider_identity import LlmSettingsHydrator
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +44,7 @@ class SpeechOptimizationContext:
     _resolve_input: Callable[[str], tuple[Artifact, Path]]
     _session_dir: Callable[[str], Path]
     _store_srt_document: StoreSrtDocumentProtocol
-    _with_database_llm_settings: Callable[[dict[str, Any], str], dict[str, Any]]
+    _with_database_llm_settings: LlmSettingsHydrator
     _begin_agentic_operation: BeginAgenticOperationProtocol
     _save_speech_plan_proposals: SaveSpeechPlanProposalsProtocol
     _optimization_text_hash: Callable[[str], str]
@@ -54,6 +55,25 @@ class SpeechOptimizationContext:
 
 
 def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_event):
+    """Create a separate, previewable text revision optimized only for speech."""
+    from .workflow_speech_execution import capture_speech_optimization
+
+    operation = capture_speech_optimization(context, payload, cancel_event)
+    if operation is None:
+        return _optimize_tts(context, payload, progress, cancel_event)
+    try:
+        return _optimize_tts(
+            context, payload, operation.progress(progress), operation.stop,
+            operation=operation,
+        )
+    except Exception as error:
+        operation.fail(error)
+        raise
+    finally:
+        operation.cleanup()
+
+
+def _optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_event, *, operation=None):
     """Create a separate, previewable text revision optimized only for speech."""
     from dataclasses import replace
     from types import SimpleNamespace
@@ -69,9 +89,12 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
     from .tts_optimization import OptimizationUsage, optimize_texts
 
     session_id = str(payload.get("session_id") or "")
-    source_artifact, source_path = context._resolve_input(
-        str(payload.get("source_artifact_id") or "")
-    )
+    if operation is None:
+        source_artifact, source_path = context._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
+    else:
+        source_artifact, source_path = operation.load_source()
     requested_settings = dict(payload.get("settings") or {})
     requested_settings_hash = hashlib.sha256(
         json.dumps(
@@ -82,7 +105,13 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
             default=str,
         ).encode("utf-8")
     ).hexdigest()
-    settings = context._with_database_llm_settings(requested_settings, "tts_optimization")
+    if operation is not None:
+        operation.prove()
+    settings = context._with_database_llm_settings(
+        requested_settings, "tts_optimization", session_id=session_id
+    )
+    if operation is not None:
+        operation.prove()
     settings["llm_tts_batch_size"] = max(
         1,
         int(settings.get("llm_tts_document_batch_size") or settings.get("llm_tts_batch_size") or 8),
@@ -94,14 +123,21 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
         request_timeout_seconds=settings["request_timeout_seconds"],
     )
     model_name = str(settings.get("tts_optimization_model") or settings["llm_default_model"])
-    run_store, agent_run, persist_checkpoint = context._begin_agentic_operation(
-        payload=payload,
-        kind="tts_optimization",
-        source_artifact=source_artifact,
-        requested_settings=requested_settings,
-        instructions=str(payload.get("instructions") or settings.get("instructions") or ""),
-        usage_settings=settings,
-    )
+    if operation is None:
+        run_store, agent_run, persist_checkpoint = context._begin_agentic_operation(
+            payload=payload,
+            kind="tts_optimization",
+            source_artifact=source_artifact,
+            requested_settings=requested_settings,
+            instructions=str(payload.get("instructions") or settings.get("instructions") or ""),
+            usage_settings=settings,
+        )
+    else:
+        run_store, agent_run, persist_checkpoint = operation.begin(
+            requested_settings,
+            str(payload.get("instructions") or settings.get("instructions") or ""),
+            settings,
+        )
     speech_mode = str(settings.get("speech_optimization_mode") or "").strip().lower()
     structured_mode = speech_mode in {"guarded", "flexible"}
     annotation_mode = (
@@ -146,13 +182,16 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
     ):
         nonlocal speech_plans
         speech_plans = [{} for _ in source_texts]
+        if operation is not None:
+            operation.prepare_units(languages)
         known_by_index = (
             {
-                index: pronunciation_library.resolve(
-                    text,
-                    session_id=session_id,
-                    language=languages[index],
-                    backend=backend,
+                index: (
+                    pronunciation_library.resolve(
+                        text, session_id=session_id, language=languages[index], backend=backend,
+                    ) if operation is None else operation.reviewed(
+                        pronunciation_library, text, languages[index], backend,
+                    )
                 )
                 for index, text in enumerate(source_texts)
             }
@@ -168,7 +207,9 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
 
         def keep_plans(items: list[tuple[int, str, dict[str, Any]]]) -> None:
             for index, _revised, plan in items:
-                if bool(settings.get("speech_plan_save_proposals", True)):
+                if operation is not None:
+                    plan.setdefault("proposals", [])
+                elif bool(settings.get("speech_plan_save_proposals", True)):
                     plan["proposals"] = context._save_speech_plan_proposals(
                         library=pronunciation_library,
                         session_id=session_id,
@@ -205,7 +246,10 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
                         usage_stage="tts_optimization",
                         usage_settings=settings,
                     ),
+                    **({"completion_func": operation.completion()} if operation is not None else {}),
                 )
+            if operation is not None:
+                operation.prove()
             if apply_reviewed and not structured_mode and not annotation_only:
                 optimized = [
                     apply_reviewed_pronunciations(
@@ -220,15 +264,16 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
                     response_usage = OptimizationUsage()
                     response_usage.add(result)
                     usage.merge(response_usage)
-                    context._record_usage(
-                        session_id,
-                        "tts_optimization",
-                        settings,
-                        response_usage,
-                        job_id=str(payload.get("_job_id") or "") or None,
-                        agent_run_id=agent_run.id,
-                        request_key=f"annotation-{context.new_id()}",
-                    )
+                    if operation is None:
+                        context._record_usage(
+                            session_id,
+                            "tts_optimization",
+                            settings,
+                            response_usage,
+                            job_id=str(payload.get("_job_id") or "") or None,
+                            agent_run_id=agent_run.id,
+                            request_key=f"annotation-{context.new_id()}",
+                        )
 
                 markup = annotate_speech_units(
                     context.database,
@@ -240,19 +285,30 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
                     cancel_event=cancel_event,
                     source_markup=source_markup,
                     on_usage=record_annotation_usage,
+                    **({"completion_func": operation.completion(), "before_data_access": operation.prove}
+                       if operation is not None else {}),
                 )
+                if operation is not None:
+                    operation.prove()
                 for index, xml in enumerate(markup):
                     if xml:
                         speech_plans[index]["speech_xml"] = xml
             return optimized, usage
         except Exception as error:
-            run_store.fail(agent_run.id, error)
+            if operation is None:
+                run_store.fail(agent_run.id, error)
             raise
 
+    segments = None
+    source_cues = None
     suffix = source_path.suffix.lower()
     progress(0.02, "Preparing speech optimization preview")
     if suffix == ".srt":
-        segments = parse_srt(source_path.read_text(encoding="utf-8-sig"))
+        segments = parse_srt(
+            source_path.read_text(encoding="utf-8-sig") if operation is None
+            else operation.read_text(source_path, encoding="utf-8-sig")
+        )
+        source_cues = segments
         source_texts = [segment.text for segment in segments]
         optimized, usage = optimize_units(
             source_texts,
@@ -263,11 +319,17 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
         segments = [
             replace(segment, text=text) for segment, text in zip(segments, optimized, strict=True)
         ]
-        destination = context._session_dir(session_id) / f"tts-optimized-{context.new_id()}.srt"
-        destination.write_text(compose_srt(segments), encoding="utf-8")
+        destination = (context._session_dir(session_id) if operation is None else operation.session_dir()) / f"tts-optimized-{context.new_id()}.srt"
+        if operation is None:
+            destination.write_text(compose_srt(segments), encoding="utf-8")
+        else:
+            destination = operation.write_text(destination, compose_srt(segments), encoding="utf-8")
         kind = "srt"
     elif suffix == ".json":
-        rows = json.loads(source_path.read_text(encoding="utf-8"))
+        rows = json.loads(
+            source_path.read_text(encoding="utf-8") if operation is None
+            else operation.read_text(source_path, encoding="utf-8")
+        )
         if not isinstance(rows, list):
             raise ValueError(
                 "Speech optimization JSON input must contain a list of generation units."
@@ -324,46 +386,89 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
                     row["speech_plan"] = merged_plan
                     if merged_plan.get("speech_xml"):
                         row["speech_xml"] = merged_plan["speech_xml"]
-        destination = context._session_dir(session_id) / f"tts-optimized-{context.new_id()}.json"
-        destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        destination = (context._session_dir(session_id) if operation is None else operation.session_dir()) / f"tts-optimized-{context.new_id()}.json"
+        if operation is None:
+            destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            destination = operation.write_text(destination, json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
         kind = "json"
     else:
-        source_texts = [source_path.read_text(encoding="utf-8-sig")]
+        source_texts = [
+            source_path.read_text(encoding="utf-8-sig") if operation is None
+            else operation.read_text(source_path, encoding="utf-8-sig")
+        ]
         optimized, usage = optimize_units(source_texts, [default_language])
         if cancel_event.is_set():
             return {}
-        destination = context._session_dir(session_id) / f"tts-optimized-{context.new_id()}.txt"
-        destination.write_text(optimized[0], encoding="utf-8")
+        destination = (context._session_dir(session_id) if operation is None else operation.session_dir()) / f"tts-optimized-{context.new_id()}.txt"
+        if operation is None:
+            destination.write_text(optimized[0], encoding="utf-8")
+        else:
+            destination = operation.write_text(destination, optimized[0], encoding="utf-8")
         kind = "text"
     progress(0.92, "Speech optimization complete; preparing preview artifact")
     speech_plan_artifact_id = ""
     if any(speech_plans):
-        plan_path = context._session_dir(session_id) / f"speech-plans-{context.new_id()}.json"
-        plan_path.write_text(
-            json.dumps(
-                [
-                    {
-                        "index": index,
-                        "source_text": source_text,
-                        "speech_plan": plan,
-                    }
-                    for index, (source_text, plan) in enumerate(
-                        zip(source_texts, speech_plans, strict=True)
-                    )
-                ],
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        plan_artifact = context.artifacts.register(
-            plan_path,
-            kind="json",
-            role="speech_plan",
-            session_id=session_id,
-            parent_ids=[source_artifact.id],
-            settings=settings,
-            metadata={
+        plan_path = (context._session_dir(session_id) if operation is None else operation.session_dir()) / f"speech-plans-{context.new_id()}.json"
+        if operation is None:
+            plan_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "index": index,
+                            "source_text": source_text,
+                            "speech_plan": plan,
+                        }
+                        for index, (source_text, plan) in enumerate(
+                            zip(source_texts, speech_plans, strict=True)
+                        )
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        else:
+            plan_path = operation.write_text(plan_path,
+                json.dumps(
+                    [
+                        {
+                            "index": index,
+                            "source_text": source_text,
+                            "speech_plan": plan,
+                        }
+                        for index, (source_text, plan) in enumerate(
+                            zip(source_texts, speech_plans, strict=True)
+                        )
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        if operation is None:
+            plan_artifact = context.artifacts.register(
+                plan_path,
+                kind="json",
+                role="speech_plan",
+                session_id=session_id,
+                parent_ids=[source_artifact.id],
+                settings=settings,
+                metadata={
+                    "source_artifact_id": source_artifact.id,
+                    "model": model_name,
+                    "mode": speech_mode,
+                    "plan_count": len(speech_plans),
+                    "speech_markup": {
+                        str(index + 1): str(plan["speech_xml"])
+                        for index, plan in enumerate(speech_plans)
+                        if isinstance(plan, dict) and isinstance(plan.get("speech_xml"), str)
+                    },
+                },
+            )
+            speech_plan_artifact_id = plan_artifact.id
+        else:
+            operation.plan = (plan_path, {
                 "source_artifact_id": source_artifact.id,
                 "model": model_name,
                 "mode": speech_mode,
@@ -373,24 +478,17 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
                     for index, plan in enumerate(speech_plans)
                     if isinstance(plan, dict) and isinstance(plan.get("speech_xml"), str)
                 },
-            },
-        )
-        speech_plan_artifact_id = plan_artifact.id
+            })
     publication_parent_ids = [
         source_artifact.id,
         *([speech_plan_artifact_id] if speech_plan_artifact_id else []),
     ]
-    try:
+    if operation is not None:
         progress(0.97, "Registering speech optimization artifacts")
-        if suffix == ".srt" and cancel_event.is_set():
-            raise ProcessCancelled("Speech optimization was canceled.")
-        artifact = context.artifacts.register(
-            destination,
-            kind=kind,
-            role="tts_optimization_candidate" if suffix == ".srt" else "tts_optimized",
-            session_id=session_id,
-            parent_ids=publication_parent_ids,
-            settings=settings,
+        artifact = operation.publish(
+            destination, kind=kind, settings=settings,
+            segments=segments if suffix == ".srt" else None,
+            source_cues=source_cues if suffix == ".srt" else None,
             metadata={
                 "source_artifact_id": source_artifact.id,
                 "model": model_name,
@@ -408,38 +506,67 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
                 "agent_run_id": agent_run.id,
             },
         )
-        if suffix == ".srt":
-            if cancel_event.is_set():
+    else:
+        try:
+            progress(0.97, "Registering speech optimization artifacts")
+            if suffix == ".srt" and cancel_event.is_set():
                 raise ProcessCancelled("Speech optimization was canceled.")
-            context._store_srt_document(
-                session_id,
-                artifact,
-                "tts_optimization",
-                language=str((source_artifact.metadata_json or {}).get("language") or "") or None,
-                parent_artifact=source_artifact,
+            artifact = context.artifacts.register(
+                destination,
+                kind=kind,
+                role="tts_optimization_candidate" if suffix == ".srt" else "tts_optimized",
+                session_id=session_id,
+                parent_ids=publication_parent_ids,
+                settings=settings,
+                metadata={
+                    "source_artifact_id": source_artifact.id,
+                    "model": model_name,
+                    "mode": "whole_document",
+                    "speech_optimization_mode": speech_mode or "legacy",
+                    "speech_plan_artifact_id": speech_plan_artifact_id or None,
+                    "speech_plan_count": len([plan for plan in speech_plans if plan]),
+                    "speech_markup": {
+                        str(index + 1): str(plan["speech_xml"])
+                        for index, plan in enumerate(speech_plans)
+                        if isinstance(plan, dict) and isinstance(plan.get("speech_xml"), str)
+                    },
+                    "batch_size": settings["llm_tts_batch_size"],
+                    "requested_settings_hash": requested_settings_hash,
+                    "agent_run_id": agent_run.id,
+                },
             )
-            if cancel_event.is_set():
-                raise ProcessCancelled("Speech optimization was canceled.")
-            registration = context.artifacts.prepare_registration(destination, settings=settings)
-            with context.database.session() as session:
+            if suffix == ".srt":
                 if cancel_event.is_set():
                     raise ProcessCancelled("Speech optimization was canceled.")
-                artifact = context.artifacts.register_in_session(
-                    session,
-                    destination,
-                    kind=kind,
-                    role="tts_optimized",
-                    session_id=session_id,
-                    parent_ids=publication_parent_ids,
-                    settings=settings,
-                    _prepared=registration,
+                context._store_srt_document(
+                    session_id,
+                    artifact,
+                    "tts_optimization",
+                    language=str((source_artifact.metadata_json or {}).get("language") or "") or None,
+                    parent_artifact=source_artifact,
                 )
                 if cancel_event.is_set():
                     raise ProcessCancelled("Speech optimization was canceled.")
-    except Exception as error:
-        run_store.fail(agent_run.id, error, interrupted=cancel_event.is_set())
-        raise
-    run_store.finish(agent_run.id, artifact_id=artifact.id)
+                registration = context.artifacts.prepare_registration(destination, settings=settings)
+                with context.database.session() as session:
+                    if cancel_event.is_set():
+                        raise ProcessCancelled("Speech optimization was canceled.")
+                    artifact = context.artifacts.register_in_session(
+                        session,
+                        destination,
+                        kind=kind,
+                        role="tts_optimized",
+                        session_id=session_id,
+                        parent_ids=publication_parent_ids,
+                        settings=settings,
+                        _prepared=registration,
+                    )
+                    if cancel_event.is_set():
+                        raise ProcessCancelled("Speech optimization was canceled.")
+        except Exception as error:
+            run_store.fail(agent_run.id, error, interrupted=cancel_event.is_set())
+            raise
+        run_store.finish(agent_run.id, artifact_id=artifact.id)
     progress(1.0, "Speech optimization preview ready")
     input_tokens = int(usage.usage.get("prompt_tokens") or 0)
     output_tokens = int(usage.usage.get("completion_tokens") or 0)
@@ -737,7 +864,9 @@ def optimize_generation_texts(
 
     from .tts_optimization import optimize_texts
 
-    resolved = context._with_database_llm_settings(dict(settings), "tts_optimization")
+    resolved = context._with_database_llm_settings(
+        dict(settings), "tts_optimization", session_id=session_id
+    )
     llm_settings = SimpleNamespace(
         provider_configs=resolved["llm_provider_configs"],
         default_model=resolved["llm_default_model"],

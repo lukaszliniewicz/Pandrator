@@ -127,6 +127,19 @@
           ></span
         ></a
       >
+      {#if appState.isAdministrator && appState.collaborationAvailable}<a
+          href="/settings/collaboration"
+          class="item"
+          ><ShieldCheck /><span
+            ><strong
+              >{appState.collaborationEnabled
+                ? 'Collaboration'
+                : 'Optional collaboration'}</strong
+            ><small
+              >Set up named accounts and shared workspaces for a small team.</small
+            ></span
+          ></a
+        >{/if}
       <a href="/settings" class="item"
         ><ShieldCheck /><span
           ><strong>Privacy and storage</strong><small

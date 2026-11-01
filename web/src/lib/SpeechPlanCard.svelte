@@ -7,12 +7,10 @@
     LoaderCircle,
     Settings2
   } from '@lucide/svelte';
-  import type { CastDraftController } from './generation-controls';
   import type { Snippet } from 'svelte';
-  import { page } from '$app/state';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
   import NarrationPlanSettings from './NarrationPlanSettings.svelte';
-  import PerformancePanel from './PerformancePanel.svelte';
+  import ParameterLabel from './ParameterLabel.svelte';
   import AudioReuseNotice from './AudioReuseNotice.svelte';
   import { openSpeechPlanEditor, type SpeechPlanState } from './session-flow';
   let {
@@ -23,7 +21,6 @@
     plan,
     busy = false,
     showCasting = true,
-    externalCastPanel,
     onprepare,
     onselect,
     onreview,
@@ -37,7 +34,6 @@
     plan: SpeechPlanState | null;
     busy?: boolean;
     showCasting?: boolean;
-    externalCastPanel?: CastDraftController;
     onprepare: () => Promise<unknown>;
     onselect: (id: string) => Promise<unknown>;
     onreview: () => Promise<unknown>;
@@ -60,11 +56,17 @@
       ><ListChecks size={21} /></span
     >
     <div class="min-w-0 flex-1">
-      <h2 class="text-lg font-semibold">Speech plan</h2>
+      <h2 class="text-lg font-semibold" aria-label="Speech plan">
+        <ParameterLabel
+          section="speech"
+          name="plan"
+          label="Speech plan"
+          description="A version of your text divided into editable narration blocks. Preparing a plan does not record audio. Use the annotation workspace for speakers and delivery, then Generation to record and listen."
+        />
+      </h2>
       <p class="muted mt-1 text-sm">
-        Divide your chosen text into blocks, then open Generation to adjust the
-        spoken words and delivery{multiVoice ? ', and assign voices' : ''}.
-        Audio is generated from the selected plan.
+        Prepare narration blocks, review speakers and delivery, then generate
+        audio.
       </p>
     </div>
     {#if selected?.reviewed}<span
@@ -120,11 +122,23 @@
           undefined}
       />
     {/if}
-    {#if workflowKind === 'audiobook'}<NarrationPlanSettings
-        {sessionId}
-        {busy}
-        onchanged={onperformancechange}
-      />{/if}
+    {#if workflowKind === 'audiobook'}<details
+        class="rounded-xl border border-[var(--line)] p-4"
+        data-testid="narration-settings"
+      >
+        <summary class="cursor-pointer text-sm font-semibold"
+          >Narration settings <span class="muted ml-2 font-normal"
+            >Block length, sentences &amp; dialogue</span
+          ></summary
+        >
+        <div class="mt-4">
+          <NarrationPlanSettings
+            {sessionId}
+            {busy}
+            onchanged={onperformancechange}
+          />
+        </div>
+      </details>{/if}
     {#if plan?.warning}<p class="text-sm text-amber-700" role="status">
         {plan.warning}
       </p>{/if}
@@ -137,14 +151,14 @@
           href={`/sessions/${sessionId}/voice#characters-cast`}
           >Characters &amp; cast</a
         >{/if}
-      <button
-        class="btn btn-secondary"
-        onclick={onsettings}
-        disabled={busy || !plan}
-        ><Settings2 size={16} />{workflowKind === 'audiobook'
-          ? 'Narration settings'
-          : 'Timing & block settings'}</button
-      >
+      {#if workflowKind !== 'audiobook'}<button
+          class="btn btn-secondary"
+          onclick={onsettings}
+          disabled={busy || !plan}
+          ><Settings2 size={16} />{workflowKind === 'audiobook'
+            ? 'Narration settings'
+            : 'Timing & block settings'}</button
+        >{/if}
       <button
         class={selected ? 'btn btn-secondary' : 'btn btn-primary'}
         disabled={busy || !plan?.can_prepare || Boolean(plan?.blocked_reason)}
@@ -210,17 +224,25 @@
       </div>
     </details>
     {#if selected}
-      {#key `${sessionId}:${selected.id}`}
-        <PerformancePanel
-          showCasting={multiVoice}
-          {externalCastPanel}
-          {sessionId}
-          revisionId={selected.id}
-          initialOpen={page.url.hash === '#speech-preparation'}
-          {busy}
-          onchanged={onperformancechange}
-        />
-      {/key}
+      <section
+        class="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-[var(--line)] pt-5"
+        aria-label="Speakers and delivery"
+      >
+        <div class="min-w-0 flex-1">
+          <h3 class="font-semibold">Speakers &amp; delivery</h3>
+          <p class="muted mt-1 text-sm">
+            Select words to mark dialogue, {multiVoice
+              ? 'assign speakers'
+              : 'label speakers'} and add directions. Review manual, AI or MCP drafts
+            before adopting them.
+          </p>
+        </div>
+        <a
+          class="btn btn-secondary"
+          href={`/sessions/${encodeURIComponent(sessionId)}/speech`}
+          >Annotate &amp; review</a
+        >
+      </section>
     {/if}
   </div>
 </section>

@@ -170,7 +170,8 @@ def register_session_purge_tools(
         title="Preview permanent session deletion",
         description=(
             "Inspect blockers, owned files, retained shared artifacts, and the "
-            "revision-bound impact token for a trashed session."
+            "revision-bound impact token for a trashed session. Requires "
+            "workspace Manager authority."
         ),
         annotations=read_only, response=response,
     )
@@ -195,7 +196,8 @@ def register_session_purge_tools(
         title="Permanently delete a trashed session",
         description=(
             "Permanently remove a trashed session after preview. Requires the "
-            "current revision, matching impact token, and explicit confirm=true."
+            "current revision, matching impact token, explicit confirm=true, "
+            "and workspace Manager authority."
         ),
         annotations=destructive_action, response=response,
     )
@@ -220,7 +222,8 @@ def register_session_purge_tools(
         title="Set session trash retention",
         description=(
             "Set retention for future trash events using the current policy "
-            "revision. Use days=null to disable automatic cleanup."
+            "revision. Use days=null to disable automatic cleanup. Only an "
+            "installation Administrator with write access may change this policy."
         ),
         annotations=revisioned_write_action, response=response,
     )

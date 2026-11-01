@@ -22,12 +22,14 @@ import wave
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TypedDict
 from urllib.request import Request, urlopen
 
 import regex
 
 from ..audio_cpp_execution import native_audio_cpp_guard
 from ..cancellable_process import ProcessCancelled, run_cancellable
+from ..model_acquisition import require_model_acquisition
 from .languages import normalize_language_code
 from .text_units import infer_cjk_language, subtitle_units
 
@@ -237,6 +239,7 @@ def ensure_model(
     with _download_lock(destination, event):
         if _verified(destination, event):
             return destination.resolve()
+        require_model_acquisition()
         if shutil.disk_usage(destination.parent).free < MODEL_SIZE + 64 * 1024 * 1024:
             raise QwenAlignmentError(
                 "Not enough free space for the 1.13 GB Qwen alignment model."
@@ -411,22 +414,31 @@ def parse_words(payload: object, duration: float) -> list[dict]:
     return words
 
 
+class _BeforeIoOptions(TypedDict, total=False):
+    before_io: Callable[[], None]
+
+
 def run_batch(
     requests: Sequence[tuple[Path, Path, Path]],
     settings: dict,
     *,
     cancel_event: threading.Event | None = None,
     run_func: Callable = subprocess.run,
+    before_io: Callable[[], None] | None = None,
 ) -> list[list[dict] | QwenAlignmentError]:
     """Load one model for up to eight bounded requests; JSON avoids shell/argv text."""
     if not 1 <= len(requests) <= MAX_BATCH_REQUESTS:
         raise QwenAlignmentError(
             "Qwen alignment batches must contain one through eight requests."
         )
+    if before_io is not None:
+        before_io()
     check_cancelled(cancel_event)
     inputs = []
     durations = []
     for index, (audio, text_path, _output) in enumerate(requests):
+        if before_io is not None:
+            before_io()
         text = Path(text_path).read_text(encoding="utf-8-sig")
         problem = language_problem(settings, text)
         if problem:
@@ -436,6 +448,8 @@ def run_batch(
             raise QwenAlignmentError(
                 "Qwen input must contain lexical text within a bounded transcript (16000 characters maximum)."
             )
+        if before_io is not None:
+            before_io()
         durations.append(validate_audio(Path(audio)))
         inputs.append(
             {
@@ -447,7 +461,11 @@ def run_batch(
                 "return_timestamps": True,
             }
         )
+    if before_io is not None:
+        before_io()
     executable = resolve_executable(settings)
+    if before_io is not None:
+        before_io()
     model = ensure_model(settings, cancel_event)
     backend = str(
         settings.get("qwen_aligner_backend")
@@ -457,9 +475,13 @@ def run_batch(
     backend = "best" if backend == "auto" else backend
     if backend not in {"cpu", "best", "cuda", "vulkan", "hip", "metal"}:
         raise QwenAlignmentError(f"Unsupported audio.cpp alignment backend: {backend}")
+    if before_io is not None:
+        before_io()
     with tempfile.TemporaryDirectory(prefix="pandrator-qwen-align-") as temporary:
         root = Path(temporary)
         sequence = root / "requests.json"
+        if before_io is not None:
+            before_io()
         sequence.write_text(
             json.dumps({"requests": inputs}, ensure_ascii=False), encoding="utf-8"
         )
@@ -482,10 +504,14 @@ def run_batch(
             "--words-out",
             str(root / "words.json"),
         ]
+        if before_io is not None:
+            before_io()
         try:
             check_cancelled(cancel_event)
             if run_func is subprocess.run:
                 with native_audio_cpp_guard(command, cancel_event):
+                    if before_io is not None:
+                        before_io()
                     run_cancellable(
                         command,
                         cancel_event=cancel_event,
@@ -494,12 +520,16 @@ def run_batch(
                         cwd=str(executable.parent),
                     )
             else:
+                if before_io is not None:
+                    before_io()
                 run_func(
                     command, check=True, capture_output=True, cwd=str(executable.parent)
                 )
         except ProcessCancelled:
             raise
         except (OSError, subprocess.CalledProcessError) as error:
+            if before_io is not None:
+                before_io()
             # Native logs can contain source text; expose only the failure kind.
             raise QwenAlignmentError(
                 f"audio.cpp Qwen alignment failed ({type(error).__name__}). Original timings remain available."
@@ -508,6 +538,8 @@ def run_batch(
         results = []
         for index, (_audio, text, _output) in enumerate(requests):
             generated = root / f"words_request_{index}.json"
+            if before_io is not None:
+                before_io()
             try:
                 payload = json.loads(generated.read_text(encoding="utf-8"))
                 result = parse_words(payload, durations[index])
@@ -515,9 +547,13 @@ def run_batch(
                 restore_surfaces(Path(text).read_text(encoding="utf-8-sig"), result)
             except (OSError, ValueError, QwenAlignmentError) as error:
                 result = QwenAlignmentError(str(error))
+            if before_io is not None:
+                before_io()
             results.append(result)
         for (_audio, _text, output), result in zip(requests, results, strict=False):
             if not isinstance(result, Exception):
+                if before_io is not None:
+                    before_io()
                 Path(output).write_text(
                     json.dumps(result, ensure_ascii=False), encoding="utf-8"
                 )
@@ -532,12 +568,15 @@ def run_alignment(
     *,
     cancel_event=None,
     run_func=subprocess.run,
+    before_io: Callable[[], None] | None = None,
 ):
+    hook_options: _BeforeIoOptions = {"before_io": before_io} if before_io is not None else {}
     result = run_batch(
         [(Path(audio_path), Path(text_path), Path(output_path))],
         settings,
         cancel_event=cancel_event,
         run_func=run_func,
+        **hook_options,
     )[0]
     if isinstance(result, Exception):
         raise result
@@ -551,8 +590,12 @@ def align_moss_turns(
     *,
     cancel_event=None,
     run_func=subprocess.run,
+    before_io: Callable[[], None] | None = None,
 ) -> None:
     """Align native MOSS turns without losing the transcript on a model failure."""
+    hook_options: _BeforeIoOptions = {"before_io": before_io} if before_io is not None else {}
+    if before_io is not None:
+        before_io()
     segments = payload.get("transcription", [])
     text = " ".join(
         str(item.get("text") or "") for item in segments if isinstance(item, dict)
@@ -569,6 +612,8 @@ def align_moss_turns(
         "failed_turns": 0,
     }
     padding = max(0.0, min(2.0, float(settings.get("moss_ctc_padding_seconds", 0.5))))
+    if before_io is not None:
+        before_io()
     with (
         wave.open(str(audio_path), "rb") as source,
         tempfile.TemporaryDirectory(prefix="pandrator-qwen-moss-") as temporary,
@@ -585,6 +630,8 @@ def align_moss_turns(
             )
         root = Path(temporary)
         for group_start in range(0, len(segments), MAX_BATCH_REQUESTS):
+            if before_io is not None:
+                before_io()
             requests, owners = [], []
             for index, segment in enumerate(
                 segments[group_start : group_start + MAX_BATCH_REQUESTS],
@@ -596,6 +643,8 @@ def align_moss_turns(
                     or not str(segment.get("text") or "").strip()
                 ):
                     continue
+                if before_io is not None:
+                    before_io()
                 try:
                     offsets = segment["offsets"]
                     start, end = float(offsets["from"]), float(offsets["to"])
@@ -630,16 +679,23 @@ def align_moss_turns(
                         "timing_source": "native_turn",
                     }
                     diagnostics["failed_turns"] += 1
+            if before_io is not None:
+                before_io()
             if not requests:
                 continue
+            if before_io is not None:
+                before_io()
             try:
                 results = run_batch(
-                    requests, options, cancel_event=cancel_event, run_func=run_func
+                    requests, options, cancel_event=cancel_event, run_func=run_func,
+                    **hook_options,
                 )
             except ProcessCancelled:
                 raise
             except (QwenAlignmentError, OSError, ValueError) as error:
                 results = [QwenAlignmentError(str(error))] * len(requests)
+            if before_io is not None:
+                before_io()
             for (segment, offset_ms, index), result in zip(
                 owners, results, strict=False
             ):
