@@ -83,6 +83,7 @@ endpoints, GPU resources and conflicting project work remain serialized. See
 
 Solo users can save project settings as defaults again. Voice redesign opens
 with the selected voice, and reusing sound settings reopens the controls on phones.
+PDF editing now opens correctly on Windows.
 
 Application activation preserves configured ports and HTTPS/proxy exposure and
 handles nested installation roots. The ownership migration avoids repeated

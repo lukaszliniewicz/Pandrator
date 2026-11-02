@@ -7,10 +7,10 @@ export default defineConfig({
   workers: 1,
   // Routed pages bypass the browser cache. Cold Windows loads can consume
   // 20-30 seconds per view, so multi-page flows need a separate total budget.
-  timeout: process.platform === 'win32' ? 90_000 : 45_000,
-  // Fresh Windows pages can spend more than eight seconds loading the static
-  // bundle before hydration begins. Keep a bounded platform budget, not retries.
-  expect: { timeout: process.platform === 'win32' ? 20_000 : 8_000 },
+  timeout: process.platform === 'win32' ? 120_000 : 45_000,
+  // Cold Windows pages can spend 20-30 seconds loading the static bundle
+  // before hydration begins. Keep a bounded platform budget, not retries.
+  expect: { timeout: process.platform === 'win32' ? 35_000 : 8_000 },
   reporter: [
     ['list'],
     ['html', { open: 'never', outputFolder: 'playwright-report' }]

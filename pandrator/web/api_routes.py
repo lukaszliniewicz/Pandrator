@@ -2367,7 +2367,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
 
     @app.get("/_app/<path:asset_path>")
     def frontend_asset(asset_path: str):
-        response = send_from_directory(static_dir / "_app", asset_path)
+        suffix = Path(asset_path).suffix.lower()
+        mimetype = "text/javascript" if suffix in {".js", ".mjs"} else None
+        response = send_from_directory(
+            static_dir / "_app",
+            asset_path,
+            mimetype=mimetype,
+        )
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 

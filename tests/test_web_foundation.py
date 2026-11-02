@@ -1806,6 +1806,37 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(favicon.content_type, "image/png")
         favicon.close()
 
+    def test_frontend_script_assets_use_javascript_mime_without_authentication(self):
+        static_app = (
+            Path(__file__).resolve().parents[1] / "pandrator" / "web" / "static" / "_app"
+        )
+        js_assets = sorted(path for path in static_app.rglob("*.js") if path.is_file())
+        mjs_assets = sorted(path for path in static_app.rglob("*.mjs") if path.is_file())
+        self.assertTrue(js_assets)
+        self.assertTrue(mjs_assets)
+        asset_paths = tuple(
+            f"/_app/{asset.relative_to(static_app).as_posix()}"
+            for asset in (js_assets[0], mjs_assets[0])
+        )
+        with mock.patch("mimetypes.guess_type", return_value=("text/plain", None)):
+            for asset_path in asset_paths:
+                response = self.client.get(asset_path)
+                try:
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.mimetype, "text/javascript")
+                    self.assertEqual(
+                        response.headers["Cache-Control"],
+                        "public, max-age=31536000, immutable",
+                    )
+                finally:
+                    response.close()
+
+        missing_module = self.client.get("/_app/immutable/assets/missing.worker.mjs")
+        try:
+            self.assertEqual(missing_module.status_code, 404)
+        finally:
+            missing_module.close()
+
     def test_job_logs_endpoint_returns_the_durable_timeline(self):
         self.authenticate()
         job = self.app.extensions["pandrator"]["jobs"].enqueue(
