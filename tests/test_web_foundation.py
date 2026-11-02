@@ -18,7 +18,6 @@ from sqlalchemy import MetaData, Table, event, func, select
 from pandrator.runtime import DataPaths, PathBoundaryError
 from pandrator.web.api import create_app
 from pandrator.web.auth import (
-    ALL_SCOPES,
     AuthService,
     BootstrapTokenStore,
 )
@@ -130,7 +129,21 @@ class SchemaUpgradeTests(unittest.TestCase):
                     (token_id,),
                 ).fetchone()
             self.assertEqual(f"api-token:{token_id}", row[0])
-            self.assertEqual(ALL_SCOPES, frozenset(json.loads(row[1])))
+            legacy_scopes = frozenset(
+                {
+                    "app.read",
+                    "app.write",
+                    "app.run",
+                    "app.cancel",
+                    "app.credentials.read",
+                    "app.credentials.write",
+                    "manager.read",
+                    "manager.runtime",
+                    "manager.mutate",
+                    "app.admin",
+                }
+            )
+            self.assertEqual(legacy_scopes, frozenset(json.loads(row[1])))
             self.assertEqual("api_token", row[2])
             self.assertEqual("legacy-migration", row[3])
 
@@ -143,6 +156,7 @@ class SchemaUpgradeTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(principal)
                 self.assertTrue(principal.has_scope("app.admin"))
+                self.assertFalse(principal.has_scope("app.workspaces.enroll"))
             finally:
                 database.dispose()
 
@@ -1152,14 +1166,17 @@ class DurableJobTests(unittest.TestCase):
             failed_job = session.get(Job, failed_job_id)
             failed_job.lease_owner = "worker"
             failed_job.lease_generation = 3
+            failed_job.lease_expires_at = utcnow() + timedelta(minutes=5)
             failed_job.attempts = failed_job.max_attempts
 
-        self.queue.fail(
-            failed_job_id,
-            "worker",
-            "synthetic",
-            "Synthetic failure",
-            lease_generation=3,
+        self.assertTrue(
+            self.queue.fail(
+                failed_job_id,
+                "worker",
+                "synthetic",
+                "Synthetic failure",
+                lease_generation=3,
+            )
         )
 
         with self.database.session() as session:
@@ -1697,8 +1714,9 @@ class WebApiTests(unittest.TestCase):
             event.remove(database.engine, "before_cursor_execute", count_selects)
 
         self.assertEqual(200, response.status_code)
-        # Includes two fixed authentication lookups, independent of document count.
-        self.assertEqual(6, select_count)
+        # Counts include fixed account, session, and workspace authorization lookups,
+        # independent of document count.
+        self.assertEqual(9, select_count)
         documents = response.get_json()["items"]
         self.assertEqual(
             [older.id, newer.id], [document["id"] for document in documents]
@@ -1761,8 +1779,9 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual({"items": []}, response.get_json())
-        # Includes the same two fixed authentication lookups as a populated catalog.
-        self.assertEqual(5, select_count)
+        # Counts include fixed account, session, and workspace authorization lookups,
+        # independent of document count.
+        self.assertEqual(8, select_count)
 
     def test_revision_conflicts_do_not_overwrite(self):
         csrf = self.authenticate()
