@@ -265,6 +265,10 @@ async function fixture(page: Page) {
   });
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
+  await expect(page.getByTestId('generation-segment-table')).toHaveAttribute(
+    'data-loaded-count',
+    '1'
+  );
   await page
     .getByRole('button', { name: 'Display options', exact: true })
     .click();

@@ -91,11 +91,18 @@ async function fixture(
     }
   });
   expect(uploaded.ok(), await uploaded.text()).toBeTruthy();
+  const sourceReady = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+      `/api/v1/sessions/${id}/sources/status`
+  );
   await page.goto(`/sessions/${id}`);
+  await (await sourceReady).finished();
   const card = page
     .locator('article')
     .filter({ has: page.getByRole('heading', { name: /^Transcribe/ }) })
     .first();
+  await expect(card.getByText('synthetic.wav', { exact: true })).toBeVisible();
   await card.getByRole('button', { name: 'Settings', exact: true }).click();
   const dialog = page.getByRole('dialog').filter({
     has: page.getByRole('combobox', {

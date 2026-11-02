@@ -15,6 +15,7 @@
   } from '@lucide/svelte';
   import { pdfApi } from './admin-api';
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { version } from '$app/environment';
   import * as pdfjs from 'pdfjs-dist';
   import type { PDFDocumentProxy } from 'pdfjs-dist';
   import type { PageViewport } from 'pdfjs-dist/types/src/display/page_viewport';
@@ -25,7 +26,8 @@
   import UnsavedChangesDialog from './UnsavedChangesDialog.svelte';
   import { guardEditorNavigation } from './editor-navigation';
 
-  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+  // Refresh the response headers as well as the worker bytes after an update.
+  pdfjs.GlobalWorkerOptions.workerSrc = `${workerUrl}?v=${encodeURIComponent(version)}`;
 
   const MAX_STACK_PREVIEW_PAGES = 24;
 

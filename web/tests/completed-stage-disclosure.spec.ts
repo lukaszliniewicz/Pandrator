@@ -62,14 +62,19 @@ async function createSession(page: Page, name: string) {
   return id;
 }
 
-function mockWorkflow(page: Page, id: string, getStages: () => StageJson[]) {
+function mockWorkflow(
+  page: Page,
+  id: string,
+  getStages: () => StageJson[],
+  getRevision: () => number = () => 1
+) {
   return page.route(`**/api/v1/sessions/${id}/workflow`, (route) =>
     route.fulfill({
       json: {
         session_id: id,
         workflow_kind: 'audiobook',
         workflow_preset: 'default',
-        revision: 1,
+        revision: getRevision(),
         sources: [],
         stages: getStages()
       }
@@ -505,6 +510,7 @@ test('folded stage forced open by a run latches open when it completes', async (
   type Phase = 'done' | 'running';
   let phase: Phase = 'done';
   let selected = 'art-t2';
+  let revision = 1;
   const snapshot = (stages: StageJson[], revision: number) => ({
     session_id: id,
     workflow_kind: 'audiobook',
@@ -522,8 +528,14 @@ test('folded stage forced open by a run latches open when it completes', async (
       progress: 0.3,
       detail: 'Transcribing…'
     });
-  await mockWorkflow(page, id, () =>
-    phase === 'done' ? [completedTranscribe(selected)] : [runningTranscribe()]
+  await mockWorkflow(
+    page,
+    id,
+    () =>
+      phase === 'done'
+        ? [completedTranscribe(selected)]
+        : [runningTranscribe()],
+    () => revision
   );
   await page.route(
     `**/api/v1/sessions/${id}/stages/transcribe/selection`,
@@ -531,12 +543,14 @@ test('folded stage forced open by a run latches open when it completes', async (
       if (selected === 'art-t2') {
         selected = 'art-t1';
         phase = 'running';
+        revision = 2;
         return route.fulfill({
           json: snapshot([runningTranscribe()], 2)
         });
       }
       selected = 'art-t2';
       phase = 'done';
+      revision = 3;
       return route.fulfill({
         json: snapshot([completedTranscribe(selected)], 3)
       });
@@ -573,10 +587,19 @@ test('folded stage forced open by a run latches open when it completes', async (
       response.url().includes('/stages/transcribe/selection') &&
       response.request().method() === 'PUT'
   );
+  const completedRefresh = page.waitForResponse(async (response) => {
+    if (
+      new URL(response.url()).pathname !== `/api/v1/sessions/${id}/workflow` ||
+      response.request().method() !== 'GET'
+    )
+      return false;
+    return (await response.json()).revision === 3;
+  });
   await transcribe
     .getByRole('combobox', { name: 'Selected version', exact: true })
     .selectOption('art-t2');
   await secondSelect;
+  await completedRefresh;
   // Completing must not re-collapse: the forced expansion latches open.
   const toggle = transcribe.getByTestId('stage-disclosure-toggle');
   await expect(toggle).toContainText('Hide details');

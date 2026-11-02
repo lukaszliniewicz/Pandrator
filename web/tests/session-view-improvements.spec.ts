@@ -123,10 +123,13 @@ test('project tabs sit above the title and stay sticky', async ({ page }) => {
   expect(order.top).toBe('0px');
   expect(order.overflowX).toBe('auto');
 
+  await expect
+    .poll(() => page.evaluate(() => document.body.scrollHeight - innerHeight))
+    .toBeGreaterThan(order.navTop + 1);
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(150);
-  const stuckTop = await nav.evaluate((el) => el.getBoundingClientRect().top);
-  expect(stuckTop).toBeLessThanOrEqual(1);
+  await expect
+    .poll(() => nav.evaluate((el) => el.getBoundingClientRect().top))
+    .toBeLessThanOrEqual(1);
   // Desktop: the global hamburger stays in the DOM (md:hidden), so assert
   // hidden rather than absent.
   await expect(

@@ -338,6 +338,10 @@ test('PDF tools load on demand and unapplied edits have save and discard protect
           .length
     )
     .toBe(1);
+  const deployedBuild = await (
+    await page.request.get('/_app/version.json')
+  ).json();
+  expect(new URL(workers[0]).searchParams.get('v')).toBe(deployedBuild.version);
   const box = (await canvas.boundingBox())!;
   await page.mouse.move(box.x + 30, box.y + 40);
   await page.mouse.down();
