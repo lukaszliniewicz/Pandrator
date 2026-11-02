@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -37,6 +38,8 @@ from .crispasr import resolve_asset
 from .host import resolve_auto_compute, vulkan_requires_quantized_models
 from .registry import ComponentRegistry
 from .slots import active_component_metadata, active_component_path
+
+_AUDIO_CPP_MODEL_RECEIPT_MAX_BYTES = 64 * 1024
 
 
 class MarkerComponentDriver:
@@ -523,6 +526,49 @@ class AudioCppComponentDriver(MarkerComponentDriver):
         )
 
     @staticmethod
+    def _model_refreshes(
+        context: ManagerContext,
+        definition: ComponentDefinition,
+        retained_model_ids: list[str],
+    ) -> list[str]:
+        """Return retained packages without a receipt matching their pinned digests."""
+        active = active_component_path(context.layout, definition.id)
+        refreshes: list[str] = []
+        for model_id in retained_model_ids:
+            package = MODEL_PACKAGES[model_id]
+            if active is None:
+                refreshes.append(model_id)
+                continue
+            marker = package.marker_path(active / "models")
+            try:
+                with marker.open("rb") as handle:
+                    if os.fstat(handle.fileno()).st_size > _AUDIO_CPP_MODEL_RECEIPT_MAX_BYTES:
+                        raise ValueError("audio.cpp model receipt exceeds the size limit")
+                    raw = handle.read(_AUDIO_CPP_MODEL_RECEIPT_MAX_BYTES)
+                    final_size = os.fstat(handle.fileno()).st_size
+                    if (
+                        final_size > _AUDIO_CPP_MODEL_RECEIPT_MAX_BYTES
+                        or len(raw) != final_size
+                    ):
+                        raise ValueError("audio.cpp model receipt is incomplete or too large")
+                receipt = json.loads(raw)
+            except (OSError, ValueError):
+                refreshes.append(model_id)
+                continue
+
+            provenance = receipt.get("provenance") if isinstance(receipt, dict) else None
+            expected_sha256 = dict(zip(package.files, package.sha256, strict=True))
+            if (
+                not isinstance(receipt, dict)
+                or receipt.get("package_id") != package.id
+                or not isinstance(provenance, dict)
+                or provenance.get("digest_verified") is not True
+                or provenance.get("sha256") != expected_sha256
+            ):
+                refreshes.append(model_id)
+        return refreshes
+
+    @staticmethod
     def inspection_source_markers(
         context: ManagerContext,
         definition: ComponentDefinition,
@@ -585,6 +631,14 @@ class AudioCppComponentDriver(MarkerComponentDriver):
         added_models = [
             model_id for model_id in selected_models if model_id not in installed_models
         ]
+        retained_models = [
+            model_id for model_id in selected_models if model_id in installed_models
+        ]
+        model_refreshes = self._model_refreshes(
+            context,
+            definition,
+            retained_models,
+        )
         removed_models = [
             model_id for model_id in installed_models if model_id not in set(selected_models)
         ]
@@ -613,12 +667,9 @@ class AudioCppComponentDriver(MarkerComponentDriver):
                 "model_changes": {
                     "add": added_models,
                     "remove": removed_models,
-                    "retain": [
-                        model_id
-                        for model_id in selected_models
-                        if model_id in installed_models
-                    ],
+                    "retain": retained_models,
                 },
+                "model_refreshes": model_refreshes,
                 "offline": bool(desired.options.get("offline")),
                 "resolved": resolved.model_dump(mode="json"),
             },
@@ -628,7 +679,8 @@ class AudioCppComponentDriver(MarkerComponentDriver):
             model.id: int(model.estimated_download_bytes or 0)
             for model in definition.models
         }
-        added_model_bytes = sum(model_sizes[model_id] for model_id in added_models)
+        models_to_download = list(dict.fromkeys([*added_models, *model_refreshes]))
+        model_download_bytes = sum(model_sizes[model_id] for model_id in models_to_download)
         previous_compute = (
             inspection.resolved.compute
             if has_verified_install and inspection.resolved is not None
@@ -650,8 +702,8 @@ class AudioCppComponentDriver(MarkerComponentDriver):
         japanese_disk = (2 + kokoro_count) * 1024**3 if japanese else 0
         stage = stage.model_copy(
             update={
-                "estimated_download_bytes": added_model_bytes + runtime_allowance + japanese_download,
-                "estimated_disk_bytes": int(added_model_bytes * 1.25)
+                "estimated_download_bytes": model_download_bytes + runtime_allowance + japanese_download,
+                "estimated_disk_bytes": int(model_download_bytes * 1.25)
                 + runtime_allowance + japanese_disk,
             }
         )

@@ -76,6 +76,57 @@ def _write_audio_cpp_archive(
             )
 
 
+def _current_model_receipt(package_id: str) -> dict[str, object]:
+    package = MODEL_PACKAGES[package_id]
+    return {
+        "package_id": package.id,
+        "provenance": {
+            "digest_verified": True,
+            "sha256": dict(zip(package.files, package.sha256, strict=True)),
+        },
+    }
+
+
+def _write_active_audio_cpp_slot(
+    context: ManagerContext,
+    receipts: dict[str, dict[str, object] | str],
+) -> Path:
+    active = component_container(context.layout, "audio_cpp") / "versions" / "planning-fixture"
+    active.mkdir(parents=True, exist_ok=True)
+    pointer = component_pointer(context.layout, "audio_cpp")
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(
+        json.dumps({"component_id": "audio_cpp", "path": str(active)}),
+        encoding="utf-8",
+    )
+    for package_id, receipt in receipts.items():
+        marker = MODEL_PACKAGES[package_id].marker_path(active / "models")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            receipt if isinstance(receipt, str) else json.dumps(receipt),
+            encoding="utf-8",
+        )
+    return active
+
+
+def _present_audio_cpp_inspection(context: ManagerContext, model_ids: tuple[str, ...]):
+    registry = builtin_registry()
+    definition = registry.definition("audio_cpp")
+    driver = registry.driver("audio_cpp")
+    desired = DesiredComponentState(
+        compute=ComputeVariant.CPU,
+        options={"models": list(model_ids)},
+    )
+    inspection = driver.inspect(context, definition, desired).model_copy(
+        update={
+            "state": ComponentState.PRESENT,
+            "installed_model_ids": model_ids,
+            "installed_revision": f"audio-cpp-{AUDIO_CPP_VERSION}-cpu-existing",
+        }
+    )
+    return definition, driver, inspection
+
+
 class AudioCppManagerTests(unittest.TestCase):
     def test_qwen_voicedesign_package_is_pinned_as_vdes(self):
         package = MODEL_PACKAGES["qwen3_tts_1_7b_voicedesign_q8_0"]
@@ -280,6 +331,16 @@ class AudioCppManagerTests(unittest.TestCase):
                     ]
                 },
             )
+            _write_active_audio_cpp_slot(
+                application.context,
+                {
+                    model_id: _current_model_receipt(model_id)
+                    for model_id in (
+                        "qwen3_tts_1_7b_base_q8_0",
+                        "voxcpm2_q8_0",
+                    )
+                },
+            )
 
             tasks = driver.plan_update(
                 application.context,
@@ -305,6 +366,7 @@ class AudioCppManagerTests(unittest.TestCase):
             },
             stage.inputs["model_changes"],
         )
+        self.assertEqual([], stage.inputs["model_refreshes"])
 
     def test_update_removing_model_requires_no_additional_model_storage(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -339,6 +401,16 @@ class AudioCppManagerTests(unittest.TestCase):
                 compute=ComputeVariant.CPU,
                 options={"models": ["qwen3_tts_1_7b_base_q8_0"]},
             )
+            _write_active_audio_cpp_slot(
+                application.context,
+                {
+                    model_id: _current_model_receipt(model_id)
+                    for model_id in (
+                        "qwen3_tts_1_7b_base_q8_0",
+                        "voxcpm2_q8_0",
+                    )
+                },
+            )
 
             tasks = driver.plan_update(
                 application.context,
@@ -358,6 +430,179 @@ class AudioCppManagerTests(unittest.TestCase):
             },
             stage.inputs["model_changes"],
         )
+        self.assertEqual([], stage.inputs["model_refreshes"])
+
+    def test_update_budgets_retained_model_when_pinned_sha_changes_without_reading_weights(self):
+        model_id = "qwen3_tts_1_7b_base_q8_0"
+        package = MODEL_PACKAGES[model_id]
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            definition, driver, inspection = _present_audio_cpp_inspection(
+                application.context,
+                (model_id,),
+            )
+            old_receipt = {
+                "package_id": package.id,
+                "provenance": {
+                    "digest_verified": True,
+                    "sha256": {filename: "0" * 64 for filename in package.files},
+                },
+            }
+            active = _write_active_audio_cpp_slot(
+                application.context,
+                {model_id: old_receipt},
+            )
+            model_path = package.required_paths(active / "models")[0]
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            model_path.write_bytes(b"old slot model payload")
+            server_config_path = active / "server.json"
+            server_config_path.write_text("old server configuration", encoding="utf-8")
+            marker = package.marker_path(active / "models")
+            old_payload = model_path.read_bytes()
+            old_config = server_config_path.read_bytes()
+            old_marker = marker.read_bytes()
+            opened_paths: list[Path] = []
+            original_open = Path.open
+
+            def record_open(path: Path, *args, **kwargs):
+                opened_paths.append(path)
+                return original_open(path, *args, **kwargs)
+
+            with (
+                mock.patch.object(Path, "open", new=record_open),
+                mock.patch.object(FilesystemTaskHandler, "_sha256_file") as hash_file,
+            ):
+                tasks = driver.plan_update(
+                    application.context,
+                    definition,
+                    DesiredComponentState(
+                        compute=ComputeVariant.CPU,
+                        options={"models": [model_id]},
+                    ),
+                    inspection,
+                )
+
+            stage = next(task for task in tasks if task.kind == "stage_audio_cpp")
+            expected_bytes = next(
+                int(model.estimated_download_bytes or 0)
+                for model in presentation_for("audio_cpp").models
+                if model.id == model_id
+            )
+            self.assertEqual([model_id], stage.inputs["model_refreshes"])
+            self.assertEqual(
+                {"add": [], "remove": [], "retain": [model_id]},
+                stage.inputs["model_changes"],
+            )
+            self.assertEqual(expected_bytes, stage.estimated_download_bytes)
+            self.assertEqual(int(expected_bytes * 1.25), stage.estimated_disk_bytes)
+            self.assertNotIn(model_path, opened_paths)
+            hash_file.assert_not_called()
+            self.assertEqual(old_payload, model_path.read_bytes())
+            self.assertEqual(old_config, server_config_path.read_bytes())
+            self.assertEqual(old_marker, marker.read_bytes())
+            self.assertEqual(active, active_component_path(application.context.layout, "audio_cpp"))
+
+    def test_update_budgets_retained_model_when_receipt_is_missing_invalid_or_nonobject(self):
+        model_id = "qwen3_tts_1_7b_base_q8_0"
+        for receipt_case in ("missing", "malformed", "nonobject"):
+            with self.subTest(receipt_case=receipt_case), tempfile.TemporaryDirectory() as directory:
+                application = create_application(directory)
+                definition, driver, inspection = _present_audio_cpp_inspection(
+                    application.context,
+                    (model_id,),
+                )
+                receipts = {
+                    "missing": {},
+                    "malformed": {model_id: "{"},
+                    "nonobject": {model_id: "[]"},
+                }[receipt_case]
+                _write_active_audio_cpp_slot(application.context, receipts)
+
+                tasks = driver.plan_update(
+                    application.context,
+                    definition,
+                    DesiredComponentState(
+                        compute=ComputeVariant.CPU,
+                        options={"models": [model_id]},
+                    ),
+                    inspection,
+                )
+
+            stage = next(task for task in tasks if task.kind == "stage_audio_cpp")
+            expected_bytes = next(
+                int(model.estimated_download_bytes or 0)
+                for model in presentation_for("audio_cpp").models
+                if model.id == model_id
+            )
+            self.assertEqual([model_id], stage.inputs["model_refreshes"])
+            self.assertEqual(expected_bytes, stage.estimated_download_bytes)
+            self.assertEqual(int(expected_bytes * 1.25), stage.estimated_disk_bytes)
+
+    def test_update_does_not_refresh_retained_model_with_matching_sha_receipt(self):
+        model_id = "qwen3_tts_1_7b_base_q8_0"
+        package = MODEL_PACKAGES[model_id]
+        receipt = _current_model_receipt(model_id)
+        provenance = receipt["provenance"]
+        assert isinstance(provenance, dict)
+        provenance["revision"] = "older-source-revision"
+        provenance["requested_revision"] = "older-source-revision"
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            definition, driver, inspection = _present_audio_cpp_inspection(
+                application.context,
+                (model_id,),
+            )
+            _write_active_audio_cpp_slot(application.context, {model_id: receipt})
+            tasks = driver.plan_update(
+                application.context,
+                definition,
+                DesiredComponentState(
+                    compute=ComputeVariant.CPU,
+                    options={"models": [model_id]},
+                ),
+                inspection,
+            )
+
+        stage = next(task for task in tasks if task.kind == "stage_audio_cpp")
+        self.assertEqual([], stage.inputs["model_refreshes"])
+        self.assertEqual(0, stage.estimated_download_bytes)
+        self.assertEqual(0, stage.estimated_disk_bytes)
+        self.assertEqual(
+            {"add": [], "remove": [], "retain": [package.id]},
+            stage.inputs["model_changes"],
+        )
+
+    def test_update_budgets_retained_model_for_oversized_receipt(self):
+        model_id = "qwen3_tts_1_7b_base_q8_0"
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            definition, driver, inspection = _present_audio_cpp_inspection(
+                application.context,
+                (model_id,),
+            )
+            _write_active_audio_cpp_slot(
+                application.context,
+                {model_id: " " * (64 * 1024 + 1)},
+            )
+            tasks = driver.plan_update(
+                application.context,
+                definition,
+                DesiredComponentState(
+                    compute=ComputeVariant.CPU,
+                    options={"models": [model_id]},
+                ),
+                inspection,
+            )
+
+        stage = next(task for task in tasks if task.kind == "stage_audio_cpp")
+        expected_bytes = next(
+            int(model.estimated_download_bytes or 0)
+            for model in presentation_for("audio_cpp").models
+            if model.id == model_id
+        )
+        self.assertEqual([model_id], stage.inputs["model_refreshes"])
+        self.assertEqual(expected_bytes, stage.estimated_download_bytes)
+        self.assertEqual(int(expected_bytes * 1.25), stage.estimated_disk_bytes)
 
     def test_offline_plan_fails_before_model_manager_can_use_network(self):
         with tempfile.TemporaryDirectory() as directory:
