@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing, contextmanager
+from copy import deepcopy
 from unittest.mock import patch
 
 from pandrator.runtime import DataPaths
@@ -175,6 +176,72 @@ class MediaEditServiceTests(unittest.TestCase):
             set(result["readiness"]),
         )
         self.assertEqual(set(result), set(service.state(self.session_id)))
+
+    def test_state_adds_timing_diagnostics_without_mutating_revision_data(self):
+        self._seed_external()
+        service = self._service()
+        plan = service.prepare(self.session_id)["plan"]
+        cues = [
+            {
+                "id": "cue-a",
+                "start_ms": 0,
+                "end_ms": 580,
+                "speaker": "Alice",
+                "text": "how we hate.",
+                "words": [
+                    {"text": "how", "start_ms": 0, "end_ms": 80},
+                    {"text": "we", "start_ms": 100, "end_ms": 180},
+                    {"text": "hate.", "start_ms": 500, "end_ms": 580},
+                ],
+            },
+            {
+                "id": "cue-b",
+                "start_ms": 300,
+                "end_ms": 680,
+                "speaker": "Bob",
+                "text": "We have",
+                "words": [
+                    {"text": "We", "start_ms": 300, "end_ms": 380},
+                    {"text": "have", "start_ms": 600, "end_ms": 680},
+                ],
+            },
+        ]
+        with self.database.session() as session:
+            revision = session.get(MediaEditPlanRevision, plan["revision_id"])
+            self.assertIsNotNone(revision)
+            revision.cues_json = deepcopy(cues)
+            payload_copy = service._payload(revision, {})
+            payload_copy["cues"][0]["words"][0]["start_ms"] = -1
+            self.assertEqual(cues, revision.cues_json)
+            baseline = {
+                "cues": deepcopy(revision.cues_json),
+                "content_hash": revision.content_hash,
+                "evidence": deepcopy(revision.evidence_json),
+            }
+
+        state = service.state(self.session_id)
+        self.assertEqual(1, state["plan"]["timing_diagnostics"]["cue_overlap_events"])
+        self.assertEqual(1, state["plan"]["timing_diagnostics"]["word_order_conflicts"])
+        self.assertEqual(
+            [
+                ["cue_overlap", "word_order_conflict"],
+                ["cue_overlap", "word_order_conflict"],
+            ],
+            [cue["timing_flags"] for cue in state["plan"]["cues"]],
+        )
+        state["plan"]["cues"][0]["timing_flags"].append("caller-change")
+        with self.database.session() as session:
+            revision = session.get(MediaEditPlanRevision, plan["revision_id"])
+            self.assertIsNotNone(revision)
+            self.assertEqual(baseline, {
+                "cues": revision.cues_json,
+                "content_hash": revision.content_hash,
+                "evidence": revision.evidence_json,
+            })
+        self.assertNotIn(
+            "caller-change",
+            service.state(self.session_id)["plan"]["cues"][0]["timing_flags"],
+        )
 
     def test_asr_only_prepare_is_supported_and_repeated_prepare_is_idempotent(self):
         media = self._register("media.mp4", "upload", b"media", "video")

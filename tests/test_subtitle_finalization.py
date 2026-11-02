@@ -186,6 +186,87 @@ This cue contains forty readable characters.
         self.assertEqual("...one single. Kanon, Kanon.", segments[0].text)
         self.assertEqual("P", segments[0].speaker)
 
+    def test_overlapping_source_cues_keep_lexical_order_and_global_word_ownership(self):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "cue-a",
+                    "start_ms": 0,
+                    "end_ms": 580,
+                    "speaker": "Alice",
+                    "text": "how we hate.",
+                    "words": [
+                        {"text": "how", "start_ms": 0, "end_ms": 80},
+                        {"text": "we", "start_ms": 100, "end_ms": 180},
+                        {"text": "hate.", "start_ms": 500, "end_ms": 580},
+                    ],
+                },
+                {
+                    "id": "cue-b",
+                    "start_ms": 300,
+                    "end_ms": 680,
+                    "speaker": "Bob",
+                    "text": "We have",
+                    "words": [
+                        {"text": "We", "start_ms": 300, "end_ms": 380},
+                        {"text": "have", "start_ms": 600, "end_ms": 680},
+                    ],
+                },
+            ],
+        }
+        with patch(
+            "pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries",
+            return_value=None,
+        ):
+            result = compose_transcript_segments_with_ownership(payload)
+
+        self.assertEqual(
+            ["how we hate.", "We have"],
+            [item.text.replace("\n", " ") for item in result.segments],
+        )
+        self.assertEqual(["Alice", "Bob"], [item.speaker for item in result.segments])
+        self.assertEqual({0: 0, 1: 0, 2: 1, 3: 0, 4: 1}, result.word_segment_ordinals)
+
+    def test_overlapping_source_cues_keep_repeated_lexemes_in_source_order(self):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "cue-a",
+                    "start_ms": 0,
+                    "end_ms": 580,
+                    "speaker": "P",
+                    "text": "karma yoga,",
+                    "words": [
+                        {"text": "karma", "start_ms": 0, "end_ms": 80},
+                        {"text": "yoga,", "start_ms": 500, "end_ms": 580},
+                    ],
+                },
+                {
+                    "id": "cue-b",
+                    "start_ms": 300,
+                    "end_ms": 680,
+                    "speaker": "P",
+                    "text": "karma marga",
+                    "words": [
+                        {"text": "karma", "start_ms": 300, "end_ms": 380},
+                        {"text": "marga", "start_ms": 600, "end_ms": 680},
+                    ],
+                },
+            ],
+        }
+        with patch(
+            "pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries",
+            return_value=None,
+        ):
+            segments = compose_transcript_segments(payload)
+
+        self.assertEqual(
+            "karma yoga, karma marga",
+            " ".join(item.text.replace("\n", " ") for item in segments),
+        )
+
     def test_word_timed_composer_preserves_untimed_source_cue(self):
         payload = {
             "schema": "pandrator.transcript.v1",

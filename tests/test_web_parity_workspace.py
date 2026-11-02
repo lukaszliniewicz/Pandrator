@@ -20,6 +20,8 @@ from pandrator.web.models import (
     GenerationRun,
     GenerationSegment,
     Job,
+    MediaEditPlan,
+    MediaEditPlanRevision,
     OutputAssembly,
     SessionRecord,
     UploadSessionRecord,
@@ -477,6 +479,18 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 )
             )
 
+        before_path = assembly_path.parent / "mix-preview-before.wav"
+        before_path.write_bytes(b"before-side voice fixture")
+        before_assembly = artifacts.register(
+            before_path, kind="audio", role="output_assembly", session_id=record["id"],
+        )
+        with extension["database"].session() as session:
+            session.add(OutputAssembly(
+                session_id=record["id"], generation_run_id=run_id,
+                artifact_id=before_assembly.id, status="completed",
+                settings_json={"audio_version_side": "before"},
+            ))
+
         response = self.client.post(
             f"/api/v1/sessions/{record['id']}/output-mix-preview",
             json={
@@ -504,6 +518,74 @@ class WebParityWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(15, queued["payload_json"]["start_seconds"])
 
+        self.assertEqual(source.content_hash, queued["payload_json"]["source_content_hash"])
+        self.assertEqual(assembled.content_hash, queued["payload_json"]["dubbing_content_hash"])
+        self.assertIsNone(queued["payload_json"]["source_edit_revision_id"])
+        self.assertIsNone(queued["payload_json"]["source_edit_content_hash"])
+
+        with extension["database"].session() as session:
+            edit_plan = MediaEditPlan(session_id=record["id"])
+            session.add(edit_plan)
+            session.flush()
+            revision = MediaEditPlanRevision(
+                plan_id=edit_plan.id,
+                revision_number=1,
+                source_media_artifact_id=source.id,
+                editorial_transcript_artifact_id=source.id,
+                duration_ms=5000,
+                content_hash="reviewed-edit",
+            )
+            session.add(revision)
+            session.flush()
+            edit_plan.active_revision_id = revision.id
+            edit_revision_id = revision.id
+        edited_path = assembly_path.parent / "edited-source.wav"
+        edited_path.write_bytes(b"edited source fixture")
+        edited = artifacts.register(
+            edited_path, kind="audio", role="media_edit_media", session_id=record["id"],
+            metadata={"media_edit_revision_id": edit_revision_id, "content_hash": "reviewed-edit"},
+        )
+        edited_response = self.client.post(
+            f"/api/v1/sessions/{record['id']}/output-mix-preview",
+            json={"generation_run_id": run_id, "mix_source_gain_db": -7},
+            headers=self.headers,
+        )
+        self.assertEqual(202, edited_response.status_code, edited_response.get_json())
+        edited_payload = edited_response.get_json()["payload_json"]
+        self.assertEqual(edited.id, edited_payload["source_artifact_id"])
+        self.assertEqual(edited.content_hash, edited_payload["source_content_hash"])
+        self.assertEqual(assembled.content_hash, edited_payload["dubbing_content_hash"])
+        self.assertEqual(edit_revision_id, edited_payload["source_edit_revision_id"])
+        self.assertEqual("reviewed-edit", edited_payload["source_edit_content_hash"])
+        self.assertEqual(-7, edited_payload["settings"]["mix_source_gain_db"])
+
+        selected_before = self.client.post(
+            f"/api/v1/sessions/{record['id']}/output-mix-preview",
+            json={"generation_run_id": run_id, "audio_version_side": "before", "mix_voice_gain_db": 4},
+            headers=self.headers,
+        )
+        self.assertEqual(202, selected_before.status_code, selected_before.get_json())
+        before_payload = selected_before.get_json()["payload_json"]
+        self.assertEqual(edited.id, before_payload["source_artifact_id"])
+        self.assertEqual(before_assembly.id, before_payload["dubbing_artifact_id"])
+        self.assertEqual(before_assembly.content_hash, before_payload["dubbing_content_hash"])
+        self.assertEqual(4, before_payload["settings"]["mix_voice_gain_db"])
+
+        # A newer unmatched render must never send the preview back to the upload.
+        with extension["database"].session() as session:
+            row = session.get_one(Artifact, edited.id)
+            row.metadata_json = {"media_edit_revision_id": edit_revision_id, "content_hash": "wrong"}
+        rejected = self.client.post(
+            f"/api/v1/sessions/{record['id']}/output-mix-preview",
+            json={"generation_run_id": run_id}, headers=self.headers,
+        )
+        self.assertEqual(409, rejected.status_code, rejected.get_json())
+        self.assertEqual("mix_preview_unavailable", rejected.get_json()["error"]["code"])
+        self.assertIn("current media edit", rejected.get_json()["error"]["message"])
+        with extension["database"].session() as session:
+            session.get_one(Artifact, edited.id).metadata_json = {
+                "media_edit_revision_id": edit_revision_id, "content_hash": "reviewed-edit",
+            }
         unavailable = self.client.post(
             f"/api/v1/sessions/{record['id']}/output-mix-preview",
             json={"generation_run_id": "another-run"},

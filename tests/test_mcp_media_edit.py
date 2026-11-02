@@ -484,6 +484,56 @@ class MediaEditToolTests(unittest.TestCase):
             payload["keep_ranges"],
         )
 
+    def test_default_media_edit_summary_retains_diagnostics_without_cues(self):
+        timing_diagnostics = {
+            "schema_version": "1",
+            "cue_count": 2,
+            "word_count": 5,
+            "cue_overlap_events": 1,
+            "word_overlap_events": 0,
+            "word_order_conflicts": 1,
+            "affected_cue_count": 2,
+            "same_speaker_word_overlaps": 0,
+            "different_speaker_word_overlaps": 0,
+            "unknown_speaker_word_overlaps": 0,
+            "issues": [
+                {
+                    "code": "word_order_conflict",
+                    "left_cue_id": "cue-a",
+                    "right_cue_id": "cue-b",
+                    "left_word_index": 3,
+                    "right_word_index": 1,
+                    "start_ms": 300,
+                    "end_ms": 500,
+                    "backward_ms": 200,
+                    "speaker_relation": "different",
+                }
+            ],
+            "issues_total": 2,
+            "issues_truncated": False,
+        }
+        self.application.get_media_edit = lambda session_id: {
+            "session_id": session_id,
+            "plan": {
+                "revision": 4,
+                "cues": [{"id": "cue-a"}, {"id": "cue-b"}],
+                "timing_diagnostics": timing_diagnostics,
+                "evidence": {"private": "omitted"},
+                "keep_ranges": [],
+            },
+        }
+
+        summary = get_media_edit(
+            self.runtime,
+            GetMediaEditArguments(session_id="session-1"),
+        )
+
+        self.assertEqual(timing_diagnostics, summary["plan"]["timing_diagnostics"])
+        self.assertEqual(2, summary["plan"]["cue_count"])
+        self.assertNotIn("cues", summary["plan"])
+        self.assertNotIn("evidence", summary["plan"])
+        self.assertIn("issues", summary["plan"]["timing_diagnostics"])
+
     def test_propose_and_render_wait_false_vs_true(self):
         queued = propose_media_edit(
             self.runtime,

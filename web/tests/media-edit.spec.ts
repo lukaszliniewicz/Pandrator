@@ -3,13 +3,16 @@ import { expect, test, type Page } from '@playwright/test';
 async function editor(
   page: Page,
   action: 'render' | 'propose',
-  failed = false
+  failed = false,
+  options: { timingWarnings?: boolean; startAction?: boolean } = {}
 ) {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Sign in', exact: true })
+  ).toBeHidden();
   const tour = page.getByRole('button', { name: 'Close tour' });
   if (await tour.isVisible()) await tour.click();
   const auth = await (await page.request.get('/api/v1/auth/status')).json();
@@ -64,9 +67,43 @@ async function editor(
           speaker: 'Presenter',
           words: [],
           timing_source: 'captions',
-          timing_confidence: null
-        }
+          timing_confidence: null,
+          timing_flags: options.timingWarnings
+            ? ['cue_overlap', 'word_overlap', 'word_order_conflict']
+            : []
+        },
+        ...(options.timingWarnings
+          ? [
+              {
+                id: 'cue-2',
+                start_ms: 17000,
+                end_ms: 24000,
+                text: 'The second speaker overlaps briefly.',
+                speaker: 'Guest',
+                words: [],
+                timing_source: 'captions',
+                timing_flags: ['cue_overlap', 'word_overlap']
+              },
+              {
+                id: 'cue-3',
+                start_ms: 30000,
+                end_ms: 33000,
+                text: 'This cue has clear timing.',
+                words: [],
+                timing_source: 'captions',
+                timing_flags: []
+              }
+            ]
+          : [])
       ],
+      timing_diagnostics: options.timingWarnings
+        ? {
+            cue_overlap_events: 1,
+            word_overlap_events: 1,
+            word_order_conflicts: 1,
+            affected_cue_count: 2
+          }
+        : undefined,
       evidence: {},
       operation: {},
       reviewed: false,
@@ -159,6 +196,8 @@ async function editor(
   await expect(
     page.getByRole('button', { name: 'Render', exact: true })
   ).toBeVisible({ timeout: 20_000 });
+  if (options.startAction === false)
+    return { stateReads: () => stateReads, errors };
   if (action === 'render') {
     await page.getByRole('button', { name: 'Render', exact: true }).click();
     await page
@@ -178,6 +217,68 @@ async function editor(
   expect(stateReads).toBe(1);
   allowCompletion = true;
   return { stateReads: () => stateReads, errors };
+}
+
+for (const width of [1280, 390]) {
+  test(`timing warnings identify and filter affected recording cues at ${width}px`, async ({
+    page
+  }, info) => {
+    await page.setViewportSize({ width, height: 844 });
+    const observed = await editor(page, 'render', false, {
+      timingWarnings: true,
+      startAction: false
+    });
+    const warnings = page.getByRole('region', {
+      name: 'Timing warnings',
+      exact: true
+    });
+    await expect(warnings).toContainText('Timing warnings in 2 cues');
+    await warnings
+      .getByRole('button', { name: 'Review timing warnings' })
+      .click();
+    const filter = page.getByLabel('Only timing warnings (2)', { exact: true });
+    await expect(filter).toBeChecked();
+    await expect(page.locator('.transcript .cue')).toHaveCount(2);
+    await expect(
+      page.getByText('Word times run backwards', { exact: true })
+    ).toBeVisible();
+    await page.screenshot({
+      path: info.outputPath(`timing-warnings-${width}.png`)
+    });
+    const geometry = await page.evaluate(() => ({
+      width: window.innerWidth,
+      scroll: document.documentElement.scrollWidth
+    }));
+    expect(geometry.scroll).toBeLessThanOrEqual(geometry.width + 1);
+    if (width === 390) {
+      const drawer = page.getByRole('dialog', {
+        name: 'Transcript & details',
+        exact: true
+      });
+      await expect(drawer).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(drawer).toBeHidden();
+      const trigger = warnings.getByRole('button', {
+        name: 'Review timing warnings'
+      });
+      await expect(trigger).toBeFocused();
+      await trigger.click();
+      await expect(filter).toBeChecked();
+    }
+    await filter.uncheck();
+    await expect(page.locator('.transcript .cue')).toHaveCount(3);
+    await page
+      .getByRole('button', { name: /The second speaker overlaps briefly/ })
+      .click();
+    await expect
+      .poll(() =>
+        page
+          .locator('video')
+          .evaluate((video) => (video as HTMLVideoElement).currentTime)
+      )
+      .toBe(17);
+    expect(observed.errors).toEqual([]);
+  });
 }
 
 for (const action of ['render', 'propose'] as const) {

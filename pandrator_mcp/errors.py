@@ -18,6 +18,7 @@ FailureCode = Literal[
     "last_administrator",
     "initial_administrator_required",
     "workspace_revision_conflict",
+    "workflow_conflict",
     "personal_workspace_protected",
     "last_workspace_manager",
     "user_not_available",

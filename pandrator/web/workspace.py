@@ -2341,6 +2341,7 @@ class GenerationService(GenerationHistoryReader):
             sections=["audio", "output"],
             run_override=run_override,
         )
+        include_sounds = (snapshot.get("output") or {}).get("include_sounds", True)
         snapshot = output_assembly_settings_snapshot(snapshot)
         settings_hash = stable_hash(snapshot)
         output_format = str(
@@ -2351,6 +2352,7 @@ class GenerationService(GenerationHistoryReader):
         if output_format not in OUTPUT_FORMATS:
             raise ValueError(f"Unsupported audio output format: {output_format}")
         return {"snapshot": snapshot, "settings_hash": settings_hash,
+                "include_sounds": include_sounds,
                 "audio_version_side": audio_version_side, "audio_version_selection": selection}
 
     def create_assembly(
@@ -2433,7 +2435,9 @@ class GenerationService(GenerationHistoryReader):
             generation_run_id=run.id if run else None,
             status="queued",
             settings_json={
-                "resolved": snapshot, "plan_revision_id": plan_revision_id,
+                "resolved": snapshot,
+                "include_sounds": prepared.get("include_sounds", True),
+                "plan_revision_id": plan_revision_id,
                 **(frozen_selection or {}),
             },
             settings_hash=settings_hash,

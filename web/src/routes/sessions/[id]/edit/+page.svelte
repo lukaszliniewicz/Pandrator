@@ -66,6 +66,7 @@
     'Remove setup chatter, screen-sharing logistics, breaks, repeated takes, and private discussion. Keep the complete public presentation and its natural opening and closing.'
   );
   let search = $state('');
+  let timingOnly = $state(false);
   let busy = $state('');
   let message = $state('');
   let error = $state('');
@@ -121,16 +122,35 @@
       (cue) => currentMs >= cue.start_ms && currentMs < cue.end_ms
     ) ?? null
   );
+  const timingCues = $derived(
+    (plan?.cues ?? []).filter((cue) => cue.timing_flags?.length)
+  );
   const displayedCues = $derived.by(() => {
     const query = search.trim().toLocaleLowerCase();
+    const cues = timingOnly ? timingCues : (plan?.cues ?? []);
     if (query)
-      return (plan?.cues ?? []).filter((cue) =>
+      return cues.filter((cue) =>
         `${cue.speaker ?? ''} ${cue.text}`.toLocaleLowerCase().includes(query)
       );
-    if (!activeCue) return (plan?.cues ?? []).slice(0, 500);
-    const index = plan?.cues.findIndex((cue) => cue.id === activeCue.id) ?? 0;
-    return (plan?.cues ?? []).slice(Math.max(0, index - 120), index + 380);
+    if (!activeCue) return cues.slice(0, 500);
+    const index = cues.findIndex((cue) => cue.id === activeCue.id);
+    return cues.slice(Math.max(0, index - 120), Math.max(0, index) + 380);
   });
+
+  function reviewTimingWarnings() {
+    timingOnly = true;
+    search = '';
+    transcriptOpen = true;
+    if (timingCues[0]) seek(timingCues[0].start_ms);
+  }
+
+  function timingFlagLabel(flag: string) {
+    return flag === 'word_order_conflict'
+      ? 'Word times run backwards'
+      : flag === 'word_overlap'
+        ? 'Word timings overlap'
+        : 'Caption timing overlaps';
+  }
   const keptDurationMs = $derived(
     plan
       ? keepFromCuts(cuts, plan.duration_ms).reduce(
@@ -415,6 +435,7 @@
   function adopt(next: MediaEditState) {
     workspaceState = next;
     plan = next.plan ?? null;
+    if (!plan?.cues.some((cue) => cue.timing_flags?.length)) timingOnly = false;
     updateCaptionTrack(plan);
     if (plan) {
       cuts = cutsFromKeep(plan.keep_ranges, plan.duration_ms, plan);
@@ -965,6 +986,40 @@
   {#if message}<div class="alert success">
       <Check size={18} /> <span>{message}</span>
     </div>{/if}
+  {#if timingCues.length}<section
+      aria-label="Timing warnings"
+      class="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex min-w-0 items-start gap-2">
+          <CircleAlert size={18} class="mt-0.5 shrink-0" />
+          <div>
+            <h3 class="text-sm font-semibold">
+              Timing warnings in {timingCues.length} cues
+            </h3>
+            <p class="mt-1 text-xs leading-relaxed">
+              Overlaps can be simultaneous speakers or alignment errors. Listen
+              before changing timing; rendering preserves word order.
+            </p>
+            {#if plan?.timing_diagnostics}<p class="muted mt-1 text-xs">
+                {plan.timing_diagnostics.word_overlap_events} word overlap{plan
+                  .timing_diagnostics.word_overlap_events === 1
+                  ? ''
+                  : 's'} · {plan.timing_diagnostics.cue_overlap_events} caption overlap{plan
+                  .timing_diagnostics.cue_overlap_events === 1
+                  ? ''
+                  : 's'} · {plan.timing_diagnostics.word_order_conflicts} backwards
+                word start{plan.timing_diagnostics.word_order_conflicts === 1
+                  ? ''
+                  : 's'}
+              </p>{/if}
+          </div>
+        </div>
+        <button class="secondary" onclick={reviewTimingWarnings}
+          >Review timing warnings</button
+        >
+      </div>
+    </section>{/if}
   {#if activeJob && ['queued', 'running', 'cancel_requested'].includes(activeJob.status)}<div
       class="surface rounded-2xl p-4"
     >
@@ -1217,6 +1272,12 @@
                     class="w-full bg-transparent py-2.5 text-sm outline-none"
                   /></label
                 >
+                {#if timingCues.length}<label
+                    class="mt-3 flex items-center gap-2 text-xs"
+                  >
+                    <input type="checkbox" bind:checked={timingOnly} /> Only
+                    timing warnings ({timingCues.length})
+                  </label>{/if}
                 <div class="transcript mt-3 space-y-1">
                   {#each displayedCues as cue (cue.id)}<button
                       onclick={() => {
@@ -1231,6 +1292,13 @@
                       <span class="min-w-0">
                         {#if cue.speaker}<strong>{cue.speaker}</strong>{/if}
                         <span>{cue.text}</span>
+                        {#if cue.timing_flags?.length}<span
+                            class="timing-flags"
+                          >
+                            {#each cue.timing_flags as flag}<span
+                                >{timingFlagLabel(flag)}</span
+                              >{/each}
+                          </span>{/if}
                         <small
                           >{cue.timing_source.replaceAll(
                             '_',
@@ -1241,6 +1309,9 @@
                         >
                       </span>
                     </button>{/each}
+                  {#if !displayedCues.length}<p class="muted p-3 text-xs">
+                      No cues match these filters.
+                    </p>{/if}
                 </div>
               </section>
 
@@ -2028,5 +2099,17 @@
     margin-top: 0.25rem;
     color: var(--muted);
     font-size: 0.58rem;
+  }
+  .cue .timing-flags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+  }
+  .cue .timing-flags span {
+    border: 1px solid color-mix(in srgb, #b7791f 55%, transparent);
+    border-radius: 0.35rem;
+    padding: 0.12rem 0.35rem;
+    font-size: 0.65rem;
   }
 </style>

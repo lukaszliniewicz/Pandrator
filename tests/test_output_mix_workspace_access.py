@@ -659,3 +659,188 @@ def test_native_boundaries_are_closed_and_dubbing_metadata_is_loaded_once(
     assert (
         sum(statement.startswith("select artifacts.metadata_json") for statement in statements) == 1
     )
+
+
+def _queue_pins(source, dubbing, *, edit_revision_id=None, edit_content_hash=None):
+    return {
+        "source_content_hash": source.content_hash,
+        "dubbing_content_hash": dubbing.content_hash,
+        "source_edit_revision_id": edit_revision_id,
+        "source_edit_content_hash": edit_content_hash,
+    }
+
+
+def _edit_plan(f, target, source):
+    with f.case.database.immediate_session() as unit:
+        plan = m.MediaEditPlan(session_id=target["id"])
+        unit.add(plan)
+        unit.flush()
+        revision = m.MediaEditPlanRevision(
+            plan_id=plan.id, revision_number=1,
+            source_media_artifact_id=source.id, editorial_transcript_artifact_id=source.id,
+            duration_ms=5000, content_hash="reviewed-edit",
+        )
+        unit.add(revision)
+        unit.flush()
+        plan.active_revision_id = revision.id
+        row = unit.get_one(m.Artifact, source.id)
+        row.role = "media_edit_media"
+        row.metadata_json = {"media_edit_revision_id": revision.id, "content_hash": revision.content_hash}
+        return plan.id, revision.id, revision.content_hash
+
+
+@pytest.mark.parametrize("changed_input", ["source", "dubbing"])
+def test_new_queued_input_hash_change_rejects_before_native(library, monkeypatch, changed_input):
+    f, u = library, library.u
+    target = _project(u.alice, u.ah, u.workspace_id)
+    source, _ = _audio(f, target)
+    dubbing, _ = _audio(f, target, dubbing=True)
+    actor = _actor(f.case, u.alice_id, RUN_SCOPES, workspaces=(u.workspace_id,))
+    job = _job(f, actor, target, source, dubbing, **_queue_pins(source, dubbing))
+    changed = source if changed_input == "source" else dubbing
+    with f.case.database.immediate_session() as unit:
+        unit.get_one(m.Artifact, changed.id).content_hash = "changed-after-queue"
+    probes, process, detection = _fake_native(monkeypatch)
+    before, files = _rows(f), _files(f)
+    with _leased_actor(actor, job), pytest.raises(KeyError, match="Mix preview input not found"):
+        preview_output_mix(
+            _context(f),
+            _payload(target, source, dubbing, **{f"{changed_input}_content_hash": "changed-after-queue"}),
+            Mock(), threading.Event(),
+        )
+    probes.assert_not_called()
+    process.assert_not_called()
+    detection.assert_not_called()
+    assert _rows(f) == before and _files(f) == files
+
+
+@pytest.mark.parametrize("boundary", ["waiting", "progress", "process"])
+def test_new_queued_edit_revision_change_rejects_next_boundary(library, monkeypatch, boundary):
+    f, u = library, library.u
+    target = _project(u.alice, u.ah, u.workspace_id)
+    source, _ = _audio(f, target)
+    dubbing, _ = _audio(f, target, dubbing=True)
+    plan_id, revision_id, edit_hash = _edit_plan(f, target, source)
+    actor = _actor(f.case, u.alice_id, RUN_SCOPES, workspaces=(u.workspace_id,))
+    job = _job(
+        f, actor, target, source, dubbing,
+        **_queue_pins(source, dubbing, edit_revision_id=revision_id, edit_content_hash=edit_hash),
+    )
+    changed = False
+
+    def change():
+        nonlocal changed
+        if changed:
+            return
+        with f.case.database.immediate_session() as unit:
+            revision = m.MediaEditPlanRevision(
+                plan_id=plan_id, revision_number=2,
+                source_media_artifact_id=source.id, editorial_transcript_artifact_id=source.id,
+                duration_ms=5000, content_hash="new-edit",
+            )
+            unit.add(revision)
+            unit.flush()
+            unit.get_one(m.MediaEditPlan, plan_id).active_revision_id = revision.id
+        changed = True
+
+    def render(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"private temporary preview")
+        if boundary == "process":
+            change()
+
+    def progress(_value, _detail):
+        if boundary == "progress":
+            change()
+
+    probes, process, _ = _fake_native(monkeypatch, process=render)
+    if boundary == "waiting":
+        change()
+    before, files = _rows(f), _files(f)
+    with _leased_actor(actor, job), pytest.raises(KeyError, match="Mix preview input not found"):
+        preview_output_mix(_context(f), _payload(target, source, dubbing), progress, threading.Event())
+    assert changed and _rows(f) == before and _files(f) == files
+    assert probes.call_count == (2 if boundary == "process" else 0)
+    assert process.call_count == (1 if boundary == "process" else 0)
+
+
+@pytest.mark.parametrize("change", ["metadata", "state", "plan_hash", "missing_active"])
+def test_new_queued_edit_pins_require_matching_current_render(library, monkeypatch, change):
+    f, u = library, library.u
+    target = _project(u.alice, u.ah, u.workspace_id)
+    source, _ = _audio(f, target)
+    dubbing, _ = _audio(f, target, dubbing=True)
+    plan_id, revision_id, edit_hash = _edit_plan(f, target, source)
+    actor = _actor(f.case, u.alice_id, RUN_SCOPES, workspaces=(u.workspace_id,))
+    job = _job(
+        f, actor, target, source, dubbing,
+        **_queue_pins(source, dubbing, edit_revision_id=revision_id, edit_content_hash=edit_hash),
+    )
+    with f.case.database.immediate_session() as unit:
+        if change == "metadata":
+            unit.get_one(m.Artifact, source.id).metadata_json = {
+                "media_edit_revision_id": "obsolete", "content_hash": edit_hash,
+            }
+        elif change == "state":
+            unit.get_one(m.Artifact, source.id).state = "stale"
+        elif change == "plan_hash":
+            unit.get_one(m.MediaEditPlanRevision, revision_id).content_hash = "changed-edit-hash"
+        else:
+            unit.get_one(m.MediaEditPlan, plan_id).active_revision_id = None
+    probes, process, _ = _fake_native(monkeypatch)
+    with _leased_actor(actor, job), pytest.raises(KeyError, match="Mix preview input not found"):
+        preview_output_mix(_context(f), _payload(target, source, dubbing), Mock(), threading.Event())
+    probes.assert_not_called()
+    process.assert_not_called()
+
+
+def test_new_queued_null_edit_pin_rejects_introduced_edit_plan(library, monkeypatch):
+    f, u = library, library.u
+    target = _project(u.alice, u.ah, u.workspace_id)
+    source, _ = _audio(f, target)
+    dubbing, _ = _audio(f, target, dubbing=True)
+    actor = _actor(f.case, u.alice_id, RUN_SCOPES, workspaces=(u.workspace_id,))
+    job = _job(f, actor, target, source, dubbing, **_queue_pins(source, dubbing))
+    _edit_plan(f, target, source)
+    probes, process, _ = _fake_native(monkeypatch)
+    with _leased_actor(actor, job), pytest.raises(KeyError, match="Mix preview input not found"):
+        preview_output_mix(_context(f), _payload(target, source, dubbing), Mock(), threading.Event())
+    probes.assert_not_called()
+    process.assert_not_called()
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_new_queued_pins_preserve_finite_source_projection(library, monkeypatch, edited):
+    f, u = library, library.u
+    target = _project(u.alice, u.ah, u.workspace_id)
+    origin = target if edited else _project(u.bob, u.bh, u.workspace_id)
+    source, _ = _audio(f, origin)
+    dubbing, _ = _audio(f, target, dubbing=True)
+    pins = _queue_pins(source, dubbing)
+    if edited:
+        _plan, revision_id, edit_hash = _edit_plan(f, target, source)
+        pins = _queue_pins(source, dubbing, edit_revision_id=revision_id, edit_content_hash=edit_hash)
+    else:
+        _attach(f, target["id"], source)
+        with f.case.database.immediate_session() as unit:
+            unit.execute(
+                text("UPDATE artifacts SET metadata_json = :bad WHERE id = :id"),
+                {"bad": "not JSON", "id": source.id},
+            )
+    actor = _actor(f.case, u.alice_id, RUN_SCOPES, projects=(target["project_id"],))
+    job = _job(f, actor, target, source, dubbing, **pins)
+    probes, process, _ = _fake_native(monkeypatch)
+
+    def forbid_source_body(artifact, _context):
+        if artifact.id == source.id:
+            raise AssertionError("Pinned mix hydrated the source Artifact body")
+
+    event.listen(m.Artifact, "load", forbid_source_body)
+    try:
+        with _leased_actor(actor, job):
+            result = preview_output_mix(
+                _context(f), _payload(target, source, dubbing), Mock(), threading.Event(),
+            )
+    finally:
+        event.remove(m.Artifact, "load", forbid_source_body)
+    assert result["artifact"]["role"] == "mix_preview"
+    assert probes.call_count == 2 and process.call_count == 1

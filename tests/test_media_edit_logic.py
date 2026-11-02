@@ -1,5 +1,8 @@
+from copy import deepcopy
+
 import pytest
 
+from pandrator.logic.dubbing.timing_diagnostics import diagnose_timed_cues
 from pandrator.logic.media_edit import (
     KeepRange,
     MediaCue,
@@ -362,3 +365,189 @@ def test_invalid_caption_and_keep_duration_are_rejected():
         parse_caption_text("not a caption")
     with pytest.raises(ValueError):
         normalize_keep_ranges((KeepRange("x", 0, 1),), 0)
+
+
+def test_timing_diagnostics_reports_overlap_and_source_order_without_mutation():
+    cues = [
+        {
+            "id": "cue-a",
+            "start_ms": 0,
+            "end_ms": 580,
+            "speaker": "Alice",
+            "text": "how we hate.",
+            "words": [
+                {"text": "how", "start_ms": 0, "end_ms": 80},
+                {"text": "we", "start_ms": 100, "end_ms": 180},
+                {"text": "hate.", "start_ms": 500, "end_ms": 580},
+            ],
+        },
+        {
+            "id": "cue-b",
+            "start_ms": 300,
+            "end_ms": 680,
+            "speaker": "Bob",
+            "text": "We have",
+            "words": [
+                {"text": "We", "start_ms": 300, "end_ms": 380},
+                {"text": "have", "start_ms": 600, "end_ms": 680},
+            ],
+        },
+    ]
+    original = deepcopy(cues)
+
+    result = diagnose_timed_cues(cues)
+
+    assert cues == original
+    assert result.summary["cue_overlap_events"] == 1
+    assert result.summary["word_overlap_events"] == 0
+    assert result.summary["word_order_conflicts"] == 1
+    assert result.summary["issues_total"] == 2
+    assert result.summary["issues_truncated"] is False
+    assert result.cue_flags == {
+        "cue-a": ["cue_overlap", "word_order_conflict"],
+        "cue-b": ["cue_overlap", "word_order_conflict"],
+    }
+    order_conflict, cue_overlap = result.summary["issues"]
+    assert order_conflict["code"] == "word_order_conflict"
+    assert cue_overlap["code"] == "cue_overlap"
+    assert (cue_overlap["start_ms"], cue_overlap["end_ms"], cue_overlap["overlap_ms"]) == (
+        300,
+        580,
+        280,
+    )
+    assert (order_conflict["left_word_index"], order_conflict["right_word_index"]) == (
+        3,
+        1,
+    )
+    assert (order_conflict["start_ms"], order_conflict["end_ms"]) == (300, 500)
+    assert order_conflict["backward_ms"] == 200
+    assert all("text" not in issue for issue in result.summary["issues"])
+
+
+def test_timing_diagnostics_detects_nested_spans_but_not_touching_or_wordless_cues():
+    cues = [
+        {
+            "id": "outer",
+            "start_ms": 0,
+            "end_ms": 100,
+            "words": [{"text": "outer", "start_ms": 0, "end_ms": 100}],
+        },
+        {
+            "id": "nested-a",
+            "start_ms": 10,
+            "end_ms": 20,
+            "words": [{"text": "nested-a", "start_ms": 10, "end_ms": 20}],
+        },
+        {
+            "id": "nested-b",
+            "start_ms": 30,
+            "end_ms": 40,
+            "words": [{"text": "nested-b", "start_ms": 30, "end_ms": 40}],
+        },
+        {
+            "id": "later",
+            "start_ms": 50,
+            "end_ms": 200,
+            "words": [{"text": "later", "start_ms": 50, "end_ms": 200}],
+        },
+        {
+            "id": "touching",
+            "start_ms": 200,
+            "end_ms": 250,
+            "words": [{"text": "touching", "start_ms": 200, "end_ms": 250}],
+        },
+        {"id": "wordless", "start_ms": 300, "end_ms": 400, "words": []},
+    ]
+
+    result = diagnose_timed_cues(cues)
+
+    assert result.summary["cue_overlap_events"] == 3
+    assert result.summary["word_overlap_events"] == 3
+    assert result.summary["word_order_conflicts"] == 0
+    assert result.summary["issues_total"] == 6
+    assert result.cue_flags["outer"] == ["cue_overlap", "word_overlap"]
+    assert result.cue_flags["nested-a"] == ["cue_overlap", "word_overlap"]
+    assert result.cue_flags["nested-b"] == ["cue_overlap", "word_overlap"]
+    assert result.cue_flags["later"] == ["cue_overlap", "word_overlap"]
+    assert "touching" not in result.cue_flags
+    assert "wordless" not in result.cue_flags
+
+
+def test_timing_diagnostics_classifies_word_overlaps_by_trimmed_speaker():
+    cues = [
+        {
+            "id": "same-a",
+            "start_ms": 0,
+            "end_ms": 100,
+            "speaker": " Alice ",
+            "words": [{"text": "a", "start_ms": 0, "end_ms": 100}],
+        },
+        {
+            "id": "same-b",
+            "start_ms": 50,
+            "end_ms": 150,
+            "speaker": "alice",
+            "words": [{"text": "b", "start_ms": 50, "end_ms": 150}],
+        },
+        {
+            "id": "different",
+            "start_ms": 80,
+            "end_ms": 120,
+            "speaker": "Bob",
+            "words": [{"text": "c", "start_ms": 80, "end_ms": 120}],
+        },
+        {
+            "id": "unknown",
+            "start_ms": 100,
+            "end_ms": 180,
+            "speaker": " ",
+            "words": [{"text": "d", "start_ms": 100, "end_ms": 180}],
+        },
+    ]
+
+    result = diagnose_timed_cues(cues)
+
+    assert result.summary["word_overlap_events"] == 3
+    assert result.summary["same_speaker_word_overlaps"] == 1
+    assert result.summary["different_speaker_word_overlaps"] == 1
+    assert result.summary["unknown_speaker_word_overlaps"] == 1
+    assert [issue["speaker_relation"] for issue in result.summary["issues"] if issue["code"] == "word_overlap"] == [
+        "same",
+        "different",
+        "unknown",
+    ]
+
+
+def test_timing_diagnostics_clamps_detail_limit_and_counts_invalid_spans():
+    cues = [
+        {
+            "id": f"cue-{index}",
+            "start_ms": index,
+            "end_ms": index + 1_000,
+            "words": [],
+        }
+        for index in range(102)
+    ]
+    capped = diagnose_timed_cues(cues, detail_limit=1_000)
+    no_details = diagnose_timed_cues(cues, detail_limit=-1)
+    invalid = diagnose_timed_cues(
+        [
+            {
+                "id": "invalid",
+                "start_ms": 10,
+                "end_ms": 10,
+                "words": [{"text": "bad", "start_ms": 0, "end_ms": 0}],
+            }
+        ]
+    )
+
+    assert capped.summary["cue_overlap_events"] == 101
+    assert len(capped.summary["issues"]) == 100
+    assert capped.summary["issues_truncated"] is True
+    assert no_details.summary["issues"] == []
+    assert no_details.summary["issues_total"] == 101
+    assert no_details.summary["issues_truncated"] is True
+    assert invalid.summary["invalid_cue_timings"] == 1
+    assert invalid.summary["invalid_word_timings"] == 1
+    assert invalid.summary["cue_overlap_events"] == 0
+    assert invalid.summary["word_overlap_events"] == 0

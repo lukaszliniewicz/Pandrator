@@ -508,31 +508,11 @@ def resolve_workflow_stage_in_session(
                 workflow_kind=record.workflow_kind,
             ) in {"media", "audio"}
         ):
-            edited_media = by_role.get("media_edit_media")
-            if edited_media is None:
-                raise ValueError(
-                    "Render and review the media edit before exporting it."
-                )
-            edited_name = str(
-                (edited_media.metadata_json or {}).get("original_filename")
-                or edited_media.relative_path.rsplit("/", 1)[-1]
-            )
-            edited_kind = str(edited_media.kind or "video")
-            edited_mime = str(edited_media.mime_type or "")
-            export_source = context.primary_source_type()(
-                artifact=edited_media,
-                source_asset=None,
-                attachment=None,
-                profile=context.classify_source(
-                    name=edited_name,
-                    kind=edited_kind,
-                    mime_type=edited_mime,
-                ),
-                name=edited_name,
-                kind=edited_kind,
-                mime_type=edited_mime,
-                resolution="derived_media_edit",
-            )
+            from .output_media_source import resolve_output_media_source
+
+            if media_edit_plan is None:
+                raise ValueError("Render and review the media edit before exporting it.")
+            export_source = resolve_output_media_source(session, session_id).source
         payload["export_contract"] = context.build_export_contract(
             workflow_kind=record.workflow_kind,
             settings=flattened,

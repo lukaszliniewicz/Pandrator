@@ -269,8 +269,195 @@ def test_uncertain_assembly_commit_preserves_the_registered_output(assembly_case
     assert job.status == "failed" and "uncertain commit" in job.error_message
     with database.snapshot_session() as session:
         assembly = session.get_one(m.OutputAssembly, a.queued["id"])
+        assert assembly.status == "completed"
         assert assembly.artifact_id is not None
         artifact = session.get_one(m.Artifact, assembly.artifact_id)
         assert artifact.state == "current" and artifact.role == "assembled_audio"
         assert a.g.f.services.paths.managed_path(artifact.relative_path).is_file()
     assert a.g.keep.read_bytes() == b"Earlier output must remain intact"
+
+
+def test_registered_voiceover_assembly_skips_postpublication_sound_processing(
+    assembly_case,
+    monkeypatch,
+):
+    a = assembly_case
+    g = a.g
+    with g.f.case.database.snapshot_session() as session:
+        assert session.get_one(m.SessionRecord, g.source["id"]).workflow_kind == "voiceover"
+    monkeypatch.setattr(
+        "pandrator.web.sound_workflow_outputs.finish_sound_assembly",
+        lambda *_args, **_kwargs: pytest.fail("Voiceover called the sound assembly helper"),
+    )
+    monkeypatch.setattr(
+        "pandrator.web.delivery_runtime.DeliveryRuntime.resolve_input",
+        lambda *_args, **_kwargs: pytest.fail("Voiceover resolved a delivery input after publication"),
+    )
+
+    assert g.worker.run_once()
+    job = g.f.services.jobs.get(a.queued["job_id"])
+    assert job.status == "succeeded", job.error_message
+    with g.f.case.database.snapshot_session() as session:
+        assembly = session.get_one(m.OutputAssembly, a.queued["id"])
+        artifact = session.get_one(m.Artifact, assembly.artifact_id)
+        assert assembly.status == "completed"
+        assert artifact.state == "current"
+        assert not any(key.startswith("sound_mix_") for key in job.result_json)
+
+
+@pytest.mark.parametrize(
+    "generation_case",
+    [{"workflow_kind": "audiobook"}],
+    indirect=True,
+)
+def test_audiobook_assembly_respects_frozen_disabled_sound_setting(
+    generation_case,
+    monkeypatch,
+):
+    g = generation_case
+    calls = fake_post(monkeypatch)
+    assert g.worker.run_once()
+    generation_job = g.f.services.jobs.get(g.marker["job_id"])
+    assert generation_job.status == "succeeded", generation_job.error_message
+    assert len(calls) == 1
+    with g.f.case.database.snapshot_session() as session:
+        generation_run = session.get_one(m.GenerationRun, g.marker["generation_run_id"])
+        assert generation_run.status == "completed", generation_run.status
+    prepared_disabled = g.f.services.generation.prepare_assembly(
+        g.source["id"],
+        generation_run_id=g.marker["generation_run_id"],
+        run_override={"output": {"format": "wav", "include_sounds": False}},
+    )
+    prepared_enabled = g.f.services.generation.prepare_assembly(
+        g.source["id"],
+        generation_run_id=g.marker["generation_run_id"],
+        run_override={"output": {"format": "wav", "include_sounds": True}},
+    )
+    assert prepared_disabled["include_sounds"] is False
+    assert prepared_enabled["include_sounds"] is True
+    assert prepared_disabled["snapshot"] == prepared_enabled["snapshot"]
+    assert prepared_disabled["settings_hash"] == prepared_enabled["settings_hash"]
+    queued = body(
+        g.f.users.alice.post(
+            f"/api/v1/sessions/{g.source['id']}/output-assemblies",
+            json={
+                "generation_run_id": g.marker["generation_run_id"],
+                "run_override": {
+                    "output": {"format": "wav", "include_sounds": False}
+                },
+            },
+            headers=headers(g.f.users.ah, "member-audiobook-assembly-job"),
+        ),
+        202,
+    )
+    with g.f.case.database.snapshot_session() as session:
+        assembly = session.get_one(m.OutputAssembly, queued["id"])
+        assert assembly.settings_json["include_sounds"] is False
+        assert "include_sounds" not in assembly.settings_json["resolved"]["output"]
+    monkeypatch.setattr(
+        "pandrator.web.sound_workflow_outputs.finish_sound_assembly",
+        lambda *_args, **_kwargs: pytest.fail("Disabled sounds called the sound assembly helper"),
+    )
+    monkeypatch.setattr(
+        "pandrator.web.delivery_runtime.DeliveryRuntime.resolve_input",
+        lambda *_args, **_kwargs: pytest.fail("Disabled sounds resolved a delivery input"),
+    )
+
+    assert g.worker.run_once()
+    job = g.f.services.jobs.get(queued["job_id"])
+    assert job.status == "succeeded", job.error_message
+    with g.f.case.database.snapshot_session() as session:
+        assembly = session.get_one(m.OutputAssembly, queued["id"])
+        artifact = session.get_one(m.Artifact, assembly.artifact_id)
+        assert assembly.status == "completed"
+        assert artifact.state == "current"
+
+
+def test_progress_failure_after_publication_keeps_completed_assembly_and_artifact(
+    assembly_case,
+    monkeypatch,
+):
+    a = assembly_case
+    g = a.g
+    original = g.handlers.assemble_generation_output
+    published = {}
+
+    def render(payload, progress, cancel_event):
+        def fail_after_publication(value, detail=None):
+            if value >= 1.0:
+                with g.f.case.database.snapshot_session() as session:
+                    assembly = session.get_one(m.OutputAssembly, a.queued["id"])
+                    artifact = session.get_one(m.Artifact, assembly.artifact_id)
+                    published["assembly"] = (
+                        assembly.status,
+                        assembly.error_message,
+                        assembly.artifact_id,
+                    )
+                    published["artifact"] = (
+                        artifact.id,
+                        artifact.state,
+                        artifact.role,
+                        artifact.relative_path,
+                        artifact.content_hash,
+                    )
+                raise RuntimeError("Synthetic progress callback failure after publication")
+            progress(value, detail)
+
+        return original(payload, fail_after_publication, cancel_event)
+
+    monkeypatch.setattr(g.handlers, "assemble_generation_output", render)
+    assert g.worker.run_once()
+    job = g.f.services.jobs.get(a.queued["job_id"])
+    assert job.status == "failed"
+    assert "Synthetic progress callback failure after publication" in job.error_message
+    with g.f.case.database.snapshot_session() as session:
+        assembly = session.get_one(m.OutputAssembly, a.queued["id"])
+        artifact = session.get_one(m.Artifact, assembly.artifact_id)
+        assert published["assembly"] == (
+            "completed",
+            None,
+            assembly.artifact_id,
+        )
+        assert published["artifact"] == (
+            artifact.id,
+            artifact.state,
+            artifact.role,
+            artifact.relative_path,
+            artifact.content_hash,
+        )
+        assert assembly.status == "completed"
+        assert assembly.error_message is None
+        assert artifact.state == "current"
+        assert g.f.services.paths.managed_path(artifact.relative_path).is_file()
+    assert g.keep.read_bytes() == b"Earlier output must remain intact"
+
+
+def test_postpublication_membership_revocation_keeps_completed_artifact(
+    assembly_case,
+    monkeypatch,
+):
+    a = assembly_case
+    g = a.g
+    original = g.handlers.assemble_generation_output
+    revoked = []
+
+    def render(payload, progress, cancel_event):
+        def revoke_after_publication(value, detail=None):
+            if value >= 1.0 and not revoked:
+                revoked.append(True)
+                revoke_member(a)
+            progress(value, detail)
+
+        return original(payload, revoke_after_publication, cancel_event)
+
+    monkeypatch.setattr(g.handlers, "assemble_generation_output", render)
+    assert g.worker.run_once()
+    job = g.f.services.jobs.get(a.queued["job_id"])
+    assert job.status == "failed"
+    assert revoked
+    with g.f.case.database.snapshot_session() as session:
+        assembly = session.get_one(m.OutputAssembly, a.queued["id"])
+        artifact = session.get_one(m.Artifact, assembly.artifact_id)
+        assert assembly.status == "completed"
+        assert artifact.state == "current"
+    assert g.keep.read_bytes() == b"Earlier output must remain intact"

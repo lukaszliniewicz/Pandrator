@@ -101,6 +101,14 @@ remain compatible. It uses the installed audio.cpp CLI and a pinned, SHA-256-ver
 bounded audio/transcript pairs share a model load. Rejected cues retain original
 timing. Select the source/audio language, not the translation target.
 
+`pandrator_get_media_edit` includes `plan.timing_diagnostics` in its summary:
+overlapping cue and word counts, backwards word starts, and bounded examples
+with cue IDs and one-based word positions. Full state adds each cue's
+`timing_flags`. These are read-only observations, not permission to sort words
+by timestamp or guess replacement timings. Inspect the source audio before
+changing timing; overlapping speakers can be intentional. Media-edit dispatch
+includes the aggregate counts while keeping its cue-only evidence contract.
+
 New proposals retain earlier cuts and their reasons, adding removals to the
 current retained timeline. An empty proposal keeps the existing cuts. To restore
 removed material, explicitly update the keep ranges before requesting another

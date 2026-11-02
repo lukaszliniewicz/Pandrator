@@ -983,9 +983,12 @@ def _timed_words(
                 )
             )
             flat_index += 1
+    # Use chronological order only while comparing MOSS seam overlaps. Keep
+    # the normalized source-order indexes as ownership and lexical authority.
     result.sort(key=lambda word: (word.start_ms, word.end_ms, word.index))
-    result = [replace(word, index=index) for index, word in enumerate(result)]
-    return _sanitize_timed_words(_deduplicate_moss_overlap_words(result))
+    result = _deduplicate_moss_overlap_words(result)
+    result.sort(key=lambda word: word.index)
+    return _sanitize_timed_words(result)
 
 
 def _source_text_and_spans(words: list[_TimedWord]) -> tuple[str, list[_TimedWord]]:

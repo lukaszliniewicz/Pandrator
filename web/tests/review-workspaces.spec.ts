@@ -471,10 +471,10 @@ test('five thousand subtitle cues keep the editor tall and search state across t
     id: `cue-${ordinal}`,
     ordinal,
     revision: 1,
-    start_ms: ordinal * 1000,
+    start_ms: ordinal * 1000 - (ordinal === 4999 ? 200 : 0),
     end_ms: ordinal * 1000 + 900,
     text: `字幕 ${ordinal + 1} の言葉を正確に保ちます。`,
-    speaker: '',
+    speaker: ordinal === 4998 ? 'Voice A' : ordinal === 4999 ? 'Voice B' : '',
     review_state: 'clear',
     edit_capabilities: {
       ownership: 'exact',
@@ -582,4 +582,34 @@ test('five thousand subtitle cues keep the editor tall and search state across t
   await expect(
     review.getByText('Page 100 of 100', { exact: true })
   ).toBeVisible();
+  await review
+    .getByRole('button', { name: 'Review overlaps', exact: true })
+    .click();
+  await expect(review.locator('tbody tr')).toHaveCount(2);
+  await expect(
+    review.getByText('Timing overlap · 100 ms.', { exact: true })
+  ).toHaveCount(2);
+  await expect(
+    review.getByRole('button', { name: 'Recheck audio', exact: true })
+  ).toHaveCount(2);
+  await expect(review).toContainText(
+    'Different speakers may be talking at once.'
+  );
+  const timingNotice = review
+    .getByText('Timing overlap · 100 ms.', { exact: true })
+    .first()
+    .locator('..');
+  await expect(timingNotice).toBeVisible();
+  const noticeRight = await timingNotice.evaluate(
+    (node) => node.getBoundingClientRect().right
+  );
+  expect(noticeRight).toBeLessThanOrEqual(390);
+  await page.screenshot({
+    path: info.outputPath('subtitle-overlap-phone.png')
+  });
+  await review.locator('[data-review-focus="cue-4998-end_ms"]').fill('4998800');
+  await expect(
+    review.getByRole('button', { name: 'Review overlaps', exact: true })
+  ).toBeHidden();
+  await expect(review.locator('tbody tr')).toHaveCount(50);
 });

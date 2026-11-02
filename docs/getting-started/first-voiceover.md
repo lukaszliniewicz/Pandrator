@@ -98,6 +98,11 @@ Choose deliberately among:
 - generated dubbing without source audio; and
 - subtitle-only or audio-only output when video rendering is unnecessary.
 
+After assembly, use **Preview 12 seconds** to check the selected audio version
+with the current mix controls. The preview leaves those controls unsaved. If
+the recording has a cut plan, render the current edit first: the mix preview
+uses that edited timeline, as the final export does.
+
 ## 6. Export and inspect
 
 Export audio, subtitle tracks, or rendered video. Video export can retain,

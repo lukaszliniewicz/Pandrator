@@ -37,7 +37,6 @@ from .schemas import (
     OutputMixPreviewRequest,
 )
 from .settings_policy import RevisionConflict as WorkspaceRevisionConflict
-from .source_resolution import resolve_media_source
 
 
 def register_generation_routes(
@@ -984,6 +983,7 @@ def register_generation_routes(
         from .access.contracts import AccessDenied
         from .access.output_mix_policy import require_output_mix_access
         from .accounts.execution_actor import execution_actor_scope
+        from .output_media_source import resolve_output_media_source
 
         payload = OutputMixPreviewRequest.model_validate(request.get_json(silent=True) or {})
         access = context.guards.access_context()
@@ -1009,9 +1009,15 @@ def register_generation_routes(
                         "Soundtrack mix previews are available for voiceover sessions.",
                         409,
                     )
-                source_resolution = resolve_media_source(
-                    db_session, session_id, include_metadata=False
-                )
+                try:
+                    selected_source = resolve_output_media_source(db_session, session_id)
+                except ValueError:
+                    return error_response(
+                        "mix_preview_unavailable",
+                        "Render and review the current media edit before previewing the soundtrack mix.",
+                        409,
+                    )
+                source_resolution = selected_source.source
                 source = source_resolution.artifact
                 if source is None or not source_resolution.has_audio:
                     return error_response(
@@ -1060,6 +1066,10 @@ def register_generation_routes(
                         "generation_run_id": payload.generation_run_id,
                         "source_artifact_id": source.id,
                         "dubbing_artifact_id": dubbing_artifact_id,
+                        "source_content_hash": captured.source.content_hash,
+                        "dubbing_content_hash": captured.dubbing.content_hash,
+                        "source_edit_revision_id": selected_source.edit_revision_id,
+                        "source_edit_content_hash": selected_source.edit_content_hash,
                         "start_seconds": payload.start_seconds,
                         "duration_seconds": payload.duration_seconds,
                         "settings": {field: getattr(payload, field) for field in mix_fields},

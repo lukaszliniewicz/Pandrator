@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import wave
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -379,3 +380,30 @@ def test_book_assembly_keeps_dry_receipt_and_reports_pending_mix(case):
         cancel_event=threading.Event(),
     )
     assert no_callback == dry_result
+
+
+def test_finish_sound_assembly_skips_input_resolution_when_sounds_are_disabled(case):
+    session = _session(case, "audiobook", "Disabled output sounds")
+    base = _artifact(case, session, "disabled-sounds.wav", role="assembled_audio")
+    context = replace(
+        _context(
+            case,
+            callback=lambda *_args, **_kwargs: pytest.fail(
+                "Disabled sounds called the sound renderer"
+            ),
+        ),
+        _resolve_input=lambda _artifact_id: pytest.fail(
+            "Disabled sounds resolved the assembled artifact"
+        ),
+    )
+    result = {"artifact_id": base.id, "paths": [base.relative_path]}
+
+    returned = finish_sound_assembly(
+        context,
+        result,
+        {"settings": {"include_sounds": False}},
+        progress=lambda *_args: None,
+        cancel_event=threading.Event(),
+    )
+
+    assert returned is result

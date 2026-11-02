@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import literal, or_, select
+from sqlalchemy import func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from ..accounts.execution_actor import HostActor, UserActor, current_execution_actor
 from ..accounts.job_authorization import require_execution_actor_in_session
 from ..accounts.models import Workspace
 from ..job_execution import current_job_lease
-from ..models import Artifact, Job, SessionRecord
+from ..models import Artifact, Job, MediaEditPlan, MediaEditPlanRevision, SessionRecord
+from ..output_media_source import matching_media_edit_render_id
 from ..projects.models import Project
 from .artifact_visibility import resource_visibility_clause
 from .contracts import AccessDenied, ProjectAction
@@ -135,22 +136,70 @@ def require_output_mix_access(
                 or lease["lease_generation"] <= 0
             ):
                 raise AccessDenied()
-            if (
-                unit.scalar(
-                    select(Job.id).where(
-                        Job.id == lease["job_id"],
-                        Job.kind == "output.mix_preview",
-                        Job.session_id == target.id,
-                        Job.project_id == target.project_id,
-                        Job.workspace_id == target.workspace_id,
-                        Job.payload_json["session_id"].as_string() == session_id,
-                        Job.payload_json["source_artifact_id"].as_string() == source_artifact_id,
-                        Job.payload_json["dubbing_artifact_id"].as_string() == dubbing_artifact_id,
-                    )
+            pin_fields = (
+                "source_content_hash", "dubbing_content_hash",
+                "source_edit_revision_id", "source_edit_content_hash",
+            )
+            queued = unit.execute(
+                select(
+                    *(Job.payload_json[field].as_string().label(field) for field in pin_fields),
+                    *(func.json_type(Job.payload_json, f"$.{field}").label(f"{field}_type")
+                      for field in pin_fields),
+                ).where(
+                    Job.id == lease["job_id"],
+                    Job.kind == "output.mix_preview",
+                    Job.session_id == target.id,
+                    Job.project_id == target.project_id,
+                    Job.workspace_id == target.workspace_id,
+                    Job.payload_json["session_id"].as_string() == session_id,
+                    Job.payload_json["source_artifact_id"].as_string() == source_artifact_id,
+                    Job.payload_json["dubbing_artifact_id"].as_string() == dubbing_artifact_id,
                 )
-                is None
-            ):
+            ).one_or_none()
+            if queued is None:
                 raise AccessDenied()
+            present = [queued._mapping[f"{field}_type"] is not None for field in pin_fields]
+            if any(present):
+                if (
+                    not all(present)
+                    or source.content_hash != queued.source_content_hash
+                    or dubbing.content_hash != queued.dubbing_content_hash
+                ):
+                    raise KeyError("Mix preview input not found.")
+                if queued.source_edit_revision_id is None:
+                    if (
+                        queued.source_edit_content_hash is not None
+                        or unit.scalar(
+                            select(MediaEditPlan.id).where(MediaEditPlan.session_id == session_id)
+                        ) is not None
+                    ):
+                        raise KeyError("Mix preview input not found.")
+                else:
+                    revision = unit.execute(
+                        select(
+                            MediaEditPlan.id.label("plan_id"),
+                            MediaEditPlanRevision.revision_number,
+                        )
+                        .join(
+                            MediaEditPlanRevision,
+                            MediaEditPlanRevision.id == MediaEditPlan.active_revision_id,
+                        )
+                        .where(
+                            MediaEditPlan.session_id == session_id,
+                            MediaEditPlanRevision.plan_id == MediaEditPlan.id,
+                            MediaEditPlanRevision.id == queued.source_edit_revision_id,
+                            MediaEditPlanRevision.content_hash == queued.source_edit_content_hash,
+                        )
+                    ).one_or_none()
+                    if revision is None or matching_media_edit_render_id(
+                        unit, session_id,
+                        revision_id=queued.source_edit_revision_id,
+                        content_hash=queued.source_edit_content_hash,
+                        plan_id=revision.plan_id,
+                        revision_number=revision.revision_number,
+                        artifact_id=source.id,
+                    ) is None:
+                        raise KeyError("Mix preview input not found.")
         captured = MixPreviewInput(
             target.id,
             target.project_id,

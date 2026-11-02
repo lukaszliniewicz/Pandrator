@@ -55,12 +55,12 @@ def finish_sound_assembly(
     """A pending cue must not discard successfully assembled speech."""
     if not result.get("artifact_id") or getattr(context, "_render_sound_mix", None) is None:
         return result
+    settings = dict(payload.get("settings") or {})
+    if settings.get("include_sounds", True) is False:
+        return result
     audio, _path = context._resolve_input(result["artifact_id"])
     # Timed speech is mixed after the source soundtrack master, during export.
     if context._session_record(str(audio.session_id)).workflow_kind != "audiobook":
-        return result
-    settings = dict(payload.get("settings") or {})
-    if settings.get("include_sounds", True) is False:
         return result
     try:
         mixed = render_output_sounds(

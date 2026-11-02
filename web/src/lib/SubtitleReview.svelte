@@ -5,6 +5,7 @@
     ChevronLeft,
     ChevronRight,
     CircleHelp,
+    Clock3,
     Columns3,
     Filter,
     LoaderCircle,
@@ -50,6 +51,7 @@
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextReplacement, TextSearchMatch } from './search-replace';
   import { createSubtitleReviewIndex } from './subtitle-review-index';
+  import { findCueTimingOverlaps } from './subtitle-timing';
   import ReviewWorkspace from './ReviewWorkspace.svelte';
   import UnsavedChangesDialog from './UnsavedChangesDialog.svelte';
 
@@ -74,6 +76,7 @@
   let loading = $state(true);
   let changedOnly = $state(false);
   let needsReviewOnly = $state(false);
+  let timingOnly = $state(false);
   let diffView = $state(false);
   let reviewPrimaryArtifactId = $state('');
   let editArtifactId = $state('');
@@ -262,6 +265,9 @@
   const editableIndex = $derived(
     createSubtitleReviewIndex(editColumn?.segments ?? [])
   );
+  const timingOverlaps = $derived(
+    findCueTimingOverlaps(editColumn?.segments ?? [])
+  );
   const editMode = $derived(payload?.edit_mode ?? 'display');
   const passages = $derived(editColumn?.logical_passages ?? []);
   const pagedPassages = $derived(
@@ -308,7 +314,8 @@
     (payload?.rows ?? []).filter(
       (row) =>
         (!changedOnly || row.changed) &&
-        (!needsReviewOnly || rowNeedsReview(row))
+        (!needsReviewOnly || rowNeedsReview(row)) &&
+        (!timingOnly || rowHasTimingOverlap(row))
     )
   );
   const needsReviewCount = $derived(
@@ -335,6 +342,10 @@
     if (pageIndex >= pageCount) pageIndex = pageCount - 1;
   });
 
+  $effect(() => {
+    if (timingOnly && !timingOverlaps.size) timingOnly = false;
+  });
+
   async function changePage(nextPage: number) {
     pageIndex = Math.max(0, Math.min(nextPage, pageCount - 1));
     await tick();
@@ -349,6 +360,23 @@
   function toggleNeedsReviewOnly() {
     needsReviewOnly = !needsReviewOnly;
     pageIndex = 0;
+  }
+
+  function rowHasTimingOverlap(row: Row) {
+    return (row.cells[editArtifactId] ?? []).some((segment) =>
+      timingOverlaps.has(stageIndex(segment))
+    );
+  }
+
+  async function showTimingOverlaps() {
+    timingOnly = true;
+    changedOnly = false;
+    needsReviewOnly = false;
+    diffView = false;
+    pageIndex = 0;
+    if (window.matchMedia('(max-width: 900px)').matches) toolsOpen = false;
+    await tick();
+    rowsViewport?.scrollTo({ top: 0, left: 0 });
   }
 
   function evidenceId(record: SubtitleEvidenceRecord) {
@@ -818,6 +846,7 @@
     toolsOpen = false;
     if (diffView) diffView = false;
     if (changedOnly) changedOnly = false;
+    timingOnly = false;
     const target = editColumn?.segments[match.itemIndex];
     const targetRow = target
       ? (payload?.rows ?? []).findIndex((row) =>
@@ -1242,7 +1271,7 @@
   bind:toolsOpen
   bind:maximized
   toolsTitle="Tools"
-  toolsSummary={`${columns.length}/4 revisions${changedOnly ? ' · changed' : ''}${needsReviewOnly ? ' · needs review' : ''}${diffView ? ' · diff' : ''}`}
+  toolsSummary={`${columns.length}/4 revisions${changedOnly ? ' · changed' : ''}${needsReviewOnly ? ' · needs review' : ''}${timingOnly ? ' · timing overlaps' : ''}${diffView ? ' · diff' : ''}`}
 >
   {#snippet header()}
     <div>
@@ -1316,6 +1345,20 @@
           {#if needsReviewCount}<span
               class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.65rem] tabular-nums text-amber-700"
               >{needsReviewCount}</span
+            >{/if}</button
+        >
+        <button
+          onclick={() => {
+            if (timingOnly) timingOnly = false;
+            else showTimingOverlaps();
+          }}
+          aria-pressed={timingOnly}
+          disabled={editMode !== 'display' || !timingOverlaps.size}
+          class:active={timingOnly}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
+          ><Clock3 size={16} /> Timing overlaps {#if timingOverlaps.size}<span
+              class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.65rem] tabular-nums"
+              >{timingOverlaps.size}</span
             >{/if}</button
         >
         <button
@@ -1544,6 +1587,18 @@
           />{/key}{/if}{/if}
   {/snippet}
   {#snippet notices()}
+    {#if !loading && editMode === 'display' && timingOverlaps.size}<div
+        role="note"
+        class="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-5 py-2 text-xs sm:px-7"
+      >
+        <span
+          >{timingOverlaps.size} cues have overlapping timing. Listen before changing
+          it.</span
+        >
+        <button class="font-semibold underline" onclick={showTimingOverlaps}
+          >Review overlaps</button
+        >
+      </div>{/if}
     {#if staleDraft}<details
         class="mx-5 my-3 rounded-xl border border-amber-500/40 p-4 sm:mx-7"
       >
@@ -1902,6 +1957,19 @@
                                   >{/if}
                               </span>
                             </div>{/if}
+                          {#if column.artifact_id === editArtifactId && timingOverlaps.has(stageIndex(item))}{@const overlap =
+                              timingOverlaps.get(stageIndex(item))!}
+                            <p
+                              class="mb-2 max-w-[13rem] whitespace-normal rounded-lg border border-amber-500/35 bg-amber-500/10 px-2 py-1.5 text-xs"
+                            >
+                              <strong
+                                >Timing overlap · {overlap.overlap_ms} ms.</strong
+                              >
+                              {overlap.different_speakers
+                                ? ' Different speakers may be talking at once.'
+                                : ' Check the source audio before adjusting this cue.'}
+                              Use Play or Recheck audio below.
+                            </p>{/if}
                           {#if item.turn_id && stageIndex(item) > 0 && editColumn?.segments[stageIndex(item) - 1]?.turn_id !== item.turn_id}<p
                               class="muted mb-2 text-xs font-semibold"
                             >

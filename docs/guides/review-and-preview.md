@@ -10,6 +10,8 @@ In **Compare and refine**, use Tools to choose the editable revision, add compar
 
 Audio and video keep their playback state when tools collapse. The compact source transport remains available beside the editor. Open the media controls for the video picture, seeking and other playback options.
 
+**Review overlaps** shows cues whose display times overlap, including overlaps across pages. Each flagged cue keeps **Play** and **Recheck audio** available. Different speakers may be talking at once, so listen before changing timing. Warnings update as you edit; they do not change the text or mark a cue reviewed.
+
 Document narration optimization saves a new reviewed artifact. Generation's **Review speech delivery** edits one segment's spoken delivery; saving can make existing takes stale. Regenerating after that save is an explicit option. Speech annotations and selecting or marking a whole speech plan reviewed remain separate operations.
 
 ## Read-only file previews
@@ -25,5 +27,7 @@ Speech-plan history previews an earlier version without activating it. Use its e
 PDF editing keeps the canvas separate from **Pages & tools**. Applying edits queues a derived PDF and preserves the original. Closing with unapplied edits offers applying them, discarding them or continuing to edit.
 
 Recording editing has a **Transcript & details** pane beside the recording and cut timeline. Saving a cut plan and rendering new media remain separate actions. Sound and voice auditions likewise separate their creation settings from the results you listen to.
+
+The recording editor also flags overlapping word times and word times that run backwards. **Review timing warnings** opens the affected transcript cues; choose a cue to seek to its position. These checks retain the original timestamps and distinguish timing evidence from the word order used for rendering.
 
 Editable reviews protect unsaved changes when closing or navigating away. Pending saves remain visible; failures retain the draft for correction or retry. The server checks project permissions for every save or processing action.

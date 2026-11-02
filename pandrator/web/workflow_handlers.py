@@ -3201,15 +3201,32 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         result = _assemble_generation_output(context, payload, progress, cancel_event)
         if result.get("artifact_id"):
             from .access.assembly_execution_policy import require_assembly_execution
-            from .delivery_runtime import DeliveryRuntime
+            from .models import OutputAssembly, SessionRecord
 
             with self.database.snapshot_session() as session:
                 proof = require_assembly_execution(session, payload)
-            # Inline exports apply sounds afterward with their frozen delivery
-            # settings. Keep this assembly as reusable clean speech and avoid
-            # rendering a mix when the export explicitly disables sounds.
-            if proof.job_kind in {"export.variant", "workflow.continue"}:
-                return result
+                # Inline exports apply sounds afterward with their frozen delivery
+                # settings. Keep their assembly as reusable clean speech.
+                if proof.job_kind in {"export.variant", "workflow.continue"}:
+                    return result
+                session_record = session.get(SessionRecord, proof.session_id)
+                assembly = session.get(OutputAssembly, proof.assembly_id)
+                assembly_settings = (
+                    assembly.settings_json
+                    if assembly is not None and isinstance(assembly.settings_json, dict)
+                    else {}
+                )
+                # Sound mixing is an optional audiobook finalization step. The
+                # choice lives outside the clean-audio snapshot/hash so changing
+                # it does not invalidate reusable speech assemblies.
+                if (
+                    session_record is None
+                    or session_record.workflow_kind != "audiobook"
+                    or assembly_settings.get("include_sounds", True) is False
+                ):
+                    return result
+            from .delivery_runtime import DeliveryRuntime
+
             context = DeliveryRuntime(
                 context, proof, cancel_event, assembly_payload=payload
             ).input_context()

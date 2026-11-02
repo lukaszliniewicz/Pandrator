@@ -12,6 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.timing_diagnostics import diagnose_timed_cues
+
 from .database import Database
 from .dispatch import DispatchError
 from .media_edit import MediaEditRevisionConflict, MediaEditService
@@ -226,6 +228,10 @@ class MediaEditDispatchRunService:
         if isinstance(counts, dict):
             evidence["alignment_counts"] = dict(counts)
         evidence["warnings"] = list(source.get("warnings") or [])
+        timing_summary = diagnose_timed_cues(revision.cues_json or []).summary
+        evidence["timing_diagnostics"] = {
+            key: value for key, value in timing_summary.items() if key != "issues"
+        }
         return evidence
 
     def create_in_session(

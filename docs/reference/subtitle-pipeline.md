@@ -90,6 +90,11 @@ selected STT engine. Engine-specific JSON is adapted to
 Normalization also repairs implausible word spans and removes strong,
 time-aligned MOSS seam duplicates before cue composition.
 
+Overlapping source segments keep their word sequence during cue composition;
+timestamps do not interleave their text. Media-edit rendering independently
+checks the composed subtitle text against the retained source cues before
+publishing it. Original word timestamps remain available as timing evidence.
+
 ## 2. Initial display cues
 
 When timed words exist, Pandrator builds one source string with word-to-character

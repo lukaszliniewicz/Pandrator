@@ -23,6 +23,7 @@ from pandrator.web.models import (
     SessionSource,
     SourceAsset,
 )
+from pandrator.web.output_media_source import resolve_output_media_source
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import MEDIA_EDIT_STAGES, WorkflowService
@@ -653,6 +654,81 @@ class MediaEditWorkflowTests(unittest.TestCase):
                         contract["source_content_hash"],
                     )
                     self.assertEqual("derived_media_edit", contract["source_resolution"])
+
+    def test_output_media_source_matches_converted_voiceover_export(self):
+        edited = self._rendered_media()
+        self._convert_to_voiceover()
+        metadata_cases = (
+            self._edit_metadata(),
+            {"media_edit_revision_id": self.plan["revision_id"], "revision_id": "document",
+             "content_hash": self.plan["content_hash"]},
+            {"revision_id": "document", "plan_id": self.plan["plan_id"],
+             "revision": str(self.plan["revision"]), "content_hash": self.plan["content_hash"]},
+        )
+        for metadata in metadata_cases:
+            with self.subTest(metadata=metadata):
+                with self.database.session() as unit:
+                    unit.get_one(Artifact, edited.id).metadata_json = metadata
+                with self.database.snapshot_session() as unit:
+                    selected = resolve_output_media_source(unit, self.record.id)
+                    self.assertEqual(edited.id, selected.source.artifact.id)
+                    self.assertEqual(self.plan["revision_id"], selected.edit_revision_id)
+                    self.assertEqual(self.plan["content_hash"], selected.edit_content_hash)
+                    self.assertIsNone(selected.source.attachment)
+                    self.assertIsNone(selected.source.source_asset)
+                contract = self.workflow.resolve_stage(
+                    self.record.id, "export", {"export_mode": "media", "audio_mode": "preserve"},
+                ).payload["export_contract"]
+                self.assertEqual(selected.source.artifact.id, contract["source_artifact_id"])
+                self.assertEqual(selected.source.artifact.content_hash, contract["source_content_hash"])
+                self.assertEqual(selected.source.resolution, contract["source_resolution"])
+
+    def test_output_media_source_without_edit_plan_matches_original_export(self):
+        self._convert_to_voiceover()
+        with self.database.session() as unit:
+            unit.delete(unit.get_one(MediaEditPlan, self.plan["plan_id"]))
+        with self.database.snapshot_session() as unit:
+            selected = resolve_output_media_source(unit, self.record.id)
+            self.assertEqual(self.original.id, selected.source.artifact.id)
+            self.assertIsNone(selected.edit_revision_id)
+            self.assertIsNone(selected.edit_content_hash)
+        contract = self.workflow.resolve_stage(
+            self.record.id, "export", {"export_mode": "media", "audio_mode": "preserve"},
+        ).payload["export_contract"]
+        self.assertEqual(selected.source.artifact.id, contract["source_artifact_id"])
+        self.assertEqual(selected.source.resolution, contract["source_resolution"])
+
+    def test_unprepared_media_edit_export_still_requires_reviewed_render(self):
+        with self.database.session() as unit:
+            unit.delete(unit.get_one(MediaEditPlan, self.plan["plan_id"]))
+        with self.assertRaisesRegex(ValueError, "Render and review"):
+            self.workflow.resolve_stage(
+                self.record.id, "export", {"export_mode": "media", "audio_mode": "preserve"},
+            )
+
+    def test_output_media_source_requires_current_matching_active_render(self):
+        self._convert_to_voiceover()
+        with self.database.snapshot_session() as unit:
+            with self.assertRaisesRegex(ValueError, "Render and review"):
+                resolve_output_media_source(unit, self.record.id)
+        edited = self._rendered_media()
+        bad_cases = (
+            ({**self._edit_metadata(), "content_hash": "wrong"}, "current", self.plan["revision_id"]),
+            ({**self._edit_metadata(), "media_edit_revision_id": "obsolete"}, "current", self.plan["revision_id"]),
+            (self._edit_metadata(), "stale", self.plan["revision_id"]),
+            (self._edit_metadata(), "current", None),
+            ({"plan_id": self.plan["plan_id"], "revision": f"{self.plan['revision']}obsolete",
+              "content_hash": self.plan["content_hash"]}, "current", self.plan["revision_id"]),
+        )
+        for metadata, state, revision_id in bad_cases:
+            with self.subTest(metadata=metadata, state=state, revision_id=revision_id):
+                with self.database.session() as unit:
+                    row = unit.get_one(Artifact, edited.id)
+                    row.metadata_json, row.state = metadata, state
+                    unit.get_one(MediaEditPlan, self.plan["plan_id"]).active_revision_id = revision_id
+                with self.database.snapshot_session() as unit:
+                    with self.assertRaisesRegex(ValueError, "Render and review"):
+                        resolve_output_media_source(unit, self.record.id)
 
     def test_converted_voiceover_export_requires_a_current_render(self):
         self._convert_to_voiceover()

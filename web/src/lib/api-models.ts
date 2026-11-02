@@ -57,6 +57,14 @@ type MediaEditCue = {
   words: MediaEditWord[];
   timing_confidence?: number | null;
   timing_source: string;
+  timing_flags?: ('cue_overlap' | 'word_overlap' | 'word_order_conflict')[];
+};
+
+type MediaEditTimingDiagnostics = {
+  cue_overlap_events: number;
+  word_overlap_events: number;
+  word_order_conflicts: number;
+  affected_cue_count: number;
 };
 
 export type MediaEditRange = {
@@ -87,6 +95,7 @@ export type MediaEditPlan = {
   instructions: string;
   keep_ranges: MediaEditRange[];
   cues: MediaEditCue[];
+  timing_diagnostics?: MediaEditTimingDiagnostics;
   evidence: {
     warnings?: string[];
     alignment_coverage?: number;

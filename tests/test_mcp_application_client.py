@@ -282,7 +282,7 @@ class ApplicationClientTests(unittest.TestCase):
         )
         client.upload_chunk("upload-1", 0, b"data", sha256="b" * 64)
         client.complete_upload("upload-1")
-        client.tts_catalog(refresh=True, service_id="audio_cpp")
+        client.tts_catalog(service_id="audio_cpp")
         client.list_generation_runs("session-1")
 
         initialized, chunk, completed, catalog, runs = session.calls
@@ -293,7 +293,7 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertEqual(120.0, chunk["timeout"])
         self.assertEqual("b" * 64, chunk["headers"]["X-Chunk-SHA256"])
         self.assertTrue(completed["url"].endswith("/api/v1/uploads/upload-1/complete"))
-        self.assertEqual({"refresh": "true", "service_id": "audio_cpp"}, catalog["params"])
+        self.assertEqual({"service_id": "audio_cpp", "view": "summary"}, catalog["params"])
         self.assertTrue(
             runs["url"].endswith("/api/v1/sessions/session-1/generation-runs")
         )
@@ -1288,6 +1288,40 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertEqual(409, caught.exception.details["status"])
         self.assertEqual(21, len(caught.exception.details))
         self.assertNotIn("detail_18", caught.exception.details)
+
+    def test_workflow_conflict_preserves_backend_error_without_retrying(self):
+        server_message = "workflow_conflict message sentinel"
+        server_details = {"workflow_id": "workflow-1", "active_run_id": "run-1"}
+        client = ApplicationClient(
+            local_registry("http://127.0.0.1:8097").bind("local"),
+            CredentialResolver(()),
+            session=FakeSession(
+                [
+                    FakeResponse(
+                        409,
+                        {
+                            "error": {
+                                "code": "workflow_conflict",
+                                "message": server_message,
+                                "details": server_details,
+                            }
+                        },
+                    )
+                ]
+            ),
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        with self.assertRaises(PandratorMcpError) as caught:
+            client._request_json("/api/v1/sessions/session-1/media-edit")
+
+        self.assertEqual("workflow_conflict", caught.exception.code)
+        self.assertEqual(server_message, str(caught.exception))
+        self.assertEqual(
+            {**server_details, "status": 409},
+            caught.exception.details,
+        )
+        self.assertFalse(caught.exception.retryable)
 
     def test_evidence_project_scope_revision_and_conflict_survive_transport(self):
         session = FakeSession([

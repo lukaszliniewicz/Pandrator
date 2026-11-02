@@ -423,6 +423,79 @@ def test_success_publishes_complete_native_pair_before_encoding(case, subtitles_
     assert {str(path): path.read_bytes() for path in case.protected_files} == case.before["files"]
 
 
+def test_reordered_composed_text_is_rejected_before_publication(case):
+    from pandrator.logic.dubbing.models import SubtitleSegment
+
+    corrupted = SimpleNamespace(
+        segments=[SubtitleSegment(1, 600, 1400, "world Hello", "Alice")],
+        word_segment_ordinals={0: 0, 1: 0},
+    )
+    with (
+        patch(
+            "pandrator.logic.dubbing.subtitle_finalization.compose_transcript_segments_with_ownership",
+            return_value=corrupted,
+        ),
+        pytest.raises(ValueError, match="text preservation verification"),
+    ):
+        _run(case, subtitles_only=True)
+
+    case.encode.assert_not_called()
+    assert _snapshot(case) == case.before
+
+
+def test_success_writes_source_order_to_composed_srt(case):
+    case.revision["cues"] = [
+        {
+            "id": "cue-a",
+            "start_ms": 500,
+            "end_ms": 1080,
+            "text": "how we hate.",
+            "speaker": "Alice",
+            "words": [
+                {"text": "how", "start_ms": 500, "end_ms": 580},
+                {"text": "we", "start_ms": 600, "end_ms": 680},
+                {"text": "hate.", "start_ms": 1000, "end_ms": 1080},
+            ],
+        },
+        {
+            "id": "cue-b",
+            "start_ms": 800,
+            "end_ms": 1180,
+            "text": "We have",
+            "speaker": "Bob",
+            "words": [
+                {"text": "We", "start_ms": 800, "end_ms": 880},
+                {"text": "have", "start_ms": 1100, "end_ms": 1180},
+            ],
+        },
+    ]
+
+    with patch(
+        "pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries",
+        return_value=None,
+    ):
+        result = _run(case, subtitles_only=True)
+
+    from pandrator.logic.dubbing.srt_utils import parse_srt
+
+    with case.database.session() as session:
+        subtitle = session.scalar(
+            select(Artifact).where(
+                Artifact.session_id == case.session.id,
+                Artifact.role == "media_edit_subtitles",
+                Artifact.state == "current",
+            )
+        )
+    assert subtitle is not None
+    content = (case.paths.root / subtitle.relative_path).read_text(encoding="utf-8")
+    assert [cue.text.replace("\n", " ") for cue in parse_srt(content)] == [
+        "how we hate.",
+        "We have",
+    ]
+    assert result["word_count"] == 5 and result["composed_cue_count"] == 2
+    case.encode.assert_not_called()
+
+
 def test_audio_probe_cancellation_reaps_native_child_and_retains_published_pair(case):
     event = threading.Event()
     started = case.paths.root / "probe-started"

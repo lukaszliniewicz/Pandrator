@@ -121,6 +121,54 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
         )
         self.assertEqual(["inside"], [cue["id"] for cue in cues])
 
+    def test_alignment_evidence_exposes_only_timing_diagnostic_aggregates(self):
+        revision = MediaEditPlanRevision(
+            duration_ms=1_000,
+            cues_json=[
+                {
+                    "id": "cue-a",
+                    "start_ms": 0,
+                    "end_ms": 580,
+                    "speaker": "Alice",
+                    "text": "how we hate.",
+                    "words": [
+                        {"text": "how", "start_ms": 0, "end_ms": 80},
+                        {"text": "we", "start_ms": 100, "end_ms": 180},
+                        {"text": "hate.", "start_ms": 500, "end_ms": 580},
+                    ],
+                },
+                {
+                    "id": "cue-b",
+                    "start_ms": 300,
+                    "end_ms": 680,
+                    "speaker": "Bob",
+                    "text": "We have",
+                    "words": [
+                        {"text": "We", "start_ms": 300, "end_ms": 380},
+                        {"text": "have", "start_ms": 600, "end_ms": 680},
+                    ],
+                },
+            ],
+        )
+
+        evidence = MediaEditDispatchRunService._alignment_evidence(revision)
+        diagnostics = evidence["timing_diagnostics"]
+
+        self.assertEqual(1, diagnostics["cue_overlap_events"])
+        self.assertEqual(1, diagnostics["word_order_conflicts"])
+        self.assertEqual(2, diagnostics["issues_total"])
+        self.assertNotIn("issues", diagnostics)
+        serialized = json.dumps(evidence)
+        for private_detail in (
+            "how we hate.",
+            "We have",
+            "left_word_index",
+            "right_word_index",
+            "start_ms",
+            "cue_flags",
+        ):
+            self.assertNotIn(private_detail, serialized)
+
     def test_create_rejects_blank_instructions(self):
         _media_edit, dispatch = self._prepared()
         with (

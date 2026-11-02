@@ -107,6 +107,7 @@ def assemble_generation_output(
                     OutputAssembly.job_id == captured.assembly_job_id,
                     OutputAssembly.generation_run_id == captured.generation_run_id,
                     OutputAssembly.settings_hash == captured.settings_hash,
+                    OutputAssembly.status != "completed",
                     Project.id == captured.project_id,
                     Project.workspace_id == captured.workspace_id,
                 )
@@ -114,7 +115,10 @@ def assemble_generation_output(
             if current is not None:
                 session.execute(
                     update(OutputAssembly)
-                    .where(OutputAssembly.id == current)
+                    .where(
+                        OutputAssembly.id == current,
+                        OutputAssembly.status != "completed",
+                    )
                     .values(status=status, error_message=error, updated_at=utcnow())
                 )
 

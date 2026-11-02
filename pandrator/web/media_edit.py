@@ -8,12 +8,14 @@ import json
 import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy import select
 
+from pandrator.logic.dubbing.timing_diagnostics import diagnose_timed_cues
 from pandrator.logic.dubbing.transcript_normalization import (
     NormalizedTranscript,
     TimedSegment,
@@ -564,6 +566,19 @@ class MediaEditService:
         revision: MediaEditPlanRevision,
         artifacts_by_id: Mapping[str, Artifact | None],
     ) -> dict[str, Any]:
+        source_cues = list(revision.cues_json or [])
+        timing_diagnostics = diagnose_timed_cues(source_cues)
+        cues = [
+            {
+                **deepcopy(dict(cue)),
+                "timing_flags": list(
+                    timing_diagnostics.cue_flags.get(str(cue.get("id") or ""), [])
+                ),
+            }
+            if isinstance(cue, Mapping)
+            else cue
+            for cue in source_cues
+        ]
         return {
             "plan_id": revision.plan_id,
             "revision_id": revision.id,
@@ -583,7 +598,8 @@ class MediaEditService:
             "duration_ms": revision.duration_ms,
             "instructions": revision.instructions,
             "keep_ranges": list(revision.keep_ranges_json or []),
-            "cues": list(revision.cues_json or []),
+            "cues": cues,
+            "timing_diagnostics": timing_diagnostics.summary,
             "evidence": dict(revision.evidence_json or {}),
             "operation": dict(revision.operation_json or {}),
             "reviewed": bool(revision.reviewed),
