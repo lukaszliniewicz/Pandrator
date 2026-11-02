@@ -54,6 +54,7 @@ test('language versions form one project and switch output controls while linkin
     source_session_id: source.id
   };
   source.translation_project = { ...membership, role: 'source' };
+  branch.project_id = source.project_id;
   branch.translation_project = {
     ...membership,
     role: 'branch',
@@ -63,11 +64,12 @@ test('language versions form one project and switch output controls while linkin
   await page.route(/\/api\/v1\/sessions(?:\?[^/]*)?$/, (route) =>
     route.fulfill({ json: { items } })
   );
-  await page.route('**/api/v1/events/snapshot?**', async (route) => {
-    const response = await route.fetch();
-    const payload = await response.json();
-    await route.fulfill({ json: { ...payload, sessions: { items } } });
-  });
+  const snapshot = await (
+    await page.request.get('/api/v1/events/snapshot?view=compact')
+  ).json();
+  await page.route('**/api/v1/events/snapshot?**', (route) =>
+    route.fulfill({ json: { ...snapshot, sessions: { items } } })
+  );
   for (const item of [source, branch])
     await page.route(`**/api/v1/sessions/${item.id}`, (route) =>
       route.fulfill({ json: item })
@@ -423,10 +425,14 @@ test('designed voice filter opens a prefilled redesign without submitting a gene
     }
   });
   const voice = await response.json();
+  const catalogueContext = await (
+    await page.request.get('/api/v1/voice-catalog?kind=managed')
+  ).json();
   let submitted = 0;
   await page.route('**/api/v1/voice-catalog?**', (route) =>
     route.fulfill({
       json: {
+        ...catalogueContext,
         items: [
           {
             ...voice,

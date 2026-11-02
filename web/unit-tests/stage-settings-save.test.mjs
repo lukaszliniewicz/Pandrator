@@ -65,6 +65,9 @@ function fixture(key = 'translate') {
     $state: { snapshot: (value) => value },
     session: { id: 'fixture', workspace_id: 'fixture-workspace' },
     canManageDefaults: true,
+    appState: {
+      canManageWorkspace: (workspaceId) => workspaceId === 'fixture-workspace'
+    },
     outcome: { revision: 7, value: { transformations: {} } },
     settingsStage: { key, enabled: true },
     settingsOpening: 1,

@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
-async function fixture(page: Page, discovery = false) {
+async function fixture(page: Page) {
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in' }).click();
@@ -19,6 +19,9 @@ async function fixture(page: Page, discovery = false) {
   });
   expect(created.ok()).toBeTruthy();
   const sessionId = (await created.json()).id as string;
+  const servicesContext = await (
+    await page.request.get('/api/v1/services/tts')
+  ).json();
   const plan = await page.request.post(
     `/api/v1/sessions/${sessionId}/generation-plan`,
     {
@@ -38,30 +41,14 @@ async function fixture(page: Page, discovery = false) {
     language: 'en',
     casting_enabled: true
   });
-  let providerBase = 'http://old-speech.invalid';
-  let heldDiscovery: Route | undefined;
-  await page.route('**/api/v1/services/tts/discover', async (route) => {
-    if (
-      route.request().postDataJSON().base_url === 'http://old-speech.invalid'
-    ) {
-      heldDiscovery = route;
-      return;
-    }
-    await route.fulfill({
-      json: {
-        success: true,
-        models: ['current-model'],
-        voices: ['fresh-voice']
-      }
-    });
-  });
   await page.route(/\/api\/v1\/services\/tts(?:\?.*)?$/, (route) =>
     route.fulfill({
       json: {
+        ...servicesContext,
         default_service: 'speech-fixture',
         services: [
           {
-            ...(discovery ? { api_base: providerBase } : {}),
+            api_base: 'http://speech-fixture.invalid',
             id: 'speech-fixture',
             name: 'Speech fixture',
             available: true,
@@ -79,7 +66,7 @@ async function fixture(page: Page, discovery = false) {
       }
     })
   );
-  await page.route('**/api/v1/voices', (route) =>
+  await page.route(/\/api\/v1\/voices(?:\?.*)?$/, (route) =>
     route.fulfill({ json: { items: [] } })
   );
   await page.route(`**${settingsUrl}`, (route) =>
@@ -140,36 +127,9 @@ async function fixture(page: Page, discovery = false) {
   return {
     voice,
     loadingField,
-    async waitForDiscovery() {
-      await expect.poll(() => Boolean(heldDiscovery)).toBe(true);
-    },
-    async releaseDiscovery() {
-      if (!heldDiscovery) return;
-      const route = heldDiscovery;
-      heldDiscovery = undefined;
-      const response = page.waitForResponse(
-        (candidate) => candidate.request() === route.request(),
-        { timeout: 5000 }
-      );
-      await route.fulfill({
-        json: {
-          success: true,
-          models: ['obsolete-model'],
-          voices: ['obsolete-voice']
-        }
-      });
-      await (await response).finished();
-      await page.evaluate(
-        () =>
-          new Promise<void>((resolve) => {
-            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-          })
-      );
-    },
     async reload(hold = false) {
       await page.keyboard.press('Escape');
       holdSecond = hold;
-      providerBase = 'http://current-speech.invalid';
       await page
         .getByRole('button', { name: 'Settings and speech services' })
         .click();
@@ -299,28 +259,37 @@ test('a failed current drawer speech refresh keeps usable options and can be ret
   }
 });
 
-test('an older drawer speech discovery cannot add obsolete voices after a newer refresh', async ({
+test('drawer speech options use cached catalogues without probing providers', async ({
   page
 }) => {
-  const data = await fixture(page, true);
+  const probes: string[] = [];
+  await page.route(
+    /\/api\/v1\/services\/tts\/(?:discover|refresh|[^/]+\/refresh)(?:\?.*)?$/,
+    (route) => {
+      probes.push(new URL(route.request().url()).pathname);
+      return route.fulfill({
+        status: 503,
+        json: {
+          error: { message: 'Provider probing is outside this read-only flow.' }
+        }
+      });
+    }
+  );
+  const data = await fixture(page);
   try {
     await data.releaseFirst(false, false);
-    await data.waitForDiscovery();
+    await expect(data.voice).toBeEnabled();
+    await expect(
+      data.voice.locator('option[value="current-voice"]')
+    ).toHaveCount(1);
     await data.reload();
     await expect(data.voice).toBeEnabled();
-    await expect(data.voice.locator('option[value="fresh-voice"]')).toHaveCount(
-      1
-    );
-    await data.releaseDiscovery();
     await expect(
-      data.voice.locator('option[value="obsolete-voice"]')
-    ).toHaveCount(0);
-    await expect(data.voice.locator('option[value="fresh-voice"]')).toHaveCount(
-      1
-    );
+      data.voice.locator('option[value="current-voice"]')
+    ).toHaveCount(1);
+    expect(probes).toEqual([]);
   } finally {
     await data.releaseFirst();
     await data.releaseSecond();
-    await data.releaseDiscovery();
   }
 });

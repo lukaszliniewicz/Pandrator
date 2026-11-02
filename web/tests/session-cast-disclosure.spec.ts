@@ -142,7 +142,19 @@ test('cast load errors stay visible while collapsed and retry succeeds', async (
 }) => {
   await signIn(page);
   const id = await createAudiobookSession(page);
-  const controls = `**/api/v1/sessions/${id}/generation-controls`;
+  const controls = `**/api/v1/sessions/${id}/generation-controls{,?*}`;
+  await page.goto(`/sessions/${id}`);
+  const card = page.getByRole('region', { name: 'Voices', exact: true });
+  await expect(card).toBeVisible();
+  const modeSaved = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+        `/api/v1/sessions/${id}/voice-setup` &&
+      response.request().method() === 'PATCH'
+  );
+  await card.getByRole('radio', { name: /Multiple voices/ }).check();
+  expect((await modeSaved).ok()).toBeTruthy();
+  await expect(card.getByTestId('cast-summary')).toContainText('0 characters');
   await page.route(controls, (route) =>
     route.fulfill({
       status: 500,
@@ -151,10 +163,7 @@ test('cast load errors stay visible while collapsed and retry succeeds', async (
       }
     })
   );
-  await page.goto(`/sessions/${id}`);
-  const card = page.getByRole('region', { name: 'Voices', exact: true });
-  await expect(card).toBeVisible();
-  await card.getByRole('radio', { name: /Multiple voices/ }).check();
+  await card.getByRole('button', { name: 'Refresh cast', exact: true }).click();
   const disclosure = card.getByTestId('cast-disclosure');
   await expect(disclosure).toHaveAttribute('open');
   await card.getByTestId('cast-summary').click();

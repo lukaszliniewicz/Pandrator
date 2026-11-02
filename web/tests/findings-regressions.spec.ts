@@ -242,20 +242,20 @@ test('background work distinguishes queue occupancy from healthy, stopped and un
       health: { state: 'healthy' }
     }
   ];
-  await page.route('**/api/v1/events/snapshot?*', async (route) => {
-    const response = await route.fetch();
-    await route.fulfill({
-      response,
-      json: { ...(await response.json()), jobs: { items: jobs } }
-    });
-  });
+  await signIn(page);
+  const snapshot = await (
+    await page.request.get('/api/v1/events/snapshot?view=compact')
+  ).json();
+  await page.route('**/api/v1/events/snapshot?*', (route) =>
+    route.fulfill({ json: { ...snapshot, jobs: { items: jobs } } })
+  );
   await page.route('**/api/v1/jobs?*', (route) =>
     route.fulfill({ json: { items: jobs } })
   );
   await page.route('**/api/v1/manager/services', (route) =>
     route.fulfill({ json: { items: services } })
   );
-  await signIn(page);
+  await page.reload();
   const work = page.getByLabel('Background work status');
   await expect(work.getByText('1 running · 1 queued')).toBeVisible();
   await expect(work.getByText(/Running: Transcription/)).toBeVisible();

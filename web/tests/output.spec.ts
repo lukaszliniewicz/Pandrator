@@ -27,6 +27,48 @@ async function createSession(page: Page, workflowKind: string) {
   return { session: await response.json(), headers };
 }
 
+async function attachExportSubtitles(
+  page: Page,
+  sessionId: string,
+  headers: Record<string, string>,
+  videoAssetId: string
+) {
+  const session = await (
+    await page.request.get(`/api/v1/sessions/${sessionId}`)
+  ).json();
+  const media = await page.request.post(
+    `/api/v1/sessions/${sessionId}/sources`,
+    {
+      headers: {
+        ...headers,
+        'If-Match': `"${session.revision}"`,
+        'Idempotency-Key': crypto.randomUUID()
+      },
+      data: { source_asset_id: videoAssetId, role: 'media' }
+    }
+  );
+  expect(media.ok(), await media.text()).toBeTruthy();
+  const subtitles = await page.request.post('/api/v1/uploads', {
+    headers,
+    multipart: {
+      session_id: sessionId,
+      purpose: 'source',
+      file: {
+        name: 'captions.srt',
+        mimeType: 'application/x-subrip',
+        buffer: Buffer.from(
+          '1\n00:00:01,000 --> 00:00:03,000\nA caption for export.\n'
+        )
+      }
+    }
+  });
+  expect(subtitles.ok(), await subtitles.text()).toBeTruthy();
+  const settings = await (
+    await page.request.get(`/api/v1/sessions/${sessionId}/settings/output`)
+  ).json();
+  expect(settings.context.subtitle_tracks.length).toBeGreaterThan(0);
+}
+
 test('voiceover minimum block gap defaults to 100 ms and saves custom values and zero', async ({
   page
 }) => {
@@ -211,6 +253,12 @@ test('Create export saves the visible burned-subtitle selection before submittin
     }
   });
   expect(uploaded.ok()).toBeTruthy();
+  await attachExportSubtitles(
+    page,
+    session.id,
+    headers,
+    (await uploaded.json()).source_asset_id
+  );
 
   const requests: string[] = [];
   let exportPayload: Record<string, unknown> | null = null;
@@ -918,7 +966,7 @@ test('Navigation after an accepted export job does not resubmit the export', asy
   expect(assemblyCalls).toBe(0);
 });
 
-test('Create export requires a completed audio version for a mixed media export', async ({
+test('Create export rejects mixed media when generated audio is unavailable', async ({
   page
 }) => {
   await signIn(page);
@@ -936,6 +984,12 @@ test('Create export requires a completed audio version for a mixed media export'
     }
   });
   expect(uploaded.ok()).toBeTruthy();
+  await attachExportSubtitles(
+    page,
+    session.id,
+    headers,
+    (await uploaded.json()).source_asset_id
+  );
 
   let exportCalls = 0;
   let assemblyCalls = 0;
@@ -981,7 +1035,9 @@ test('Create export requires a completed audio version for a mixed media export'
   await page.getByLabel('Audio result').selectOption('mixed');
   await page.getByRole('button', { name: 'Create export' }).click();
   await expect(
-    page.getByText('Select a completed audio version for this media export.')
+    page.getByText(
+      'Assemble the current recordings in Generation before exporting.'
+    )
   ).toBeVisible({ timeout: 10_000 });
 
   expect(exportCalls).toBe(0);
@@ -1302,6 +1358,12 @@ for (const target of ['media', 'subtitles']) {
         }
       });
       expect(uploaded.ok()).toBeTruthy();
+      await attachExportSubtitles(
+        page,
+        session.id,
+        headers,
+        (await uploaded.json()).source_asset_id
+      );
       await page.route(
         `**/api/v1/sessions/${session.id}/generation-runs*`,
         (route) =>

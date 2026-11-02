@@ -208,7 +208,7 @@ async function setup(
         }
       })
   );
-  await page.route('**/api/v1/voices', (route) =>
+  await page.route('**/api/v1/voices{,?*}', (route) =>
     route.fulfill({ json: { items: [] } })
   );
   await page.route(
@@ -638,10 +638,16 @@ test('audiobook voice mode is an atomic choice and exposes model-aware narration
   await card.screenshot({
     path: `../tmp/audiobook-casting-${info.project.name}.png`
   });
-  await page
-    .getByRole('button', { name: 'Narration settings', exact: true })
-    .click();
+  const narration = page.getByTestId('narration-settings');
+  await narration.locator('summary').click();
+  await expect(narration).toHaveJSProperty('open', true);
   await expect(
-    page.getByText('Model-aware', { exact: false }).first()
-  ).toBeVisible();
+    narration.getByRole('combobox', { name: /^Length policy/ })
+  ).toHaveValue('model');
+  await expect(
+    narration.getByRole('spinbutton', {
+      name: 'Model default (characters)',
+      exact: true
+    })
+  ).toBeDisabled();
 });

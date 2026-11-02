@@ -232,7 +232,12 @@
   );
 
   $effect(() => {
-    if (targetInitialized) return;
+    if (targetInitialized || catalogueLoading || draftTouched) return;
+    if (
+      initialVoiceId &&
+      !availableVoices.some((voice) => voice.id === initialVoiceId)
+    )
+      return;
     targetVoiceId = availableVoices.some((voice) => voice.id === initialVoiceId)
       ? initialVoiceId
       : '';
@@ -252,6 +257,7 @@
   }
 
   function chooseTarget() {
+    targetInitialized = true;
     const target = availableVoices.find((voice) => voice.id === targetVoiceId);
     const targetLanguage = String(target?.language ?? '').toLowerCase();
     if (targetLanguage) {

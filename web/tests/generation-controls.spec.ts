@@ -349,7 +349,7 @@ test('recognition settings and managed voice categories are editable without gen
   });
   const saved = page.waitForResponse(
     (response) =>
-      response.url().endsWith(`/api/v1/voices/${voice.id}`) &&
+      new URL(response.url()).pathname === `/api/v1/voices/${voice.id}` &&
       response.request().method() === 'PATCH'
   );
   await page.getByRole('button', { name: 'Save profile', exact: true }).click();
@@ -372,10 +372,13 @@ async function openAudiobookCast(page: Page) {
   return card;
 }
 
-test('catalog selection assigns a managed reference to a character', async ({
+test('catalog selection retains an unprepared reference as an unsaved cast draft', async ({
   page
 }) => {
   const { sid, csrf } = await setup(page);
+  const original = await (
+    await page.request.get(`/api/v1/sessions/${sid}/generation-controls`)
+  ).json();
   const panel = await openAudiobookCast(page);
   const name = `Cast reference ${crypto.randomUUID()}`;
   const created = await page.request.post('/api/v1/voices', {
@@ -383,7 +386,6 @@ test('catalog selection assigns a managed reference to a character', async ({
     data: { name, language: 'en' }
   });
   expect(created.ok()).toBeTruthy();
-  const voice = await created.json();
   await panel.getByRole('button', { name: 'Add speaker', exact: true }).click();
   const character = panel.locator('article');
   await character.getByLabel('Speaker name', { exact: true }).fill('Scrooge');
@@ -410,12 +412,21 @@ test('catalog selection assigns a managed reference to a character', async ({
     .getByRole('button', { name: 'Save characters and cast', exact: true })
     .click();
   await expect(
-    panel.getByText('Characters and cast saved.', { exact: false })
+    panel
+      .getByRole('alert')
+      .filter({
+        hasText: `Publish or link '${name}' to audio_cpp before casting it.`
+      })
+      .first()
   ).toBeVisible();
   const saved = await (
     await page.request.get(`/api/v1/sessions/${sid}/generation-controls`)
   ).json();
-  expect(saved.cast.characters[saved.characters[0].id].voice_id).toBe(voice.id);
+  expect(saved).toEqual(original);
+  await expect(character.locator('p').filter({ hasText: name })).toBeVisible();
+  await expect(
+    panel.getByText('Unsaved character or cast changes')
+  ).toBeVisible();
 });
 
 test('character dictionary and cast remain usable on mobile without synthesis', async ({

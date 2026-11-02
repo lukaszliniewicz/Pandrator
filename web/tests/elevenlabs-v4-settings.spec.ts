@@ -55,7 +55,7 @@ for (const width of [1280, 390]) {
         json: { services: [service], default_service: 'elevenlabs' }
       })
     );
-    await page.route('**/api/v1/voices', (route) =>
+    await page.route('**/api/v1/voices{,?*}', (route) =>
       route.fulfill({ json: { items: [] } })
     );
     const settingsUrl = `/api/v1/sessions/${session.id}/settings/tts`;

@@ -95,7 +95,7 @@ for (const saveAsDefaults of [false, true]) {
     await page.route('**/api/v1/services/tts**', (route) =>
       route.fulfill({ json: { services, default_service: 'audio_cpp' } })
     );
-    await page.route('**/api/v1/voices', (route) =>
+    await page.route('**/api/v1/voices{,?*}', (route) =>
       route.fulfill({ json: { items: [] } })
     );
     await page.goto(`/sessions/${session.id}`);
@@ -163,13 +163,18 @@ test('global service picker uses catalogue policy and clears an old selection on
   page
 }, testInfo) => {
   await signIn(page);
+  const defaultsContext = await (
+    await page.request.get('/api/v1/defaults/tts')
+  ).json();
   await page.route('**/api/v1/services/tts**', (route) =>
     route.fulfill({ json: { services, default_service: 'audio_cpp' } })
   );
-  await page.route('**/api/v1/defaults/tts', (route) =>
+  await page.route('**/api/v1/defaults/tts{,?*}', (route) =>
     route.fulfill({
       json: {
+        ...defaultsContext,
         section: 'tts',
+        can_manage: true,
         revision: 1,
         builtin: { service: 'audio_cpp', model: '', voice: '' },
         value: {
@@ -186,7 +191,7 @@ test('global service picker uses catalogue policy and clears an old selection on
     })
   );
   let saved: Record<string, unknown> | null = null;
-  await page.route('**/api/v1/settings/defaults.tts', (route) => {
+  await page.route('**/api/v1/settings/defaults.tts{,?*}', (route) => {
     saved = route.request().postDataJSON().value;
     return route.fulfill({ json: { value: saved, revision: 2 } });
   });
@@ -195,7 +200,7 @@ test('global service picker uses catalogue policy and clears an old selection on
   const panel = page
     .locator('details')
     .filter({ has: page.locator('summary').filter({ hasText: /^TTS$/ }) });
-  const select = panel.getByRole('combobox', { name: 'Service', exact: true });
+  const select = panel.getByRole('combobox', { name: /^Service/ });
   await expect(select).toHaveValue('kobold_qwen');
   await expect(select.locator('option')).toHaveText([
     'audio.cpp',
@@ -203,7 +208,7 @@ test('global service picker uses catalogue policy and clears an old selection on
     'Kokoro'
   ]);
   await select.selectOption('audio_cpp');
-  await panel.getByRole('button', { name: 'Save global defaults' }).click();
+  await panel.getByRole('button', { name: 'Save workspace defaults' }).click();
   await expect
     .poll(() => saved)
     .toMatchObject({

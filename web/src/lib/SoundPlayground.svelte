@@ -278,6 +278,7 @@
     try {
       const result = await choose(id);
       if (result && restoreRequest(result, reuseSeed)) {
+        setupOpen = true;
         await tick();
         promptInput.focus();
         promptInput.scrollIntoView({ behavior: 'smooth', block: 'center' });

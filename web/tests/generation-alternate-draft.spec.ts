@@ -154,7 +154,7 @@ async function fixture(page: Page) {
       }
     })
   );
-  await page.route('**/api/v1/voices', (route) =>
+  await page.route('**/api/v1/voices{,?*}', (route) =>
     route.fulfill({ json: { items: [] } })
   );
   await page.route('**/api/v1/rvc/models', (route) =>

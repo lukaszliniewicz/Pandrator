@@ -128,6 +128,7 @@ class AppState {
   }
 
   canManageWorkspace(workspaceId?: string) {
+    if (this.projectLink) return false;
     if (!this.collaborationEnabled) return this.authenticated;
     return Boolean(
       workspaceId &&

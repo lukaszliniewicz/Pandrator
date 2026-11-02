@@ -62,10 +62,10 @@ export async function voiceReferenceFixture(page: Page, reviewed = true) {
   await page.route('**/api/v1/services/tts**', (route) =>
     route.fulfill({ json: { default_service: '', services: [] } })
   );
-  await page.route(`**/api/v1/voices/${a.id}/samples`, (route) =>
+  await page.route(`**/api/v1/voices/${a.id}/samples{,?*}`, (route) =>
     route.fulfill({ json: { items: samples } })
   );
-  await page.route(`**/api/v1/voices/${b.id}/samples`, (route) =>
+  await page.route(`**/api/v1/voices/${b.id}/samples{,?*}`, (route) =>
     route.fulfill({
       json: {
         items: [

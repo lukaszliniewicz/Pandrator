@@ -145,7 +145,12 @@ for (const width of [1280, 390]) {
       fullPage: true
     });
     // The submit handler must guard programmatic submissions as well as clicks.
-    await page.locator('form').first().dispatchEvent('submit');
+    await page
+      .locator('form')
+      .filter({
+        has: page.getByRole('button', { name: 'Generate', exact: true })
+      })
+      .dispatchEvent('submit');
     await expect(page.getByRole('alert')).toContainText(
       'Choose an available model and backend'
     );
@@ -233,7 +238,12 @@ test('reusing an incompatible take cannot submit until a compatible model is cho
   await expect(
     page.getByRole('button', { name: 'Generate', exact: true })
   ).toBeDisabled();
-  await page.locator('form').first().dispatchEvent('submit');
+  await page
+    .locator('form')
+    .filter({
+      has: page.getByRole('button', { name: 'Generate', exact: true })
+    })
+    .dispatchEvent('submit');
   await expect(page.getByRole('alert')).toContainText(
     'Choose an available model and backend'
   );
@@ -308,6 +318,11 @@ for (const width of [1280, 390]) {
       music: yueModel,
       candidates: [instrumentalCandidate]
     });
+    const tools = page.locator('dialog[data-workspace-tools]');
+    if (width === 390 && (await tools.isVisible())) {
+      await page.keyboard.press('Escape');
+      await expect(tools).not.toBeVisible();
+    }
     await page
       .getByRole('button', { name: 'Use settings', exact: true })
       .click();

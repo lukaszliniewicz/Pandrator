@@ -813,7 +813,8 @@
       throw new Error(
         'Reload these settings before saving workspace defaults.'
       );
-    if (!canManageDefaults || !session.workspace_id)
+    const workspaceId = stored.workspace_id ?? session.workspace_id;
+    if (!workspaceId || !appState.canManageWorkspace(workspaceId))
       throw new Error('Workspace managers can change these defaults.');
     await sessionApi.saveDefaults(
       section,
@@ -822,7 +823,7 @@
         ...stored.global,
         ...value
       },
-      session.workspace_id
+      workspaceId
     );
     completed.push(`${sectionDisplay(section)} defaults`);
     const cleaned = { ...(stored.override ?? {}) };

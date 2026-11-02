@@ -129,14 +129,18 @@ async function attachRecording(
   buffer: Buffer
 ) {
   const card = page.getByRole('region', { name: 'Project source' });
-  await card.getByRole('button', { name: 'Attach audio or video' }).click();
+  await card
+    .getByRole('button', {
+      name: /^(?:Attach audio or video|Replace recording)/
+    })
+    .click();
   const picker = page.getByRole('dialog', { name: 'Add a source' });
   await expect(picker).toBeVisible();
   await picker
     .locator('input[type="file"]')
     .setInputFiles({ name, mimeType, buffer });
   await picker
-    .getByRole('button', { name: 'Add and select', exact: true })
+    .getByRole('button', { name: 'Review replacement', exact: true })
     .click();
   const confirmation = page.getByRole('dialog', {
     name: 'Use this associated recording?'

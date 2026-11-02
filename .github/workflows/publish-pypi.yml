@@ -3,6 +3,10 @@ name: Publish Python packages
 on:
   workflow_dispatch:
     inputs:
+      publish_manager:
+        description: Publish Manager (disable when its version is unchanged)
+        type: boolean
+        default: true
       publish_mcp:
         description: Publish MCP (disable when its version is unchanged)
         type: boolean
@@ -106,6 +110,7 @@ jobs:
           packages-dir: dist/pandrator
 
   publish-manager:
+    if: inputs.publish_manager
     name: Publish Pandrator Manager to PyPI
     needs: build
     runs-on: ubuntu-22.04

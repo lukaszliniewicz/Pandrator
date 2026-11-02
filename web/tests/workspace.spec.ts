@@ -72,7 +72,9 @@ test('wizard offers Simple and Advanced and creates a guided subtitle workspace'
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Review', exact: true }).click();
   await page.getByLabel('Project name').fill(sessionName);
-  await page.getByRole('button', { name: 'Create workspace' }).click();
+  await page
+    .getByRole('button', { name: 'Create project', exact: true })
+    .click();
   await page.waitForURL(/\/sessions\/[^/?]+$/);
   await expect(page.getByRole('heading', { name: sessionName })).toBeVisible({
     timeout: 20_000
@@ -2340,7 +2342,7 @@ test('alternate regeneration sends one selected-only setting set and returns to 
       })
     })
   );
-  await page.route('**/api/v1/voices', (route) =>
+  await page.route('**/api/v1/voices{,?*}', (route) =>
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({ items: [] })

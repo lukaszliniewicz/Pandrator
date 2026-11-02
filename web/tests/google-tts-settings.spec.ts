@@ -69,7 +69,7 @@ for (const provider of ['gemini', 'vertex_ai']) {
           json: { services: [service], default_service: provider }
         })
       );
-      await page.route('**/api/v1/voices', (route) =>
+      await page.route('**/api/v1/voices{,?*}', (route) =>
         route.fulfill({ json: { items: [] } })
       );
       const settingsUrl = `/api/v1/sessions/${session.id}/settings/tts`;

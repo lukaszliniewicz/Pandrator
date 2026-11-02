@@ -99,7 +99,7 @@ test('microphone cleanup sends the flag with the original voice revision', async
   await mockEmptyTtsCatalogue(page);
 
   let saved = false;
-  await page.route(`**/api/v1/voices/${voice.id}/samples`, (route) =>
+  await page.route(`**/api/v1/voices/${voice.id}/samples{,?*}`, (route) =>
     route.fulfill({
       contentType: 'application/json',
       json: {
@@ -119,7 +119,7 @@ test('microphone cleanup sends the flag with the original voice revision', async
   let uploadUrl = '';
   let ifMatch = '';
   let uploadBody = '';
-  await page.route('**/api/v1/voices/*/samples', async (route) => {
+  await page.route('**/api/v1/voices/*/samples{,?*}', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     uploadUrl = route.request().url();
     ifMatch = route.request().headers()['if-match'] ?? '';
@@ -184,13 +184,13 @@ test('failed cleanup keeps the local recording for retry', async ({
   const voice = await createVoice(page, voiceName);
   await mockEmptyTtsCatalogue(page);
 
-  await page.route(`**/api/v1/voices/${voice.id}/samples`, (route) =>
+  await page.route(`**/api/v1/voices/${voice.id}/samples{,?*}`, (route) =>
     route.fulfill({
       contentType: 'application/json',
       json: { items: [] }
     })
   );
-  await page.route('**/api/v1/voices/*/samples', async (route) => {
+  await page.route('**/api/v1/voices/*/samples{,?*}', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     await route.fulfill({
       contentType: 'application/json',
@@ -279,13 +279,13 @@ test('cancel during a slow upload cancels the exact returned job', async ({
   const voice = await createVoice(page, voiceName);
   await mockEmptyTtsCatalogue(page);
 
-  await page.route(`**/api/v1/voices/${voice.id}/samples`, (route) =>
+  await page.route(`**/api/v1/voices/${voice.id}/samples{,?*}`, (route) =>
     route.fulfill({
       contentType: 'application/json',
       json: { items: [] }
     })
   );
-  await page.route('**/api/v1/voices/*/samples', async (route) => {
+  await page.route('**/api/v1/voices/*/samples{,?*}', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     await new Promise((resolve) => setTimeout(resolve, 2_000));
     await route.fulfill({
@@ -361,13 +361,13 @@ test('a failed cancel call is reported instead of a false cancellation', async (
   const voice = await createVoice(page, voiceName);
   await mockEmptyTtsCatalogue(page);
 
-  await page.route(`**/api/v1/voices/${voice.id}/samples`, (route) =>
+  await page.route(`**/api/v1/voices/${voice.id}/samples{,?*}`, (route) =>
     route.fulfill({
       contentType: 'application/json',
       json: { items: [] }
     })
   );
-  await page.route('**/api/v1/voices/*/samples', async (route) => {
+  await page.route('**/api/v1/voices/*/samples{,?*}', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     await route.fulfill({
       contentType: 'application/json',
@@ -433,13 +433,13 @@ test('confirmed server cancellation keeps the recording for retry', async ({
   const voice = await createVoice(page, voiceName);
   await mockEmptyTtsCatalogue(page);
 
-  await page.route(`**/api/v1/voices/${voice.id}/samples`, (route) =>
+  await page.route(`**/api/v1/voices/${voice.id}/samples{,?*}`, (route) =>
     route.fulfill({
       contentType: 'application/json',
       json: { items: [] }
     })
   );
-  await page.route('**/api/v1/voices/*/samples', async (route) => {
+  await page.route('**/api/v1/voices/*/samples{,?*}', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     await route.fulfill({
       contentType: 'application/json',

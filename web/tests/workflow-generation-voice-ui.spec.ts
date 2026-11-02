@@ -129,13 +129,13 @@ test('standalone voice library lets users choose a cloning provider', async ({
   await page.route('**/api/v1/services/tts**', (route) =>
     route.fulfill({ contentType: 'application/json', json: services })
   );
-  await page.route('**/api/v1/voices', (route) =>
+  await page.route('**/api/v1/voices{,?*}', (route) =>
     route.fulfill({
       contentType: 'application/json',
       json: { items: [managedVoice] }
     })
   );
-  await page.route('**/api/v1/voices/managed-voice/samples', (route) =>
+  await page.route('**/api/v1/voices/managed-voice/samples{,?*}', (route) =>
     route.fulfill({
       contentType: 'application/json',
       json: {
@@ -234,7 +234,7 @@ test('generation settings preserve provider availability and voice language choi
   await page.route('**/api/v1/services/tts**', (route) =>
     route.fulfill({ contentType: 'application/json', json: services })
   );
-  await page.route('**/api/v1/voices', (route) =>
+  await page.route('**/api/v1/voices{,?*}', (route) =>
     route.fulfill({
       contentType: 'application/json',
       json: {
@@ -399,6 +399,9 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
   expect(created.ok()).toBeTruthy();
   const session = await created.json();
   const builtin = 'tts_models/multilingual/multi-dataset/xtts_v2';
+  const catalogueContext = await (
+    await page.request.get('/api/v1/services/tts')
+  ).json();
   let legacy = false;
   let installed = false;
   let uploadAttempt = 0;
@@ -407,6 +410,7 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
+        ...catalogueContext,
         default_service: 'xtts',
         services: [
           {
@@ -423,7 +427,7 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
       })
     })
   );
-  await page.route('**/api/v1/voices', (route) =>
+  await page.route('**/api/v1/voices{,?*}', (route) =>
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({ items: [] })
@@ -457,7 +461,9 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
     }
     if (method === 'DELETE') {
       deletedModelIds.push(
-        decodeURIComponent(route.request().url()).split('/models/')[1]
+        decodeURIComponent(new URL(route.request().url()).pathname).split(
+          '/models/'
+        )[1]
       );
       await route.fulfill({
         contentType: 'application/json',

@@ -51,6 +51,17 @@ const client = async () =>
     )
   ).appState;
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test('Solo project visitors cannot manage workspace defaults', async () => {
+  const state = await client();
+  state.authenticated = true;
+  state.linkContext = { id: 'visitor-link' };
+  assert.equal(state.canManageWorkspace('personal-workspace'), false);
+  state.linkContext = null;
+  assert.equal(state.canManageWorkspace('personal-workspace'), true);
+  state.authenticated = false;
+  assert.equal(state.canManageWorkspace('personal-workspace'), false);
+});
 function deferred() {
   let resolve;
   const promise = new Promise((done) => {

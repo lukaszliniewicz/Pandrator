@@ -18,7 +18,7 @@ for (const width of [1280, 390]) {
       const pending = gate();
       const started = gate();
       await page.route(
-        `**/api/v1/voices/${f.a.id}/samples/first`,
+        `**/api/v1/voices/${f.a.id}/samples/first{,?*}`,
         async (route) => {
           started.release();
           await pending.ready;
@@ -35,8 +35,9 @@ for (const width of [1280, 390]) {
       await f.second.focus();
       const refreshed = page.waitForResponse(
         (response) =>
-          response.url().endsWith(`/voices/${f.a.id}/samples`) &&
-          response.request().method() === 'GET'
+          new URL(response.url()).pathname.endsWith(
+            `/voices/${f.a.id}/samples`
+          ) && response.request().method() === 'GET'
       );
       pending.release();
       await refreshed;
@@ -61,7 +62,7 @@ for (const width of [1280, 390]) {
       const pending = gate();
       const started = gate();
       await page.route(
-        `**/api/v1/voices/${f.a.id}/samples/first/transcript`,
+        `**/api/v1/voices/${f.a.id}/samples/first/transcript{,?*}`,
         async (route: Route) => {
           expect(route.request().postDataJSON().transcript).toBe(
             'Submitted first'
@@ -80,8 +81,9 @@ for (const width of [1280, 390]) {
       await first.fill('Newer first draft');
       const refreshed = page.waitForResponse(
         (response) =>
-          response.url().endsWith(`/voices/${f.a.id}/samples`) &&
-          response.request().method() === 'GET'
+          new URL(response.url()).pathname.endsWith(
+            `/voices/${f.a.id}/samples`
+          ) && response.request().method() === 'GET'
       );
       pending.release();
       await refreshed;
@@ -101,7 +103,7 @@ for (const width of [1280, 390]) {
       await f.rows.nth(0).locator('textarea').fill('  Saved after trim  ');
       await f.second.fill('');
       await page.route(
-        `**/api/v1/voices/${f.a.id}/samples/first/transcript`,
+        `**/api/v1/voices/${f.a.id}/samples/first/transcript{,?*}`,
         async (route) => {
           const transcript = route.request().postDataJSON().transcript;
           expect(transcript).toBe('Saved after trim');
@@ -110,7 +112,7 @@ for (const width of [1280, 390]) {
         }
       );
       const refreshed = page.waitForResponse((response) =>
-        response.url().endsWith(`/voices/${f.a.id}/samples`)
+        new URL(response.url()).pathname.endsWith(`/voices/${f.a.id}/samples`)
       );
       await f.rows
         .nth(0)
@@ -158,7 +160,7 @@ for (const width of [1280, 390]) {
       page.on('pageerror', (error) => pageErrors.push(error.message));
       await f.second.fill('Draft through failed refresh');
       let failed = true;
-      await page.route(`**/api/v1/voices/${f.a.id}/samples`, (route) =>
+      await page.route(`**/api/v1/voices/${f.a.id}/samples{,?*}`, (route) =>
         failed
           ? route.fulfill({
               status: 503,
@@ -196,7 +198,7 @@ for (const width of [1280, 390]) {
       page
     }) => {
       const f = await fixture(page);
-      await page.route(`**/api/v1/voices/${f.a.id}/samples`, (route) =>
+      await page.route(`**/api/v1/voices/${f.a.id}/samples{,?*}`, (route) =>
         route.request().method() === 'POST'
           ? route.fulfill({
               status: 202,
@@ -243,7 +245,7 @@ for (const width of [1280, 390]) {
         const pending = gate();
         const started = gate();
         await page.route(
-          `**/api/v1/voices/${f.a.id}/samples/second/transcribe`,
+          `**/api/v1/voices/${f.a.id}/samples/second/transcribe{,?*}`,
           (route) =>
             route.fulfill({
               status: 202,
@@ -289,13 +291,16 @@ for (const width of [1280, 390]) {
       const pending = gate();
       const started = gate();
       const submitted: string[] = [];
-      await page.route('**/api/v1/voices/*/samples/*/transcribe', (route) => {
-        submitted.push(route.request().url());
-        return route.fulfill({
-          status: 202,
-          json: { id: 'batch-job', status: 'queued' }
-        });
-      });
+      await page.route(
+        '**/api/v1/voices/*/samples/*/transcribe{,?*}',
+        (route) => {
+          submitted.push(route.request().url());
+          return route.fulfill({
+            status: 202,
+            json: { id: 'batch-job', status: 'queued' }
+          });
+        }
+      );
       await page.route('**/api/v1/jobs/batch-job', async (route) => {
         started.release();
         await pending.ready;
@@ -337,11 +342,14 @@ for (const width of [1280, 390]) {
       await expect(f.rows.locator('textarea')).toHaveValue('Other voice saved');
       const pending = gate();
       const started = gate();
-      await page.route(`**/api/v1/voices/${f.a.id}/samples`, async (route) => {
-        started.release();
-        await pending.ready;
-        await route.fulfill({ json: { items: f.samples } });
-      });
+      await page.route(
+        `**/api/v1/voices/${f.a.id}/samples{,?*}`,
+        async (route) => {
+          started.release();
+          await pending.ready;
+          await route.fulfill({ json: { items: f.samples } });
+        }
+      );
       await selectVoice(page, f.a.name);
       await started.ready;
       await selectVoice(page, f.b.name);
@@ -349,7 +357,7 @@ for (const width of [1280, 390]) {
       await f.rows.locator('summary').click();
       await f.rows.locator('textarea').fill('Current voice draft');
       const late = page.waitForResponse((response) =>
-        response.url().endsWith(`/voices/${f.a.id}/samples`)
+        new URL(response.url()).pathname.endsWith(`/voices/${f.a.id}/samples`)
       );
       pending.release();
       await late;

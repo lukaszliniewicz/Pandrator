@@ -45,7 +45,7 @@ for (const width of [1280, 390]) {
           const pending = gate();
           const started = gate();
           const renamed = `${f.a.name} renamed`;
-          await page.route(`**/api/v1/voices/${f.a.id}`, async (route) => {
+          await page.route(`**/api/v1/voices/${f.a.id}{,?*}`, async (route) => {
             if (route.request().method() !== 'PATCH') return route.fallback();
             expect(route.request().headers()['if-match']).toBe(
               `"${f.a.revision}"`
@@ -159,7 +159,7 @@ for (const width of [1280, 390]) {
       }) => {
         const f = await voiceReferenceFixture(page);
         await f.second.fill('Unsaved sample through rejected metadata');
-        await page.route(`**/api/v1/voices/${f.a.id}`, (route) =>
+        await page.route(`**/api/v1/voices/${f.a.id}{,?*}`, (route) =>
           route.request().method() === 'PATCH'
             ? route.fulfill({
                 status: 503,
@@ -207,7 +207,7 @@ for (const width of [1280, 390]) {
       const started = gate();
       const submitted = `${f.a.name} submitted`;
       const newer = `${f.a.name} newer draft`;
-      await page.route(`**/api/v1/voices/${f.a.id}`, async (route) => {
+      await page.route(`**/api/v1/voices/${f.a.id}{,?*}`, async (route) => {
         if (route.request().method() !== 'PATCH') return route.fallback();
         started.release();
         await pending.ready;

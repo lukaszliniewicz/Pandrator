@@ -29,16 +29,16 @@ opens Pandrator in your browser. Older workspace data can still be imported.
 For the retired Qt desktop interface, use an
 [older release](https://github.com/lukaszliniewicz/Pandrator/releases).
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.0/PandratorManager-0.9.31-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.0/PandratorManager-0.9.31-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.1/PandratorManager-0.9.31-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.1/PandratorManager-0.9.31-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.0 / Manager 0.9.31
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.1 / Manager 0.9.31
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-## New in 0.14.0
+## New in 0.14.1
 
 - **Work with a team.** Enable individual accounts and shared workspaces when you need them. Solo remains the default, and existing projects stay private.
 - **Invite a project collaborator or translation reviewer.** Optional expiring links let you share one project or collect corrections for approval.
@@ -47,7 +47,7 @@ Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.0 / Manager 0.9.31
 - **Try more local voices.** audio.cpp 0.9.3 adds Phonon, Ming 3.0 and XTTS routes, expands Kitten's voices and languages, and supports Drama 3 directions and disk-backed experts. Model licences and hardware needs vary.
 - **Recover long jobs more easily.** Exports can wait for disk space and resume; independent jobs can use an optional second worker.
 
-See the [0.14.0 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.14.0) and [detailed changes](docs/release-changes-0.14.0.md).
+See the [0.14.1 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.14.1) and [detailed changes](docs/release-changes-0.14.1.md).
 
 ## Try your first workflow
 

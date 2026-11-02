@@ -83,7 +83,7 @@ test('project TTS settings filter MAI voices by model and language and retain mu
   await page.route('**/api/v1/services/tts**', (route) =>
     route.fulfill({ json: { services, default_service: 'mai' } })
   );
-  await page.route('**/api/v1/voices', (route) =>
+  await page.route('**/api/v1/voices{,?*}', (route) =>
     route.fulfill({ json: { items: [] } })
   );
   const settingsUrl = `/api/v1/sessions/${session.id}/settings/tts`;

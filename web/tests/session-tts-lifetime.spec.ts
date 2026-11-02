@@ -39,6 +39,9 @@ async function fixture(page: Page, publication = false) {
   });
   expect(created.ok()).toBeTruthy();
   const sessionId = (await created.json()).id as string;
+  const catalogueContext: Record<string, unknown> = await (
+    await page.request.get('/api/v1/services/tts')
+  ).json();
   const settingsUrl = `/api/v1/sessions/${sessionId}/settings/tts`;
   const settings = await (await page.request.get(settingsUrl)).json();
   await page.route(`**${settingsUrl}`, async (route) => {
@@ -72,6 +75,7 @@ async function fixture(page: Page, publication = false) {
   let holdDiscovery = false;
   let holdCatalogue = false;
   const body = {
+    ...catalogueContext,
     view: 'compact',
     services: publication
       ? services.map((service) => ({
@@ -85,6 +89,7 @@ async function fixture(page: Page, publication = false) {
     default_service: 'provider_b'
   };
   const localVoice = {
+    workspace_id: catalogueContext.workspace_id,
     id: 'local-publication-voice',
     name: 'Publication narrator',
     language: 'en',
@@ -104,7 +109,8 @@ async function fixture(page: Page, publication = false) {
       async (route) => {
         expect(route.request().method()).toBe('POST');
         expect(route.request().headers()['if-match']).toBe('"1"');
-        submittedService = route.request().url().split('/').at(-1) ?? '';
+        submittedService =
+          new URL(route.request().url()).pathname.split('/').at(-1) ?? '';
         await route.fulfill({
           json: {
             id: 'controlled-publication-job',
@@ -125,7 +131,7 @@ async function fixture(page: Page, publication = false) {
     }
     await route.fulfill({ json: body });
   });
-  await page.route('**/api/v1/voices', async (route) => {
+  await page.route('**/api/v1/voices{,?*}', async (route) => {
     if (holdReadback) {
       delayedReadback = route;
       return;
@@ -139,15 +145,19 @@ async function fixture(page: Page, publication = false) {
         : { json: { items: library } }
     );
   });
-  await page.route('**/api/v1/services/tts/discover', async (route) => {
-    if (
-      holdDiscovery &&
-      route.request().postDataJSON().service_id === 'provider_a'
-    ) {
+  await page.route('**/api/v1/services/tts/*/refresh{,?*}', async (route) => {
+    const serviceId = new URL(route.request().url()).pathname.split('/').at(-2);
+    if (holdCatalogue) {
+      delayedCatalogue = route;
+      return;
+    }
+    if (holdDiscovery && serviceId === 'provider_a') {
       delayedDiscovery = route;
       return;
     }
-    await route.fulfill({ json: { success: true, models: [], voices: [] } });
+    await route.fulfill({
+      json: { service: body.services.find((item) => item.id === serviceId) }
+    });
   });
   await page.goto(`/sessions/${sessionId}`);
   const card = page
@@ -258,6 +268,9 @@ async function fixture(page: Page, publication = false) {
     async delayDiscovery() {
       holdDiscovery = true;
       await dialog.getByLabel('TTS service').selectOption('provider_a');
+      await dialog
+        .getByRole('button', { name: 'Refresh service availability' })
+        .click();
       await expect.poll(() => Boolean(delayedDiscovery)).toBe(true);
     },
     async releaseDiscovery() {
@@ -266,7 +279,9 @@ async function fixture(page: Page, publication = false) {
         const route = delayedDiscovery;
         delayedDiscovery = undefined;
         await settleResponse(route, {
-          json: { success: true, models: [], voices: [] }
+          json: {
+            service: body.services.find((item) => item.id === 'provider_a')
+          }
         });
       }
     },
@@ -291,11 +306,10 @@ async function fixture(page: Page, publication = false) {
               }
             : {
                 json: {
-                  ...body,
-                  services: body.services.map((service) => ({
-                    ...service,
-                    models: [...service.models, `fresh-${service.id}`]
-                  }))
+                  service: {
+                    ...body.services.find((item) => item.id === 'provider_b'),
+                    models: [...services[1].models, 'fresh-provider_b']
+                  }
                 }
               }
         );
@@ -382,7 +396,7 @@ for (const changeModel of [false, true]) {
 }
 
 for (const fail of [false, true]) {
-  test(`a late catalogue refresh ${fail ? 'failure' : 'response'} preserves a newer provider choice`, async ({
+  test(`a late provider refresh ${fail ? 'failure' : 'response'} preserves a newer provider choice`, async ({
     page
   }) => {
     const data = await fixture(page);
@@ -398,15 +412,15 @@ for (const fail of [false, true]) {
       );
       await expect(data.dialog.getByLabel('TTS model')).toHaveValue('model-a');
       if (fail) {
-        await expect(data.dialog.getByRole('alert')).toContainText(
-          'Controlled catalogue outage'
-        );
+        await expect(
+          data.dialog.getByText('Controlled catalogue outage', { exact: false })
+        ).toHaveCount(0);
       } else {
         await expect(
           data.dialog
             .getByLabel('TTS model')
             .locator('option[value="fresh-provider_a"]')
-        ).toHaveCount(1);
+        ).toHaveCount(0);
       }
       await expect(
         data.dialog.getByRole('combobox', { name: 'Voice', exact: true })
