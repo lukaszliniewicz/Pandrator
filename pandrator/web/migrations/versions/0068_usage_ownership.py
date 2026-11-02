@@ -19,6 +19,18 @@ _WORKSPACE_FK = "fk_usage_events_workspace_id_workspaces"
 _PROJECT_FK = "fk_usage_events_project_id_projects"
 _WORKSPACE_INDEX = "ix_usage_events_workspace_id"
 _PROJECT_INDEX = "ix_usage_events_project_id"
+_ADOPTION_LOOKUP_CACHE_INFO_KEY = "_pandrator_0068_usage_ownership_adoption_lookup_cache"
+
+
+class _AdoptionLookupCache:
+    __slots__ = ("project_owners", "workspace_states")
+
+    project_owners: dict[str, tuple[str, str]]
+    workspace_states: dict[str, str]
+
+    def __init__(self) -> None:
+        self.project_owners = {}
+        self.workspace_states = {}
 
 # These are the columns created by the historical model and migrations.  In
 # particular, integer/JSON Python-side defaults never became SQL defaults.
@@ -296,6 +308,14 @@ def _stored_id(value: Any, *, label: str) -> str:
 
 def _workspace_state(bind: sa.Connection, workspace_id: str) -> str:
     workspace_id = _stored_id(workspace_id, label="workspace ID")
+    cache = bind.info.get(_ADOPTION_LOOKUP_CACHE_INFO_KEY)
+    if isinstance(cache, _AdoptionLookupCache):
+        cached_state = cache.workspace_states.get(workspace_id)
+        if cached_state is not None:
+            return cached_state
+    else:
+        cache = None
+
     row = (
         bind.execute(
             sa.text("SELECT state FROM workspaces WHERE id = :workspace_id"),
@@ -308,7 +328,10 @@ def _workspace_state(bind: sa.Connection, workspace_id: str) -> str:
         raise RuntimeError(
             f"Cannot adopt usage ownership; workspace {workspace_id!r} is missing or invalid."
         )
-    return str(row["state"])
+    state = str(row["state"])
+    if cache is not None:
+        cache.workspace_states[workspace_id] = state
+    return state
 
 
 def _validate_translation_roots(
@@ -368,6 +391,14 @@ def _validate_translation_roots(
 
 def _project_owner(bind: sa.Connection, project_id: str) -> tuple[str, str]:
     project_id = _stored_id(project_id, label="project ID")
+    cache = bind.info.get(_ADOPTION_LOOKUP_CACHE_INFO_KEY)
+    if isinstance(cache, _AdoptionLookupCache):
+        cached_owner = cache.project_owners.get(project_id)
+        if cached_owner is not None:
+            return cached_owner
+    else:
+        cache = None
+
     row = (
         bind.execute(
             sa.text("SELECT workspace_id, source_session_id FROM projects WHERE id = :project_id"),
@@ -412,7 +443,10 @@ def _project_owner(bind: sa.Connection, project_id: str) -> tuple[str, str]:
         project_id=project_id,
         source_session_id=source_session_id,
     )
-    return workspace_id, project_id
+    owner = (workspace_id, project_id)
+    if cache is not None:
+        cache.project_owners[project_id] = owner
+    return owner
 
 
 def _session_owner(bind: sa.Connection, session_id: str) -> tuple[str, str]:
@@ -764,27 +798,38 @@ def _event_owner(
 def _load_adoption_plan(
     bind: sa.Connection, *, fallback_workspace_id: str
 ) -> dict[str, tuple[str, str | None]]:
-    rows = (
-        bind.execute(
-            sa.text(
-                "SELECT id, session_id, workflow_run_id, job_id, artifact_id, "
-                "generation_run_id, agent_run_id FROM usage_events ORDER BY id"
+    # This pass only reads the ownership graph. Reuse successful validation
+    # here, then discard it so later passes revalidate after any mutations.
+    had_previous_cache = _ADOPTION_LOOKUP_CACHE_INFO_KEY in bind.info
+    previous_cache = bind.info.get(_ADOPTION_LOOKUP_CACHE_INFO_KEY)
+    bind.info[_ADOPTION_LOOKUP_CACHE_INFO_KEY] = _AdoptionLookupCache()
+    try:
+        rows = (
+            bind.execute(
+                sa.text(
+                    "SELECT id, session_id, workflow_run_id, job_id, artifact_id, "
+                    "generation_run_id, agent_run_id FROM usage_events ORDER BY id"
+                )
             )
+            .mappings()
+            .all()
         )
-        .mappings()
-        .all()
-    )
-    plan: dict[str, tuple[str, str | None]] = {}
-    for row in rows:
-        event_id = _stored_id(row["id"], label="usage event ID")
-        plan[event_id] = _event_owner(
-            bind,
-            row,
-            fallback_workspace_id=fallback_workspace_id,
-        )
-    if len(plan) != len(rows):
-        raise RuntimeError("Cannot adopt usage ownership; event IDs are not unique.")
-    return plan
+        plan: dict[str, tuple[str, str | None]] = {}
+        for row in rows:
+            event_id = _stored_id(row["id"], label="usage event ID")
+            plan[event_id] = _event_owner(
+                bind,
+                row,
+                fallback_workspace_id=fallback_workspace_id,
+            )
+        if len(plan) != len(rows):
+            raise RuntimeError("Cannot adopt usage ownership; event IDs are not unique.")
+        return plan
+    finally:
+        if had_previous_cache:
+            bind.info[_ADOPTION_LOOKUP_CACHE_INFO_KEY] = previous_cache
+        else:
+            bind.info.pop(_ADOPTION_LOOKUP_CACHE_INFO_KEY, None)
 
 
 def _index_definitions(

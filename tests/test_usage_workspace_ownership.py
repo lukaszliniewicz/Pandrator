@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from pandrator.web.database import create_database_engine, sqlite_url
@@ -21,6 +23,9 @@ TABLE = "usage_events"
 NOW = "2026-10-23 13:20:00"
 WORKSPACE_INDEX = "ix_usage_events_workspace_id"
 PROJECT_INDEX = "ix_usage_events_project_id"
+_USAGE_OWNERSHIP_MIGRATION = import_module(
+    "pandrator.web.migrations.versions.0068_usage_ownership"
+)
 OLD_COLUMNS = (
     "id",
     "session_id",
@@ -92,6 +97,22 @@ def _config(path: Path) -> Config:
 def schema_at_0067(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("usage-schema-base") / "at-0067.sqlite"
     command.upgrade(_config(path), PREVIOUS_REVISION)
+    connection = sqlite3.connect(path)
+    try:
+        future_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'project_link_sessions'"
+        ).fetchone()
+        if future_table is not None:
+            # Revision 0087 adds this table with a browser_auth_sessions FK
+            # from revision 0073, which is absent in the historical 0067 schema.
+            row_count = connection.execute(
+                "SELECT COUNT(*) FROM project_link_sessions"
+            ).fetchone()
+            assert row_count is not None and row_count[0] == 0
+            connection.execute("DROP TABLE project_link_sessions")
+    finally:
+        connection.close()
     return path
 
 
@@ -1054,3 +1075,178 @@ def test_opaque_whitespace_root_ids_are_looked_up_without_normalization(
         assert connection.execute(
             "SELECT workspace_id, project_id FROM usage_events WHERE id = 'event-opaque'"
         ).fetchone() == (" workspace-opaque ", " project-opaque ")
+
+
+def test_adoption_plan_memoizes_reused_project_and_workspace_roots(
+    schema_at_0067: Path, tmp_path: Path
+) -> None:
+    path = tmp_path / "lookup-cache-256-events.sqlite"
+    _legacy_usage_database(schema_at_0067, path)
+    with sqlite3.connect(path) as connection:
+        _owner_id, fallback_workspace_id = _owner_workspace(connection)
+        workspace_id = "workspace-cache"
+        project_id = "project-cache"
+        session_id = "session-cache"
+        _create_workspace(connection, workspace_id)
+        _create_project_graph(
+            connection,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            root_session_id=session_id,
+        )
+        for index in range(256):
+            _insert_event(connection, f"event-cache-{index:03d}", session_id=session_id)
+
+    counts = {"projects": 0, "workspaces": 0}
+
+    def count_owner_lookups(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        normalized = " ".join(statement.lower().split())
+        if normalized.startswith("select workspace_id, source_session_id from projects "):
+            counts["projects"] += 1
+        elif normalized.startswith("select state from workspaces "):
+            counts["workspaces"] += 1
+
+    engine = create_database_engine(path)
+    event.listen(engine, "before_cursor_execute", count_owner_lookups)
+    try:
+        with engine.connect() as bind:
+            plan = _USAGE_OWNERSHIP_MIGRATION._load_adoption_plan(
+                bind,
+                fallback_workspace_id=fallback_workspace_id,
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_owner_lookups)
+        engine.dispose()
+
+    assert plan == {
+        f"event-cache-{index:03d}": (workspace_id, project_id) for index in range(256)
+    }
+    assert counts == {"projects": 1, "workspaces": 1}
+
+
+def test_adoption_plan_does_not_reuse_lookups_after_workspace_and_project_mutation(
+    schema_at_0067: Path, tmp_path: Path
+) -> None:
+    path = tmp_path / "lookup-cache-mutated-project.sqlite"
+    _legacy_usage_database(schema_at_0067, path)
+    with sqlite3.connect(path) as connection:
+        _owner_id, fallback_workspace_id = _owner_workspace(connection)
+        workspace_id = "workspace-cache-mutation"
+        project_id = "project-cache-mutation"
+        session_id = "session-cache-mutation"
+        _create_workspace(connection, workspace_id)
+        _create_project_graph(
+            connection,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            root_session_id=session_id,
+        )
+        _insert_event(connection, "event-cache-mutation", session_id=session_id)
+
+    engine = create_database_engine(path)
+    try:
+        with engine.connect() as bind:
+            expected = {"event-cache-mutation": (workspace_id, project_id)}
+            assert _USAGE_OWNERSHIP_MIGRATION._load_adoption_plan(
+                bind,
+                fallback_workspace_id=fallback_workspace_id,
+            ) == expected
+            bind.execute(
+                sa.text("UPDATE workspaces SET state = 'archived' WHERE id = :workspace_id"),
+                {"workspace_id": workspace_id},
+            )
+            assert _USAGE_OWNERSHIP_MIGRATION._workspace_state(bind, workspace_id) == "archived"
+            assert _USAGE_OWNERSHIP_MIGRATION._load_adoption_plan(
+                bind,
+                fallback_workspace_id=fallback_workspace_id,
+            ) == expected
+            bind.execute(
+                sa.text("UPDATE projects SET source_session_id = NULL WHERE id = :project_id"),
+                {"project_id": project_id},
+            )
+            with pytest.raises(RuntimeError, match="retained project.*sessions but no source session"):
+                _USAGE_OWNERSHIP_MIGRATION._load_adoption_plan(
+                    bind,
+                    fallback_workspace_id=fallback_workspace_id,
+                )
+    finally:
+        engine.dispose()
+
+
+def test_failed_adoption_plan_clears_cache_before_same_connection_retry(
+    schema_at_0067: Path, tmp_path: Path
+) -> None:
+    path = tmp_path / "lookup-cache-failed-retry.sqlite"
+    _legacy_usage_database(schema_at_0067, path)
+    with sqlite3.connect(path) as connection:
+        _owner_id, fallback_workspace_id = _owner_workspace(connection)
+        workspace_a = "workspace-cache-retry-a"
+        workspace_b = "workspace-cache-retry-b"
+        project_a = "project-cache-retry-a"
+        project_b = "project-cache-retry-b"
+        session_a = "session-cache-retry-a"
+        session_b = "session-cache-retry-b"
+        _create_workspace(connection, workspace_a)
+        _create_workspace(connection, workspace_b)
+        _create_project_graph(
+            connection,
+            workspace_id=workspace_a,
+            project_id=project_a,
+            root_session_id=session_a,
+        )
+        _create_project_graph(
+            connection,
+            workspace_id=workspace_b,
+            project_id=project_b,
+            root_session_id=session_b,
+        )
+        _insert_job(
+            connection,
+            "job-cache-retry-b",
+            workspace_id=workspace_b,
+            project_id=project_b,
+            session_id=session_b,
+        )
+        _insert_event(connection, "a-valid", session_id=session_a)
+        _insert_event(
+            connection,
+            "z-conflict",
+            session_id=session_a,
+            job_id="job-cache-retry-b",
+        )
+
+    engine = create_database_engine(path)
+    try:
+        with engine.connect() as bind:
+            with pytest.raises(RuntimeError, match="conflicting workspace roots"):
+                _USAGE_OWNERSHIP_MIGRATION._load_adoption_plan(
+                    bind,
+                    fallback_workspace_id=fallback_workspace_id,
+                )
+            bind.execute(
+                sa.text("UPDATE usage_events SET job_id = NULL WHERE id = 'z-conflict'")
+            )
+            bind.execute(
+                sa.text(
+                    "UPDATE projects SET workspace_id = :workspace_id WHERE id = :project_id"
+                ),
+                {"workspace_id": workspace_b, "project_id": project_a},
+            )
+
+            expected = {
+                "a-valid": (workspace_b, project_a),
+                "z-conflict": (workspace_b, project_a),
+            }
+            assert _USAGE_OWNERSHIP_MIGRATION._load_adoption_plan(
+                bind,
+                fallback_workspace_id=fallback_workspace_id,
+            ) == expected
+    finally:
+        engine.dispose()
