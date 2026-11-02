@@ -1914,6 +1914,19 @@
     }
     if (
       key === 'transcribe' &&
+      (hasAttachedCaptions && draft.captionAlignmentMethod !== 'asr'
+        ? draft.vadEnabled
+        : draft.sttEngine === 'moss'
+          ? draft.mossVadEnabled
+          : draft.vadEnabled) &&
+      !draft.vadModel.trim()
+    ) {
+      error =
+        'Choose a speech detector or enter the full path to an existing model file.';
+      return;
+    }
+    if (
+      key === 'transcribe' &&
       (!hasAttachedCaptions || draft.captionAlignmentMethod !== 'ctc') &&
       sttLanguageIssue
     ) {
@@ -2384,6 +2397,10 @@
               {sttCatalogue}
               {sttLanguageIssue}
               {subtitleSettingsPayload}
+              sessionId={session.id}
+              savedVadModel={String(
+                stageSettings.transcribe?.crispasr_vad_model ?? 'silero'
+              )}
             />
           {/if}
           {#if settingsStage.key === 'transcribe' || settingsStage.key === 'correct'}

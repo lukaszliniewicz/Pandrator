@@ -32935,6 +32935,226 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/transcription-readiness": {
+      "post": {
+        "description": "Read-only file-presence assessment. A positive result does not verify the native runtime or transcription quality.",
+        "operationId": "assessTranscriptionReadiness",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "settings": {
+                    "additionalProperties": false,
+                    "description": "Selection and toggle overrides only; credentials, cache roots, endpoints and executable paths are not accepted.",
+                    "properties": {
+                      "crispasr_vad_enabled": {
+                        "type": "boolean"
+                      },
+                      "crispasr_vad_model": {
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "moss_ctc_aligner_model": {
+                        "maxLength": 4096,
+                        "type": "string"
+                      },
+                      "moss_ctc_alignment_enabled": {
+                        "type": "boolean"
+                      },
+                      "moss_vad_enabled": {
+                        "type": "boolean"
+                      },
+                      "qwen_asr_chunk_mode": {
+                        "enum": [
+                          "auto",
+                          "fixed",
+                          "vad",
+                          "none"
+                        ],
+                        "type": "string"
+                      },
+                      "qwen_asr_model": {
+                        "enum": [
+                          "qwen3_asr_0_6b",
+                          "qwen3_asr_1_7b"
+                        ],
+                        "type": "string"
+                      },
+                      "stt_engine": {
+                        "enum": [
+                          "auto",
+                          "whisper",
+                          "parakeet",
+                          "moss",
+                          "qwen3",
+                          "azure_mai_transcribe_1_5",
+                          "azure_mai_transcribe_2"
+                        ],
+                        "type": "string"
+                      },
+                      "stt_language": {
+                        "maxLength": 80,
+                        "type": "string"
+                      },
+                      "stt_lid_backend": {
+                        "enum": [
+                          "auto",
+                          "whisper",
+                          "ecapa",
+                          "off",
+                          "none",
+                          "disabled"
+                        ],
+                        "type": "string"
+                      },
+                      "stt_model_quantization": {
+                        "enum": [
+                          "f16",
+                          "q8_0",
+                          "q5_0",
+                          "q4_k"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "settings"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "assets": {
+                      "items": {
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "verification": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id",
+                          "status",
+                          "verification"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "engine": {
+                      "type": "string"
+                    },
+                    "ready": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "runtime_check_required": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "schema_version": {
+                      "const": "1",
+                      "type": "string"
+                    },
+                    "scope": {
+                      "const": "local_model_files",
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "cached",
+                        "missing",
+                        "unresolved",
+                        "not_required"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "schema_version",
+                    "scope",
+                    "status",
+                    "ready",
+                    "engine",
+                    "assets",
+                    "runtime_check_required"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Selected local model file readiness"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Read permission denied"
+          },
+          "404": {
+            "description": "Session not found or not readable"
+          },
+          "413": {
+            "description": "Request exceeds 32 KiB"
+          },
+          "422": {
+            "description": "Invalid selection or request shape"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Assess selected local transcription files",
+        "x-required-scopes": [
+          "app.read"
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/translation-project": {
       "get": {
         "operationId": "getSessionTranslationProject",

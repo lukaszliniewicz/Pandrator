@@ -4,6 +4,8 @@
   import LanguageSelect from './LanguageSelect.svelte';
   import QwenTranscriptionControls from './QwenTranscriptionControls.svelte';
   import SubtitleLimitsSummary from './SubtitleLimitsSummary.svelte';
+  import TranscriptionReadiness from './TranscriptionReadiness.svelte';
+  import VadModelSelect from './VadModelSelect.svelte';
   import { type StageSettingsDraft } from './stage-settings-draft.svelte';
   import {
     sttLanguageProblem,
@@ -23,7 +25,9 @@
     capabilities,
     sttCatalogue,
     sttLanguageIssue,
-    subtitleSettingsPayload
+    subtitleSettingsPayload,
+    sessionId,
+    savedVadModel = 'silero'
   }: {
     draft: StageSettingsDraft;
     workflowKind: SessionRecord['workflow_kind'];
@@ -32,6 +36,8 @@
     sttCatalogue: SttCatalogue;
     sttLanguageIssue: string;
     subtitleSettingsPayload: SettingsPayload | null;
+    sessionId: string;
+    savedVadModel?: string;
   } = $props();
 
   const supportsSttCompute = (name: string) =>
@@ -46,13 +52,27 @@
 
   const sttOptionLabel = (engineId: string, label: string, timing: string) => {
     const info = capabilities?.stt?.models?.[engineId] ?? {};
-    const readiness = info.default
-      ? 'default'
-      : info.installed
-        ? 'ready'
-        : 'downloads on first use';
-    return `${label} · ${timing} · ${readiness}${sttLanguageProblem(capabilities, engineId, draft.originalLanguage) ? ' · unsupported language' : ''}`;
+    const runtime = info.available ? 'engine available' : 'engine unavailable';
+    return `${label} · ${timing} · ${runtime}${sttLanguageProblem(capabilities, engineId, draft.originalLanguage) ? ' · unsupported language' : ''}`;
   };
+
+  const readinessSettings = $derived({
+    stt_engine: draft.sttEngine,
+    stt_model_quantization: draft.sttQuantization,
+    stt_language: draft.originalLanguage,
+    stt_lid_backend: draft.sttLidBackend,
+    crispasr_vad_enabled: draft.vadEnabled,
+    crispasr_vad_model: draft.vadModel,
+    moss_vad_enabled: draft.mossVadEnabled,
+    moss_ctc_alignment_enabled: draft.mossCtcAlignmentEnabled,
+    qwen_asr_model: draft.qwenAsrModel,
+    qwen_asr_chunk_mode: draft.qwenChunkMode
+  });
+  const unsavedLocalFile = $derived(
+    !['silero', 'firered', 'marblenet', 'whisper-vad', 'webrtc'].includes(
+      draft.vadModel
+    ) && draft.vadModel !== savedVadModel
+  );
 </script>
 
 <VocalIsolationControl bind:value={draft.transcriptionVocalIsolation} />
@@ -254,22 +274,8 @@
             label="Validate against VAD"
             compact
           /></label
-        >{#if draft.vadEnabled}<label class="text-xs font-semibold"
-            ><ParameterLabel
-              section="stt"
-              name="crispasr_vad_model"
-              label="VAD model"
-              compact
-            /><select
-              bind:value={draft.vadModel}
-              class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-              ><option value="silero">Silero · recommended</option><option
-                value="firered">FireRedVAD · robust</option
-              ><option value="marblenet">MarbleNet · compact</option><option
-                value="whisper-vad">Whisper VAD · experimental</option
-              ></select
-            ></label
-          ><label class="text-xs font-semibold sm:col-span-2"
+        >{#if draft.vadEnabled}<VadModelSelect bind:value={draft.vadModel} />
+          <label class="text-xs font-semibold sm:col-span-2"
             ><ParameterLabel
               section="stt"
               name="crispasr_vad_threshold"
@@ -294,6 +300,13 @@
   {/if}
 {/if}
 {#if !hasAttachedCaptions || draft.captionAlignmentMethod !== 'ctc'}
+  {#if !isCloudStt(draft.sttEngine)}
+    <TranscriptionReadiness
+      {sessionId}
+      settings={readinessSettings}
+      {unsavedLocalFile}
+    />
+  {/if}
   <label class="text-sm font-semibold"
     ><ParameterLabel
       section="stt"
@@ -643,22 +656,8 @@
     {#if draft.sttEngine === 'moss' ? draft.mossVadEnabled : draft.vadEnabled}<div
         class="grid grid-cols-2 gap-3"
       >
+        <VadModelSelect bind:value={draft.vadModel} />
         <label class="text-xs font-semibold"
-          ><ParameterLabel
-            section="stt"
-            name="crispasr_vad_model"
-            label="VAD model"
-            compact
-          /><select
-            bind:value={draft.vadModel}
-            class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-            ><option value="silero">Silero · general purpose</option><option
-              value="firered">FireRedVAD · robust</option
-            ><option value="marblenet">MarbleNet · compact</option><option
-              value="whisper-vad">Whisper VAD · experimental</option
-            ></select
-          ></label
-        ><label class="text-xs font-semibold"
           ><ParameterLabel
             section="stt"
             name="crispasr_vad_threshold"

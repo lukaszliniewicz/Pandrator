@@ -123,6 +123,8 @@ The workflow is designed to survive an interrupted agent turn:
 - inspect upload state and continue only missing chunks;
 - replaying upload completion returns the original artifact result;
 - inspect durable jobs instead of starting replacements blindly;
+- after an uncertain branch-creation response, inspect the translation project
+  or replay the same idempotency key before creating more branches;
 - renew or release a passive batch lease deliberately;
 - re-plan after a stale-plan or revision conflict; and
 - resume an artifact download instead of restarting it.

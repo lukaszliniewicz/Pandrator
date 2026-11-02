@@ -588,6 +588,59 @@ class WorkflowExecutionPlanService:
                 return host not in {"localhost", "host.docker.internal"}
         return bool(provider and provider not in LOCAL_PROVIDER_IDS)
 
+    def _transcription_readiness(
+        self,
+        *,
+        session_id: str,
+        resolved: ResolvedWorkflowStage,
+        target_stage: str,
+    ) -> dict[str, Any]:
+        """Add an informational local-file summary without gating the plan."""
+
+        from pandrator.logic.dubbing.transcription_readiness import (
+            diagnose_transcription_readiness,
+        )
+
+        from .settings_policy import adapt_runtime_settings
+        from .workspace_settings import WorkspaceSettingsService
+
+        try:
+            payload = resolved.payload if isinstance(resolved.payload, dict) else {}
+            snapshot = payload.get("resolved_settings_snapshot")
+            stt_snapshot = snapshot.get("stt") if isinstance(snapshot, dict) else None
+            if isinstance(stt_snapshot, dict):
+                settings = adapt_runtime_settings("stt", stt_snapshot)
+            else:
+                stored = WorkspaceSettingsService(self.database).get(
+                    session_id, "stt"
+                )
+                settings = adapt_runtime_settings(
+                    "stt", dict(stored.get("effective") or {})
+                )
+
+            stage_settings = payload.get("stage_settings")
+            if isinstance(stage_settings, dict) and isinstance(
+                stage_settings.get("transcribe"), dict
+            ):
+                settings.update(stage_settings["transcribe"])
+            if target_stage == "transcribe" and isinstance(
+                payload.get("settings"), dict
+            ):
+                settings.update(payload["settings"])
+            return diagnose_transcription_readiness(settings)
+        except Exception:
+            # This field is a hint only. A filesystem or selection diagnostic
+            # must never block creation or execution of an otherwise valid plan.
+            return {
+                "schema_version": "1",
+                "scope": "local_model_files",
+                "status": "unresolved",
+                "ready": None,
+                "engine": "unresolved",
+                "assets": [],
+                "runtime_check_required": True,
+            }
+
     def _ordered_steps(
         self,
         *,
@@ -973,6 +1026,15 @@ class WorkflowExecutionPlanService:
             "created_at": _iso(now),
             "expires_at": _iso(expires_at),
         }
+        if any(
+            step.get("stage") == "transcribe" and step.get("decision") == "run"
+            for step in steps
+        ):
+            public_plan["transcription_readiness"] = self._transcription_readiness(
+                session_id=session_id,
+                resolved=resolved,
+                target_stage=target_stage,
+            )
         execution_payload = dict(resolved.payload)
         if continuation:
             planned_reuse_stages = {

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from pandrator.runtime import DataPaths
 
 from .artifacts import sha256_file
+from .fork_file_preparation import _PreparedForkFiles
 from .models import (
     Artifact,
     DispatchRun,
@@ -28,7 +29,7 @@ from .models import (
     TranslationProjectBranch,
     utcnow,
 )
-from .multilingual_setup import SECTION, canonical_language, read_setup
+from .multilingual_setup import SECTION, MultilingualSetup, canonical_language, read_setup
 from .outcome_plans import derive_legacy_outcome
 from .projects.identity import session_project, sync_project_name
 from .session_forks import SessionForkService
@@ -88,6 +89,7 @@ def _checkpoint(
     checkpoint_artifact_id: str,
     *,
     expected_hash: str | None = None,
+    verify_file: bool = True,
 ) -> tuple[Artifact, str]:
     checkpoint = session.get(Artifact, checkpoint_artifact_id)
     if checkpoint is None or checkpoint.session_id != source_session_id:
@@ -105,7 +107,7 @@ def _checkpoint(
         source_path = paths.managed_path(checkpoint.relative_path)
     except ValueError as error:
         raise TranslationProjectConflict(f"The {role} path is invalid.") from error
-    if not source_path.is_file() or sha256_file(source_path) != checkpoint.content_hash:
+    if verify_file and (not source_path.is_file() or sha256_file(source_path) != checkpoint.content_hash):
         raise TranslationProjectConflict(f"The {role} file is missing or changed.")
     revision_id = str((checkpoint.metadata_json or {}).get("revision_id") or "")
     if revision_id:
@@ -378,18 +380,49 @@ def get_session_project(
     return result
 
 
-def create_project_in_session(
-    db: Session,
-    source_session_id: str,
-    checkpoint_artifact_id: str,
-    name: str,
-    expected_revision: int,
-    *,
-    paths: DataPaths,
-    create_planned_branches: bool = False,
-    session_forks: SessionForkService | None = None,
-    created_directories: list[Path] | None = None,
-) -> dict[str, Any]:
+def _planned_branch_targets(setup: MultilingualSetup) -> list[dict[str, Any]]:
+    return [
+        {
+            "target_language": language,
+            "carry_source_subtitle_settings": setup.carry_source_subtitle_settings,
+        }
+        for language in setup.target_languages
+    ]
+
+
+def _normalize_branch_targets(
+    source: SessionRecord, source_language: str, targets: list[dict[str, Any]], *,
+    existing: set[str],
+) -> list[tuple[str, str, bool]]:
+    if not 1 <= len(targets) <= 20:
+        raise ValueError("Create between 1 and 20 language branches per request.")
+    if source.target_language:
+        existing.add(canonical_language(source.target_language))
+    normalized: list[tuple[str, str, bool]] = []
+    requested: set[str] = set()
+    for target in targets:
+        language = canonical_language(target["target_language"])
+        if language == source_language or language in existing or language in requested:
+            raise TranslationProjectConflict("A target repeats the source or an existing language.")
+        requested.add(language)
+        title = str(target.get("name") or "").strip() or f"{source.name} — {language}"
+        if len(title) > 255:
+            raise ValueError("A branch name cannot exceed 255 characters.")
+        carry_source_subtitle_settings = target.get(
+            "carry_source_subtitle_settings", False
+        )
+        if type(carry_source_subtitle_settings) is not bool:
+            raise ValueError("carry_source_subtitle_settings must be a boolean.")
+        normalized.append((language, title, carry_source_subtitle_settings))
+
+    return normalized
+
+
+def _validate_new_project(
+    db: Session, source_session_id: str, checkpoint_artifact_id: str, name: str,
+    expected_revision: int, *, paths: DataPaths, create_planned_branches: bool,
+    verify_file: bool,
+):
     source = db.get(SessionRecord, source_session_id)
     if source is None or source.trashed_at is not None:
         raise KeyError(source_session_id)
@@ -407,7 +440,10 @@ def create_project_in_session(
         )
     ):
         raise TranslationProjectConflict("A language branch cannot become a project source.")
-    checkpoint, language = _checkpoint(db, paths, source_session_id, checkpoint_artifact_id)
+    checkpoint, language = _checkpoint(
+        db, paths, source_session_id, checkpoint_artifact_id,
+        verify_file=verify_file,
+    )
     _validate_new_source_checkpoint_choice(source, checkpoint)
     setup = read_setup(db, source_session_id) if create_planned_branches else None
     if create_planned_branches and setup is None:
@@ -419,47 +455,15 @@ def create_project_in_session(
         raise ValueError("A project name cannot exceed 255 characters.")
     edit_id, edit_hash = _source_edit(db, source_session_id)
     ownership = session_project(db, source_session_id)
-    project = TranslationProject(
-        project_root_id=ownership.id,
-        name=title,
-        source_session_id=source_session_id,
-        checkpoint_artifact_id=checkpoint.id,
-        source_content_hash=checkpoint.content_hash,
-        source_language=language,
-        source_media_edit_revision_id=edit_id,
-        source_media_edit_content_hash=edit_hash,
-    )
-    db.add(project)
-    db.flush()
-    sync_project_name(db, source_session_id)
     if setup is not None:
-        if session_forks is None or created_directories is None:
-            raise ValueError("Planned branch creation requires a fork service and cleanup list.")
-        create_branches_in_session(
-            db, project.id, project.revision,
-            [
-                {
-                    "target_language": language,
-                    "carry_source_subtitle_settings": setup.carry_source_subtitle_settings,
-                }
-                for language in setup.target_languages
-            ],
-            session_forks=session_forks, paths=paths,
-            created_directories=created_directories,
-        )
-    return get_session_project(db, source_session_id, paths=paths)
+        _normalize_branch_targets(source, language, _planned_branch_targets(setup), existing=set())
+    return source, checkpoint, language, setup, title, edit_id, edit_hash, ownership
 
 
-def create_branches_in_session(
-    db: Session,
-    project_id: str,
-    expected_revision: int,
-    targets: list[dict[str, Any]],
-    *,
-    session_forks: SessionForkService,
-    paths: DataPaths,
-    created_directories: list[Path],
-) -> dict[str, Any]:
+def _validate_branch_creation(
+    db: Session, project_id: str, expected_revision: int, targets: list[dict[str, Any]], *,
+    paths: DataPaths, verify_file: bool,
+):
     project = db.get(TranslationProject, project_id)
     if project is None:
         raise KeyError(project_id)
@@ -478,6 +482,7 @@ def create_branches_in_session(
         source.id,
         project.checkpoint_artifact_id,
         expected_hash=project.source_content_hash,
+        verify_file=verify_file,
     )
     if (
         "correct" in (source.included_stages_json or [])
@@ -497,8 +502,6 @@ def create_branches_in_session(
         raise TranslationProjectConflict(
             "The source media edit plan changed since project creation."
         )
-    if not 1 <= len(targets) <= 20:
-        raise ValueError("Create between 1 and 20 language branches per request.")
     existing = set(
         db.scalars(
             select(TranslationProjectBranch.target_language).where(
@@ -506,24 +509,98 @@ def create_branches_in_session(
             )
         ).all()
     )
-    if source.target_language:
-        existing.add(canonical_language(source.target_language))
-    normalized: list[tuple[str, str, bool]] = []
-    requested: set[str] = set()
-    for target in targets:
-        language = canonical_language(target["target_language"])
-        if language == project.source_language or language in existing or language in requested:
-            raise TranslationProjectConflict("A target repeats the source or an existing language.")
-        requested.add(language)
-        title = str(target.get("name") or "").strip() or f"{source.name} — {language}"
-        if len(title) > 255:
-            raise ValueError("A branch name cannot exceed 255 characters.")
-        carry_source_subtitle_settings = target.get(
-            "carry_source_subtitle_settings", False
+    normalized = _normalize_branch_targets(
+        source, project.source_language, targets, existing=existing,
+    )
+    return project, source, ownership, setup, pinned_checkpoint, normalized
+
+
+def prepare_branch_files(
+    db: Session, resource_id: str, payload: dict[str, Any], *,
+    session_resource: bool, session_forks: SessionForkService, paths: DataPaths,
+) -> _PreparedForkFiles | None:
+    """Validate cheaply and collect an authorized snapshot before any file IO."""
+    project_id = None
+    if session_resource:
+        if not payload.get("create_planned_branches"):
+            return None
+        source, checkpoint, _language, setup, *_context = _validate_new_project(
+            db, resource_id, payload["checkpoint_artifact_id"], payload["name"],
+            payload["expected_revision"], paths=paths, create_planned_branches=True,
+            verify_file=False,
         )
-        if type(carry_source_subtitle_settings) is not bool:
-            raise ValueError("carry_source_subtitle_settings must be a boolean.")
-        normalized.append((language, title, carry_source_subtitle_settings))
+        assert setup is not None
+        target_count = len(setup.target_languages)
+    else:
+        project, source, _ownership, _setup, checkpoint, normalized = _validate_branch_creation(
+            db, resource_id, payload["expected_revision"], payload["targets"],
+            paths=paths, verify_file=False,
+        )
+        project_id = project.id
+        target_count = len(normalized)
+    return _PreparedForkFiles.collect(
+        db, session_forks, source.id, checkpoint.id, target_count, project_id=project_id,
+    )
+
+
+def create_project_in_session(
+    db: Session,
+    source_session_id: str,
+    checkpoint_artifact_id: str,
+    name: str,
+    expected_revision: int,
+    *,
+    paths: DataPaths,
+    create_planned_branches: bool = False,
+    session_forks: SessionForkService | None = None,
+    created_directories: list[Path] | None = None,
+    prepared_files: _PreparedForkFiles | None = None,
+) -> dict[str, Any]:
+    source, checkpoint, language, setup, title, edit_id, edit_hash, ownership = _validate_new_project(
+        db, source_session_id, checkpoint_artifact_id, name, expected_revision,
+        paths=paths, create_planned_branches=create_planned_branches,
+        verify_file=prepared_files is None,
+    )
+    project = TranslationProject(
+        project_root_id=ownership.id,
+        name=title,
+        source_session_id=source_session_id,
+        checkpoint_artifact_id=checkpoint.id,
+        source_content_hash=checkpoint.content_hash,
+        source_language=language,
+        source_media_edit_revision_id=edit_id,
+        source_media_edit_content_hash=edit_hash,
+    )
+    db.add(project)
+    db.flush()
+    sync_project_name(db, source_session_id)
+    if setup is not None:
+        if session_forks is None or created_directories is None:
+            raise ValueError("Planned branch creation requires a fork service and cleanup list.")
+        create_branches_in_session(
+            db, project.id, project.revision,
+            _planned_branch_targets(setup),
+            session_forks=session_forks, paths=paths,
+            created_directories=created_directories, prepared_files=prepared_files,
+        )
+    return get_session_project(db, source_session_id, paths=paths)
+
+
+def create_branches_in_session(
+    db: Session,
+    project_id: str,
+    expected_revision: int,
+    targets: list[dict[str, Any]],
+    *,
+    session_forks: SessionForkService,
+    paths: DataPaths,
+    created_directories: list[Path],
+    prepared_files: _PreparedForkFiles | None = None,
+) -> dict[str, Any]:
+    project, source, ownership, setup, pinned_checkpoint, normalized = _validate_branch_creation(
+        db, project_id, expected_revision, targets, paths=paths,
+        verify_file=prepared_files is None,
+    )
 
     settings_service = WorkspaceSettingsService(session_forks.database)
     source_settings = {
@@ -548,6 +625,7 @@ def create_branches_in_session(
             expected_revision=source.revision,
             allow_source_checkpoint=True,
             project_id=ownership.id,
+            prepared_files=prepared_files,
         )
         created_directories.append(fork.directory)
         record = fork.record

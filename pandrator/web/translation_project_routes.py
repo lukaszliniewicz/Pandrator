@@ -23,6 +23,7 @@ from .translation_projects import (
     create_project_in_session,
     get_project,
     get_session_project,
+    prepare_branch_files,
     rename_project_in_session,
     update_project_source_in_session,
 )
@@ -217,9 +218,19 @@ def register_translation_project_routes(
             result = reader(db, resource_id)
         return result if compact else enrich_project_payload(services, result, session=db)
 
+    def mutation_response(resource_id, *, session_resource, status, replayed):
+        # Readiness enrichment and access readback stay outside the writer.
+        with services.database.snapshot_session() as db:
+            authorize(db, resource_id, session_resource=session_resource, action=ProjectAction.READ)
+            response = jsonify(project_response(db, resource_id, session_resource=session_resource))
+        response.status_code = status
+        if replayed:
+            response.headers["Idempotency-Replayed"] = "true"
+        return response
+
     def mutate(
         resource_id: str, operation_id: str, payload: dict, action,
-        *, session_resource: bool = False,
+        *, session_resource: bool = False, prepare=None,
     ):
         try:
             key = services.idempotency.validate_key(request.headers.get("Idempotency-Key"))
@@ -227,7 +238,29 @@ def register_translation_project_routes(
             return error_response("idempotency_key_required", str(error), 400)
         directories: list[Path] = []
         committed = False
+        prepared_files = None
         try:
+            early_replay = None
+            if prepare is not None:
+                with services.database.snapshot_session() as db:
+                    authorize(
+                        db, resource_id, session_resource=session_resource,
+                        action=ProjectAction.EDIT,
+                    )
+                    early_replay = services.idempotency.replay_if_present(
+                        db, principal=principal(), operation_id=operation_id,
+                        idempotency_key=key, payload={"resource_id": resource_id, **payload},
+                    )
+                    if early_replay is None:
+                        prepared_files = prepare(db)
+                if early_replay is not None:
+                    assert early_replay.response is not None
+                    return mutation_response(
+                        resource_id, session_resource=session_resource,
+                        status=early_replay.response[1], replayed=True,
+                    )
+                if prepared_files is not None:
+                    prepared_files.materialize()
             with services.database.immediate_session() as db:
                 authorize(
                     db, resource_id, session_resource=session_resource,
@@ -246,7 +279,12 @@ def register_translation_project_routes(
                 else:
                     replayed = False
                     status = 200
-                    result = action(db, directories)
+                    if prepared_files is not None:
+                        prepared_files.revalidate(db)
+                    result = (
+                        action(db, directories, prepared_files)
+                        if prepare is not None else action(db, directories)
+                    )
                     services.idempotency.complete(
                         db,
                         reservation,
@@ -256,20 +294,9 @@ def register_translation_project_routes(
                         resource_id=result["project"]["id"],
                     )
             committed = True
-            # Response enrichment reads current state outside the short writer.
-            # Recheck access in that snapshot, including on a receipt replay.
-            with services.database.snapshot_session() as db:
-                authorize(
-                    db, resource_id, session_resource=session_resource,
-                    action=ProjectAction.READ,
-                )
-                response = jsonify(project_response(
-                    db, resource_id, session_resource=session_resource,
-                ))
-            response.status_code = status
-            if replayed:
-                response.headers["Idempotency-Replayed"] = "true"
-            return response
+            return mutation_response(
+                resource_id, session_resource=session_resource, status=status, replayed=replayed,
+            )
         except PermissionError:
             # PermissionError is also an OSError; preserve the common 403
             # authorization response instead of labeling it a missing file.
@@ -286,6 +313,8 @@ def register_translation_project_routes(
         ) as error:
             return failure(error)
         finally:
+            if prepared_files is not None:
+                prepared_files.cleanup(committed=committed)
             if not committed:
                 for directory in directories:
                     shutil.rmtree(directory, ignore_errors=True)
@@ -311,12 +340,16 @@ def register_translation_project_routes(
             session_id,
             "createSessionTranslationProject",
             payload,
-            lambda db, directories: create_project_in_session(
+            lambda db, directories, prepared: create_project_in_session(
                 db, session_id, **payload, paths=services.paths,
                 session_forks=services.session_forks,
-                created_directories=directories,
+                created_directories=directories, prepared_files=prepared,
             ),
             session_resource=True,
+            prepare=lambda db: prepare_branch_files(
+                db, session_id, payload, session_resource=True,
+                session_forks=services.session_forks, paths=services.paths,
+            ),
         )
 
     @app.get("/api/v1/translation-projects/<project_id>")
@@ -355,13 +388,17 @@ def register_translation_project_routes(
             project_id,
             "createTranslationProjectBranches",
             payload,
-            lambda db, directories: create_branches_in_session(
+            lambda db, directories, prepared: create_branches_in_session(
                 db,
                 project_id,
                 **payload,
                 session_forks=services.session_forks,
                 paths=services.paths,
-                created_directories=directories,
+                created_directories=directories, prepared_files=prepared,
+            ),
+            prepare=lambda db: prepare_branch_files(
+                db, project_id, payload, session_resource=False,
+                session_forks=services.session_forks, paths=services.paths,
             ),
         )
 

@@ -7,7 +7,7 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -41,6 +41,10 @@ from .models import (
 from .projects.artifact_identity import resolve_artifact_ownership
 from .projects.source_identity import validate_source_attachment
 from .sessions import RevisionConflict, SessionService
+from .settings_policy import RevisionConflict as PreparedFileConflict
+
+if TYPE_CHECKING:
+    from .fork_file_preparation import _PreparedForkFiles
 
 CHECKPOINT_STAGES = ("transcription", "correction", "translation")
 CHECKPOINT_RANK = {stage: index for index, stage in enumerate(CHECKPOINT_STAGES)}
@@ -141,7 +145,7 @@ class SessionForkService:
 
     @staticmethod
     def _revision_records(
-        session: Session,
+        session: Session | None,
         source_session_id: str,
         artifact: Artifact,
         source_path: Path,
@@ -155,7 +159,7 @@ class SessionForkService:
     ]:
         metadata = dict(artifact.metadata_json or {})
         revision_id = str(metadata.get("revision_id") or "")
-        if revision_id:
+        if revision_id and session is not None:
             revision = session.get(DocumentRevision, revision_id)
             document = session.get(Document, revision.document_id) if revision else None
             if (
@@ -361,6 +365,7 @@ class SessionForkService:
         expected_revision: int | None = None,
         allow_source_checkpoint: bool = False,
         project_id: str | None = None,
+        prepared_files: _PreparedForkFiles | None = None,
     ) -> SessionForkResult:
         if interface_mode is not None and interface_mode not in (
             "simple",
@@ -393,17 +398,24 @@ class SessionForkService:
         checkpoint_sources = [
             (artifact, self.paths.managed_path(artifact.relative_path)) for artifact in checkpoints
         ]
-        for artifact, path in checkpoint_sources:
+        for artifact, path in checkpoint_sources if prepared_files is None else []:
             if not path.is_file():
                 raise FileNotFoundError(f"The {artifact.role} checkpoint file is missing: {path}")
             if artifact.content_hash and sha256_file(path) != artifact.content_hash:
                 raise ValueError(f"The {artifact.role} checkpoint content hash changed.")
 
         record_id = new_id()
-        storage_key = new_id()
+        if prepared_files is not None and (
+            prepared_files.source_session_id != source_session_id
+            or prepared_files.checkpoint_artifact_id != checkpoint_artifact_id
+        ):
+            raise PreparedFileConflict("Prepared branch files belong to a different source.")
+        target_files = prepared_files.install_target() if prepared_files else None
+        storage_key = target_files.storage_key if target_files else new_id()
         destination_dir = self.paths.sessions / storage_key
         try:
-            destination_dir.mkdir(parents=True, exist_ok=False)
+            if target_files is None:
+                destination_dir.mkdir(parents=True, exist_ok=False)
             record = SessionService(self.database).create(
                 self._unique_name(
                     session, name, source, checkpoint.role,
@@ -503,11 +515,10 @@ class SessionForkService:
                     revision_settings_hash,
                     segments,
                     words,
-                ) = self._revision_records(
-                    session,
-                    source_session_id,
-                    artifact,
-                    source_path,
+                ) = (
+                    prepared_files.revision_records[artifact.id]
+                    if prepared_files is not None
+                    else self._revision_records(session, source_session_id, artifact, source_path)
                 )
                 document = Document(
                     session_id=record.id,
@@ -566,13 +577,18 @@ class SessionForkService:
                     )
                 document.active_revision_id = revision.id
 
-                destination = (
-                    destination_dir
-                    / "checkpoints"
-                    / f"{artifact.role}-{new_id()}{source_path.suffix.lower()}"
-                )
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_path, destination)
+                registration = target_files.registrations.get(artifact.id) if target_files else None
+                if target_files is not None and registration is None:
+                    raise PreparedFileConflict("A checkpoint is absent from the prepared manifest.")
+                if registration is not None:
+                    destination = self.paths.managed_path(registration.relative_path)
+                else:
+                    destination = (
+                        destination_dir / "checkpoints"
+                        / f"{artifact.role}-{new_id()}{source_path.suffix.lower()}"
+                    )
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_path, destination)
                 metadata = deepcopy(artifact.metadata_json or {})
                 metadata.update(
                     {
@@ -605,6 +621,7 @@ class SessionForkService:
                     session_id=record.id,
                     parent_ids=([previous_artifact_id] if previous_artifact_id else []),
                     metadata=metadata,
+                    _prepared=registration,
                 )
                 cloned.settings_hash = artifact.settings_hash
                 copied_artifacts[artifact.role] = cloned
@@ -716,6 +733,11 @@ class SessionForkService:
                         f"Referenced fork artifact is unavailable: {source_artifact_id}"
                     )
                 if source_artifact_id in shared_ids:
+                    if prepared_files is not None:
+                        if source_artifact_id not in prepared_files.artifacts:
+                            raise PreparedFileConflict("A shared source is absent from the prepared manifest.")
+                        old_to_new_artifact_ids[source_artifact_id] = source_artifact_id
+                        return source_artifact_id
                     shared_path = self.paths.managed_path(original.relative_path)
                     if not shared_path.is_file():
                         raise FileNotFoundError(
@@ -744,18 +766,24 @@ class SessionForkService:
                     ).all()
                 )
                 copied_parents = [copy_artifact(parent_id) for parent_id in parents]
-                original_path = self.paths.managed_path(original.relative_path)
-                if not original_path.is_file():
-                    raise FileNotFoundError(
-                        f"Referenced fork artifact file is missing: {original_path}"
+                registration = target_files.registrations.get(original.id) if target_files else None
+                if target_files is not None and registration is None:
+                    raise PreparedFileConflict("A dependency is absent from the prepared manifest.")
+                if registration is not None:
+                    destination = self.paths.managed_path(registration.relative_path)
+                else:
+                    original_path = self.paths.managed_path(original.relative_path)
+                    if not original_path.is_file():
+                        raise FileNotFoundError(
+                            f"Referenced fork artifact file is missing: {original_path}"
+                        )
+                    if original.content_hash and sha256_file(original_path) != original.content_hash:
+                        raise ValueError(f"Referenced fork artifact hash changed: {original.id}")
+                    destination = (
+                        destination_dir / "dependencies" / f"{new_id()}{original_path.suffix.lower()}"
                     )
-                if original.content_hash and sha256_file(original_path) != original.content_hash:
-                    raise ValueError(f"Referenced fork artifact hash changed: {original.id}")
-                destination = (
-                    destination_dir / "dependencies" / f"{new_id()}{original_path.suffix.lower()}"
-                )
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(original_path, destination)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(original_path, destination)
                 metadata = deepcopy(original.metadata_json or {})
                 old_revision_id = str(metadata.get("revision_id") or "")
                 if old_revision_id:
@@ -778,7 +806,7 @@ class SessionForkService:
                         metadata["document_id"] = copied_document_revision.document_id
                 metadata["forked_from_session_id"] = source_session_id
                 metadata["forked_from_artifact_id"] = original.id
-                prepared = self.artifacts.prepare_registration(destination)
+                prepared = registration or self.artifacts.prepare_registration(destination)
                 ownership = resolve_artifact_ownership(session, session_id=record.id)
                 cloned = Artifact(
                     session_id=record.id,
@@ -888,29 +916,32 @@ class SessionForkService:
                         metadata["revision_id"] = copied_revision.id
                     clone.metadata_json = metadata
 
-            referenced_evidence_ids: set[str] = set()
-            for old_revision_id in list(old_to_new_revisions):
-                for segment in session.scalars(
-                    select(Segment).where(Segment.revision_id == old_revision_id)
-                ).all():
-                    referenced_evidence_ids.update(
-                        str(value)
-                        for value in (segment.metadata_json or {}).get("evidence_ids") or []
-                    )
-            for original_id in list(old_to_new_artifact_ids):
-                original = session.get(Artifact, original_id)
-                if original is None:
-                    continue
-                passage_packet = (original.metadata_json or {}).get("logical_passages")
-                if isinstance(passage_packet, dict):
-                    for row in passage_packet.get("items") or []:
-                        if isinstance(row, dict):
-                            referenced_evidence_ids.update(
-                                str(value) for value in row.get("evidence_ids") or []
-                            )
+            def referenced_evidence() -> set[str]:
+                result: set[str] = set()
+                for old_revision_id in list(old_to_new_revisions):
+                    for segment in session.scalars(
+                        select(Segment).where(Segment.revision_id == old_revision_id)
+                    ).all():
+                        result.update(
+                            str(value)
+                            for value in (segment.metadata_json or {}).get("evidence_ids") or []
+                        )
+                for original_id in list(old_to_new_artifact_ids):
+                    original = session.get(Artifact, original_id)
+                    if original is None or original_id in shared_ids:
+                        continue
+                    metadata = original.metadata_json or {}
+                    result.update(str(value) for value in metadata.get("evidence_ids") or [])
+                    passage_packet = metadata.get("logical_passages")
+                    if isinstance(passage_packet, dict):
+                        for row in passage_packet.get("items") or []:
+                            if isinstance(row, dict):
+                                result.update(str(value) for value in row.get("evidence_ids") or [])
+                return result
 
             evidence_id_map: dict[str, str] = {}
-            for evidence_id in sorted(referenced_evidence_ids):
+            while pending_evidence := referenced_evidence() - evidence_id_map.keys():
+                evidence_id = sorted(pending_evidence)[0]
                 evidence = session.get(SubtitleEvidence, evidence_id)
                 if evidence is None or evidence.session_id != source_session_id:
                     raise ValueError(f"Referenced subtitle evidence is unavailable: {evidence_id}")

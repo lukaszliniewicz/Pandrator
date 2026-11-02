@@ -28,6 +28,11 @@ model, and—when supported—word alignment and diarization. A fixed language i
 usually safer when it is known. Vocabulary hints or a Whisper prompt can help
 with names and domain terms.
 
+Check **Local model files** before a long run. It checks the selected model,
+VAD and alignment files; an available engine alone does not mean those files
+are present. An Administrator can select an existing VAD file under **Speech
+detector** or acquire the missing models.
+
 Pandrator normalizes engine-specific output into timed segments and words,
 then deterministically composes readable display cues. Review speaker changes,
 long silences, overlaps, very fast cues, names, and the beginning and end of

@@ -26,6 +26,18 @@ model supports it, and undocumented coverage stays unverified.
 
 ## Qwen3 recognition and word alignment
 
+In transcription settings, **Local model files** checks the selected model and
+its companions separately from engine availability. A cached recognizer does
+not establish that Silero or a word aligner is present. These checks inspect
+files without downloading anything; compatibility and full integrity checks
+still run when the model is used. Automatic selection can remain unresolved
+until the source language is known.
+
+If a compatible VAD model already exists elsewhere on the Pandrator computer,
+an Administrator can choose **Existing local model file…** under **Speech
+detector**. Save the path and reopen the settings to check it. The file is used
+in place. WebRTC needs no model file; disabling VAD removes that requirement.
+
 The new automatic recognition default prefers Parakeet for its supported source
 languages, then Qwen when recognition and the requested timing are supported,
 then Whisper. Existing explicit selections remain overrides. Automatic source
@@ -49,7 +61,7 @@ coverage without loading an aligner. Converting that result to timed subtitles
 requires a separate, supported timed request; changing the download format does
 not invent timestamps or silently rerun recognition.
 
-Long recordings are processed in bounded chunks with original offsets retained. The automatic Qwen chunk setting resolves to a non-VAD native mode for these bounded chunks, avoiding an implicit dependency on an uninstalled Silero model. Explicit VAD mode remains an advanced choice and requires its runtime assets. Token-budget, output, timestamp-bound and cancellation checks reject incomplete results rather than inventing word timing. Original transcript punctuation is restored onto safely matched word surfaces before subtitle composition.
+Long recordings are processed in bounded chunks with original offsets retained. Automatic Qwen chunking follows the VAD setting: it uses VAD when enabled and fixed chunks when disabled. VAD requires its selected companion file unless WebRTC is selected. Token-budget, output, timestamp-bound and cancellation checks reject incomplete results rather than inventing word timing. Original transcript punctuation is restored onto safely matched word surfaces before subtitle composition.
 
 ## Vocal isolation before transcription
 

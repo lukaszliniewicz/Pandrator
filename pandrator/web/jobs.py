@@ -8,8 +8,11 @@ import random
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping, Sequence
-from datetime import timedelta
+from collections import deque
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, TypeGuard
 
 from sqlalchemy import and_, delete, false, func, or_, select, update
@@ -1395,8 +1398,57 @@ class JobQueue:
             return events
 
 
+_JOB_LOG_CAPTURE_LOCK = threading.Lock()
+_job_log_capture_count = 0
+_job_log_previous_level = logging.NOTSET
+_job_log_managed_level = False
+
+
+@contextmanager
+def _capture_job_logs(handler: logging.Handler) -> Iterator[None]:
+    """Share root INFO admission and restore it only after the last capture."""
+    global _job_log_capture_count, _job_log_previous_level, _job_log_managed_level
+    root = logging.getLogger()
+    with _JOB_LOG_CAPTURE_LOCK:
+        if _job_log_capture_count == 0:
+            _job_log_previous_level = root.level
+            logging.basicConfig(level=min(root.level, logging.INFO))
+            _job_log_managed_level = _job_log_previous_level > logging.INFO
+            if _job_log_managed_level:
+                root.setLevel(logging.INFO)
+        _job_log_capture_count += 1
+        root.addHandler(handler)
+    try:
+        yield
+    finally:
+        with _JOB_LOG_CAPTURE_LOCK:
+            root.removeHandler(handler)
+            _job_log_capture_count -= 1
+            if _job_log_capture_count == 0:
+                # Respect an external level change made during capture.
+                if _job_log_managed_level and root.level == logging.INFO:
+                    root.setLevel(_job_log_previous_level)
+                _job_log_managed_level = False
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingJobLog:
+    level: str
+    message: str
+    logger: str
+    trace: str
+    emitted_at: str
+
+
 class _JobLogHandler(logging.Handler):
-    """Route Python logs emitted while a handler runs into its durable timeline."""
+    """Buffer only this handler thread's logs; emitting never writes to SQLite.
+
+    Child-thread diagnostics require explicit attribution in their own logging
+    port. Thread attribution is deliberately not inherited from a parent worker.
+    """
+
+    MAX_RECORDS = 256
+    MAX_TEXT_BYTES = 8192
 
     def __init__(
         self,
@@ -1410,26 +1462,148 @@ class _JobLogHandler(logging.Handler):
         self.job_id = job_id
         self.worker_id = worker_id
         self.lease_generation = lease_generation
+        self.owner_thread_id = threading.get_ident()
+        self._pending: deque[_PendingJobLog] = deque()
+        self._pending_lock = threading.Lock()
+        self._flush_lock = threading.Lock()
+        self._dropped = 0
+        self._dropped_at = ""
+        self._persistence_errors = 0
+        self._last_error_type = ""
+
+    def _bounded_text(self, value: object) -> str:
+        safe = self.queue.secret_redactor.redact(value)
+        return safe.encode("utf-8")[: self.MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
 
     def emit(self, record: logging.LogRecord) -> None:
+        if record.thread != self.owner_thread_id:
+            return
         try:
-            trace = (
-                logging.Formatter().formatException(record.exc_info)
-                if record.exc_info
-                else ""
+            trace = logging.Formatter().formatException(record.exc_info) if record.exc_info else ""
+            pending = _PendingJobLog(
+                self._bounded_text(record.levelname),
+                self._bounded_text(record.getMessage()),
+                self._bounded_text(record.name),
+                self._bounded_text(trace),
+                datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             )
-            self.queue.log(
-                self.job_id,
-                record.levelname,
-                record.getMessage(),
-                logger=record.name,
-                trace=trace,
-                worker_id=self.worker_id,
-                lease_generation=self.lease_generation,
-            )
-        except Exception:
-            # Logging must never be allowed to fail the job it is observing.
-            self.handleError(record)
+            with self._pending_lock:
+                if len(self._pending) < self.MAX_RECORDS:
+                    self._pending.append(pending)
+                else:
+                    self._dropped += 1
+                    self._dropped_at = self._dropped_at or pending.emitted_at
+        except Exception as error:
+            # Never retain unsanitized text or invoke logging/handleError here.
+            # The loss remains observable through the next durable summary.
+            with self._pending_lock:
+                self._dropped += 1
+                self._dropped_at = self._dropped_at or utcnow().isoformat()
+                self._persistence_errors += 1
+                self._last_error_type = type(error).__name__[:100]
+
+    def flush_pending(self, max_records: int = 20, *, deadline: float | None = None) -> int:
+        """Persist one fenced batch with zero writer wait; retain it on failure.
+
+        Terminal draining may wait for an already active flush, within its
+        existing deadline. Monitor flushing never waits on another flusher.
+        """
+        if max_records <= 0:
+            return 0
+        wait = max(0.0, deadline - time.monotonic()) if deadline is not None else 0.0
+        if not self._flush_lock.acquire(timeout=wait):
+            return 0
+        try:
+            if deadline is not None and time.monotonic() >= deadline:
+                return 0
+            limit = min(int(max_records), 20)
+            with self._pending_lock:
+                dropped, errors = self._dropped, self._persistence_errors
+                batch: list[_PendingJobLog] = []
+                if dropped:
+                    batch.append(
+                        _PendingJobLog(
+                            "WARNING",
+                            f"Job log capture dropped {dropped} record(s).",
+                            __name__,
+                            "",
+                            self._dropped_at,
+                        )
+                    )
+                if errors and len(batch) < limit:
+                    batch.append(
+                        _PendingJobLog(
+                            "WARNING",
+                            f"Job log capture recovered after {errors} error(s) ({self._last_error_type}).",
+                            __name__,
+                            "",
+                            utcnow().isoformat(),
+                        )
+                    )
+                else:
+                    errors = 0
+                records = list(self._pending)[: max(0, limit - len(batch))]
+                batch.extend(records)
+            if not batch:
+                return 0
+            try:
+                with self.queue.database.immediate_session(busy_timeout_ms=0) as session:
+                    job = session.get(Job, self.job_id)
+                    if (
+                        job is None
+                        or job.lease_owner != self.worker_id
+                        or job.lease_generation != self.lease_generation
+                    ):
+                        return 0
+                    common: dict[str, Any] | None = None
+                    log_fields = {"level", "message", "logger", "trace", "emitted_at"}
+                    for pending in batch:
+                        payload = {
+                            "level": pending.level,
+                            "message": pending.message,
+                            "logger": pending.logger,
+                            "emitted_at": pending.emitted_at,
+                            **({"trace": pending.trace} if pending.trace else {}),
+                        }
+                        if common is None:
+                            event = self.queue._event(session, self.job_id, "job.log", payload)
+                            # Job context is invariant within this fenced writer.
+                            # Redact it once per batch; keep each record's fields
+                            # independently redacted against current credentials.
+                            common = {
+                                key: value
+                                for key, value in event.payload_json.items()
+                                if key not in log_fields
+                            }
+                        else:
+                            session.add(
+                                JobEvent(
+                                    job_id=self.job_id,
+                                    event_type="job.log",
+                                    payload_json={
+                                        **common,
+                                        **self.queue.redact_diagnostic(payload),
+                                    },
+                                )
+                            )
+            except Exception as error:
+                if not is_sqlite_busy(error):
+                    # Bound the diagnostic and report recovery durably; never
+                    # recursively log a storage failure or fail the job for it.
+                    with self._pending_lock:
+                        self._persistence_errors += 1
+                        self._last_error_type = type(error).__name__[:100]
+                return 0
+            with self._pending_lock:
+                for _ in records:
+                    self._pending.popleft()
+                self._dropped -= dropped
+                self._persistence_errors -= errors
+                if not self._dropped:
+                    self._dropped_at = ""
+            return len(batch)
+        finally:
+            self._flush_lock.release()
 
 
 class Worker:
@@ -1530,12 +1704,17 @@ class Worker:
             # ASR diagnostics can contain recognized speech. Temporary work
             # must not copy those diagnostics into durable job logs.
             log_handler.addFilter(lambda _record: False)
-        root_logger = logging.getLogger()
-        previous_log_level = root_logger.level
-        logging.basicConfig(level=logging.INFO)
-        if previous_log_level > logging.INFO:
-            root_logger.setLevel(logging.INFO)
-        root_logger.addHandler(log_handler)
+        log_capture = ExitStack()
+        log_capture.enter_context(_capture_job_logs(log_handler))
+
+        def flush_terminal_logs() -> None:
+            # A bounded drain outside the handler's writer, before terminal
+            # fencing clears ownership. Busy/error stops immediately. During
+            # DB failure persistence (including loss summaries) is best effort.
+            deadline = time.monotonic() + 0.5
+            for _ in range((log_handler.MAX_RECORDS + 2 + 19) // 20):
+                if time.monotonic() >= deadline or not log_handler.flush_pending(deadline=deadline):
+                    break
 
         last_successful_heartbeat = time.monotonic()
 
@@ -1602,6 +1781,8 @@ class Worker:
                         renewed = renew_lease()
                         if renewed is False:
                             return
+                        if renewed is True:
+                            log_handler.flush_pending()
                         heartbeat_at = now + (0.2 if renewed is None else 5.0)
             except Exception as error:
                 self._report_exception(f"Worker monitor failed for job {job.id}", error)
@@ -1664,6 +1845,7 @@ class Worker:
                         result = handler(handler_payload, progress, cancel_event)
             finally:
                 current_job_lease.reset(lease_token)
+            flush_terminal_logs()
             canceled = self.queue.should_cancel(
                 job.id,
                 self.worker_id,
@@ -1705,6 +1887,7 @@ class Worker:
                     job.id,
                     safe_message,
                 )
+                flush_terminal_logs()
                 self._update_agent_run_status(job, "canceled", lease_generation)
                 self.queue.cancel_owned(
                     job.id,
@@ -1712,6 +1895,7 @@ class Worker:
                     lease_generation=lease_generation,
                 )
             elif not lease_lost_event.is_set():
+                flush_terminal_logs()
                 try:
                     self.queue.defer_for_storage(
                         job.id,
@@ -1742,6 +1926,7 @@ class Worker:
                 logging.error(
                     "Worker job %s failed: %s\n%s", job.id, safe_message, safe_trace
                 )
+            flush_terminal_logs()
             self._update_agent_run_status(
                 job,
                 "canceled" if canceled else "failed",
@@ -1766,8 +1951,8 @@ class Worker:
             monitor_stop.set()
             if monitor_thread.ident is not None:
                 monitor_thread.join(timeout=1.0)
-            root_logger.removeHandler(log_handler)
-            root_logger.setLevel(previous_log_level)
+            log_handler.flush_pending()
+            log_capture.close()
 
     def run_once(self) -> bool:
         """Claim and run at most one job without letting infrastructure errors escape."""

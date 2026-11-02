@@ -3206,6 +3206,139 @@ def build_openapi_document() -> dict:
                     "SessionSettingsUpdate",
                 ),
             },
+            "/api/v1/sessions/{sessionId}/transcription-readiness": {
+                "post": {
+                    "operationId": "assessTranscriptionReadiness",
+                    "summary": "Assess selected local transcription files",
+                    "description": (
+                        "Read-only file-presence assessment. A positive result does "
+                        "not verify the native runtime or transcription quality."
+                    ),
+                    "x-required-scopes": ["app.read"],
+                    "security": [
+                        {"cookieAuth": []},
+                        {"bearerToken": []},
+                        {"nativeOAuth": ["app.read"]},
+                    ],
+                    "parameters": [
+                        {
+                            "name": "sessionId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "format": "uuid"},
+                        }
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["settings"],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "settings": {
+                                            "type": "object",
+                                            "additionalProperties": False,
+                                            "description": (
+                                                "Selection and toggle overrides only; "
+                                                "credentials, cache roots, endpoints and "
+                                                "executable paths are not accepted."
+                                            ),
+                                            "properties": {
+                                                "stt_engine": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                        "auto",
+                                                        "whisper",
+                                                        "parakeet",
+                                                        "moss",
+                                                        "qwen3",
+                                                        "azure_mai_transcribe_1_5",
+                                                        "azure_mai_transcribe_2",
+                                                    ],
+                                                },
+                                                "stt_model_quantization": {
+                                                    "type": "string",
+                                                    "enum": ["f16", "q8_0", "q5_0", "q4_k"],
+                                                },
+                                                "stt_language": {"type": "string", "maxLength": 80},
+                                                "stt_lid_backend": {
+                                                    "type": "string",
+                                                    "enum": ["auto", "whisper", "ecapa", "off", "none", "disabled"],
+                                                },
+                                                "crispasr_vad_enabled": {"type": "boolean"},
+                                                "crispasr_vad_model": {"type": "string", "maxLength": 4096},
+                                                "moss_vad_enabled": {"type": "boolean"},
+                                                "moss_ctc_alignment_enabled": {"type": "boolean"},
+                                                "moss_ctc_aligner_model": {"type": "string", "maxLength": 4096},
+                                                "qwen_asr_model": {
+                                                    "type": "string",
+                                                    "enum": ["qwen3_asr_0_6b", "qwen3_asr_1_7b"],
+                                                },
+                                                "qwen_asr_chunk_mode": {
+                                                    "type": "string",
+                                                    "enum": ["auto", "fixed", "vad", "none"],
+                                                },
+                                            },
+                                        }
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Selected local model file readiness",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": [
+                                            "schema_version",
+                                            "scope",
+                                            "status",
+                                            "ready",
+                                            "engine",
+                                            "assets",
+                                            "runtime_check_required",
+                                        ],
+                                        "properties": {
+                                            "schema_version": {"type": "string", "const": "1"},
+                                            "scope": {"type": "string", "const": "local_model_files"},
+                                            "status": {
+                                                "type": "string",
+                                                "enum": ["cached", "missing", "unresolved", "not_required"],
+                                            },
+                                            "ready": {"type": ["boolean", "null"]},
+                                            "engine": {"type": "string"},
+                                            "assets": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "required": ["kind", "id", "status", "verification"],
+                                                    "properties": {
+                                                        "kind": {"type": "string"},
+                                                        "id": {"type": "string"},
+                                                        "status": {"type": "string"},
+                                                        "verification": {"type": "string"},
+                                                    },
+                                                },
+                                            },
+                                            "runtime_check_required": {"type": "boolean", "const": True},
+                                        },
+                                    }
+                                }
+                            },
+                        },
+                        "401": {"description": "Authentication required"},
+                        "403": {"description": "Read permission denied"},
+                        "404": {"description": "Session not found or not readable"},
+                        "413": {"description": "Request exceeds 32 KiB"},
+                        "422": {"description": "Invalid selection or request shape"},
+                    },
+                }
+            },
             "/api/v1/sessions/{sessionId}/settings/resolve": {
                 "post": operation(
                     "resolveSessionSettings", "Immutable effective settings snapshot"

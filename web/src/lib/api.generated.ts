@@ -4061,6 +4061,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/transcription-readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assess selected local transcription files
+         * @description Read-only file-presence assessment. A positive result does not verify the native runtime or transcription quality.
+         */
+        post: operations["assessTranscriptionReadiness"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/translation-project": {
         parameters: {
             query?: never;
@@ -23537,6 +23557,104 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    assessTranscriptionReadiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Selection and toggle overrides only; credentials, cache roots, endpoints and executable paths are not accepted. */
+                    settings: {
+                        crispasr_vad_enabled?: boolean;
+                        crispasr_vad_model?: string;
+                        moss_ctc_aligner_model?: string;
+                        moss_ctc_alignment_enabled?: boolean;
+                        moss_vad_enabled?: boolean;
+                        /** @enum {string} */
+                        qwen_asr_chunk_mode?: "auto" | "fixed" | "vad" | "none";
+                        /** @enum {string} */
+                        qwen_asr_model?: "qwen3_asr_0_6b" | "qwen3_asr_1_7b";
+                        /** @enum {string} */
+                        stt_engine?: "auto" | "whisper" | "parakeet" | "moss" | "qwen3" | "azure_mai_transcribe_1_5" | "azure_mai_transcribe_2";
+                        stt_language?: string;
+                        /** @enum {string} */
+                        stt_lid_backend?: "auto" | "whisper" | "ecapa" | "off" | "none" | "disabled";
+                        /** @enum {string} */
+                        stt_model_quantization?: "f16" | "q8_0" | "q5_0" | "q4_k";
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Selected local model file readiness */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        assets: {
+                            id: string;
+                            kind: string;
+                            status: string;
+                            verification: string;
+                        }[];
+                        engine: string;
+                        ready: boolean | null;
+                        /** @constant */
+                        runtime_check_required: true;
+                        /** @constant */
+                        schema_version: "1";
+                        /** @constant */
+                        scope: "local_model_files";
+                        /** @enum {string} */
+                        status: "cached" | "missing" | "unresolved" | "not_required";
+                    };
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Read permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found or not readable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request exceeds 32 KiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid selection or request shape */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

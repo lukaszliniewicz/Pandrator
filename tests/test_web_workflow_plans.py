@@ -178,9 +178,18 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         original_get = WorkspaceSettingsService._get_in_workspace
         changed = False
 
-        def replace_after_settings(service, db_session, target, section, workspace_id):
+        def replace_after_settings(
+            service, db_session, target, section, workspace_id, *, _read_context=None
+        ):
             nonlocal changed
-            result = original_get(service, db_session, target, section, workspace_id)
+            result = original_get(
+                service,
+                db_session,
+                target,
+                section,
+                workspace_id,
+                _read_context=_read_context,
+            )
             if target == session_id and section == last_section and not changed:
                 changed = True
                 # Commit on a separate connection between settings resolution
@@ -335,9 +344,18 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         original_get = WorkspaceSettingsService._get_in_workspace
         changed = False
 
-        def update_once(service, db_session, target, section, workspace_id):
+        def update_once(
+            service, db_session, target, section, workspace_id, *, _read_context=None
+        ):
             nonlocal changed
-            result = original_get(service, db_session, target, section, workspace_id)
+            result = original_get(
+                service,
+                db_session,
+                target,
+                section,
+                workspace_id,
+                _read_context=_read_context,
+            )
             if target == session_id and not changed:
                 changed = True
                 with database.session() as writer:

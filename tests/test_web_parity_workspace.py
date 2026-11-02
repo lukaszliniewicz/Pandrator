@@ -37,6 +37,7 @@ from pandrator.web.workspace import (
     RUNTIME_SETTING_ALIASES,
     adapt_runtime_settings,
 )
+from pandrator.web.workspace_settings import WorkspaceSettingsService
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -67,6 +68,14 @@ class WebParityWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(201, response.status_code, response.get_json())
         return response.get_json()
+
+    def _stored_preview_settings(self, response):
+        job_id = response.get_json()["id"]
+        database = self.app.extensions["pandrator"]["database"]
+        with database.snapshot_session() as session:
+            job = session.get(Job, job_id)
+            self.assertIsNotNone(job)
+            return dict((job.payload_json or {}).get("settings") or {})
 
     def test_session_setting_precedence_and_secret_free_snapshot(self):
         record = self.create_session()
@@ -113,11 +122,16 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(1.2, resolved["value"]["tts"]["speed"])
         self.assertEqual("Ada", resolved["value"]["tts"]["voice"])
         self.assertNotIn("api_key", resolved["value"]["tts"])
+        self.assertNotIn("kokoro_base_url", resolved["value"]["tts"])
+        self.assertNotIn("provider_configs", resolved["value"]["tts"])
         self.assertEqual(2048, resolved["value"]["tts"]["max_tokens"])
-        self.assertEqual(
-            "http://127.0.0.1:8880", resolved["value"]["tts"]["kokoro_base_url"]
+        internal, _internal_hash = WorkspaceSettingsService(database).resolve(
+            record["id"],
+            sections=["tts"],
+            run_override={"tts": {"speed": 1.2, "max_tokens": 2048}},
         )
-        self.assertEqual("local", resolved["value"]["tts"]["provider_configs"][0]["id"])
+        self.assertEqual("http://127.0.0.1:8880", internal["tts"]["kokoro_base_url"])
+        self.assertEqual("local", internal["tts"]["provider_configs"][0]["id"])
         self.assertEqual(64, len(resolved["settings_hash"]))
 
     def test_qwen_voice_cloning_selection_survives_the_run_snapshot_resolution(self):
@@ -166,6 +180,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(2, effective["effective"]["max_lines"])
 
     def test_fish_discovery_projects_one_canonical_model(self):
+        endpoint = "http://127.0.0.1:8020"
         with patch(
             "pandrator.logic.tts_endpoint_discovery.discover_tts_endpoint",
             return_value={
@@ -178,11 +193,11 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 ],
                 "voices": ["default"],
             },
-        ):
+        ) as discover:
             response = self.client.post(
                 "/api/v1/services/tts/discover",
                 json={
-                    "base_url": "http://localhost:8022",
+                    "base_url": endpoint,
                     "service_id": "fishs2",
                 },
                 headers=self.headers,
@@ -193,6 +208,8 @@ class WebParityWorkspaceTests(unittest.TestCase):
             ["fishaudio/s2-pro"],
             response.get_json()["models"],
         )
+        discover.assert_called_once()
+        self.assertEqual(endpoint, discover.call_args.args[0])
 
     def test_subtitle_workspace_inherits_document_export_defaults(self):
         subtitle = self.create_session(kind="subtitles")
@@ -760,12 +777,16 @@ class WebParityWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(202, response.status_code, response.get_json())
         settings = response.get_json()["payload_json"]["settings"]
+        self.assertEqual("audio_cpp", settings["preview_service_id"])
         self.assertEqual("Warm, intimate delivery.", settings["generation_prompt"])
         self.assertEqual(17, settings["seed"])
         self.assertEqual(17, settings["audio_cpp_seed"])
         self.assertEqual("", settings["voice"])
         self.assertEqual("", settings["speaker"])
-        self.assertEqual("audio_cpp", settings["preview_adapter"])
+        for key in ("preview_adapter", "openai_audio_endpoint", "provider_configs"):
+            self.assertNotIn(key, settings)
+        stored = self._stored_preview_settings(response)
+        self.assertEqual("audio_cpp", stored["preview_adapter"])
 
     def test_external_audio_cpp_breeze_preview_preserves_blank_design_voice(self):
         database = self.app.extensions["pandrator"]["database"]
@@ -806,10 +827,16 @@ class WebParityWorkspaceTests(unittest.TestCase):
 
         self.assertEqual(202, response.status_code, response.get_json())
         settings = response.get_json()["payload_json"]["settings"]
+        self.assertEqual("audio_cpp_experimental", settings["preview_service_id"])
+        self.assertEqual("Measured delivery.", settings["generation_prompt"])
+        self.assertEqual(21, settings["seed"])
         self.assertEqual("", settings["voice"])
         self.assertEqual("", settings["speaker"])
         self.assertEqual(21, settings["audio_cpp_seed"])
-        self.assertEqual("audio_cpp", settings["preview_adapter"])
+        for key in ("preview_adapter", "openai_audio_endpoint", "provider_configs"):
+            self.assertNotIn(key, settings)
+        stored = self._stored_preview_settings(response)
+        self.assertEqual("audio_cpp", stored["preview_adapter"])
 
     def test_custom_openai_compatible_previews_use_canonical_runtime_service(self):
         database = self.app.extensions["pandrator"]["database"]
@@ -871,14 +898,23 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 settings = response.get_json()["payload_json"]["settings"]
                 self.assertEqual("Custom", settings["service"])
                 self.assertEqual(service_id.replace("-", "_"), settings["preview_service_id"])
-                self.assertEqual(service_id, settings["openai_audio_endpoint"])
-                endpoint, error = tts_handler.resolve_openai_audio_endpoint(settings)
+                self.assertEqual(model, settings["model"])
+                self.assertEqual(voice, settings["voice"])
+                for key in (
+                    "preview_adapter",
+                    "openai_audio_endpoint",
+                    "provider_configs",
+                ):
+                    self.assertNotIn(key, settings)
+                stored = self._stored_preview_settings(response)
+                self.assertEqual(service_id, stored["openai_audio_endpoint"])
+                endpoint, error = tts_handler.resolve_openai_audio_endpoint(stored)
                 self.assertEqual("", error)
                 self.assertIsNotNone(endpoint)
                 self.assertEqual(service_id, endpoint["name"])
-                self.assertEqual(adapter, settings["preview_adapter"])
-                self.assertEqual(model, settings["model"])
-                self.assertEqual(voice, settings["voice"])
+                self.assertEqual(adapter, stored["preview_adapter"])
+                self.assertEqual(model, stored["model"])
+                self.assertEqual(voice, stored["voice"])
 
     def test_qwen_preview_preserves_the_selected_voice_cloning_model(self):
         response = self.client.post(
@@ -1018,7 +1054,9 @@ class WebParityWorkspaceTests(unittest.TestCase):
             ),
             patch("socket.create_connection", side_effect=OSError("offline")),
         ):
-            response = self.client.get("/api/v1/services/tts?refresh=true")
+            response = self.client.post(
+                "/api/v1/services/tts/refresh", headers=self.headers
+            )
         self.assertEqual(200, response.status_code, response.get_json())
         payload = response.get_json()
         restored = next(
@@ -1073,7 +1111,9 @@ class WebParityWorkspaceTests(unittest.TestCase):
                 return_value=voices,
             ),
         ):
-            response = self.client.get("/api/v1/services/tts?refresh=true")
+            response = self.client.post(
+                "/api/v1/services/tts/refresh", headers=self.headers
+            )
 
         self.assertEqual(200, response.status_code, response.get_json())
         silero = next(

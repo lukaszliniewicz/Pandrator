@@ -152,6 +152,7 @@ from .speech_optimization_dispatch_routes import (
     register_speech_optimization_dispatch_routes,
 )
 from .training_routes import register_training_routes
+from .transcription_readiness_routes import register_transcription_readiness_routes
 from .upload_publication import publish_multipart_upload
 from .uploads import cleanup_initialized_directories
 from .voice_routes import register_voice_routes
@@ -390,6 +391,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_voice_routes(app, context)
     register_google_voice_design_routes(app, context)
     register_quick_transcription_routes(app, context)
+    register_transcription_readiness_routes(app, context)
 
     @app.get("/api/v1/health")
     def health():
