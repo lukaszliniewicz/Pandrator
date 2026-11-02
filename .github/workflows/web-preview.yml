@@ -11,6 +11,21 @@ on:
         description: 'UI/package checks only; qualify unchanged backend separately'
         type: boolean
         default: false
+      e2e_os:
+        description: 'Browser test operating system'
+        type: choice
+        default: all
+        options: [all, ubuntu-latest, windows-latest]
+      e2e_browser:
+        description: 'Browser test engine'
+        type: choice
+        default: all
+        options: [all, chromium, firefox]
+      e2e_shard:
+        description: 'Browser shard (Linux 1-2; Windows 1-4)'
+        type: choice
+        default: all
+        options: [all, '1', '2', '3', '4']
 
 permissions:
   contents: read
@@ -231,61 +246,20 @@ jobs:
           test -z "$(git status --porcelain -- pandrator/web/static)"
 
   e2e:
-    name: E2E (${{ matrix.os }}, ${{ matrix.browser }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    name: E2E (${{ matrix.os }}, ${{ matrix.browser }}, ${{ matrix.shard }}/${{ matrix.os == 'ubuntu-latest' && 2 || 4 }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        include:
+        os: ${{ fromJSON(inputs.e2e_os && inputs.e2e_os != 'all' && format('["{0}"]', inputs.e2e_os) || '["ubuntu-latest","windows-latest"]') }}
+        browser: ${{ fromJSON(inputs.e2e_browser && inputs.e2e_browser != 'all' && format('["{0}"]', inputs.e2e_browser) || '["chromium","firefox"]') }}
+        shard: ${{ fromJSON(inputs.e2e_shard && inputs.e2e_shard != 'all' && format('[{0}]', inputs.e2e_shard) || '[1,2,3,4]') }}
+        exclude:
           - os: ubuntu-latest
-            browser: chromium
-            shard: 1
-            shards: 2
-          - os: ubuntu-latest
-            browser: chromium
-            shard: 2
-            shards: 2
-          - os: ubuntu-latest
-            browser: firefox
-            shard: 1
-            shards: 2
-          - os: ubuntu-latest
-            browser: firefox
-            shard: 2
-            shards: 2
-          - os: windows-latest
-            browser: chromium
-            shard: 1
-            shards: 4
-          - os: windows-latest
-            browser: chromium
-            shard: 2
-            shards: 4
-          - os: windows-latest
-            browser: chromium
             shard: 3
-            shards: 4
-          - os: windows-latest
-            browser: chromium
+          - os: ubuntu-latest
             shard: 4
-            shards: 4
-          - os: windows-latest
-            browser: firefox
-            shard: 1
-            shards: 4
-          - os: windows-latest
-            browser: firefox
-            shard: 2
-            shards: 4
-          - os: windows-latest
-            browser: firefox
-            shard: 3
-            shards: 4
-          - os: windows-latest
-            browser: firefox
-            shard: 4
-            shards: 4
 
     steps:
       - uses: actions/checkout@v4
@@ -318,12 +292,12 @@ jobs:
       - name: Run selected Playwright project
         run: >-
           npm --prefix web run test:e2e -- --project=${{ matrix.browser }}
-          --shard=${{ matrix.shard }}/${{ matrix.shards }}
+          --shard=${{ matrix.shard }}/${{ matrix.os == 'ubuntu-latest' && 2 || 4 }}
       - name: Upload Playwright diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: pandrator-web-preview-playwright-${{ matrix.os }}-${{ matrix.browser }}-${{ matrix.shard }}of${{ matrix.shards }}
+          name: pandrator-web-preview-playwright-${{ matrix.os }}-${{ matrix.browser }}-${{ matrix.shard }}of${{ matrix.os == 'ubuntu-latest' && 2 || 4 }}
           path: |
             web/playwright-report
             web/test-results

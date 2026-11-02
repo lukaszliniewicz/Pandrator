@@ -272,11 +272,13 @@ test('course folders organize the whole multilingual project, retain independent
   await expect(
     page.getByRole('combobox', { name: 'Folder', exact: true })
   ).toHaveValue(module.id);
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth
+      )
     )
-  ).toBeTruthy();
+    .toBeTruthy();
   await page
     .getByRole('combobox', { name: 'Folder', exact: true })
     .selectOption('unfiled');

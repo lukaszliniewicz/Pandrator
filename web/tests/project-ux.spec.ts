@@ -323,9 +323,33 @@ test('manual annotations preserve words, support phrase directions and protect a
   await workspace
     .getByRole('checkbox', { name: /^Accept .* unanalysed blocks/ })
     .check();
-  await workspace
-    .getByRole('button', { name: 'Adopt speakers and directions', exact: true })
-    .click();
+  const blocks = workspace.getByRole('navigation', { name: 'Speech blocks' });
+  let releaseAdoption!: () => void;
+  const adoptionGate = new Promise<void>((resolve) => {
+    releaseAdoption = resolve;
+  });
+  await page.route(`**${planUrl}/adopt{,?*}`, async (route) => {
+    const response = await route.fetch();
+    await adoptionGate;
+    await route.fulfill({ response });
+  });
+  try {
+    await workspace
+      .getByRole('button', {
+        name: 'Adopt speakers and directions',
+        exact: true
+      })
+      .click();
+    await expect(blocks.getByRole('button').first()).toBeDisabled();
+    await expect(blocks).toHaveAttribute('tabindex', '0');
+    await blocks.focus();
+    await expect(blocks).toBeFocused();
+  } finally {
+    releaseAdoption();
+  }
+  await expect(
+    workspace.getByText(/adopted for future generation\./)
+  ).toBeVisible();
   await expect(
     workspace.getByRole('textbox', { name: /^Accepted spoken text/ })
   ).toHaveValue(spoken);
@@ -333,11 +357,7 @@ test('manual annotations preserve words, support phrase directions and protect a
     await page.request.get(`/api/v1/sessions/${id}/performance-plans`)
   ).json();
   expect(listing.items[0].status).toBe('adopted');
-  const blocks = workspace.getByRole('navigation', { name: 'Speech blocks' });
-  await expect(blocks.getByRole('button').first()).toBeDisabled();
-  await expect(blocks).toHaveAttribute('tabindex', '0');
-  await blocks.focus();
-  await expect(blocks).toBeFocused();
+  await expect(blocks.getByRole('button').first()).toBeEnabled();
   expect(unexpected).toEqual([]);
   expect(errors).toEqual([]);
   const audit = await new AxeBuilder({ page })
