@@ -18,7 +18,7 @@ organize content inside them.
 ## Choose the download
 
 Open the [latest release](https://github.com/lukaszliniewicz/Pandrator/releases/latest).
-Its **Which file should I download?** section identifies the current files.
+Use its Windows or Linux download button, or choose a file from the table below.
 
 | System | Asset pattern |
 | --- | --- |
@@ -120,7 +120,7 @@ You do not need every engine:
 
 - **Kokoro** is a lightweight first choice for ready-made voices.
 - **Qwen3 TTS Base** or **XTTS v2** is a practical starting point for voice
-  cloning.
+  cloning. XTTS's model licence restricts use to non-commercial purposes.
 - **CrispASR** supplies local transcription engines, timestamps, and optional
   diarization.
 - Add an LLM or translation provider only when you want its language work.

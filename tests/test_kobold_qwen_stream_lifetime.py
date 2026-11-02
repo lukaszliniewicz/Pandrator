@@ -886,7 +886,7 @@ def test_windows_cancel_io_ex_propagates_other_api_errors(monkeypatch):
 @pytest.mark.skipif(sys.platform != "win32", reason="Requires native Winsock receive timeouts")
 @pytest.mark.parametrize("stalled_server", ["http", "https"], indirect=True, ids=["http", "https"])
 def test_windows_short_receive_timeout_raises_once_after_partial_body(
-    stalled_server, readers, monkeypatch, native_interruptions
+    stalled_server, readers, monkeypatch, native_interruptions, host_model_acquisition
 ):
     stalled_server[1]["first_event"] = True
     stalled_server[3].set()

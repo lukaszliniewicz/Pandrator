@@ -29,24 +29,25 @@ opens Pandrator in your browser. Older workspace data can still be imported.
 For the retired Qt desktop interface, use an
 [older release](https://github.com/lukaszliniewicz/Pandrator/releases).
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.13.0/PandratorManager-0.9.30-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.13.0/PandratorManager-0.9.30-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.0/PandratorManager-0.9.31-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.0/PandratorManager-0.9.31-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.13.0 / Manager 0.9.30
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.0 / Manager 0.9.31
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-## New in 0.13.0
+## New in 0.14.0
 
-- **Refine audiobook pacing.** Keep short dialogue exchanges together, split long sentences more carefully, and adjust pauses when assembling the audio.
-- **Choose how EPUB content is read.** Set narration preferences for tables and illustration text, with better handling of footnotes and ruby readings.
-- **Edit captions without re-recording.** Display-only edits preserve the spoken text and recordings. New subtitle exports use your current display text; historical wording remains available when you need it.
-- **Keep related work together.** Organize projects in virtual folders and keep language versions under one project.
-- **Use more local speech options.** audio.cpp 0.9.2 adds French PocketTTS and Voxtral TTS. Kokoro offers optional Japanese support with a separate dictionary download. Voxtral's weights are licensed for noncommercial use.
+- **Work with a team.** Enable individual accounts and shared workspaces when you need them. Solo remains the default, and existing projects stay private.
+- **Invite a project collaborator or translation reviewer.** Optional expiring links let you share one project or collect corrections for approval.
+- **Review with more room.** Collapsible tools, phone drawers, and better draft protection make text, subtitle, delivery, and PDF reviews easier to use.
+- **Direct the narration.** Edit speaker assignments and phrase directions in one workspace, with clearer model limits and sentence-packing choices.
+- **Try more local voices.** audio.cpp 0.9.3 adds Phonon, Ming 3.0 and XTTS routes, expands Kitten's voices and languages, and supports Drama 3 directions and disk-backed experts. Model licences and hardware needs vary.
+- **Recover long jobs more easily.** Exports can wait for disk space and resume; independent jobs can use an optional second worker.
 
-See the [0.13.0 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.13.0) and [detailed changes](docs/release-changes-0.13.0.md).
+See the [0.14.0 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.14.0) and [detailed changes](docs/release-changes-0.14.0.md).
 
 ## Try your first workflow
 
@@ -237,9 +238,14 @@ settings. You can switch models or add more later. Available families include:
 | **Chatterbox** | Reference-voice cloning; Turbo has its own voice and vocal-event controls. | 19 listed languages in the multilingual package; Turbo is English-only. |
 | **MagpieTTS** | Preset multilingual voices. | English, Arabic, Mandarin Chinese, French, German, Spanish, Hindi, Italian, Korean, Brazilian Portuguese, and Vietnamese; choices depend on the voice. |
 | **OmniVoice** | Reference-voice cloning and described voices on supported packages. | Hundreds of languages; the main package lists 646 language entries. Related checkpoints can have narrower coverage. |
-| **PocketTTS** | Preset voices and reference-voice cloning. | Separate English, German, Italian, Portuguese, and Spanish checkpoints; choose the one for your text. |
+| **PocketTTS** | Preset voices and reference-voice cloning. | Separate English, French, German, Italian, Portuguese, and Spanish checkpoints; choose the one for your text. |
 | **FireRedTTS3 Base** | Experimental reference-voice cloning. | 24 listed languages, including English, Mandarin Chinese, Cantonese, Japanese, Korean, Polish, and Dutch. |
 | **BreezeTTS 2** | Voice design, generation from saved designs, and reference-voice cloning. | English and Mandarin Chinese; open weights and self-hosted outputs are for non-commercial use. |
+| **Phonon** | Preset voices; no reference cloning. | English. |
+| **Ming 3.0 TTS** | Presets, directions and model-specific delivery controls. | Seven languages; the separate experimental Ming Audio route covers English and Chinese. |
+| **XTTS v2** | Reference-voice cloning through audio.cpp; a WAV sample is required. | Multilingual; model use is restricted to non-commercial purposes. |
+| **Kitten TTS 2** | Presets and optional reference cloning. | New checkpoints list sixteen languages and 124 presets; older checkpoints retain ten languages and 48 presets. |
+| **Drama 3** | Reference voices, delivery directions and vocal events. | Coverage and quality depend on the checkpoint. Even the small package is large; check its memory requirements and licence. |
 
 The Manager supplies model packages with their supported compute options.
 CPU, Vulkan, and CUDA builds are available; the Linux CUDA build is currently

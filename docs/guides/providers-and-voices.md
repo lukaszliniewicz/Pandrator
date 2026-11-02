@@ -1,26 +1,15 @@
 # Providers, local models, and voices
 
-The **Audio models** catalogue offers language-name and code autocomplete from
-its supported-language inventory. Speech model details show the default audiobook
-segment target separately from provider input/output limits and configurable
-runtime text-splitting defaults. Planning targets leave headroom for output
-budgets; they are starting points for representative listening tests.
-
-Fish's application chunk default is 300 characters (native audio.cpp: 200),
-with a 270-character audiobook target. Whole-segment directions are recommended;
-phrase cues are best effort. Qwen's output budget comes from the checkpoint,
-with a 2,048-frame fallback.
-
-In **Voices**, filter by origin to find designed voices, reference recordings or
-built-in speakers. **Redesign** opens an existing designed voice with its current
-brief and save target, so you can change the prompt and audition new candidates
-before saving a sample.
-
 Pandrator separates providers, models, voices, and generated takes. A provider
 is a configured service; a model is one of its processing choices; a voice is a
 reusable identity or reference; and a take is generated audio for one segment.
-Keeping those concepts separate makes it possible to change a provider without
-rewriting source text or silently replacing selected audio.
+Choose a model for your language and hardware, then try a short passage before
+generating a whole project. The **Audio models** catalogue lets you filter by
+language, provider and supported voice controls.
+
+In **Voices**, filter by origin to find designed voices, reference recordings or
+built-in speakers. **Redesign** reopens a designed voice's brief so you can
+audition changes before saving a new sample.
 
 ## Local or cloud
 
@@ -54,8 +43,9 @@ The Manager shows available compute variants, model licences, and downloads
 before changing the installation.
 
 **audio.cpp** is the main local TTS provider and the default in a fresh
-workspace. Its model packages cover Qwen3 TTS, Fish Audio S2 Pro, VoxCPM2,
-Chatterbox, MagpieTTS, OmniVoice, PocketTTS, Voxtral TTS, FireRedTTS3, and BreezeTTS 2.
+workspace. Its model packages include Qwen3 TTS, Fish Audio S2 Pro, VoxCPM2,
+Chatterbox, MagpieTTS, OmniVoice, PocketTTS, Voxtral TTS, FireRedTTS3, BreezeTTS 2,
+Drama 3, Kitten TTS 2, Phonon, Ming and XTTS v2.
 Select packages in the Manager and select an installed model in generation
 settings. XTTS, Silero, Kokoro, and Voxtral retain their dedicated providers.
 
@@ -113,7 +103,8 @@ local NVIDIA hardware. Use Vulkan when those dependencies are unavailable. Stagi
 an unexpected archive layout instead of installing a broken slot.
 
 Saved model IDs, voices and generation settings stay selected. Download manifests
-are independently pinned; a catalogue refresh can advance weight revisions.
+are independently pinned; a catalogue refresh can advance weight revisions and
+require replacement downloads even when a model's name stays the same.
 
 The catalogue contains 130 families and 413 packages, including the retained
 legacy Kitten TTS 2 package. New speech routes include English Phonon, seven-language

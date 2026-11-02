@@ -84,7 +84,7 @@
         "pandrator_list_workspaces_without_manager",
         "pandrator_recover_workspace_manager"
       ],
-      "minimum_application_version": "0.13.0",
+      "minimum_application_version": "0.14.0",
       "revision": 1,
       "file": "collaboration.md"
     },

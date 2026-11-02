@@ -1,11 +1,12 @@
 # Pandrator Manager
 
-`pandrator-manager` is Pandrator's Qt-free, per-user installation, update,
-repair, removal, and runtime control plane. It runs independently of the
-Pandrator application, browser, and optional tray client, and exposes an
-authenticated loopback API plus a standalone setup/recovery WebUI. Explicit
-private-network and HTTPS-ingress profiles support headless servers and GPU
-pods without changing the loopback-only default.
+Pandrator Manager installs and updates Pandrator, manages local engines, and
+helps recover a damaged installation. It runs independently of the application
+and opens its setup and recovery screens in your browser. A tray icon provides
+quick access on desktop systems.
+
+By default, its authenticated API is reachable only from the same computer.
+Explicit network and HTTPS settings support headless servers and GPU pods.
 
 For most users, the easiest installation is the Windows executable or Linux
 AppImage on the
@@ -13,7 +14,7 @@ AppImage on the
 These packages include their own runtime and do not require a suitable system
 Python. The public [installation guide](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/getting-started/installation.md)
 explains download selection, checksums, and workspace choice; this component
-guide owns exact Manager behavior and operational commands.
+guide covers Manager commands and operational details.
 
 ## Safety and ownership
 

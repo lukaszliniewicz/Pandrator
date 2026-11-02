@@ -1,11 +1,12 @@
 # Pandrator MCP
 
-`pandrator-mcp` is Pandrator's MCP adapter for explaining the application,
-inspecting an instance, and carrying out bounded application and Manager
-actions. A compatible local Manager supervises an authenticated loopback
-Streamable HTTP service; stdio remains available for remote targets, older
-hosts, and explicit process-per-target use. It can control Pandrator on the
-same computer, a trusted LAN or VPN, an external HTTPS server, or a pod.
+Pandrator MCP connects your AI assistant to Pandrator. The assistant can inspect
+projects, help process text and media, and carry out the actions you authorize.
+It can work with Pandrator on the same computer or on a configured remote host.
+
+For a local installation, Manager runs an authenticated Streamable HTTP service
+on loopback. Stdio is also available for remote targets and hosts that start a
+separate MCP process for each connection.
 
 The sidecar talks only to Pandrator's versioned HTTP APIs. It does not import
 the application ORM or job queue, accept model-selected URLs, expose arbitrary
@@ -15,9 +16,8 @@ For public workflow concepts, start with
 [passive dispatch](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/guides/passive-dispatch.md),
 [remote and headless operation](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/operations/remote-and-headless.md),
 and [privacy and security](https://github.com/lukaszliniewicz/Pandrator/blob/main/docs/security/privacy-and-security.md).
-This component guide remains the canonical source for exact MCP installation,
-target, scope, enrollment, host-configuration, diagnostic, and protocol
-behavior.
+This guide covers MCP installation, target configuration, permissions,
+enrollment, troubleshooting and protocol support.
 
 ## Optional workflow skill
 
