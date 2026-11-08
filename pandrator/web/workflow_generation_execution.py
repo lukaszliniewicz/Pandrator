@@ -245,7 +245,7 @@ def _run_generation(
                 speech_input_parents.setdefault(segment_id, set()).add(retained.pin["artifact_id"])
         return prepared
     progress(0.0, "Checking speech plan and voice references")
-    with context.database.session() as session:
+    with context.database.immediate_session() as session:
         prove(session)
         run = session.get(GenerationRun, run_id)
         if run is None:
@@ -265,24 +265,41 @@ def _run_generation(
         run.status = "running"
         run.updated_at = utcnow()
         settings_snapshot = dict(run.settings_snapshot_json or {})
-        from .generation_audio_identity import plan_audio_identities
-        from .speech_plan_workspace import plan_signature
-
-        plan_changed = bool(settings_snapshot.get("speech_plan_signature") and settings_snapshot["speech_plan_signature"] != plan_signature(session, run.plan_revision_id))
         audio_version = run.audio_version_json
         is_audio_version = audio_version is not None
-        audio_identities = plan_audio_identities(
-            session, run.plan_revision_id, settings_snapshot,
-            segment_ids=audio_version["target_segment_ids"] if audio_version is not None else None,
-        )
-        audio_identity_changed = bool(settings_snapshot.get("generation_audio_identities") and settings_snapshot["generation_audio_identities"] != audio_identities)
-        if plan_changed or audio_identity_changed:
-            run.status = "failed"
         session_id = run.session_id
         plan_revision_id = run.plan_revision_id
         run_sequence_number = run.sequence_number
         job_id = run.job_id or str(payload.get("_job_id") or "") or None
 
+    from .generation_audio_identity import plan_audio_identities
+    from .speech_plan_workspace import plan_signature
+
+    # This can take minutes on a long plan. Holding a writer here would stop this
+    # job's own heartbeats. Use a plain session, not a snapshot: voice checks prove
+    # the lease, and a pinned snapshot would never see it being renewed.
+    with context.database.session() as session:
+        plan_changed = bool(settings_snapshot.get("speech_plan_signature") and settings_snapshot["speech_plan_signature"] != plan_signature(session, plan_revision_id))
+        audio_identities = plan_audio_identities(
+            session, plan_revision_id, settings_snapshot,
+            segment_ids=audio_version["target_segment_ids"] if audio_version is not None else None,
+        )
+        audio_identity_changed = bool(settings_snapshot.get("generation_audio_identities") and settings_snapshot["generation_audio_identities"] != audio_identities)
+
+    if plan_changed or audio_identity_changed:
+        with context.database.immediate_session() as session:
+            # An expired lease denies voice access, and the identity check swallows
+            # that denial. Prove the lease before blaming the inputs. A lease cannot
+            # recover once expired, so passing here means it held throughout the check.
+            prove(session)
+            run = session.get(GenerationRun, run_id)
+            if run is not None:
+                run.status = "failed"
+                # A pause or cancel can land during the check now that it holds no
+                # writer, and job reconciliation skips runs that are already terminal.
+                run.cancel_requested = False
+                run.pause_requested = False
+                run.updated_at = utcnow()
     if plan_changed:
         raise ValueError("The selected speech plan changed after generation was queued. Review and submit it again.")
     if audio_identity_changed:

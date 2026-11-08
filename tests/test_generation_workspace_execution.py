@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import socket
 from copy import deepcopy
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -361,6 +362,157 @@ def test_late_generation_loss_leaves_no_outputs_or_owned_orphans(
     assert g.worker.run_once()
     assert len(calls) == 1
     assert_denied_without_outputs(g)
+
+
+def during_identity_check(monkeypatch, action, *, identities=None):
+    """Run ``action`` inside the check that opens ``generation.run``."""
+    from pandrator.web import generation_audio_identity
+
+    original = generation_audio_identity.plan_audio_identities
+    calls = []
+
+    def wrapped(session, *args, **kwargs):
+        first = not calls
+        calls.append(True)
+        if first:
+            action(session)
+        result = original(session, *args, **kwargs)
+        return identities if first and identities is not None else result
+
+    monkeypatch.setattr(generation_audio_identity, "plan_audio_identities", wrapped)
+    return calls
+
+
+def job_events(g, job_id):
+    with g.f.case.database.snapshot_session() as session:
+        return session.scalars(select(m.JobEvent).where(m.JobEvent.job_id == job_id)).all()
+
+
+def test_identity_check_keeps_heartbeats_and_renewed_leases_working(generation_case, monkeypatch):
+    g = generation_case
+    calls = fake_post(monkeypatch)
+    queue = g.f.services.jobs
+    job_id = g.marker["job_id"]
+    observed = {}
+
+    def renew_like_the_monitor(session):
+        job = queue.get(job_id)
+        with queue.database.snapshot_session() as other:
+            observed["run_status"] = other.get_one(
+                m.GenerationRun, g.marker["generation_run_id"]
+            ).status
+        observed["renewed"] = queue.heartbeat(
+            job_id,
+            job.lease_owner,
+            lease_generation=job.lease_generation,
+            lease_seconds=3600,
+        )
+        # The lease proof reads through this session, so it has to see renewals
+        # committed after the check began. A pinned snapshot would keep failing.
+        # The real monitor may also renew here, so compare with the earlier lease.
+        seen = session.scalar(select(m.Job.lease_expires_at).where(m.Job.id == job_id))
+        observed["renewal_visible"] = seen > job.lease_expires_at
+
+    during_identity_check(monkeypatch, renew_like_the_monitor)
+    assert g.worker.run_once()
+
+    assert observed["run_status"] == "running"
+    assert observed["renewed"] is True
+    assert observed["renewal_visible"] is True
+    job = queue.get(job_id)
+    assert job.status == "succeeded", job.error_message
+    assert len(calls) == 1
+
+
+def test_lost_lease_during_identity_check_is_not_reported_as_voice_change(
+    generation_case, monkeypatch
+):
+    g = generation_case
+    calls = fake_post(monkeypatch)
+    queue = g.f.services.jobs
+    job_id = g.marker["job_id"]
+
+    def expire_lease(_session):
+        with queue.database.immediate_session() as session:
+            session.get_one(m.Job, job_id).lease_expires_at = m.utcnow() - timedelta(seconds=1)
+
+    # An expired lease denies voice access. The check swallows that denial, so
+    # the identities come back different even though no voice changed.
+    during_identity_check(monkeypatch, expire_lease, identities={})
+    assert g.worker.run_once()
+
+    job = queue.get(job_id)
+    assert (job.status, job.error_code) == ("failed", "worker_lease_expired")
+    assert not [
+        event
+        for event in job_events(g, job_id)
+        if "voice reference changed" in str(event.payload_json)
+    ]
+    with g.f.case.database.snapshot_session() as session:
+        assert session.get_one(m.GenerationRun, g.marker["generation_run_id"]).status == "failed"
+    assert not calls
+
+
+def test_identity_change_with_a_live_lease_still_fails_the_run(generation_case, monkeypatch):
+    g = generation_case
+    calls = fake_post(monkeypatch)
+    during_identity_check(monkeypatch, lambda _session: None, identities={})
+    assert g.worker.run_once()
+
+    job = g.f.services.jobs.get(g.marker["job_id"])
+    assert job.status == "failed"
+    assert "voice reference changed" in job.error_message
+    with g.f.case.database.snapshot_session() as session:
+        assert session.get_one(m.GenerationRun, g.marker["generation_run_id"]).status == "failed"
+    assert not calls
+
+
+def test_plan_change_with_a_live_lease_still_fails_the_run(generation_case, monkeypatch):
+    g = generation_case
+    calls = fake_post(monkeypatch)
+    segment_id = g.f.services.generation.list_segments(g.source["id"])["items"][0]["id"]
+    with g.f.case.database.immediate_session() as session:
+        session.get_one(m.GenerationSegment, segment_id).text = "A different sentence."
+    assert g.worker.run_once()
+
+    job = g.f.services.jobs.get(g.marker["job_id"])
+    assert job.status == "failed"
+    assert "speech plan changed" in job.error_message
+    with g.f.case.database.snapshot_session() as session:
+        assert session.get_one(m.GenerationRun, g.marker["generation_run_id"]).status == "failed"
+    assert not calls
+
+
+def test_failed_identity_check_clears_a_pause_requested_during_it(generation_case, monkeypatch):
+    g = generation_case
+    fake_post(monkeypatch)
+    run_id = g.marker["generation_run_id"]
+
+    def request_pause(_session):
+        with g.f.case.database.immediate_session() as session:
+            run = session.get_one(m.GenerationRun, run_id)
+            run.status, run.pause_requested = "pausing", True
+
+    during_identity_check(monkeypatch, request_pause, identities={})
+    assert g.worker.run_once()
+
+    with g.f.case.database.snapshot_session() as session:
+        run = session.get_one(m.GenerationRun, run_id)
+        assert (run.status, run.pause_requested) == ("failed", False)
+
+
+def test_cancel_during_identity_check_stops_before_provider_send(generation_case, monkeypatch):
+    g = generation_case
+    calls = fake_post(monkeypatch)
+    queue = g.f.services.jobs
+    job_id = g.marker["job_id"]
+    during_identity_check(monkeypatch, lambda _session: queue.request_cancel(job_id))
+    assert g.worker.run_once()
+
+    assert queue.get(job_id).status == "canceled"
+    with g.f.case.database.snapshot_session() as session:
+        assert session.get_one(m.GenerationRun, g.marker["generation_run_id"]).status == "canceled"
+    assert not calls
 
 
 def test_take_name_collision_preserves_existing_file(generation_case, monkeypatch):
