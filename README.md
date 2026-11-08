@@ -29,25 +29,25 @@ opens Pandrator in your browser. Older workspace data can still be imported.
 For the retired Qt desktop interface, use an
 [older release](https://github.com/lukaszliniewicz/Pandrator/releases).
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.1/PandratorManager-0.9.31-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.1/PandratorManager-0.9.31-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.2/PandratorManager-0.9.31-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.2/PandratorManager-0.9.31-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.1 / Manager 0.9.31
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.2 / Manager 0.9.31
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-## New in 0.14.1
+## New in 0.14.2
 
-- **Work with a team.** Enable individual accounts and shared workspaces when you need them. Solo remains the default, and existing projects stay private.
-- **Invite a project collaborator or translation reviewer.** Optional expiring links let you share one project or collect corrections for approval.
-- **Review with more room.** Collapsible tools, phone drawers, and better draft protection make text, subtitle, delivery, and PDF reviews easier to use.
-- **Direct the narration.** Edit speaker assignments and phrase directions in one workspace, with clearer model limits and sentence-packing choices.
-- **Try more local voices.** audio.cpp 0.9.3 adds Phonon, Ming 3.0 and XTTS routes, expands Kitten's voices and languages, and supports Drama 3 directions and disk-backed experts. Model licences and hardware needs vary.
-- **Recover long jobs more easily.** Exports can wait for disk space and resume; independent jobs can use an optional second worker.
+- **Find timing problems before export.** Subtitle and recording review flag overlapping cues, overlapping word times and backwards word times without changing text or timestamps.
+- **Check transcription files first.** A new **Local model files** panel checks the recognizer, speech detector, aligner and language detector separately. Administrators can reuse an existing VAD file.
+- **Keep captions intact.** Media-edit rendering preserves whole captions with incomplete word timing, refuses cuts that would split a caption, and checks subtitle text before publishing.
+- **Preview the edit you will export.** The 12-second mix preview follows the reviewed media-edit timeline, and exports require that exact render.
+- **Refresh narration length automatically.** Generation resegments untouched automatic plans when the effective target changes; edited plans keep their boundaries. Breeze and VoxCPM2 targets are shorter.
+- **More reliable automation and long jobs.** Translation branch creation is atomic and idempotent, job logs are bounded and redacted, and completed assemblies survive later progress failures.
 
-See the [0.14.1 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.14.1) and [detailed changes](docs/release-changes-0.14.1.md).
+See the [0.14.2 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.14.2) and [detailed changes](docs/release-changes-0.14.2.md).
 
 ## Try your first workflow
 
