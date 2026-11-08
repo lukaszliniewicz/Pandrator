@@ -37,6 +37,7 @@ from .text_units import (
 from .transcript_normalization import (
     NormalizedTranscript,
     TimedSegment,
+    TimedWord,
     load_transcript,
     normalize_transcript,
 )
@@ -989,6 +990,25 @@ def _timed_words(
     result = _deduplicate_moss_overlap_words(result)
     result.sort(key=lambda word: word.index)
     return _sanitize_timed_words(result)
+
+
+def subtitle_timing_words(transcript: NormalizedTranscript) -> tuple[TimedWord, ...]:
+    """Expose the composer's derived timing view without changing ASR evidence.
+
+    Canonical ordinals identify original occurrences even with overlapping
+    speakers, source-order repairs, or MOSS seam deduplication.
+    """
+    originals = transcript.words
+    return tuple(
+        replace(
+            originals[word.canonical_ordinal],
+            text=word.text,
+            start_ms=word.start_ms,
+            end_ms=word.end_ms,
+            speaker=word.speaker,
+        )
+        for word in _timed_words(transcript)
+    )
 
 
 def _source_text_and_spans(words: list[_TimedWord]) -> tuple[str, list[_TimedWord]]:

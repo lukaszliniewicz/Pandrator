@@ -1323,6 +1323,35 @@ class ApplicationClientTests(unittest.TestCase):
         )
         self.assertFalse(caught.exception.retryable)
 
+    def test_incomplete_media_word_timing_preserves_backend_details_without_retrying(self):
+        server_message = (
+            "A retained-range boundary cuts inside a cue without complete word "
+            "timing. Keep or remove the whole cue."
+        )
+        server_details = {
+            "partial": 1, "unavailable": 0, "complete": 0,
+            "issues_total": 1, "truncated": False,
+            "issues": [{"cue_id": "cue-17", "status": "partial",
+                        "missing_text": "leading text", "missing_text_truncated": False}],
+        }
+        session = FakeSession([FakeResponse(422, {"error": {
+            "code": "media_edit_word_timing_incomplete",
+            "message": server_message, "details": server_details,
+        }})])
+        client = ApplicationClient(
+            local_registry("http://127.0.0.1:8097").bind("local"),
+            CredentialResolver(()), session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        with self.assertRaises(PandratorMcpError) as caught:
+            client._request_json("/api/v1/sessions/session-1/media-edit/render",
+                                 method="POST", body={"revision": 1, "subtitles_only": True})
+        self.assertEqual("media_edit_word_timing_incomplete", caught.exception.code)
+        self.assertEqual(server_message, str(caught.exception))
+        self.assertEqual({**server_details, "status": 422}, caught.exception.details)
+        self.assertFalse(caught.exception.retryable)
+        self.assertEqual(1, len(session.calls))
+
     def test_evidence_project_scope_revision_and_conflict_survive_transport(self):
         session = FakeSession([
             FakeResponse(200, {"routes": [], "audio_models": [{"id": "team-model"}]}),

@@ -6,15 +6,19 @@ from pandrator.logic.dubbing.timing_diagnostics import diagnose_timed_cues
 from pandrator.logic.media_edit import (
     KeepRange,
     MediaCue,
+    MediaEditWordCoverageError,
     MediaWord,
     align_cues_to_words,
     caption_to_srt,
     keep_ranges_from_cuts,
+    media_cue_word_coverage,
     media_cues_to_transcript,
+    media_word_coverage_summary,
     normalize_keep_ranges,
     parse_caption_text,
     refine_boundary,
     retime_cues,
+    validate_retime_word_coverage,
 )
 
 
@@ -306,6 +310,68 @@ def test_keep_ranges_from_cuts_returns_complement():
         (item.start_ms, item.end_ms)
         for item in keep_ranges_from_cuts(((-10, 50),), 1_000)
     ] == [(50, 1_000)]
+
+
+@pytest.mark.parametrize("text", ["missing hello world", "hello world missing"])
+def test_retime_partial_cues_preserves_full_caption_without_claiming_word_precision(text):
+    cue = MediaCue(
+        "partial", 1000, 3000, text,
+        words=(MediaWord("hello", 1500, 1800), MediaWord("world", 1800, 2200)),
+        timing_confidence=0.8, timing_source="asr_alignment",
+    )
+    assert media_cue_word_coverage(cue)["status"] == "partial"
+    assert "missing" in media_cue_word_coverage(cue)["missing_text"]
+    retimed, = retime_cues((cue,), (KeepRange("keep", 500, 3500),))
+    assert (retimed.text, retimed.start_ms, retimed.end_ms) == (text, 500, 2500)
+    assert retimed.words == ()
+    assert retimed.timing_source == "caption"
+    assert retimed.timing_confidence is None
+    assert len(cue.words) == 2
+
+
+@pytest.mark.parametrize("words", [(), (MediaWord("middle", 1200, 1600),)])
+@pytest.mark.parametrize("ranges", [
+    (KeepRange("left", 0, 1500),),
+    (KeepRange("right", 1500, 4000),),
+    (KeepRange("left", 0, 1500), KeepRange("right", 2000, 4000)),
+])
+def test_incomplete_word_coverage_rejects_interior_edges(words, ranges):
+    cue = MediaCue("incomplete", 1000, 3000, "leading middle trailing", words=words)
+    with pytest.raises(MediaEditWordCoverageError) as captured:
+        validate_retime_word_coverage((cue,), ranges)
+    assert captured.value.details["issues"][0]["cue_id"] == "incomplete"
+    assert captured.value.details["issues_total"] == 1
+    with pytest.raises(MediaEditWordCoverageError):
+        retime_cues((cue,), ranges)
+    # Exact whole-cue removal and touching kept intervals remain safe.
+    assert retime_cues((cue,), (KeepRange("before", 0, 1000), KeepRange("after", 3000, 4000))) == ()
+    kept, = retime_cues((cue,), (KeepRange("a", 0, 1500), KeepRange("b", 1500, 4000)))
+    assert kept.text == cue.text
+
+
+@pytest.mark.parametrize(("text", "words"), [
+    ("Hello, world!", ("Hello,", "world!")),
+    ('He said: "Hello world".', ("He", "said:", '"', "Hello", "world", '".')),
+    ("日本語。次の言葉", ("日本語。", "次の", "言葉")),
+])
+def test_word_coverage_uses_subtitle_layout_and_punctuation_semantics(text, words):
+    cue = MediaCue("layout", 0, 1000, text, words=tuple(
+        MediaWord(word, index * 40, index * 40 + 30) for index, word in enumerate(words)
+    ))
+    assert media_cue_word_coverage(cue)["status"] == "complete"
+
+
+def test_wordless_whole_cue_and_bounded_coverage_evidence():
+    cue = MediaCue("wordless", 1000, 2000, "caption retained")
+    assert retime_cues((cue,), (KeepRange("full", 0, 3000),)) == (cue,)
+    many = tuple(MediaCue(str(index) * 200, index * 3000, index * 3000 + 2000, "lost " * 200)
+                 for index in range(30))
+    summary = media_word_coverage_summary(many)
+    assert summary["unavailable"] == summary["issues_total"] == 30
+    assert summary["truncated"]
+    assert len(summary["issues"]) == 20
+    assert len(summary["issues"][0]["cue_id"]) <= 160
+    assert len(summary["issues"][0]["missing_text"]) <= 256
 
 
 def test_retime_cues_splits_cue_and_words_across_kept_ranges():

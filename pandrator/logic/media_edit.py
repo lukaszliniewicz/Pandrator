@@ -13,8 +13,11 @@ import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from difflib import SequenceMatcher
+from typing import Literal, TypedDict
 
+from .dubbing.subtitle_integrity import subtitle_text_integrity
+from .dubbing.text_units import join_fragments
 from .speaker_labels import normalize_speaker_label, speaker_label_candidate
 
 
@@ -609,12 +612,101 @@ def _coalesce_ranges(ranges: Sequence[KeepRange]) -> tuple[KeepRange, ...]:
     return tuple(result)
 
 
+class MediaCueWordCoverage(TypedDict):
+    status: Literal["complete", "partial", "unavailable"]
+    missing_text: str
+    missing_text_truncated: bool
+
+
+def media_cue_word_coverage(cue: MediaCue) -> MediaCueWordCoverage:
+    """Check whether word surfaces preserve the full cue under export semantics."""
+    word_text = join_fragments(word.text for word in cue.words)
+    matches = bool(cue.words) and subtitle_text_integrity(
+        caption_to_srt((cue,)),
+        caption_to_srt((replace(cue, text=word_text),)),
+    )["matches"]
+    if matches:
+        return {"status": "complete", "missing_text": "", "missing_text_truncated": False}
+    # Detail is diagnostic only; the independent integrity guard above decides
+    # coverage. Bound both comparison work and the returned excerpt.
+    source, target = cue.text[:4096], word_text[:4096]
+    missing = " ".join(
+        source[start:end]
+        for operation, start, end, _left, _right in SequenceMatcher(
+            None, source, target, autojunk=False
+        ).get_opcodes()
+        if operation in {"delete", "replace"}
+    ).strip()
+    return {
+        "status": "partial" if cue.words else "unavailable",
+        "missing_text": missing[:256],
+        "missing_text_truncated": len(missing) > 256 or len(cue.text) > 4096,
+    }
+
+
+def media_word_coverage_summary(cues: Sequence[MediaCue]) -> dict[str, object]:
+    """Return bounded, read-only coverage evidence for a prepared timeline."""
+    counts = {"complete": 0, "partial": 0, "unavailable": 0}
+    issues: list[dict[str, object]] = []
+    partial_cues: list[dict[str, object]] = []
+    for cue in cues:
+        coverage = media_cue_word_coverage(cue)
+        counts[coverage["status"]] += 1
+        if coverage["status"] == "complete":
+            continue
+        detail: dict[str, object] = {"cue_id": cue.id[:160], **coverage}
+        if len(issues) < 20:
+            issues.append(detail)
+        if coverage["status"] == "partial" and len(partial_cues) < 20:
+            partial_cues.append(detail)
+    issues_total = counts["partial"] + counts["unavailable"]
+    return {
+        **counts,
+        "partial_cues": partial_cues,
+        "issues": issues,
+        "issues_total": issues_total,
+        "truncated": issues_total > len(issues),
+    }
+
+
+class MediaEditWordCoverageError(ValueError):
+    """A retained-range boundary needs unavailable complete word timing."""
+
+    def __init__(self, cues: Sequence[MediaCue]) -> None:
+        self.details = media_word_coverage_summary(cues)
+        super().__init__(
+            "A retained-range boundary cuts inside a cue without complete word "
+            "timing. Keep or remove the whole cue, or obtain complete aligned "
+            "word timing before rendering."
+        )
+
+
+def validate_retime_word_coverage(
+    cues: Sequence[MediaCue], keep_ranges: Sequence[KeepRange]
+) -> None:
+    """Reject interior cuts into incomplete cues; whole-cue removal is safe."""
+    ranges = _coalesce_ranges(keep_ranges)
+    incomplete = [
+        cue
+        for cue in cues
+        if any(
+            cue.start_ms < edge < cue.end_ms
+            for item in ranges
+            for edge in (item.start_ms, item.end_ms)
+        )
+        and media_cue_word_coverage(cue)["status"] != "complete"
+    ]
+    if incomplete:
+        raise MediaEditWordCoverageError(incomplete)
+
+
 def retime_cues(
     cues: Sequence[MediaCue], keep_ranges: Sequence[KeepRange]
 ) -> tuple[MediaCue, ...]:
     """Map cue portions from source time into the contiguous kept timeline."""
 
     ranges = _coalesce_ranges(tuple(keep_ranges))
+    validate_retime_word_coverage(cues, ranges)
     if not ranges:
         return ()
     output_bases: list[tuple[KeepRange, int]] = []
@@ -625,6 +717,7 @@ def retime_cues(
 
     result: list[MediaCue] = []
     for cue in cues:
+        complete = media_cue_word_coverage(cue)["status"] == "complete"
         intersections: list[tuple[KeepRange, int, int, int]] = []
         for item, output_base in output_bases:
             start_ms = max(cue.start_ms, item.start_ms)
@@ -647,10 +740,10 @@ def retime_cues(
                     + output_base,
                     end_ms=min(word.end_ms, part_end) - _item.start_ms + output_base,
                 )
-                for word in cue.words
+                for word in (cue.words if complete else ())
                 if word.end_ms > part_start and word.start_ms < part_end
             )
-            if cue.words and not selected_words:
+            if complete and not selected_words:
                 continue
             if selected_words:
                 piece_text = (
@@ -669,6 +762,8 @@ def retime_cues(
                     end_ms=new_end,
                     text=piece_text,
                     words=selected_words,
+                    timing_source=cue.timing_source if complete else "caption",
+                    timing_confidence=cue.timing_confidence if complete else None,
                 )
             )
     return tuple(result)

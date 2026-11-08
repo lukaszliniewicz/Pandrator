@@ -11,10 +11,11 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlalchemy import select
 
+from pandrator.logic.dubbing.subtitle_finalization import subtitle_timing_words
 from pandrator.logic.dubbing.timing_diagnostics import diagnose_timed_cues
 from pandrator.logic.dubbing.transcript_normalization import (
     NormalizedTranscript,
@@ -28,8 +29,11 @@ from pandrator.logic.media_edit import (
     MediaCue,
     MediaWord,
     align_cues_to_words,
+    media_cue_word_coverage,
+    media_word_coverage_summary,
     normalize_keep_ranges,
     parse_caption_text,
+    validate_retime_word_coverage,
 )
 from pandrator.logic.media_edit_proposals import (
     boundary_payload,
@@ -568,11 +572,43 @@ class MediaEditService:
     ) -> dict[str, Any]:
         source_cues = list(revision.cues_json or [])
         timing_diagnostics = diagnose_timed_cues(source_cues)
+        coverage_cues: list[MediaCue] = []
+        incomplete_ids: set[str] = set()
+        invalid_count = 0
+        invalid_details: list[dict[str, object]] = []
+        for source_cue in source_cues:
+            raw_id = source_cue.get("id") if isinstance(source_cue, Mapping) else None
+            cue_id = raw_id if isinstance(raw_id, str) else ""
+            try:
+                cue = cls._cue_from_payload(dict(source_cue))
+            except (KeyError, TypeError, ValueError):
+                invalid_count += 1
+                if cue_id:
+                    incomplete_ids.add(cue_id)
+                if len(invalid_details) < 20:
+                    invalid_details.append({"cue_id": cue_id[:160], "reason": "invalid_timing_data"})
+                continue
+            coverage_cues.append(cue)
+            if media_cue_word_coverage(cue)["status"] != "complete":
+                incomplete_ids.add(cue.id)
+        coverage = media_word_coverage_summary(coverage_cues)
+        issues = (cast(list[dict[str, object]], coverage["issues"]) + invalid_details)[:20]
+        issues_total = cast(int, coverage["issues_total"]) + invalid_count
+        coverage.update({
+            "invalid": invalid_count,
+            "invalid_cues": invalid_details,
+            "issues": issues,
+            "issues_total": issues_total,
+            "truncated": issues_total > len(issues),
+        })
         cues = [
             {
                 **deepcopy(dict(cue)),
                 "timing_flags": list(
                     timing_diagnostics.cue_flags.get(str(cue.get("id") or ""), [])
+                ) + (
+                    ["incomplete_word_coverage"]
+                    if str(cue.get("id") or "") in incomplete_ids else []
                 ),
             }
             if isinstance(cue, Mapping)
@@ -600,12 +636,24 @@ class MediaEditService:
             "keep_ranges": list(revision.keep_ranges_json or []),
             "cues": cues,
             "timing_diagnostics": timing_diagnostics.summary,
-            "evidence": dict(revision.evidence_json or {}),
+            "word_coverage": coverage,
+            "evidence": deepcopy(dict(revision.evidence_json or {})),
             "operation": dict(revision.operation_json or {}),
             "reviewed": bool(revision.reviewed),
             "content_hash": revision.content_hash,
             "created_at": revision.created_at.isoformat(),
         }
+
+    @classmethod
+    def validate_render_word_coverage(cls, plan: Mapping[str, Any]) -> None:
+        """Validate immutable reviewed ranges before admitting render work."""
+        validate_retime_word_coverage(
+            tuple(cls._cue_from_payload(item) for item in plan.get("cues") or []),
+            tuple(
+                cls._keep_range_from_payload(item, index)
+                for index, item in enumerate(plan.get("keep_ranges") or [], start=1)
+            ),
+        )
 
     def _state_in_session(self, session, session_id: str) -> dict[str, Any]:
         record = session.get(SessionRecord, session_id)
@@ -743,7 +791,9 @@ class MediaEditService:
                             end_ms=word.end_ms,
                             confidence=word.confidence,
                         )
-                        for word in transcript.words
+                        for word in (
+                            transcript.words if external else subtitle_timing_words(transcript)
+                        )
                     ]
                     aligned = align_cues_to_words(cues, timing_words)
             except (OSError, ValueError, TypeError):
@@ -755,6 +805,13 @@ class MediaEditService:
         else:
             aligned = cues
         cue_payloads = [self._cue_payload(cue) for cue in aligned]
+        word_coverage = media_word_coverage_summary(aligned)
+        if word_coverage["partial"]:
+            warnings.append(
+                "Some cues have incomplete word coverage; whole retained cues "
+                "will preserve caption text and timing. Cuts inside those cues "
+                "require complete aligned word timing."
+            )
         coverage = self._token_coverage(aligned)
         confidence_values = [float(cue.timing_confidence or 0.0) for cue in aligned]
         if (
@@ -785,6 +842,7 @@ class MediaEditService:
             if confidence_values
             else 0.0,
             "timing_available": bool(timing_words) or reused_alignment,
+            "word_coverage": word_coverage,
             "warnings": warnings,
         }
         if timing_metadata and timing_metadata.get("alignment_method"):

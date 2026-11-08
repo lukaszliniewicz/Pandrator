@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
@@ -13,11 +14,56 @@ from pandrator.logic.dubbing.subtitle_finalization import (
     compose_transcript_segments,
     compose_transcript_segments_with_ownership,
     finalize_srt_content,
+    subtitle_timing_words,
     wrap_subtitle_text,
+)
+from pandrator.logic.dubbing.transcript_normalization import (
+    NormalizedTranscript,
+    TimedSegment,
+    TimedWord,
+    normalize_transcript,
 )
 
 
 class SubtitleFinalizationTests(unittest.TestCase):
+    def test_public_timing_view_preserves_long_cjk_phrase_and_overlapping_speakers(self):
+        phrase = "これは長い日本語の文章です"
+        transcript = NormalizedTranscript((
+            TimedSegment(phrase, 0, 10000, speaker="Alice", words=(
+                TimedWord(phrase, 0, 10000),
+            )),
+            TimedSegment("Overlap", 500, 800, speaker="Bob", words=(
+                TimedWord("Overlap", 500, 800),
+            )),
+        ), source_format="fixture")
+        view = subtitle_timing_words(transcript)
+        self.assertEqual([(0, 10000, "Alice"), (500, 800, "Bob")], [
+            (word.start_ms, word.end_ms, word.speaker) for word in view
+        ])
+
+    def test_public_timing_view_delegates_repairs_and_preserves_original_occurrences(self):
+        transcript = NormalizedTranscript((
+            TimedSegment("Later", 600, 7000, speaker="Bob", words=(
+                TimedWord("Later", 600, 7000, confidence=0.6, metadata={"identity": "later"}),
+            )),
+            TimedSegment("Early", 0, 300, speaker="Alice", words=(
+                TimedWord("Early", 0, 300, confidence=0.9, metadata={"identity": "early"}),
+            )),
+        ), source_format="fixture")
+        baseline = deepcopy(transcript.to_dict())
+        with patch.object(subtitle_finalization, "_timed_words", wraps=subtitle_finalization._timed_words) as processor:
+            derived = subtitle_timing_words(transcript)
+        processor.assert_called_once_with(transcript)
+        expected = subtitle_finalization._timed_words(transcript)
+        self.assertEqual(
+            [(word.text, word.start_ms, word.end_ms, word.speaker) for word in expected],
+            [(word.text, word.start_ms, word.end_ms, word.speaker) for word in derived],
+        )
+        self.assertEqual(["later", "early"], [word.metadata["identity"] for word in derived])
+        self.assertEqual([0.6, 0.9], [word.confidence for word in derived])
+        self.assertIs(derived[0].metadata, transcript.segments[0].words[0].metadata)
+        self.assertEqual(baseline, transcript.to_dict())
+
     def _compose_payload(self, payload, settings=None):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "words.json"
@@ -482,6 +528,13 @@ This cue contains forty readable characters.
         result = compose_transcript_segments_with_ownership(payload)
 
         self.assertEqual({0: 0, 2: 0, 4: 0, 6: 0, 7: 0}, result.word_segment_ordinals)
+        transcript = normalize_transcript(payload)
+        view = subtitle_timing_words(transcript)
+        self.assertEqual(["asleep", "when", "you're", "under", "anesthesia"], [word.text for word in view])
+        self.assertEqual(["moss-a", "moss-b", "moss-b", "moss-b", "moss-b"], [
+            word.metadata["moss_segment_id"] for word in view
+        ])
+        self.assertEqual(8, len(transcript.words))
 
     def test_zero_minimum_gap_is_a_valid_explicit_setting(self):
         config = SubtitleFinalizationConfig.from_settings({"subtitle_min_gap_ms": 0})

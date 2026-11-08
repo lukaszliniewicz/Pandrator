@@ -75,6 +75,7 @@ def media_edit_render(context: MediaEditRenderContext, payload, progress, cancel
         )
     if not bool(revision.get("reviewed")):
         raise ValueError("The media-edit revision must be reviewed before rendering.")
+    context.media_edit.validate_render_word_coverage(revision)
     source_info = revision.get("source_media_artifact")
     source_id = str((source_info or {}).get("id") or "")
     source_artifact, source_path = context._resolve_input(source_id)
@@ -100,6 +101,12 @@ def media_edit_render(context: MediaEditRenderContext, payload, progress, cancel
     if not keep_ranges:
         raise ValueError("The selected media-edit revision has no retained ranges.")
     retimed_cues = retime_cues(cues, keep_ranges)
+    fallback_ids = [cue.id for cue in retimed_cues if not cue.words]
+    fallback_metadata = {
+        "cue_timing_fallback_count": len(fallback_ids),
+        "cue_timing_fallback_ids": [cue_id[:160] for cue_id in fallback_ids[:20]],
+        "cue_timing_fallback_truncated": len(fallback_ids) > 20,
+    }
     operation_dir = context._operation_dir(session_id, "media-edit-render")
     plan_id = str(revision.get("plan_id") or "")
     revision_id = str(revision.get("revision_id") or "")
@@ -119,6 +126,7 @@ def media_edit_render(context: MediaEditRenderContext, payload, progress, cancel
                     "revision": revision_number,
                     "timing_method": "media_edit_retime",
                     "word_count": word_count,
+                    **fallback_metadata,
                 },
             ),
             ensure_ascii=False,
@@ -153,6 +161,7 @@ def media_edit_render(context: MediaEditRenderContext, payload, progress, cancel
         "source_cue_count": len(retimed_cues),
         "composed_cue_count": len(published_cues),
         "composition_mode": composition_mode,
+        **fallback_metadata,
     }
     encoder = str(settings.get("burn_video_encoder") or "libx264").strip().lower()
     parent_ids = [

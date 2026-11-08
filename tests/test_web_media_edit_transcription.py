@@ -868,6 +868,98 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
     def test_media_edit_resegments_without_encoding_or_replacing_video(self):
         self._assert_media_edit_render(subtitles_only=True)
 
+    def test_native_long_span_words_survive_unchanged_and_cut_subtitle_render(self):
+        from pandrator.logic.dubbing.srt_utils import compose_srt
+        from pandrator.logic.dubbing.subtitle_finalization import compose_transcript_segments
+        from tests.test_web_media_edit import _long_span_native_transcript
+
+        transcript = _long_span_native_transcript()
+        timing_path = self.paths.root / "long-spans.json"
+        raw = json.dumps(transcript.to_dict())
+        timing_path.write_text(raw)
+        caption_path = self.paths.root / "long-spans.srt"
+        with patch("pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries", return_value=None):
+            caption_path.write_text(compose_srt(compose_transcript_segments(transcript)))
+        cues, _evidence = self.handlers.media_edit._parse_editorial(
+            caption_path, timing_path, 40000, external=False
+        )
+        for keep_ranges, expected_words in (
+            ([{"id": "full", "start_ms": 0, "end_ms": 40000}], 16),
+            ([{"id": "left", "start_ms": 0, "end_ms": 9000},
+              {"id": "right", "start_ms": 19000, "end_ms": 40000}], 12),
+        ):
+            with self.subTest(kept=keep_ranges):
+                result, _subtitle, _words = self._assert_subtitle_timing_render(cues, keep_ranges)
+                self.assertEqual(expected_words, result["word_count"])
+                self.assertEqual(0, result["cue_timing_fallback_count"])
+        self.assertEqual(raw, timing_path.read_text())
+
+    def test_mixed_partial_and_wordless_render_preserves_text_and_reports_fallback(self):
+        cues = [
+            {"id": "complete", "start_ms": 0, "end_ms": 800, "text": "Hello world.",
+             "words": [{"text": "Hello", "start_ms": 0, "end_ms": 300},
+                       {"text": "world.", "start_ms": 400, "end_ms": 800}]},
+            {"id": "partial", "start_ms": 2000, "end_ms": 4000,
+             "text": "leading middle trailing", "timing_source": "asr_alignment",
+             "words": [{"text": "middle", "start_ms": 2500, "end_ms": 3000}]},
+            {"id": "wordless", "start_ms": 5000, "end_ms": 6000,
+             "text": "Caption without words", "words": []},
+        ]
+        result, subtitle, words = self._assert_subtitle_timing_render(
+            cues, [{"id": "keep", "start_ms": 0, "end_ms": 7000}]
+        )
+        self.assertEqual(2, result["word_count"])
+        self.assertEqual(2, result["cue_timing_fallback_count"])
+        self.assertEqual(["partial", "wordless"], result["cue_timing_fallback_ids"])
+        self.assertEqual(2, subtitle.metadata_json["cue_timing_fallback_count"])
+        self.assertEqual(["partial", "wordless"], words["metadata"]["cue_timing_fallback_ids"])
+        self.assertEqual([], words["segments"][1]["words"])
+        self.assertEqual("caption", words["segments"][1]["metadata"]["timing_source"])
+        self.assertEqual(1, len(cues[1]["words"]))
+
+    def test_worker_rejects_incomplete_cut_before_resolving_media_or_creating_outputs(self):
+        from pandrator.logic.media_edit import MediaEditWordCoverageError
+
+        revision = {"reviewed": True,
+                    "keep_ranges": [{"id": "cut", "start_ms": 1500, "end_ms": 5000}],
+                    "cues": [{"id": "wordless", "start_ms": 1000, "end_ms": 2000,
+                              "text": "must remain whole", "words": []}]}
+        with (
+            patch.object(self.handlers.media_edit, "revision", return_value=revision),
+            patch.object(self.handlers, "_resolve_input") as resolve,
+            patch.object(self.handlers, "_operation_dir") as operation,
+            self.assertRaises(MediaEditWordCoverageError),
+        ):
+            self.handlers.media_edit_render({"session_id": self.session.id, "revision": 1,
+                                             "subtitles_only": True}, self.progress, threading.Event())
+        resolve.assert_not_called()
+        operation.assert_not_called()
+
+    def _assert_subtitle_timing_render(self, cues, keep_ranges):
+        from pandrator.logic.dubbing.subtitle_integrity import subtitle_text_integrity
+        from pandrator.logic.media_edit import KeepRange, caption_to_srt, retime_cues
+
+        source = self._artifact("timing-render.mp4", "upload", "media", "video")
+        revision = {"reviewed": True, "plan_id": "timing-plan", "revision_id": "timing-revision",
+                    "source_media_artifact": {"id": source.id}, "keep_ranges": keep_ranges,
+                    "cues": cues}
+        expected_cues = retime_cues(tuple(self.handlers.media_edit._cue_from_payload(cue) for cue in cues),
+                                   tuple(KeepRange(item["id"], item["start_ms"], item["end_ms"]) for item in keep_ranges))
+        with (
+            patch.object(self.handlers.media_edit, "revision", return_value=revision),
+            patch("pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries", return_value=None),
+            patch("pandrator.web.media_process.run_media_process") as encode,
+        ):
+            result = self.handlers.media_edit_render(
+                {"session_id": self.session.id, "revision": 1, "subtitles_only": True,
+                 "settings": {}, "settings_hash": "fixture"}, self.progress, threading.Event()
+            )
+        encode.assert_not_called()
+        subtitle, subtitle_path = self.artifacts.resolve(result["subtitle_artifact_id"])
+        words_path = self.artifacts.resolve(result["word_timestamps_artifact_id"])[1]
+        self.assertTrue(subtitle_text_integrity(caption_to_srt(expected_cues), subtitle_path.read_text())["matches"])
+        return result, subtitle, json.loads(words_path.read_text())
+
     def test_composed_overlapping_words_keep_their_cues_and_reviewed_speakers(self):
         from pandrator.logic.dubbing.srt_utils import compose_srt
         from pandrator.logic.dubbing.subtitle_finalization import (

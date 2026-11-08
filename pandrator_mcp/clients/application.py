@@ -66,6 +66,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "initial_administrator_required",
         "workspace_revision_conflict",
         "workflow_conflict",
+        "media_edit_word_timing_incomplete",
         "personal_workspace_protected",
         "last_workspace_manager",
         "user_not_available",

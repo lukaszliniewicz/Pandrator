@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.media_edit import MediaEditWordCoverageError
+
 from .auth import Principal
 from .domain_blueprints import DomainBlueprints
 from .http_idempotency import MutationIdempotency
@@ -263,6 +265,10 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
                 "Media-edit inputs changed while preparing; retry preparation.",
                 409,
                 {"retryable": True},
+            )
+        if isinstance(error, MediaEditWordCoverageError):
+            return error_response(
+                "media_edit_word_timing_incomplete", str(error), 422, error.details
             )
         if isinstance(error, ValueError):
             message = str(error)
@@ -639,6 +645,7 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
                     raise ValueError(
                         "The media-edit revision must be reviewed before rendering."
                     )
+                media_edit.validate_render_word_coverage(plan)
                 settings, settings_hash = _settings_snapshot(session_id, "output")
                 subtitle_settings, _ = _settings_snapshot(session_id, "subtitles")
                 settings.update(subtitle_settings)

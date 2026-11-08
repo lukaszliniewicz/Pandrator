@@ -25,7 +25,167 @@ from pandrator.web.models import (
 from pandrator.web.projects.identity import create_session_project
 
 
+def _long_span_native_transcript():
+    """Four ASR outliers, separated by ordinary 200 ms synthetic words."""
+    from pandrator.logic.dubbing.transcript_normalization import (
+        NormalizedTranscript,
+        TimedSegment,
+        TimedWord,
+    )
+
+    segments = []
+    for index, (token, span) in enumerate((
+        ("until1988.1987", 3680), ("Somehow.", 3680),
+        ("Unchair.", 4960), ("the19.", 6320),
+    )):
+        base = index * 10000
+        surfaces = ("Alpha", "beta", "gamma", token)
+        words = tuple(
+            TimedWord(surface, base + slot * 300,
+                      base + slot * 300 + (span if slot == 3 else 200),
+                      confidence=0.95, metadata={"ordinal": index * 4 + slot})
+            for slot, surface in enumerate(surfaces)
+        )
+        segments.append(TimedSegment(" ".join(surfaces), base, words[-1].end_ms, words=words))
+    return NormalizedTranscript(tuple(segments), source_format="synthetic_native_asr", language="en")
+
+
 class MediaEditServiceTests(unittest.TestCase):
+    def test_native_asr_prepare_shares_composer_timing_and_preserves_all_four_outliers(self):
+        from pandrator.logic.dubbing.srt_utils import compose_srt
+        from pandrator.logic.dubbing.subtitle_finalization import compose_transcript_segments
+
+        transcript = _long_span_native_transcript()
+        raw = json.dumps(transcript.to_dict())
+        media = self._register("native.mp4", "upload", b"native", "video")
+        self._attach(media, "primary", "video")
+        with patch("pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries", return_value=None):
+            srt = compose_srt(compose_transcript_segments(transcript))
+        captions = self._register("native.srt", "transcription", srt, "srt", parent_ids=[media.id])
+        timing = self._register("native.json", "word_timestamps", raw, "json", parent_ids=[media.id])
+        service = MediaEditService(self.database, self.artifacts, lambda _sid: self.paths.sessions,
+                                   duration_probe=lambda _path: 40000)
+        plan = service.prepare(self.session_id)["plan"]
+        self.assertEqual(4, plan["word_coverage"]["complete"])
+        self.assertEqual(0, plan["word_coverage"]["issues_total"])
+        self.assertEqual([word.text for word in transcript.words], [
+            word["text"] for cue in plan["cues"] for word in cue["words"]
+        ])
+        self.assertEqual(raw, self.artifacts.resolve(timing.id)[1].read_text())
+        # Attached captions keep the raw evidence's strict temporal checks.
+        _external_cues, external_evidence = service._parse_editorial(
+            self.artifacts.resolve(captions.id)[1], self.artifacts.resolve(timing.id)[1],
+            40000, external=True,
+        )
+        self.assertEqual(4, external_evidence["word_coverage"]["partial"])
+
+    def test_partial_coverage_diagnostics_are_bounded_and_do_not_change_revision_hash(self):
+        self._seed_external()
+        service = self._service()
+        plan = service.prepare(self.session_id)["plan"]
+        partial = {"id": "partial", "start_ms": 1000, "end_ms": 2000,
+                   "text": "hello world missing", "words": [
+                       {"text": "hello", "start_ms": 1000, "end_ms": 1300},
+                       {"text": "world", "start_ms": 1400, "end_ms": 1600},
+                   ]}
+        with self.database.session() as db:
+            revision = db.get(MediaEditPlanRevision, plan["revision_id"])
+            revision.cues_json = [partial]
+            before = deepcopy(service._revision_snapshot(revision))
+            content_hash = revision.content_hash
+            result = service._payload(revision, {})
+            self.assertEqual(1, result["word_coverage"]["partial"])
+            self.assertIn("missing", result["word_coverage"]["partial_cues"][0]["missing_text"])
+            self.assertIn("incomplete_word_coverage", result["cues"][0]["timing_flags"])
+            result["word_coverage"]["partial_cues"][0]["missing_text"] = "caller change"
+            result["cues"][0]["text"] = "caller change"
+            self.assertEqual(before, service._revision_snapshot(revision))
+            self.assertEqual(content_hash, revision.content_hash)
+            self.assertEqual(service._content_hash(before), service._content_hash(service._revision_snapshot(revision)))
+
+    def test_partial_preparation_warns_and_exposes_missing_caption_edges(self):
+        captions = self.paths.root / "partial.srt"
+        captions.write_text("1\n00:00:01,000 --> 00:00:03,000\nmissing hello world\n")
+        timing = self.paths.root / "partial.json"
+        timing.write_text(json.dumps({"schema": "pandrator.transcript.v1", "segments": [{
+            "start_ms": 1000, "end_ms": 3000, "text": "hello world", "words": [
+                {"text": "hello", "start_ms": 1500, "end_ms": 1800},
+                {"text": "world", "start_ms": 1900, "end_ms": 2200},
+            ],
+        }]}))
+        cues, evidence = self._service()._parse_editorial(captions, timing, 5000, external=True)
+        self.assertEqual("missing hello world", cues[0]["text"])
+        self.assertEqual(1, evidence["word_coverage"]["partial"])
+        self.assertTrue(any("incomplete word coverage" in warning for warning in evidence["warnings"]))
+
+    def test_historical_invalid_word_timing_remains_readable_without_snapshot_changes(self):
+        self._seed_external()
+        service = self._service()
+        plan = service.prepare(self.session_id)["plan"]
+        saved_cues = [
+            {"id": "valid", "start_ms": 0, "end_ms": 2000, "text": "hello",
+             "words": [{"text": "hello", "start_ms": 0, "end_ms": 500}]},
+            {"id": "invalid", "start_ms": 500, "end_ms": 1500, "text": "broken",
+             "words": [{"text": "broken", "start_ms": 1000, "end_ms": 900}]},
+        ]
+        with self.database.session() as db:
+            revision = db.get(MediaEditPlanRevision, plan["revision_id"])
+            revision.cues_json = deepcopy(saved_cues)
+            baseline = deepcopy(service._revision_snapshot(revision))
+            content_hash = revision.content_hash
+        state = service.state(self.session_id)["plan"]
+        coverage = state["word_coverage"]
+        self.assertEqual(1, coverage["invalid"])
+        self.assertEqual(1, coverage["complete"])
+        self.assertEqual(1, coverage["issues_total"])
+        self.assertFalse(coverage["truncated"])
+        self.assertEqual([{"cue_id": "invalid", "reason": "invalid_timing_data"}], coverage["invalid_cues"])
+        self.assertEqual(1, state["timing_diagnostics"]["invalid_word_timings"])
+        self.assertEqual(1, state["timing_diagnostics"]["cue_overlap_events"])
+        self.assertIn("cue_overlap", state["cues"][1]["timing_flags"])
+        self.assertIn("incomplete_word_coverage", state["cues"][1]["timing_flags"])
+        self.assertEqual(900, state["cues"][1]["words"][0]["end_ms"])
+        with self.assertRaises(ValueError):
+            service.validate_render_word_coverage(state)
+        with self.database.session() as db:
+            revision = db.get(MediaEditPlanRevision, plan["revision_id"])
+            self.assertEqual(content_hash, revision.content_hash)
+            self.assertEqual(baseline, service._revision_snapshot(revision))
+
+    def test_render_http_rejects_incomplete_interior_cut_before_queueing(self):
+        from sqlalchemy import select
+
+        from pandrator.web.api import create_app
+        from pandrator.web.auth import BootstrapTokenStore
+        from pandrator.web.models import Job
+
+        bootstrap = BootstrapTokenStore()
+        token = bootstrap.issue()
+        app = create_app(data_root=self.directory.name, testing=True, bootstrap_tokens=bootstrap)
+        client = app.test_client()
+        csrf = client.post("/api/v1/auth/bootstrap", json={"token": token}).get_json()["csrf_token"]
+        extension = app.extensions["pandrator"]
+        try:
+            for words in ([], [{"text": "middle", "start_ms": 1500, "end_ms": 1800}]):
+                with self.subTest(wordless=not words), patch.object(extension["media_edit"], "state", return_value={"plan": {
+                    "revision": 1, "reviewed": True,
+                    "keep_ranges": [{"id": "keep", "start_ms": 0, "end_ms": 2000}],
+                    "cues": [{"id": "incomplete", "start_ms": 1000, "end_ms": 3000,
+                              "text": "leading middle trailing", "words": words}],
+                }}):
+                    response = client.post(f"/api/v1/sessions/{self.session_id}/media-edit/render",
+                                           json={"revision": 1, "subtitles_only": True},
+                                           headers={"X-CSRF-Token": csrf})
+                    self.assertEqual(422, response.status_code, response.get_json())
+                    error = response.get_json()["error"]
+                    self.assertEqual("media_edit_word_timing_incomplete", error["code"])
+                    self.assertEqual("incomplete", error["details"]["issues"][0]["cue_id"])
+                    self.assertIn("leading", error["details"]["issues"][0]["missing_text"])
+            with extension["database"].session() as db:
+                self.assertEqual([], list(db.scalars(select(Job))))
+        finally:
+            extension["database"].dispose()
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.paths = DataPaths.from_value(self.directory.name).ensure()
