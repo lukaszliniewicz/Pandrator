@@ -39,6 +39,15 @@ def nested_keys(value, key):
     return found
 
 
+def test_browser_build_inputs_and_outputs_stay_lf_on_every_platform():
+    # CI builds on Ubuntu, so it cannot see a Windows checkout producing different bundles.
+    rules = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+
+    assert "web/** text=auto eol=lf" in rules
+    assert "pandrator/web/static/** text=auto eol=lf" in rules
+    assert "pandrator_manager/recovery_ui/static/model-groups.js text eol=lf" in rules
+
+
 def test_api_core_is_the_only_direct_network_gateway():
     offenders = []
     for path in frontend_sources():

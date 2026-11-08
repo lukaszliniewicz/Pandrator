@@ -1,3 +1,10 @@
 # Vite emits content-addressed, minified assets. Treat them as generated blobs so
 # embedded whitespace tables do not create false-positive patch whitespace errors.
 pandrator/web/static/_app/immutable/** -diff -whitespace
+
+# The browser build must be byte-identical on every platform. CRLF sources change the
+# version hash in web/svelte.config.js and leak into the emitted bundles, and CI compares
+# a clean Ubuntu rebuild against the tracked output. Keep build inputs and outputs LF.
+web/** text=auto eol=lf
+pandrator/web/static/** text=auto eol=lf
+pandrator_manager/recovery_ui/static/model-groups.js text eol=lf
