@@ -119,7 +119,9 @@ test('packing choices persist through stage and speech-plan settings', async ({
     .getByRole('button', { name: 'Save narration settings' })
     .click();
   await expect(
-    page.getByRole('status').filter({ hasText: 'Saved. Run Segment narration' })
+    page
+      .getByRole('status')
+      .filter({ hasText: 'Saved. Generation updates untouched narration' })
   ).toBeVisible();
   stored = await (
     await page.request.get(`/api/v1/sessions/${id}/settings/text`)

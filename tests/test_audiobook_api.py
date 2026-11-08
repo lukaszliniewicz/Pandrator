@@ -75,6 +75,12 @@ class _Guards:
         return SimpleNamespace(subject="test")
 
     @staticmethod
+    def inline_credential_error(payload):
+        if (payload.get("tts") or {}).get("api_key"):
+            return _Guards.error_response("inline_credentials", "Use stored credentials.", 422)
+        return None
+
+    @staticmethod
     def error_response(code, message, status, details=None):
         from flask import jsonify
 
@@ -98,9 +104,12 @@ def _client(monkeypatch):
 def test_request_models_are_strict_and_bounded():
     payload = AudiobookSetupConfigureRequest(expected_revision=REVISION, mode="single_voice")
     assert payload.expected_revision == REVISION
-    assert SpeechPlanPreviewRequest(
-        revision_id=" revision ", segment_id="segment", include_request=True
-    ).revision_id == "revision"
+    assert (
+        SpeechPlanPreviewRequest(
+            revision_id=" revision ", segment_id="segment", include_request=True
+        ).revision_id
+        == "revision"
+    )
     with pytest.raises(ValidationError):
         AudiobookSetupConfigureRequest(
             expected_revision=REVISION,
@@ -117,6 +126,8 @@ def test_openapi_exposes_all_audiobook_contracts():
     assert set(AUDIOBOOK_SCHEMAS) == {
         "AudiobookSetupConfigureRequest",
         "SpeechPlanPreviewRequest",
+        "AudiobookGenerationPreparationRequest",
+        "AudiobookSegmentationPreviewRequest",
     }
     paths = audiobook_paths()
     setup = paths["/api/v1/sessions/{sessionId}/audiobook-setup"]
@@ -126,6 +137,10 @@ def test_openapi_exposes_all_audiobook_contracts():
     assert setup["patch"]["requestBody"]["required"] is True
     assert preview["security"][-1] == {"nativeOAuth": ["app.read"]}
     assert preview["requestBody"]["required"] is True
+    preparation = paths["/api/v1/sessions/{sessionId}/audiobook-generation-preparation"]["post"]
+    assert preparation["security"][-1] == {"nativeOAuth": ["app.run"]}
+    segmentation = paths["/api/v1/sessions/{sessionId}/audiobook-segmentation-preview"]["post"]
+    assert segmentation["security"][-1] == {"nativeOAuth": ["app.read"]}
 
 
 def test_setup_patch_validates_session_before_reserving(monkeypatch):
@@ -240,3 +255,62 @@ def test_setup_conflict_and_missing_key_are_standard_errors(monkeypatch):
     )
     assert conflict.status_code == 409
     assert conflict.json["error"]["code"] == "idempotency_conflict"
+
+
+def test_generation_preparation_routes_explicit_prerequisite(monkeypatch):
+    client, database, _idempotency, _guards = _client(monkeypatch)
+    calls = []
+
+    def preparation(_services, session_id, **payload):
+        calls.append((session_id, payload))
+        return {
+            "status": "queued",
+            "speech_plan_revision_id": payload["speech_plan_revision_id"],
+            "job_id": "job",
+            "message": "Queued.",
+        }
+
+    monkeypatch.setattr(audiobook_routes, "prepare_audiobook_generation", preparation)
+    response = client.post(
+        "/api/v1/sessions/session-1/audiobook-generation-preparation",
+        json={"speech_plan_revision_id": " plan "},
+    )
+    assert response.status_code == 200
+    assert response.json["status"] == "queued"
+    assert calls == [
+        ("session-1", {"speech_plan_revision_id": "plan", "settings_source_run_id": None})
+    ]
+    assert database.events == []
+    invalid = client.post(
+        "/api/v1/sessions/session-1/audiobook-generation-preparation",
+        json={"speech_plan_revision_id": "plan", "force": True},
+    )
+    assert invalid.status_code == 422
+
+
+def test_segmentation_preview_rejects_inline_credentials(monkeypatch):
+    client, database, _idempotency, _guards = _client(monkeypatch)
+    calls = []
+
+    def preview(_services, session_id, **payload):
+        calls.append((session_id, payload))
+        return {
+            "segmentation": {"target_chars": 450},
+            "model_default_segmentation": {"target_chars": 450},
+        }
+
+    monkeypatch.setattr(audiobook_routes, "preview_audiobook_segmentation", preview)
+    response = client.post(
+        "/api/v1/sessions/session-1/audiobook-segmentation-preview",
+        json={"tts": {"model": "breeze"}},
+    )
+    assert response.status_code == 200
+    assert response.json["segmentation"]["target_chars"] == 450
+    assert database.events == []
+    assert len(calls) == 1
+    rejected = client.post(
+        "/api/v1/sessions/session-1/audiobook-segmentation-preview",
+        json={"tts": {"api_key": "test-secret"}},
+    )
+    assert rejected.status_code == 422
+    assert len(calls) == 1

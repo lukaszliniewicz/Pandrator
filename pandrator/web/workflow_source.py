@@ -555,12 +555,28 @@ def prepare_text(
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
     session_id = str(payload.get("session_id") or "")
+    from .artifacts import sha256_file
+    from .audiobook_generation_preparation import (
+        GUARD_KEY,
+        validate_automatic_narration_refresh,
+    )
+    from .settings_policy import RevisionConflict
+    from .workspace_settings import WorkspaceSettingsService
+
+    refresh_guard = payload.get(GUARD_KEY)
+    if refresh_guard is not None:
+        with context.database.snapshot_session() as unit:
+            validate_automatic_narration_refresh(
+                unit, session_id, payload, WorkspaceSettingsService(context.database)
+            )
     requested_source_id = str(payload.get("source_artifact_id") or "")
     source_artifact_id, source_path, source_metadata = _load_text_preparation_source(
         context,
         session_id,
         requested_source_id,
     )
+    if refresh_guard is not None and sha256_file(source_path) != refresh_guard.get("source_content_hash"):
+        raise RevisionConflict("The source text file changed before narration preparation.")
     supplied_markup = source_metadata.get("speech_markup") or {}
     source_revision_id = str(source_metadata.get("revision_id") or "") or None
     requires_source_metadata = bool(supplied_markup or source_revision_id)
@@ -825,6 +841,12 @@ def prepare_text(
             source_artifact_id,
             require_metadata=requires_source_metadata,
         )
+        if refresh_guard is not None:
+            validate_automatic_narration_refresh(
+                unit, session_id, payload, WorkspaceSettingsService(context.database)
+            )
+            if sha256_file(source_path) != refresh_guard.get("source_content_hash"):
+                raise RevisionConflict("The source text file changed during narration preparation.")
         artifact = context.artifacts.register_in_session(
             unit,
             destination,

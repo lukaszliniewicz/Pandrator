@@ -24,9 +24,7 @@ def _response(description: str) -> dict:
     return {
         "description": description,
         "content": {
-            "application/json": {
-                "schema": {"type": "object", "additionalProperties": True}
-            }
+            "application/json": {"schema": {"type": "object", "additionalProperties": True}}
         },
     }
 
@@ -63,9 +61,7 @@ def audiobook_paths() -> dict:
             "required": True,
             "content": {
                 "application/json": {
-                    "schema": {
-                        "$ref": "#/components/schemas/AudiobookSetupConfigureRequest"
-                    }
+                    "schema": {"$ref": "#/components/schemas/AudiobookSetupConfigureRequest"}
                 }
             },
         },
@@ -104,7 +100,9 @@ def audiobook_paths() -> dict:
             "401": {"description": "Authentication required."},
             "403": {"description": "The authenticated actor lacks the required scope."},
             "404": {"description": "The voice setup session was not found."},
-            "422": {"description": "Voice setup is available for audiobook and voiceover sessions."},
+            "422": {
+                "description": "Voice setup is available for audiobook and voiceover sessions."
+            },
         },
     }
     voice_setup_patch = {
@@ -131,9 +129,7 @@ def audiobook_paths() -> dict:
             "required": True,
             "content": {
                 "application/json": {
-                    "schema": {
-                        "$ref": "#/components/schemas/VoiceSetupConfigureRequest"
-                    }
+                    "schema": {"$ref": "#/components/schemas/VoiceSetupConfigureRequest"}
                 }
             },
         },
@@ -143,8 +139,12 @@ def audiobook_paths() -> dict:
             "401": {"description": "Authentication required."},
             "403": {"description": "The authenticated actor lacks the required scope."},
             "404": {"description": "The voice setup session was not found."},
-            "409": {"description": "The current configuration is stale or the idempotency key conflicts."},
-            "422": {"description": "The request fields are invalid or the workflow is unsupported."},
+            "409": {
+                "description": "The current configuration is stale or the idempotency key conflicts."
+            },
+            "422": {
+                "description": "The request fields are invalid or the workflow is unsupported."
+            },
         },
     }
     preview = {
@@ -161,14 +161,61 @@ def audiobook_paths() -> dict:
             "required": True,
             "content": {
                 "application/json": {
-                    "schema": {
-                        "$ref": "#/components/schemas/SpeechPlanPreviewRequest"
-                    }
+                    "schema": {"$ref": "#/components/schemas/SpeechPlanPreviewRequest"}
                 }
             },
         },
         "responses": {
             "200": _response("Compiled speech-plan segment preview; no audio."),
+            **common_errors,
+        },
+    }
+    preparation = {
+        "operationId": "prepareAudiobookGeneration",
+        "summary": "Prepare automatic audiobook narration for current settings",
+        "description": (
+            "Explicit generation prerequisite. Queue deterministic text preparation "
+            "when the effective chunk budget changed and the selected plan is provably "
+            "untouched automatic prepared text. Preserve edited and annotated plans. "
+            "Historical settings sources retain their selected segmentation. No synthesis."
+        ),
+        "security": _security("app.run"),
+        "parameters": [_session_parameter()],
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/AudiobookGenerationPreparationRequest"}
+                }
+            },
+        },
+        "responses": {
+            "200": _response(
+                "Current, preserved, or queued narration preparation; queued responses include job_id."
+            ),
+            **common_errors,
+        },
+    }
+    segmentation_preview = {
+        "operationId": "previewAudiobookSegmentation",
+        "summary": "Preview effective audiobook segmentation settings",
+        "description": (
+            "Resolve optional text and TTS overrides through current settings inheritance "
+            "and return effective and model-default chunk budgets. No settings writes, "
+            "external calls, or text preparation. Inline credentials are rejected."
+        ),
+        "security": _security("app.read"),
+        "parameters": [_session_parameter()],
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/AudiobookSegmentationPreviewRequest"}
+                }
+            },
+        },
+        "responses": {
+            "200": _response("Effective segmentation and model_default_segmentation budgets."),
             **common_errors,
         },
     }
@@ -183,6 +230,12 @@ def audiobook_paths() -> dict:
         },
         "/api/v1/sessions/{sessionId}/speech-plan/preview": {
             "post": preview,
+        },
+        "/api/v1/sessions/{sessionId}/audiobook-generation-preparation": {
+            "post": preparation,
+        },
+        "/api/v1/sessions/{sessionId}/audiobook-segmentation-preview": {
+            "post": segmentation_preview,
         },
     }
 

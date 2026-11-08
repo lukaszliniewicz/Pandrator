@@ -273,6 +273,65 @@ async function openDialog(
   return dialog;
 }
 
+test('generation waits for updated narration and previews the new revision before confirmation', async ({
+  page
+}) => {
+  const { sessionId, revisionId } = await setupSession(page);
+  const updated = crypto.randomUUID();
+  let finishPreparation: () => void = () => {};
+  const finished = new Promise<void>((resolve) => {
+    finishPreparation = resolve;
+  });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/audiobook-generation-preparation`,
+    (route) =>
+      route.fulfill({
+        json: {
+          status: 'queued',
+          speech_plan_revision_id: revisionId,
+          job_id: 'narration-refresh',
+          message: 'Updating narration to the selected model’s length…'
+        }
+      })
+  );
+  await page.route('**/api/v1/jobs/narration-refresh', async (route) => {
+    await finished;
+    await route.fulfill({
+      json: {
+        id: 'narration-refresh',
+        status: 'succeeded',
+        result_json: { generation_plan_revision_id: updated }
+      }
+    });
+  });
+  const canned = previewsFor(updated);
+  const previews = await mockPreview(page, sessionId, (body) => {
+    expect(body.speech_plan_revision_id).toBe(updated);
+    return body.missing_only ? canned.missing : canned.stale;
+  });
+  const starts = await mockStart(page, sessionId, () => ({
+    status: 202,
+    json: startedRun(sessionId, updated)
+  }));
+  await page.goto(`/sessions/${sessionId}`);
+  const dialog = await openDialog(page);
+  await expect(
+    dialog.getByTestId('narration-preparation-notice')
+  ).toContainText('Updating narration');
+  await expect(dialog.getByTestId('generation-start-submit')).toBeDisabled();
+  expect(previews).toHaveLength(0);
+  expect(starts).toHaveLength(0);
+  finishPreparation();
+  await expect(
+    dialog.getByTestId('narration-preparation-notice')
+  ).toContainText('Narration blocks were updated');
+  await expect(dialog.getByTestId('generation-start-submit')).toBeEnabled();
+  await dialog.getByTestId('generation-start-submit').click();
+  await expect(dialog).toBeHidden();
+  expect(starts).toHaveLength(1);
+  expect(starts[0].speech_plan_revision_id).toBe(updated);
+});
+
 test('continue keeps completed recordings and confirms a single block', async ({
   page
 }) => {

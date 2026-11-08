@@ -181,9 +181,9 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
     if is_audio_cpp and family == "qwen3_tts":
         return "qwen3_tts", 350, None, "audio.cpp Qwen application policy"
     if family == "breeze_tts" or service in {"breeze", "breeze_tts"}:
-        return "breeze_tts", 600, None, "Breeze application policy"
+        return "breeze_tts", 500, None, "Breeze application policy"
     if family == "voxcpm2" or service in {"voxcpm", "voxcpm2"}:
-        return "voxcpm2", 2000, None, "VoxCPM2 application policy"
+        return "voxcpm2", 350, None, "VoxCPM2 application policy"
     if family in {"fish_audio", "fish_audio_s2"} or service in {
         "fishs2",
         "fish_audio",
@@ -287,10 +287,10 @@ def audiobook_chunk_budget(
             "reason": reason,
         }
 
-    # Qwen's 350-character policy is already a conservative direct target.
+    # Qwen and VoxCPM2 use an already conservative direct 350-character target.
     target = (
         policy_limit
-        if profile in {"xtts", "unknown", "qwen3_tts"}
+        if profile in {"xtts", "unknown", "qwen3_tts", "voxcpm2"}
         else math.floor(policy_limit * 0.9)
     )
     reason = policy_reason

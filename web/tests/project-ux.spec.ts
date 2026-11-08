@@ -162,7 +162,9 @@ test('overview tools and narration help are discoverable; both views show run me
     .getByRole('button', { name: 'Save narration settings' })
     .click();
   await expect(
-    page.getByRole('status').filter({ hasText: 'Saved. Run Segment narration' })
+    page
+      .getByRole('status')
+      .filter({ hasText: 'Saved. Generation updates untouched narration' })
   ).toBeVisible();
   await page.reload();
   await settings.locator('summary').click();

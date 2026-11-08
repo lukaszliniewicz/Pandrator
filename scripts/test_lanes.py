@@ -472,6 +472,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     ),
     "web-05-serial": (
         "tests/test_audiobook_chunking_integration.py",
+        "tests/test_audiobook_generation_preparation.py",
         "tests/test_audiobook_resegmentation.py",
         "tests/test_audiobook_setup.py",
         "tests/test_voice_setup.py",

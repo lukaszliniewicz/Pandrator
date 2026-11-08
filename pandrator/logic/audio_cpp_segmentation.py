@@ -52,13 +52,14 @@ def native_character_chunk_default(family: str) -> int | None:
 
 
 def narration_character_policy(family: str, language: str = "en") -> tuple[int, str]:
-    """Return the family policy; Qwen's conservative target is used directly."""
+    """Return the family policy; Qwen and VoxCPM2 use direct conservative targets."""
     family = _family(family)
     cjk = language.lower().replace("_", "-").split("-", 1)[0] in {"zh", "ja", "ko"}
     explicit = {
         "qwen3_tts": 350,
         "voxcpm1": 2000,
-        "voxcpm2": 2000,
+        "voxcpm2": 350,
+        "breeze_tts": 500,
         "fish_audio": 300,
         "fireredtts3": 600,
         "magpie_tts": 100 if language.lower().startswith(("zh", "ko")) else 300,
@@ -91,7 +92,7 @@ def narration_character_policy(family: str, language: str = "en") -> tuple[int, 
         # Output frames are not text tokens. Short frame budgets need smaller
         # CJK segments because each written character represents more speech.
         cjk_limits = {
-            "voxcpm1": 500, "voxcpm2": 500, "breeze_tts": 360,
+            "voxcpm1": 500, "breeze_tts": 360,
             "higgs_audio_tts": 300, "moss_tts_local": 500, "moss_tts_nano": 50,
             "fireredtts3": 80,
             "fish_drama3": 300,

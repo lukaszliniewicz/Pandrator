@@ -108,6 +108,18 @@ def test_qwen_narration_policy_is_language_independent():
     assert narration_character_policy("qwen3_tts", "ja")[0] == 350
 
 
+@pytest.mark.parametrize("language", ["en", "pl", "ja", "zh-Hant", "ko"])
+def test_voxcpm2_uses_direct_350_character_target(language):
+    budget = audiobook_chunk_budget(
+        {"audiobook_chunking": "model"},
+        {"service": "audio_cpp", "model": "voxcpm2_q8_0"},
+        language,
+    )
+    assert budget["target_chars"] == budget["policy_limit_chars"] == 350
+    assert narration_character_policy("voxcpm1", "en")[0] == 2000
+    assert narration_character_policy("voxcpm1", "ja")[0] == 500
+
+
 @pytest.mark.parametrize("language,expected", [("en", 540), ("zh-Hant", 270), ("ja", 270), ("ko", 270)])
 def test_drama_uses_narration_policy_instead_of_native_split_default(language, expected):
     model = "fish_drama3_small_iq3_xxs"
@@ -157,12 +169,12 @@ def test_qwen_cjk_budget(language, expected, policy):
 @pytest.mark.parametrize(
     ("tts", "profile", "policy", "target", "input_limit"),
     [
-        ({"service": "VoxCPM", "model": "openbmb/VoxCPM2"}, "voxcpm2", 2000, 1800, None),
+        ({"service": "VoxCPM", "model": "openbmb/VoxCPM2"}, "voxcpm2", 350, 350, None),
         ({"service": "FishS2", "model": "fishaudio/s2-pro"}, "fish_audio_s2", 300, 270, None),
         ({"service": "Kokoro", "model": "kokoro"}, "kokoro", 240, 216, None),
         ({"service": "OpenAI", "model": "tts-1"}, "openai", 4000, 3600, 4096),
         ({"service": "Google Gemini", "model": "gemini-2.5-flash-tts"}, "gemini", 4000, 3600, None),
-        ({"service": "audio_cpp", "model": "breeze_tts_2_q8_0"}, "breeze_tts", 600, 540, None),
+        ({"service": "audio_cpp", "model": "breeze_tts_2_q8_0"}, "breeze_tts", 500, 450, None),
         ({"service": "azure", "adapter": "azure_speech", "model": "MAI-Voice-2"}, "azure_speech", 4000, 3600, None),
         ({"service": "XTTS", "model": "tts_models/multilingual/multi-dataset/xtts_v2"}, "xtts", 200, 200, None),
     ],
@@ -177,7 +189,7 @@ def test_provider_policy_profiles(tts, profile, policy, target, input_limit):
 
 @pytest.mark.parametrize(
     ("model", "default_tokens", "target"),
-    [("qwen3_tts_1_7b_base_q8_0", 2048, 350), ("breeze_tts_2_q8_0", 1500, 540)],
+    [("qwen3_tts_1_7b_base_q8_0", 2048, 350), ("breeze_tts_2_q8_0", 1500, 450)],
 )
 @pytest.mark.parametrize("source", ["model_map", "scalar", "audio_cpp_options", "options"])
 def test_output_budget_scaling_uses_each_runtime_option_source(model, default_tokens, target, source):
@@ -203,7 +215,7 @@ def test_output_budget_scaling_uses_each_runtime_option_source(model, default_to
 
 @pytest.mark.parametrize(
     ("model", "default_tokens", "target"),
-    [("qwen3_tts_1_7b_base_q8_0", 2048, 350), ("breeze_tts_2_q8_0", 1500, 540)],
+    [("qwen3_tts_1_7b_base_q8_0", 2048, 350), ("breeze_tts_2_q8_0", 1500, 450)],
 )
 def test_output_budget_does_not_expand_policy_or_borrow_scalar_from_empty_map(model, default_tokens, target):
     base = {"service": "audio_cpp", "model": model}

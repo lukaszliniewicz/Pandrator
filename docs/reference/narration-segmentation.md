@@ -4,18 +4,28 @@ Choose the TTS model before segmenting an audiobook. Pandrator groups complete
 sentences within a model-specific budget. Ordinary paragraphs stay separate;
 short, confidently recognised dialogue turns can share a narration block.
 Chapter and scene boundaries remain separate. Most targets leave roughly 10%
-below the reviewed application ceiling; Qwen uses a direct 350-character target
+below the reviewed application ceiling; Qwen and VoxCPM2 use a direct 350-character target
 to reduce memory use.
 These are starting policies, not measured acoustic maxima for every checkpoint,
 language, voice, or speaking style. Short paragraphs can remain shorter.
 
 ## Change the length in the UI
 
-Open an audiobook project, select **Advanced**, and find **Length of new narration
-blocks** in **Speech plan**. **Automatic · model default** displays the current
-model target. Select **Custom limit**, enter the maximum characters, and click
-**Save narration settings**. Run **Segment narration** again and prepare a new
-speech plan to apply it. Existing reviewed plans and recordings keep their boundaries.
+Open **Generate audio → Settings** or **Voice and audio** to find **Length of new
+narration blocks** alongside the speech model. It is also available in
+**Customize workflow** and, in Advanced mode, **Speech plan → Narration settings**.
+**Automatic · model default** displays the effective target and updates as you
+select another model, including unsaved model choices. **Custom limit** keeps
+your chosen character budget across model changes. Save with the containing
+settings dialog, or **Save narration settings** in Speech plan.
+
+When starting generation with current settings, Pandrator checks the effective
+length before showing the recording preview. If it changed, untouched automatic
+narration is resegmented into a new plan first; the preview uses that new plan.
+The previous plan and recordings remain in history. Plans with edits, annotations, optimized text, or sound placements keep their
+boundaries and show an explanation. Explicitly
+selected historical run settings keep their frozen plan. Changing sentence-packing
+or dialogue settings still requires rerunning **Segment narration**.
 
 Custom limits can exceed automatic targets. Actual model input and output limits
 still apply. Irodori requests that cannot be shown to fit its text window fail
@@ -144,7 +154,7 @@ preference, not necessarily a hard model input limit.
 | --- | ---: | ---: |
 | `audio8_tts` | 180 | 200 |
 | `auk` | 270 | Not a fixed request character default |
-| `breeze_tts` | 540 | 600 |
+| `breeze_tts` | 450 | 600 |
 | `chatterbox` | 180 | 128 |
 | `chatterbox_turbo` | 180 | 128 |
 | `confucius4_tts` | 216 | Not a fixed request character default |
@@ -191,7 +201,7 @@ preference, not necessarily a hard model input limit.
 | `supertonic` | 270 | Not a fixed request character default |
 | `vibevoice` | 270 | Not a fixed request character default |
 | `voxcpm1` | 1,800 | 2048 |
-| `voxcpm2` | 1,800 | 2048 |
+| `voxcpm2` | 350 | 2048 |
 | `voxtral_tts` | 1,152 | 300 |
 | `xtts_v2` | 230 | 256 |
 | `zipvoice` | 180 | 128 |
@@ -212,7 +222,7 @@ and upstream warns that forcing longer text into one chunk can omit speech.
 These policies do not establish measured maximum durations.
 
 Drama 3 uses 270 characters for Chinese, Japanese, and Korean.
-Qwen also uses 350 characters for Chinese, Japanese, and Korean; VoxCPM uses 450;
+Qwen and VoxCPM2 also use 350 characters for Chinese, Japanese, and Korean; VoxCPM1 uses 450;
 Breeze 324; Higgs 270; MOSS Local 450; and MOSS Nano 45. FireRedTTS3 uses 72 for
 Chinese, Japanese and Korean; Magpie uses 90 for Chinese and Korean. Supertonic uses 108 for
 Japanese and Korean. Confucius uses 72 for Chinese, Japanese, and Korean.

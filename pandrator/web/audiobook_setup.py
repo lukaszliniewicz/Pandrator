@@ -17,6 +17,27 @@ from .settings_policy import RevisionConflict, stable_hash
 AudiobookMode = Literal["single_voice", "multi_voice"]
 
 
+def preview_audiobook_segmentation(
+    services: Any, session_id: str, *, tts: dict | None = None, text: dict | None = None
+) -> dict[str, Any]:
+    """Resolve proposed settings through the shared inheritance path without writes."""
+    from .access.current_session_policy import require_current_session_access
+
+    with services.database.snapshot_session() as session:
+        require_current_session_access(session, session_id)
+        record = _audiobook_record(session, session_id)
+        language = str(record.source_language or "en")
+    resolved, _ = services.workspace_settings.resolve(
+        session_id, ["text", "tts"], {"tts": tts or {}, "text": text or {}}
+    )
+    return {
+        "segmentation": audiobook_chunk_budget(resolved["text"], resolved["tts"], language),
+        "model_default_segmentation": audiobook_chunk_budget(
+            {**resolved["text"], "audiobook_chunking": "model"}, resolved["tts"], language
+        ),
+    }
+
+
 def _service(services: Any, name: str) -> Any:
     if isinstance(services, Mapping):
         return services[name]
@@ -55,9 +76,7 @@ def _snapshot(
     outcome_value, outcome_revision = _outcome_snapshot(session, record)
     text_effective = deepcopy(text["effective"])
     tts_effective = deepcopy(tts["effective"])
-    document_optimization_enabled = bool(
-        text_effective.get("llm_tts_document_optimization")
-    )
+    document_optimization_enabled = bool(text_effective.get("llm_tts_document_optimization"))
     annotation_mode = str(text_effective.get("llm_tts_annotation_mode") or "off")
     annotation_only = bool(text_effective.get("llm_tts_annotation_only"))
     casting_enabled = bool(tts_effective.get("casting_enabled"))
@@ -113,21 +132,9 @@ def _snapshot(
             str(record.source_language or "en"),
         ),
         "tts": {
-            "service": str(
-                tts_effective.get("service")
-                or tts_effective.get("tts_service")
-                or ""
-            ),
-            "model": str(
-                tts_effective.get("model")
-                or tts_effective.get("xtts_model")
-                or ""
-            ),
-            "voice": str(
-                tts_effective.get("voice")
-                or tts_effective.get("speaker")
-                or ""
-            ),
+            "service": str(tts_effective.get("service") or tts_effective.get("tts_service") or ""),
+            "model": str(tts_effective.get("model") or tts_effective.get("xtts_model") or ""),
+            "voice": str(tts_effective.get("voice") or tts_effective.get("speaker") or ""),
             "language": str(tts_effective.get("language") or ""),
         },
         "configured": configured,

@@ -2297,6 +2297,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/audiobook-generation-preparation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare automatic audiobook narration for current settings
+         * @description Explicit generation prerequisite. Queue deterministic text preparation when the effective chunk budget changed and the selected plan is provably untouched automatic prepared text. Preserve edited and annotated plans. Historical settings sources retain their selected segmentation. No synthesis.
+         */
+        post: operations["prepareAudiobookGeneration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/audiobook-segmentation-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview effective audiobook segmentation settings
+         * @description Resolve optional text and TTS overrides through current settings inheritance and return effective and model-default chunk budgets. No settings writes, external calls, or text preparation. Inline credentials are rejected.
+         */
+        post: operations["previewAudiobookSegmentation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/audiobook-setup": {
         parameters: {
             query?: never;
@@ -5763,6 +5803,33 @@ export interface components {
         AudioVersionUndoRequest: {
             /** Expected Selection Hash */
             expected_selection_hash: string;
+        };
+        /**
+         * AudiobookGenerationPreparationRequest
+         * @description Explicit prerequisite for generation from current model settings.
+         */
+        AudiobookGenerationPreparationRequest: {
+            /**
+             * Settings Source Run Id
+             * @default null
+             */
+            settings_source_run_id?: string | null;
+            /** Speech Plan Revision Id */
+            speech_plan_revision_id: string;
+        };
+        /**
+         * AudiobookSegmentationPreviewRequest
+         * @description Read-only effective section overrides for a proposed model selection.
+         */
+        AudiobookSegmentationPreviewRequest: {
+            /** Text */
+            text?: {
+                [key: string]: unknown;
+            };
+            /** Tts */
+            tts?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * AudiobookSetupConfigureRequest
@@ -18420,6 +18487,132 @@ export interface operations {
         responses: {
             /** @description Agentic cleaning queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    prepareAudiobookGeneration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AudiobookGenerationPreparationRequest"];
+            };
+        };
+        responses: {
+            /** @description Current, preserved, or queued narration preparation; queued responses include job_id. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The audiobook session or requested segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The current configuration or speech-plan revision is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields are invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewAudiobookSegmentation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AudiobookSegmentationPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Effective segmentation and model_default_segmentation budgets. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The audiobook session or requested segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The current configuration or speech-plan revision is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields are invalid. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -4,6 +4,7 @@
   import ParameterLabel from './ParameterLabel.svelte';
   import EpubNarrationSettings from './EpubNarrationSettings.svelte';
   import NarrationPackingSettings from './NarrationPackingSettings.svelte';
+  import NarrationPlanSettings from './NarrationPlanSettings.svelte';
   import { notifySessionFlowChange } from './session-flow';
   import TranscriptionStageSettings from './TranscriptionStageSettings.svelte';
   import SourcePassageSettings from './SourcePassageSettings.svelte';
@@ -130,6 +131,10 @@
   >([]);
 
   let settingsStage = $state<Stage | null>(null);
+  let narrationSettings = $state<{
+    persist: () => Promise<void>;
+    validate: () => void;
+  }>();
 
   let settingsLoading = $state(false);
 
@@ -2042,6 +2047,7 @@
     const completed: string[] = [];
     settingsSaving = true;
     try {
+      if (key === 'generate_audio') narrationSettings?.validate();
       for (const update of submitted) {
         if (!bases[update.section])
           throw new Error('Reload these settings before saving changes.');
@@ -2080,6 +2086,8 @@
       }
       if (transformations)
         await updateOutcomeTransformations(transformations, submittedOutcome);
+      if (key === 'generate_audio' && session.workflow_kind === 'audiobook')
+        await narrationSettings?.persist();
       if (mode === 'session') {
         if (key === 'prepare_text' || key === 'generate_audio')
           notifySessionFlowChange(session.id);
@@ -2776,6 +2784,18 @@
                 useLibraryVoice
               }}
             />
+            {#if session.workflow_kind === 'audiobook'}
+              <NarrationPlanSettings
+                bind:this={narrationSettings}
+                sessionId={session.id}
+                ttsOverride={{
+                  service: draft.ttsService,
+                  model: draft.ttsModel,
+                  language: draft.targetLanguage
+                }}
+                embedded
+              />
+            {/if}
           {/if}
           {#if settingsStage.key === 'export'}
             <label class="text-sm font-semibold"

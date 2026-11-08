@@ -5,6 +5,7 @@
   import type { OutcomePlan, SessionRecord } from './api-models';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import { modalFocus } from './modal-focus';
+  import NarrationPlanSettings from './NarrationPlanSettings.svelte';
 
   let {
     sessionId,
@@ -19,6 +20,10 @@
     $state<SessionRecord['workflow_kind']>('audiobook');
   let error = $state('');
   let saving = $state(false);
+  let narrationSettings = $state<{
+    persist: () => Promise<void>;
+    validate: () => void;
+  }>();
   const transformations = $derived(payload?.value?.transformations ?? {});
   const deliverables = $derived(payload?.value?.deliverables ?? {});
   const speechOptimizationEnabled = $derived(
@@ -119,6 +124,7 @@
     if (!current) return;
     saving = true;
     try {
+      narrationSettings?.validate();
       if (session)
         await sessionApi.update(sessionId, session.revision, {
           source_language: sourceLanguage,
@@ -164,6 +170,7 @@
           target_language: targetLanguage
         }
       });
+      await narrationSettings?.persist();
       onsaved();
       onclose();
     } catch (caught) {
@@ -322,6 +329,15 @@
             >{/if}
         </div>
       </div>
+      {#if session?.workflow_kind === 'audiobook'}
+        <div class="mt-5">
+          <NarrationPlanSettings
+            bind:this={narrationSettings}
+            {sessionId}
+            embedded
+          />
+        </div>
+      {/if}
       <div class="mt-5 rounded-2xl bg-[var(--accent-soft)] p-5">
         <div class="section-label">Resolved pipeline</div>
         <div class="mt-3 flex flex-wrap items-center gap-2">

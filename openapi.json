@@ -357,6 +357,55 @@
         "title": "AudioVersionUndoRequest",
         "type": "object"
       },
+      "AudiobookGenerationPreparationRequest": {
+        "additionalProperties": false,
+        "description": "Explicit prerequisite for generation from current model settings.",
+        "properties": {
+          "settings_source_run_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Settings Source Run Id"
+          },
+          "speech_plan_revision_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Speech Plan Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "speech_plan_revision_id"
+        ],
+        "title": "AudiobookGenerationPreparationRequest",
+        "type": "object"
+      },
+      "AudiobookSegmentationPreviewRequest": {
+        "additionalProperties": false,
+        "description": "Read-only effective section overrides for a proposed model selection.",
+        "properties": {
+          "text": {
+            "additionalProperties": true,
+            "title": "Text",
+            "type": "object"
+          },
+          "tts": {
+            "additionalProperties": true,
+            "title": "Tts",
+            "type": "object"
+          }
+        },
+        "title": "AudiobookSegmentationPreviewRequest",
+        "type": "object"
+      },
       "AudiobookSetupConfigureRequest": {
         "additionalProperties": false,
         "description": "Revision-checked audiobook voice-mode configuration.",
@@ -25548,6 +25597,144 @@
           "app.read",
           "app.run"
         ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/audiobook-generation-preparation": {
+      "post": {
+        "description": "Explicit generation prerequisite. Queue deterministic text preparation when the effective chunk budget changed and the selected plan is provably untouched automatic prepared text. Preserve edited and annotated plans. Historical settings sources retain their selected segmentation. No synthesis.",
+        "operationId": "prepareAudiobookGeneration",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudiobookGenerationPreparationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current, preserved, or queued narration preparation; queued responses include job_id."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The audiobook session or requested segment was not found."
+          },
+          "409": {
+            "description": "The current configuration or speech-plan revision is stale."
+          },
+          "422": {
+            "description": "The request fields are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ],
+        "summary": "Prepare automatic audiobook narration for current settings"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/audiobook-segmentation-preview": {
+      "post": {
+        "description": "Resolve optional text and TTS overrides through current settings inheritance and return effective and model-default chunk budgets. No settings writes, external calls, or text preparation. Inline credentials are rejected.",
+        "operationId": "previewAudiobookSegmentation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudiobookSegmentationPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Effective segmentation and model_default_segmentation budgets."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The audiobook session or requested segment was not found."
+          },
+          "409": {
+            "description": "The current configuration or speech-plan revision is stale."
+          },
+          "422": {
+            "description": "The request fields are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Preview effective audiobook segmentation settings"
       }
     },
     "/api/v1/sessions/{sessionId}/audiobook-setup": {

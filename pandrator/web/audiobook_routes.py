@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
+from .audiobook_generation_preparation import prepare_audiobook_generation
 from .audiobook_schemas import (
+    AudiobookGenerationPreparationRequest,
+    AudiobookSegmentationPreviewRequest,
     AudiobookSetupConfigureRequest,
     SpeechPlanPreviewRequest,
     VoiceSetupConfigureRequest,
 )
-from .audiobook_setup import configure_audiobook_setup, get_audiobook_setup
+from .audiobook_setup import (
+    configure_audiobook_setup,
+    get_audiobook_setup,
+    preview_audiobook_segmentation,
+)
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .settings_policy import RevisionConflict
 from .speech_plan_preview import preview_speech_segment
@@ -24,6 +31,30 @@ def register_audiobook_routes(app, context) -> None:
     voice_setup_path = "/api/v1/sessions/<session_id>/voice-setup"
     preview_path = "/api/v1/sessions/<session_id>/speech-plan/preview"
 
+    @app.post("/api/v1/sessions/<session_id>/audiobook-generation-preparation")
+    @guards.require_scope("app.run")
+    def prepare_generation(session_id):
+        try:
+            payload = AudiobookGenerationPreparationRequest.model_validate(
+                request.get_json(silent=True) or {}
+            ).model_dump(mode="json")
+            return jsonify(prepare_audiobook_generation(services, session_id, **payload))
+        except (KeyError, ValueError, RevisionConflict) as error:
+            return failure(error)
+
+    @app.post("/api/v1/sessions/<session_id>/audiobook-segmentation-preview")
+    @guards.require_scope("app.read")
+    def preview_segmentation(session_id):
+        try:
+            payload = AudiobookSegmentationPreviewRequest.model_validate(
+                request.get_json(silent=True) or {}
+            ).model_dump(mode="json")
+            if rejected := guards.inline_credential_error(payload):
+                return rejected
+            return jsonify(preview_audiobook_segmentation(services, session_id, **payload))
+        except (KeyError, ValueError, RevisionConflict) as error:
+            return failure(error)
+
     def failure(error):
         if isinstance(error, KeyError):
             return guards.error_response("not_found", "Audiobook session not found.", 404)
@@ -35,7 +66,7 @@ def register_audiobook_routes(app, context) -> None:
                 str(error),
                 409,
                 {"retryable": error.retryable},
-        )
+            )
         return guards.error_response("validation_error", str(error), 422)
 
     def voice_setup_failure(error):
@@ -72,9 +103,7 @@ def register_audiobook_routes(app, context) -> None:
             try:
                 services.idempotency.validate_key(key)
             except ValueError as error:
-                return guards.error_response(
-                    "idempotency_key_required", str(error), 400
-                )
+                return guards.error_response("idempotency_key_required", str(error), 400)
 
             with services.database.immediate_session() as session:
                 # Confirm the session and current audiobook snapshot before
@@ -138,9 +167,7 @@ def register_audiobook_routes(app, context) -> None:
             try:
                 services.idempotency.validate_key(key)
             except ValueError as error:
-                return guards.error_response(
-                    "idempotency_key_required", str(error), 400
-                )
+                return guards.error_response("idempotency_key_required", str(error), 400)
 
             with services.database.immediate_session() as session:
                 # Validate the session and workflow before reserving the retry key.

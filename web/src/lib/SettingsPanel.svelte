@@ -36,6 +36,8 @@
   import SubtitleLimitsSummary from './SubtitleLimitsSummary.svelte';
   import TtsServiceSelect from './TtsServiceSelect.svelte';
   import { settingApplies } from './settings-fields';
+  import NarrationPlanSettings from './NarrationPlanSettings.svelte';
+  import { notifySessionFlowChange } from './session-flow';
 
   let {
     sessionId,
@@ -64,6 +66,11 @@
   let advanced = $state(false);
   let saving = $state(false);
   let message = $state('');
+  let audiobook = $state(false);
+  let narrationSettings = $state<{
+    persist: () => Promise<void>;
+    validate: () => void;
+  }>();
   const common: Record<string, string[]> = {
     text: [
       'enable_sentence_splitting',
@@ -486,6 +493,13 @@
   );
   onMount(() => {
     if (section === 'tts')
+      void sessionApi
+        .get(sessionId)
+        .then((session) => {
+          audiobook = session.workflow_kind === 'audiobook';
+        })
+        .catch(() => {});
+    if (section === 'tts')
       void voiceApi
         .list<VoiceRecord>({ sessionId })
         .then((result) => {
@@ -781,6 +795,7 @@
     saving = true;
     message = '';
     try {
+      narrationSettings?.validate();
       if (section === 'tts')
         override = Object.fromEntries(
           Object.entries(override).filter(([key]) => !providerSetting(key))
@@ -792,6 +807,8 @@
         override
       );
       override = { ...payload.override };
+      await narrationSettings?.persist();
+      if (section === 'tts') notifySessionFlowChange(sessionId);
       message = 'Saved for this project.';
       await onpersisted?.(payload);
     } catch (caught) {
@@ -1354,6 +1371,16 @@
   {#if modelTuningError}<p class="mt-4 text-sm text-red-500" role="alert">
       {modelTuningError}
     </p>{/if}
+  {#if audiobook && section === 'tts'}
+    <div class="mt-5">
+      <NarrationPlanSettings
+        bind:this={narrationSettings}
+        {sessionId}
+        ttsOverride={override}
+        embedded
+      />
+    </div>
+  {/if}
   {#if message}<p
       class="mt-4 text-xs"
       class:text-red-500={message.includes('invalid') ||

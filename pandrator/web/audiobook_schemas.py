@@ -54,6 +54,25 @@ class SpeechPlanPreviewRequest(StrictModel):
         return _trim_nonblank(value) if value is not None else value
 
 
+class AudiobookGenerationPreparationRequest(StrictModel):
+    """Explicit prerequisite for generation from current model settings."""
+
+    speech_plan_revision_id: str = Field(min_length=1, max_length=128)
+    settings_source_run_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("speech_plan_revision_id", "settings_source_run_id", mode="before")
+    @classmethod
+    def trim_identifiers(cls, value: Any) -> Any:
+        return _trim_nonblank(value) if value is not None else value
+
+
+class AudiobookSegmentationPreviewRequest(StrictModel):
+    """Read-only effective section overrides for a proposed model selection."""
+
+    tts: dict[str, Any] = Field(default_factory=dict)
+    text: dict[str, Any] = Field(default_factory=dict)
+
+
 # Keep the endpoint-oriented short name available to callers that treat the
 # setup body as the resource request; the OpenAPI schema retains the explicit
 # configure name above.
@@ -63,6 +82,8 @@ AudiobookSetupRequest = AudiobookSetupConfigureRequest
 AUDIOBOOK_SCHEMAS = {
     AudiobookSetupConfigureRequest.__name__: AudiobookSetupConfigureRequest,
     SpeechPlanPreviewRequest.__name__: SpeechPlanPreviewRequest,
+    AudiobookGenerationPreparationRequest.__name__: AudiobookGenerationPreparationRequest,
+    AudiobookSegmentationPreviewRequest.__name__: AudiobookSegmentationPreviewRequest,
 }
 
 VOICE_SETUP_SCHEMAS = {
@@ -77,4 +98,6 @@ __all__ = [
     "AudiobookSetupConfigureRequest",
     "VoiceSetupConfigureRequest",
     "SpeechPlanPreviewRequest",
+    "AudiobookGenerationPreparationRequest",
+    "AudiobookSegmentationPreviewRequest",
 ]

@@ -15,10 +15,14 @@
   let {
     sessionId,
     busy = false,
+    ttsOverride = {},
+    embedded = false,
     onchanged
   }: {
     sessionId: string;
     busy?: boolean;
+    ttsOverride?: Record<string, unknown>;
+    embedded?: boolean;
     onchanged?: () => void | Promise<void>;
   } = $props();
   type Budget = {
@@ -31,6 +35,9 @@
   let settings = $state<SettingsPayload | null>(null);
   let budget = $state<Budget | null>(null);
   let modelDefault = $state<Budget | null>(null);
+  let previewBudget = $state<Budget | null>(null);
+  let previewLoading = $state(false);
+  let previewError = $state('');
   let policy = $state<'model' | 'manual'>('model');
   let characters = $state<number | undefined>();
   let sentencePacking = $state<'auto' | 'sentences' | 'clauses'>('auto');
@@ -46,6 +53,51 @@
   let serial = 0;
   let destination = $state<{ url: URL; replace: boolean } | null>(null);
   let allowNavigation = false;
+  $effect(() => {
+    if (!settings) return;
+    const body = JSON.stringify({
+      tts: ttsOverride,
+      text: {
+        audiobook_chunking: policy,
+        ...(Number.isInteger(characters)
+          ? { max_sentence_length: characters }
+          : {})
+      }
+    });
+    const controller = new AbortController();
+    previewLoading = true;
+    previewBudget = null;
+    previewError = '';
+    const timer = setTimeout(() => {
+      void apiJson<{
+        segmentation: Budget;
+        model_default_segmentation: Budget;
+      }>(
+        `/sessions/${encodeURIComponent(sessionId)}/audiobook-segmentation-preview`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          signal: controller.signal
+        }
+      )
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          previewBudget = result.segmentation;
+          modelDefault = result.model_default_segmentation;
+        })
+        .catch((caught: unknown) => {
+          if (!controller.signal.aborted) previewError = errorMessage(caught);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) previewLoading = false;
+        });
+    }, 150);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  });
   const initialCharacters = $derived(
     budget?.mode === 'manual'
       ? Number(settings?.effective.max_sentence_length ?? budget.target_chars)
@@ -127,8 +179,17 @@
       if (request === serial) loading = false;
     }
   }
-  async function save() {
-    if (!settings || !dirty || !valid || busy || saving) return;
+  export function validate() {
+    if (dirty && !valid)
+      throw new Error(
+        'Enter a valid narration length and whole-sentence threshold before saving.'
+      );
+  }
+  export async function persist() {
+    validate();
+    if (!dirty) return;
+    if (!settings || !valid || busy || saving)
+      throw new Error('Enter a valid narration length before saving.');
     saving = true;
     notice = '';
     error = '';
@@ -144,11 +205,19 @@
       notifySessionFlowChange(sessionId);
       await onchanged?.();
       notice =
-        'Saved. Run Segment narration again, then prepare a new plan, to use these settings.';
+        'Saved. Generation updates untouched narration blocks when their length changes. Rerun Segment narration for sentence or dialogue changes.';
     } catch (caught) {
       error = errorMessage(caught);
+      throw caught;
     } finally {
       saving = false;
+    }
+  }
+  async function save() {
+    try {
+      await persist();
+    } catch {
+      /* The field displays the save error. */
     }
   }
   onMount(() => {
@@ -189,7 +258,7 @@
         section="text"
         name="audiobook_chunking"
         label="Length policy"
-        description="Automatic uses the selected speech model’s default block length. Custom limit sets your own character budget. Shorter blocks generally use less GPU memory. These settings apply when you segment narration again; existing plans keep their boundaries."
+        description="Automatic follows the selected speech model and its tuning. Custom limit keeps your chosen character budget when the model changes. Generation updates untouched narration blocks when their effective length changes; edited plans keep their boundaries."
       /><select class="input" bind:value={policy}
         ><option value="model">Automatic · model default</option><option
           value="manual">Custom limit</option
@@ -207,11 +276,15 @@
         step="1"
         required
         disabled={policy === 'model'}
-        value={policy === 'model' ? modelDefault?.target_chars : characters}
+        value={policy === 'model'
+          ? previewLoading || previewError
+            ? undefined
+            : modelDefault?.target_chars
+          : characters}
         oninput={(event) => (characters = event.currentTarget.valueAsNumber)}
       /></label
     >
-    {#if dirty}<button
+    {#if dirty && !embedded}<button
         type="button"
         class="btn btn-secondary"
         disabled={!valid}
@@ -235,14 +308,18 @@
     </select>
   </label>
   <p>
-    {#if budget}{budget.target_chars.toLocaleString()} characters per block · {policy ===
-      'model'
+    {#if previewLoading}Updating model length…{:else if previewBudget}{previewBudget.target_chars.toLocaleString()}
+      characters per block · {policy === 'model'
         ? 'Selected model default.'
         : 'Current effective length.'}{:else}Loading model defaults…{/if} Clear dialogue
     turns can share a block when Dialogue flow is enabled. Chapter and scene breaks
-    stay separate. Existing plans keep their boundaries.
+    stay separate. Untouched narration is updated before generation when this length
+    changes. Edited and annotated plans keep their boundaries.
   </p>
 </fieldset>
+{#if previewError}<p role="alert">
+    Could not update the model length: {previewError}
+  </p>{/if}
 {#if error}<p role="alert" class="text-sm text-red-700">
     {error}
     <button type="button" class="underline" disabled={saving} onclick={load}

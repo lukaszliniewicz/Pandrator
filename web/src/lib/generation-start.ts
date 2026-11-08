@@ -1,5 +1,6 @@
 import { apiJson } from './api';
-import type { GenerationRun } from './api-models';
+import type { GenerationRun, JobRecord } from './api-models';
+import { notifySessionFlowChange } from './session-flow';
 import {
   admitGeneration,
   type AdmissionProgress
@@ -64,6 +65,83 @@ export type GenerationConfirmRequest = GenerationPreviewRequest & {
   /** Preview is mandatory: starts always bind to a previewed selection. */
   expected_selection_hash: string;
 };
+
+export type NarrationPreparation = {
+  status: 'current' | 'preserved' | 'queued';
+  speech_plan_revision_id: string;
+  job_id?: string;
+  message: string;
+};
+
+/** Finish narration prerequisites before taking the read-only recording preview. */
+export async function prepareGenerationNarration(
+  sessionId: string,
+  planRevisionId: string,
+  settingsSourceRunId: string | null,
+  signal: AbortSignal,
+  onprogress: (message: string) => void
+): Promise<NarrationPreparation> {
+  if (settingsSourceRunId)
+    return {
+      status: 'current',
+      speech_plan_revision_id: planRevisionId,
+      message: 'Using the selected run’s saved plan and settings.'
+    };
+  const result = await apiJson<NarrationPreparation>(
+    `/sessions/${encodeURIComponent(sessionId)}/audiobook-generation-preparation`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        speech_plan_revision_id: planRevisionId,
+        settings_source_run_id: settingsSourceRunId
+      }),
+      signal
+    }
+  );
+  if (result.status !== 'queued') return result;
+  if (!result.job_id)
+    throw new Error('Narration preparation did not return a job.');
+  onprogress(result.message);
+  while (!signal.aborted) {
+    const job = await apiJson<JobRecord>(
+      `/jobs/${encodeURIComponent(result.job_id)}`,
+      { signal }
+    );
+    if (job.status === 'succeeded') {
+      const revision = job.result_json?.generation_plan_revision_id;
+      if (typeof revision !== 'string' || !revision)
+        throw new Error(
+          'Narration preparation finished without a speech plan.'
+        );
+      notifySessionFlowChange(sessionId);
+      return {
+        ...result,
+        speech_plan_revision_id: revision,
+        message:
+          'Narration blocks were updated for the selected model. The previous plan and recordings remain in history.'
+      };
+    }
+    if (['failed', 'canceled', 'cancelled', 'interrupted'].includes(job.status))
+      throw new Error(
+        job.error_message ||
+          'Narration preparation stopped. Refresh the project before generating.'
+      );
+    await new Promise<void>((resolve, reject) => {
+      const aborted = () => {
+        clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', aborted);
+        resolve();
+      }, 500);
+      signal.addEventListener('abort', aborted, { once: true });
+      if (signal.aborted) aborted();
+    });
+  }
+  throw new DOMException('Aborted', 'AbortError');
+}
 
 /**
  * Map the explicit dialog choice onto the backend selection flags.

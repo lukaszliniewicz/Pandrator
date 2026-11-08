@@ -8,6 +8,7 @@
     nonzeroReasons,
     previewGenerationStart,
     previewModeForStartMode,
+    prepareGenerationNarration,
     startModeFlags,
     type GenerationPreview,
     type GenerationStartMode
@@ -56,10 +57,49 @@
   let previewTicket = 0;
   let retryController: AbortController | null = null;
   let mounted = true;
-  onMount(() => () => {
-    mounted = false;
-    retryController?.abort();
-    generationController?.abort();
+  let preparedPlanRevisionId = $state<string | null>(null);
+  let narrationReady = $state(false);
+  let narrationMessage = $state('Checking narration length…');
+  let narrationError = $state('');
+  const activePlanRevisionId = $derived(
+    preparedPlanRevisionId ?? planRevisionId
+  );
+  onMount(() => {
+    const controller = new AbortController();
+    const requestedRevision = planRevisionId;
+    if (requestedRevision)
+      void prepareGenerationNarration(
+        sessionId,
+        requestedRevision,
+        settingsSourceRunId || null,
+        controller.signal,
+        (message) => {
+          if (mounted) narrationMessage = message;
+        }
+      )
+        .then((result) => {
+          if (!mounted || controller.signal.aborted) return;
+          if (
+            planRevisionId !== requestedRevision &&
+            planRevisionId !== result.speech_plan_revision_id
+          )
+            throw new Error(
+              'The selected speech plan changed. Close and reopen generation.'
+            );
+          preparedPlanRevisionId = result.speech_plan_revision_id;
+          narrationMessage = result.status === 'current' ? '' : result.message;
+          narrationReady = true;
+        })
+        .catch((caught: unknown) => {
+          if (!controller.signal.aborted) narrationError = errorMessage(caught);
+        });
+    else narrationError = 'No speech plan revision is selected.';
+    return () => {
+      mounted = false;
+      controller.abort();
+      retryController?.abort();
+      generationController?.abort();
+    };
   });
 
   const reasons = $derived(preview ? nonzeroReasons(preview.reasons) : []);
@@ -76,12 +116,13 @@
       !previewLoading &&
       !startBusy &&
       !startSucceeded &&
+      narrationReady &&
       preview.generate_count > 0 &&
       typeof preview.selection_hash === 'string' &&
       preview.selection_hash.trim().length > 0 &&
       !preview.blocked_reason &&
       !preview.provider_preflight?.configuration_warning &&
-      preview.speech_plan_revision_id === planRevisionId &&
+      preview.speech_plan_revision_id === activePlanRevisionId &&
       preview.mode === previewModeForStartMode(mode) &&
       (!needsAck || acknowledged)
   );
@@ -101,11 +142,12 @@
   // Parent row refreshes can replace the payload object without changing the
   // selected revision. Primitive derived values keep those refreshes from
   // repeating the preflight and clearing an already reviewed acknowledgment.
-  const previewRevisionId = $derived(planRevisionId);
+  const previewRevisionId = $derived(activePlanRevisionId);
   const previewSessionId = $derived(sessionId);
   const previewSettingsSourceRunId = $derived(settingsSourceRunId || null);
 
   $effect(() => {
+    if (!narrationReady) return;
     if (!previewRevisionId) {
       preview = null;
       previewError = 'No speech plan revision is selected.';
@@ -135,7 +177,7 @@
           ticket !== previewTicket ||
           controller.signal.aborted ||
           mode !== requestedMode ||
-          planRevisionId !== requestedRevision ||
+          activePlanRevisionId !== requestedRevision ||
           sessionId !== requestedSession
         )
           return;
@@ -167,7 +209,7 @@
           ticket !== previewTicket ||
           controller.signal.aborted ||
           mode !== requestedMode ||
-          planRevisionId !== requestedRevision ||
+          activePlanRevisionId !== requestedRevision ||
           sessionId !== requestedSession
         )
           return;
@@ -203,7 +245,7 @@
     // never clears a start/conflict explanation; the user must still click
     // confirm explicitly after any refresh.
     const requestedMode = mode;
-    const requestedRevision = planRevisionId;
+    const requestedRevision = activePlanRevisionId;
     const requestedSession = sessionId;
     const ticket = ++previewTicket;
     retryController?.abort();
@@ -228,7 +270,7 @@
         ticket !== previewTicket ||
         controller.signal.aborted ||
         mode !== requestedMode ||
-        planRevisionId !== requestedRevision ||
+        activePlanRevisionId !== requestedRevision ||
         sessionId !== requestedSession
       )
         return;
@@ -260,7 +302,7 @@
         ticket !== previewTicket ||
         controller.signal.aborted ||
         mode !== requestedMode ||
-        planRevisionId !== requestedRevision ||
+        activePlanRevisionId !== requestedRevision ||
         sessionId !== requestedSession
       )
         return;
@@ -272,7 +314,7 @@
   }
 
   async function submit() {
-    if (!canSubmit || !preview || !planRevisionId) return;
+    if (!canSubmit || !preview || !activePlanRevisionId) return;
     startBusy = true;
     admissionProgress = null;
     generationController = new AbortController();
@@ -284,7 +326,7 @@
       const run = await confirmGenerationStart(
         sessionId,
         {
-          speech_plan_revision_id: planRevisionId,
+          speech_plan_revision_id: activePlanRevisionId,
           settings_source_run_id: settingsSourceRunId || null,
           ...flags,
           expected_selection_hash: preview.selection_hash
@@ -345,6 +387,16 @@
   </header>
 
   <div class="dialog-body">
+    {#if narrationError}<p role="alert" class="preview-error text-sm">
+        {narrationError}
+      </p>
+    {:else if narrationMessage}<p
+        role="status"
+        class="resume-note text-sm"
+        data-testid="narration-preparation-notice"
+      >
+        {narrationMessage}
+      </p>{/if}
     {#if pausedRunLabel}
       <p class="resume-note text-sm" data-testid="generation-start-resume-note">
         <strong>Resume paused run is separate.</strong> It continues “{pausedRunLabel}”

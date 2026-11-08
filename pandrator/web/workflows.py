@@ -470,7 +470,7 @@ AUDIOBOOK_STAGES = (
     StageDefinition(
         "prepare_text",
         "Segment narration",
-        "Create editable generation segments from the cleaned document. This controls text boundaries and pauses, not the TTS model.",
+        "Group cleaned text into editable narration blocks using the selected model’s length policy.",
         prerequisite_roles=("clean_text",),
         output_role="prepared_text",
         job_kind="text.prepare",
