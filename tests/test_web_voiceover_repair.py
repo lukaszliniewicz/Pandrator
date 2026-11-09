@@ -373,6 +373,194 @@ class VoiceoverRepairTests(unittest.TestCase):
             self.assertEqual(guard["base_state_hash"], repair_state_hash(session, self.revision_id))
             self.assertEqual(guard["result_state_hash"], repair_state_hash(session, self.active()))
 
+    def test_passage_repair_rebinds_one_before_one_after_semantic_context(self):
+        from pandrator.web.generation_performance_snapshot import (
+            frozen_semantic_contexts,
+        )
+
+        self.plan()
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                    "tts_context_mode": "both",
+                    "performance_context_before": 1,
+                    "performance_context_after": 1,
+                },
+            }
+            first = session.get(GenerationSegment, self.segment_ids[0])
+            first.speech_block_provenance_json = {
+                **dict(first.speech_block_provenance_json or {}),
+                "section_id": "religious-history",
+            }
+            closing = session.get(GenerationSegment, self.segment_ids[-1])
+            closing.speech_block_provenance_json = {
+                **dict(closing.speech_block_provenance_json or {}),
+                "section_id": "discussion",
+            }
+
+        result, calls = self.generate()
+        self.assertEqual(1, result.get("repaired_blocks"))
+        self.assertNotEqual(self.revision_id, self.active())
+        self.assertGreaterEqual(calls, 4)
+
+        with self.database.session() as session:
+            accepted = session.get(GenerationRun, result["generation_run_id"])
+            snapshot = accepted.settings_snapshot_json
+            frozen = snapshot["semantic_context_snapshot"]
+            self.assertEqual(self.active(), frozen["plan_revision_id"])
+            rows = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == self.active())
+                    .order_by(GenerationSegment.ordinal)
+                )
+            )
+            self.assertEqual(
+                [self.first, self.second, "The unchanged closing sentence."],
+                [row.text for row in rows],
+            )
+            self.assertEqual(
+                ["religious-history", "religious-history"],
+                [row.speech_block_provenance_json.get("section_id") for row in rows[:2]],
+            )
+            contexts = frozen_semantic_contexts(snapshot)
+            left, right, closing = rows
+            self.assertEqual(self.second, contexts[left.id]["after"])
+            self.assertEqual(self.first, contexts[right.id]["before"])
+            self.assertEqual("", contexts[closing.id]["before"])
+            self.assertTrue(all(row.id in contexts for row in rows))
+            self.assertTrue(all(row.id in {unit["id"] for unit in frozen["units"]} for row in rows))
+            original = session.get(GenerationRun, self.run_id)
+            self.assertEqual(
+                original.settings_snapshot_json["tts"]["tts_context_mode"],
+                snapshot["tts"]["tts_context_mode"],
+            )
+
+    def test_audio_section_context_mode_refreshes_neighbours_as_tts_mode(self):
+        from pandrator.web.generation_performance_snapshot import (
+            frozen_semantic_contexts,
+        )
+
+        self.plan()
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                },
+                "audio": {
+                    **run.settings_snapshot_json["audio"],
+                    "tts_context_mode": "both",
+                    "performance_context_before": 1,
+                    "performance_context_after": 1,
+                },
+            }
+
+        result, calls = self.generate()
+        self.assertEqual(1, result.get("repaired_blocks"))
+        self.assertEqual(5, calls)
+        with self.database.session() as session:
+            child = session.get(GenerationRun, result["generation_run_id"])
+            contexts = frozen_semantic_contexts(child.settings_snapshot_json)
+            self.assertEqual(3, len(contexts))
+            self.assertEqual(
+                self.active(),
+                child.settings_snapshot_json["semantic_context_snapshot"][
+                    "plan_revision_id"
+                ],
+            )
+
+    def test_passage_repair_replaces_neighbour_with_changed_semantic_context(self):
+        from pandrator.web.generation_performance_snapshot import (
+            frozen_semantic_contexts,
+        )
+
+        self.plan()
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                    "tts_context_mode": "both",
+                    "performance_context_before": 1,
+                    "performance_context_after": 1,
+                },
+            }
+
+        result, calls = self.generate()
+        self.assertEqual(1, result.get("repaired_blocks"))
+        # Two original takes, two split children, and the immediately
+        # following block whose frozen preceding context has changed.
+        self.assertEqual(5, calls)
+        with self.database.session() as session:
+            accepted = session.get(GenerationRun, result["generation_run_id"])
+            rows = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == self.active())
+                    .order_by(GenerationSegment.ordinal)
+                )
+            )
+            contexts = frozen_semantic_contexts(accepted.settings_snapshot_json)
+            self.assertEqual(self.second, contexts[rows[-1].id]["before"])
+            take = session.scalar(
+                select(AudioTake).where(
+                    AudioTake.generation_segment_id == rows[-1].id,
+                    AudioTake.generation_run_id == accepted.id,
+                    AudioTake.status == "completed",
+                )
+            )
+            self.assertIsNotNone(take)
+            self.assertIsNone(take.parent_take_id)
+
+    def test_context_neighbour_duration_growth_rejects_optional_repair(self):
+        self.plan()
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                    "tts_context_mode": "both",
+                    "performance_context_before": 1,
+                    "performance_context_after": 1,
+                },
+            }
+
+        closing_calls = 0
+
+        def longer_neighbour(text, *_args, **_kwargs):
+            nonlocal closing_calls
+            if text == "The unchanged closing sentence.":
+                closing_calls += 1
+                duration = 1000 if closing_calls == 1 else 13000
+            else:
+                duration = (
+                    2000
+                    if text.startswith(self.first) and self.second in text
+                    else 1000
+                )
+            return Sine(440).to_audio_segment(duration=duration)
+
+        result, calls = self.generate(synth=longer_neighbour)
+        self.assertEqual(5, calls)
+        self.assertEqual(0, result.get("repaired_blocks"))
+        self.assertEqual(self.revision_id, self.active())
+        history = self.repairs()
+        self.assertEqual("not_applied", history[0]["repair_status"])
+        self.assertEqual(
+            "context_neighbour_added_duration", history[0]["repair_reason"]
+        )
+
     def test_german_clause_conjunction_regenerates_children_in_target_language(self):
         self.first = "Wir lassen den ganzen Gedanken zunächst zusammen"
         self.second = "weil natürliche Sprache hier wichtiger ist."
@@ -388,6 +576,22 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertEqual(4, calls)
         self.assertNotEqual(self.revision_id, self.active())
         self.assertEqual("applied", self.repairs()[0]["repair_status"])
+
+    def test_segment_language_overrides_generic_tts_language_during_repair(self):
+        self.first = "Wir lassen den ganzen Gedanken zunächst zusammen"
+        self.second = "weil natürliche Sprache hier wichtiger ist."
+        self.plan()
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, self.segment_ids[0])
+            segment.language = "de"
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {**run.settings_snapshot_json["tts"], "language": "en"},
+            }
+        result, calls = self.generate()
+        self.assertEqual(1, result.get("repaired_blocks"))
+        self.assertEqual(4, calls)
 
     def test_bare_german_noun_coordination_does_not_trigger_timing_repair(self):
         self.first = "Die Sammlung enthält eine große Zahl gedruckter Bücher"
@@ -511,6 +715,56 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertEqual(
             ["applied", "applied"], [item["repair_status"] for item in self.repairs()]
         )
+
+    def test_multiple_repaired_blocks_keep_unique_contextual_active_takes(self):
+        from pandrator.web.generation_performance_snapshot import (
+            frozen_semantic_contexts,
+        )
+
+        self.plan(groups=2)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                    "tts_context_mode": "both",
+                    "performance_context_before": 1,
+                    "performance_context_after": 1,
+                },
+            }
+        result, calls = self.generate()
+        self.assertEqual(2, result.get("repaired_blocks"))
+        self.assertGreaterEqual(calls, 7)
+        self.assertEqual(
+            ["applied", "applied"], [row["repair_status"] for row in self.repairs()]
+        )
+        with self.database.session() as session:
+            active_revision = self.active()
+            final_run = session.get(GenerationRun, result["generation_run_id"])
+            self.assertEqual(active_revision, final_run.plan_revision_id)
+            contexts = frozen_semantic_contexts(final_run.settings_snapshot_json)
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment).where(
+                        GenerationSegment.plan_revision_id == active_revision
+                    )
+                )
+            )
+            self.assertEqual(5, len(segments))
+            self.assertEqual({item.id for item in segments}, set(contexts))
+            for segment in segments:
+                takes = list(
+                    session.scalars(
+                        select(AudioTake).where(
+                            AudioTake.generation_segment_id == segment.id,
+                            AudioTake.is_active.is_(True),
+                            AudioTake.status == "completed",
+                        )
+                    )
+                )
+                self.assertEqual(1, len(takes), segment.text)
 
     def test_timing_preview_matches_real_forward_assembly_with_slowdown(self):
         self.plan(enabled=False, previous=True, groups=2)

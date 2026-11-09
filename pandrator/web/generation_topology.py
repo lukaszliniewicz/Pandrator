@@ -501,6 +501,16 @@ class GenerationTopologyService:
                     {str(value) for value in base.get("risk_flags") or [] if value}
                 ),
             }
+            # Section identifiers also define semantic-context boundaries.
+            # A split does not cross an authored section boundary, so both
+            # children must retain the parent's section identity.
+            section_id = base.get("section_id")
+            if (
+                isinstance(section_id, (str, int))
+                and not isinstance(section_id, bool)
+                and str(section_id).strip()
+            ):
+                child["section_id"] = str(section_id)
             if index == 1:
                 child["boundary_before"] = {
                     "action": "keep_boundary",
@@ -1045,6 +1055,17 @@ class GenerationTopologyService:
                 )
             if left.speaker and right.speaker and left.speaker != right.speaker:
                 raise ValueError("Segments with different speakers cannot be merged.")
+            # Keep the same section boundaries used by unspoken TTS context.
+            # Merging labelled text across sections would make a later split
+            # inherit an incorrect section identifier.
+            left_section = str(
+                (left.speech_block_provenance_json or {}).get("section_id") or ""
+            ).strip()
+            right_section = str(
+                (right.speech_block_provenance_json or {}).get("section_id") or ""
+            ).strip()
+            if left_section != right_section:
+                raise ValueError("Segments from different sections cannot be merged.")
             for field_name in ("voice_id", "voice", "language"):
                 if getattr(left, field_name) != getattr(right, field_name):
                     raise ValueError(f"Merge delivery override mismatch: {field_name}.")

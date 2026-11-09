@@ -295,9 +295,9 @@ def _run_generation(
         has_selected_ids=bool(selected_ids),
         workflow_kind=workflow_kind,
     )
-    # Passage-first planning never runs the old early split repair: a
-    # split pass followed by a regroup pass could undo each other in a
-    # loop. The optional regroup second pass runs in passage mode only.
+    # At most one optional second pass may run: early cue-boundary repair
+    # takes precedence when enabled, otherwise passage regrouping may run.
+    # Child runs carry a parent marker so neither pass can recursively run.
     repair_requested = second_pass == "repair"
     regroup_requested = second_pass == "regroup"
     if repair_requested:

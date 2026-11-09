@@ -4486,8 +4486,8 @@ A single reviewed cue.
                 with self.subTest(mode=mode, owned_job=owned_job):
                     settings = {
                         "service": "XTTS", "speech_block_generation_mode": mode,
-                        "speech_block_early_repair_enabled": True,
-                        "speech_block_regroup_enabled": True,
+                        "speech_block_early_repair_enabled": mode == "legacy",
+                        "speech_block_regroup_enabled": mode == "passage",
                     }
                     revision_id, segment_ids = self.handlers._store_generation_plan(
                         self.session.id, [{"text": "Keep this completed take."}],

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,14 @@ from .workspace import GenerationService, mark_output_assemblies_stale
 from .workspace_settings import WorkspaceSettingsService
 
 logger = logging.getLogger(__name__)
+
+
+class _RepairNotApplied(Exception):
+    """Reject only this optional repair; keep the original plan and takes."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _record_repair_outcome(
@@ -340,9 +349,16 @@ def repair_early_blocks(
     current_run_id = run_id
     current_revision_id = source_revision_id
     repaired = 0
+    repair_candidates = 0
+    repair_attempts = 0
+    rejection_reasons: Counter[str] = Counter()
     cursor = 0
+    from .generation_performance_snapshot import performance_runtime_settings
+
     audio_settings = dict(snapshot.get("audio") or {})
-    tts_settings = dict(snapshot.get("tts") or {})
+    # Resolve semantic context and repair parameters exactly as the frozen
+    # synthesis snapshot does, including the selected segment override.
+    tts_settings = performance_runtime_settings(snapshot)
     thresholds = {
         name: tts_settings.get(f"speech_block_early_repair_{name}", default)
         for name, default in (
@@ -382,7 +398,9 @@ def repair_early_blocks(
             provenance = dict(segment.speech_block_provenance_json or {})
             if (
                 len(group.segments) == 1
-                and "estimated_internal_timing" not in (provenance.get("risk_flags") or [])
+                and not {
+                    "estimated_internal_timing", "shared_passage_timing"
+                }.intersection(provenance.get("risk_flags") or [])
             ):
                 boundary = find_repair_boundary(
                     segment.text,
@@ -393,7 +411,9 @@ def repair_early_blocks(
                     timing_details.get("processed_audio_ms", duration),
                     incoming_delay_ms=max(0, cursor - group.start_ms),
                     start_delay_ms=start_delay,
-                    language_code=str(tts_settings.get("language") or "en"),
+                    language_code=str(
+                        segment.language or tts_settings.get("language") or "en"
+                    ),
                     **thresholds,
                 )
             if boundary is None or (boundary.start_ms, boundary.end_ms) != (
@@ -402,6 +422,7 @@ def repair_early_blocks(
             ):
                 cursor = baseline_cursor
                 continue
+            repair_candidates += 1
             staged_run_id = None
             staged_revision_id = None
             repair_status = "failed"
@@ -465,6 +486,90 @@ def repair_early_blocks(
                         child_snapshot,
                         explicit=True,
                     )
+                    # The parent run's semantic neighbours are keyed by its
+                    # original block IDs. A split must rebind context to the
+                    # two newly authored blocks, never silently omit context.
+                    from .generation_performance_snapshot import (
+                        frozen_semantic_contexts,
+                        performance_runtime_settings,
+                    )
+
+                    # Match exactly the effective settings used by synthesis:
+                    # audio, TTS and the supported selected-segment override.
+                    # The TTS-only value can disagree with the frozen context
+                    # and would otherwise silently reuse stale neighbour takes.
+                    context_mode = str(
+                        performance_runtime_settings(child_snapshot).get(
+                            "tts_context_mode"
+                        ) or "off"
+                    )
+                    if context_mode != "off":
+                        frozen = child_snapshot.get("semantic_context_snapshot") or {}
+                        child_ids = set(proposal["affected_segment_ids"])
+                        frozen_ids = {
+                            str(item.get("id"))
+                            for item in frozen.get("units") or []
+                            if isinstance(item, dict)
+                        }
+                        if (
+                            frozen.get("plan_revision_id")
+                            != proposal["plan_revision_id"]
+                            or not child_ids.issubset(frozen_ids)
+                            or not child_ids.issubset(
+                                frozen_semantic_contexts(child_snapshot)
+                            )
+                        ):
+                            raise ValueError(
+                                "Split speech blocks have no revision-matched "
+                                "semantic context; preserving original audio."
+                            )
+                    # Semantic windows use neighbouring block text.  A
+                    # split changes the context of nearby unchanged blocks,
+                    # so their old takes cannot be carried over implicitly.
+                    # Re-synthesise only those neighbours whose actual
+                    # before/after context differs on the staged revision.
+                    changed_context_clones: set[str] = set()
+                    # descendant -> parent block.  The parent take is
+                    # independently retained so a neighbour that grows in
+                    # duration cannot silently worsen downstream timing.
+                    refreshed_context_parents: dict[str, str] = {}
+                    if context_mode != "off":
+                        # Compare with the semantic evidence actually frozen
+                        # for the selected source takes, not merely a window
+                        # recalculated from the new settings.  Later repairs
+                        # derive from the latest accepted child run.
+                        current_run = session.get(GenerationRun, current_run_id)
+                        if current_run is None:
+                            raise ValueError("The source generation run is unavailable.")
+                        current_snapshot = current_run.settings_snapshot_json or {}
+                        prior_frozen = current_snapshot.get("semantic_context_snapshot") or {}
+                        if prior_frozen and prior_frozen.get("plan_revision_id") != current_revision_id:
+                            raise ValueError("The selected audio has stale semantic context.")
+                        old_contexts = frozen_semantic_contexts(current_snapshot)
+                        new_contexts = frozen_semantic_contexts(child_snapshot)
+                        for old_id, descendants in proposal["lineage"].items():
+                            if (
+                                len(descendants) == 1
+                                and old_contexts.get(old_id)
+                                != new_contexts.get(descendants[0])
+                            ):
+                                changed_context_clones.add(descendants[0])
+                                refreshed_context_parents[descendants[0]] = old_id
+                        # A manually chosen alternate take from outside
+                        # this run cannot be replaced without review. The
+                        # selected-take signature already fences user changes;
+                        # merely having historical alternatives does NOT mean
+                        # a user selected one. Approved earlier repairs leave
+                        # multiple immutable takes and must remain repairable.
+                        for old_id in set(refreshed_context_parents.values()):
+                            choice = session.get(AudioTake, take_ids[old_id])
+                            if (
+                                choice is None
+                                or choice.generation_run_id != current_run_id
+                            ):
+                                raise _RepairNotApplied(
+                                    "selected_neighbor_take_requires_review"
+                                )
                     child_snapshot["generation_audio_identities"] = (
                         plan_audio_identities(
                             session, proposal["plan_revision_id"], child_snapshot
@@ -517,8 +622,16 @@ def repair_early_blocks(
                             raise ValueError(
                                 "The original audio take cannot be preserved."
                             )
-                        clone.generation_run_id = staged.id
+                        if descendants[0] in changed_context_clones:
+                            # The cloned audio was generated with a different
+                            # semantic window.  Leave it outside this run so
+                            # its new version is synthesised with fresh 1/1
+                            # (or wider) neighbour context.
+                            clone.generation_run_id = None
+                        else:
+                            clone.generation_run_id = staged.id
                     source_signature = plan_signature(session, current_revision_id)
+                repair_attempts += 1
                 progress(
                     index / len(groups),
                     f"Regenerating two cue groups for block {index + 1}",
@@ -539,6 +652,44 @@ def repair_early_blocks(
                     }:
                         repair_status, repair_reason = "stopped", "generation_stopped"
                     break
+                # A contextual neighbour is re-synthesised because its
+                # before/after window changed.  It may also change duration.
+                # Shorter audio cannot worsen its original timing slot;
+                # reject the entire optional repair if any such neighbour
+                # grows, rather than adopt an unverified downstream delay.
+                # This conservative comparison preserves the original
+                # complete run and all selected takes on rejection.
+                if refreshed_context_parents:
+                    with handler.database.session() as session:
+                        for descendant_id, old_id in refreshed_context_parents.items():
+                            original_take = session.get(AudioTake, take_ids[old_id])
+                            refreshed_take = session.scalar(
+                                select(AudioTake)
+                                .where(
+                                    AudioTake.generation_segment_id == descendant_id,
+                                    AudioTake.generation_run_id == staged_run_id,
+                                    AudioTake.status == "completed",
+                                )
+                                .order_by(AudioTake.created_at.desc(), AudioTake.id.desc())
+                                .limit(1)
+                            )
+                            if (
+                                original_take is None
+                                or refreshed_take is None
+                                or original_take.duration_ms is None
+                                or refreshed_take.duration_ms is None
+                            ):
+                                raise _RepairNotApplied(
+                                    "context_neighbour_unmeasurable"
+                                )
+                            if refreshed_take.duration_ms > original_take.duration_ms:
+                                repair_status, repair_reason = (
+                                    "not_applied", "context_neighbour_added_duration"
+                                )
+                                break
+                    if repair_status == "not_applied":
+                        cursor = baseline_cursor
+                        continue
                 staged_groups, staged_takes = _load_groups(handler, staged_run_id)
                 child_ids = set(proposal["affected_segment_ids"])
                 replacement = [
@@ -626,6 +777,10 @@ def repair_early_blocks(
                 take_ids = staged_takes
                 cursor = child_cursor
                 repaired += 1
+            except _RepairNotApplied as skipped:
+                repair_status, repair_reason = "not_applied", skipped.reason
+                cursor = baseline_cursor
+                continue
             except Exception:
                 if stop.is_set():
                     repair_status, repair_reason = "stopped", "generation_stopped"
@@ -643,12 +798,18 @@ def repair_early_blocks(
                             staged.status = "failed"
                 break
             finally:
+                if repair_status != "applied":
+                    rejection_reasons[repair_reason or repair_status] += 1
                 if staged_revision_id and repair_status != "applied":
                     with handler.database.session() as session:
                         _record_repair_outcome(
                             session, staged_revision_id, repair_status, repair_reason
                         )
     return {
+        "repair_checked_blocks": len(groups),
+        "repair_candidate_blocks": repair_candidates,
+        "repair_attempted_blocks": repair_attempts,
+        "repair_rejection_reasons": dict(sorted(rejection_reasons.items())),
         "repaired_blocks": repaired,
         "repaired_generation_run_id": current_run_id,
         "repaired_plan_revision_id": current_revision_id,

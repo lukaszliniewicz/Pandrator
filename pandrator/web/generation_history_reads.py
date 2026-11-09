@@ -801,6 +801,24 @@ class GenerationHistoryReader:
             has_selected_ids=False,
             workflow_kind=str(context["workflow_kind"] or ""),
         )
+        # A historical completed run predating a repair-policy change must
+        # not retrospectively claim that a newly eligible pass actually ran.
+        # A completed post-pass writes a durable result key even when it found
+        # zero repairable blocks.  Child revisions are also authoritative.
+        if job is not None and job.status == "succeeded":
+            receipt = job.result_json if isinstance(job.result_json, dict) else {}
+            if (
+                second_pass == "repair"
+                and not history.repair_children
+                and "repaired_blocks" not in receipt
+            ):
+                second_pass = None
+            elif (
+                second_pass == "regroup"
+                and not history.repair_children
+                and "regrouped_groups" not in receipt
+            ):
+                second_pass = None
         repair_enabled = second_pass == "repair" and run.operation in {
             "generate",
             "resume",

@@ -353,12 +353,19 @@ the session's `tts` settings through MCP:
 Generation uses its saved settings snapshot. Incoming-delay protection,
 reliable cue mappings, and meaningful text boundaries remain mandatory.
 
-At most one boundary is tried per original block. New children are generated
-in an inactive plan version; unchanged takes are reused. The version becomes
-active only if synthesis succeeds, the source plan and selected takes still
-match, and measured forward fitting shows no additional outgoing delay. Original
-takes and plan versions remain available. Cancellation or failure keeps the last accepted
-version. Individual selected-take regeneration does not trigger this pass.
+At most one boundary is tried per original block. Early-finish repair works
+in legacy or passage-first mode; if both repair and regroup are selected,
+repair wins and only one post-generation pass runs. With semantic text context
+enabled, both new children receive freshly frozen context from their staged
+revision; unchanged neighbouring takes with different before/after context
+are regenerated as well. A repair is rejected if a refreshed neighbour
+grows in duration, or the split introduces later drift. Performance/casting
+plans still require manual review before changing their block IDs.
+New children are generated in an inactive plan version; unaffected takes are
+reused. The version becomes active only if synthesis and timing validation
+succeed and source choices remain unchanged. Original takes and plan versions
+remain available. Cancellation or failure retains the last accepted version.
+Individual selected-take regeneration does not trigger this pass.
 
 Speech-plan history identifies these revisions as automatic and exposes
 `repair_status` (`pending`, `applied`, `not_applied`, `failed`, `stopped`, or

@@ -254,18 +254,24 @@ def select_second_pass(
         **dict(tts),
         **dict((snapshot.get("selected_segment_override") or {}).get("tts") or {}),
     }
-    if directed.get("performance_enabled") or directed.get("tts_context_mode", "off") != "off":
-        # Performance spans and semantic windows are bound to adopted block IDs.
-        # Do not silently rewrite topology after synthesis and reuse stale context.
-        # Explicit block repair remains available, followed by a new review/run.
+    # Per-block performance and casting plans are pinned to the original IDs.
+    # Plain semantic text context is different: the repair workflow freezes a
+    # fresh context snapshot from the staged split revision before synthesis.
+    if directed.get("performance_enabled") or directed.get("casting_enabled"):
         return None
     try:
         mode = normalize_generation_mode(tts.get("speech_block_generation_mode"))
     except ValueError:
         mode = DEFAULT_GENERATION_MODE
-    if mode == "passage":
-        return "regroup" if tts.get("speech_block_regroup_enabled") is True else None
-    return "repair" if tts.get("speech_block_early_repair_enabled") is True else None
+    # An early-finish repair has priority when explicitly enabled, even with
+    # passage-first blocks. Never run repair and regroup on the same root run.
+    if tts.get("speech_block_early_repair_enabled") is True:
+        return "repair"
+    if mode == "passage" and tts.get("speech_block_regroup_enabled") is True:
+        # Regrouping is not yet safe with existing semantic-context identities;
+        # it needs its own neighbour-context revalidation before activation.
+        return "regroup" if directed.get("tts_context_mode", "off") == "off" else None
+    return None
 
 
 def _int_source_refs(passage: RegroupPassage) -> list[int] | None:

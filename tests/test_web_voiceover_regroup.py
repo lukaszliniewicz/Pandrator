@@ -437,7 +437,7 @@ class VoiceoverRegroupTests(unittest.TestCase):
         self.assertNotIn("regrouped_groups", result)
         self.assertEqual(self.revision_id, self.active())
 
-    def test_passage_mode_ignores_early_repair_flag(self):
+    def test_passage_mode_checks_early_repair_when_enabled(self):
         self.plan(enabled=False)
         with self.database.session() as session:
             run = session.get(GenerationRun, self.run_id)
@@ -450,7 +450,9 @@ class VoiceoverRegroupTests(unittest.TestCase):
             }
         result, calls = self.generate()
         self.assertEqual(3, calls)
-        self.assertNotIn("repaired_blocks", result)
+        self.assertEqual(0, result["repaired_blocks"])
+        self.assertEqual(3, result["repair_checked_blocks"])
+        self.assertEqual(0, result["repair_candidate_blocks"])
         self.assertEqual(self.revision_id, self.active())
 
 
