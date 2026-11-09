@@ -319,8 +319,30 @@ class RepairCancellation:
         return self.is_set() or self.event.wait(timeout) or self.is_set()
 
 
+def _skipped_repair_result(
+    reason: str, run_id: str, plan_revision_id: str
+) -> dict[str, Any]:
+    """Return the same durable envelope for every fail-closed skip path."""
+
+    return {
+        "repair_checked_blocks": 0,
+        "repair_candidate_blocks": 0,
+        "repair_attempted_blocks": 0,
+        "repair_rejection_reasons": {reason: 1},
+        "repaired_blocks": 0,
+        "repaired_generation_run_id": run_id,
+        "repaired_plan_revision_id": plan_revision_id,
+    }
+
+
+
 def repair_early_blocks(
-    handler: Any, run_id: str, progress: Any, cancel_event: Any
+    handler: Any,
+    run_id: str,
+    progress: Any,
+    cancel_event: Any,
+    *,
+    stage_job_id: str | None = None,
 ) -> dict[str, Any]:
     """One pass over original blocks; never recursively repair new children."""
     from .repair_batches import GUARD_KEY, capture_repair_base, record_accepted_repair
@@ -334,11 +356,15 @@ def repair_early_blocks(
             select(GenerationPlan).where(GenerationPlan.session_id == session_id)
         )
         if active is None or active.active_revision_id != source_revision_id:
-            return {"repaired_blocks": 0}
+            return _skipped_repair_result(
+                "active_plan_changed", run_id, source_revision_id
+            )
         batch_snapshot = capture_repair_base(session, source_revision_id)
     groups, take_ids = _load_groups(handler, run_id)
     if not groups:
-        return {"repaired_blocks": 0}
+        return _skipped_repair_result(
+            "no_speech_blocks", run_id, source_revision_id
+        )
     service = GenerationService(
         handler.database, handler.jobs, WorkspaceSettingsService(handler.database)
     )
@@ -359,6 +385,29 @@ def repair_early_blocks(
     # Resolve semantic context and repair parameters exactly as the frozen
     # synthesis snapshot does, including the selected segment override.
     tts_settings = performance_runtime_settings(snapshot)
+    if str(tts_settings.get("tts_context_mode") or "off") != "off":
+        from .generation_performance_snapshot import frozen_semantic_contexts
+
+        frozen = snapshot.get("semantic_context_snapshot") or {}
+        try:
+            context_units = frozen_semantic_contexts(snapshot)
+        except (ValueError, TypeError, KeyError):
+            # A future/unknown schema is not evidence of the original TTS
+            # neighbours. Optional repair must refuse it without failing
+            # the completed source generation job.
+            context_units = {}
+        # Older or interrupted voiceovers may predate immutable semantic
+        # windows. Reconstructing their context from today's settings would
+        # not prove that existing audio was spoken with that same context.
+        # Fail closed, leaving every original take intact, rather than
+        # invalidating all neighbours and synthesising the whole lecture.
+        if (
+            frozen.get("plan_revision_id") != source_revision_id
+            or not set(take_ids).issubset(context_units)
+        ):
+            return _skipped_repair_result(
+                "missing_source_semantic_context", run_id, source_revision_id
+            )
     thresholds = {
         name: tts_settings.get(f"speech_block_early_repair_{name}", default)
         for name, default in (
@@ -370,8 +419,10 @@ def repair_early_blocks(
     }
     with tempfile.TemporaryDirectory(prefix="voiceover-repair-") as directory:
         work = Path(directory)
+        checked = 0
         for index, group in enumerate(groups):
             if stop.is_set():
+                rejection_reasons["generation_stopped"] += 1
                 break
             progress(
                 index / len(groups),
@@ -392,7 +443,9 @@ def repair_early_blocks(
                     "Voiceover timing inspection stopped; selected audio is unchanged.",
                     exc_info=True,
                 )
+                rejection_reasons["timing_inspection_failed"] += 1
                 break
+            checked += 1
             segment = group.segments[0]
             boundary = None
             provenance = dict(segment.speech_block_provenance_json or {})
@@ -434,7 +487,11 @@ def repair_early_blocks(
                     )
                     if choices != take_ids:
                         # A choice made before staging also wins over the run
-                        # audio used to measure the proposed repair.
+                        # audio used to measure the proposed repair. Preserve
+                        # its provenance as a user selection, not a TTS error.
+                        repair_status, repair_reason = (
+                            "not_applied", "selection_changed"
+                        )
                         break
                     # The public split semantics are reused, but activation waits for audio.
                     proposal = service.revise_topology_in_session(
@@ -543,9 +600,11 @@ def repair_early_blocks(
                             raise ValueError("The source generation run is unavailable.")
                         current_snapshot = current_run.settings_snapshot_json or {}
                         prior_frozen = current_snapshot.get("semantic_context_snapshot") or {}
-                        if prior_frozen and prior_frozen.get("plan_revision_id") != current_revision_id:
-                            raise ValueError("The selected audio has stale semantic context.")
+                        if prior_frozen.get("plan_revision_id") != current_revision_id:
+                            raise _RepairNotApplied("missing_source_semantic_context")
                         old_contexts = frozen_semantic_contexts(current_snapshot)
+                        if not set(proposal["lineage"]).issubset(old_contexts):
+                            raise _RepairNotApplied("missing_source_semantic_context")
                         new_contexts = frozen_semantic_contexts(child_snapshot)
                         for old_id, descendants in proposal["lineage"].items():
                             if (
@@ -555,21 +614,10 @@ def repair_early_blocks(
                             ):
                                 changed_context_clones.add(descendants[0])
                                 refreshed_context_parents[descendants[0]] = old_id
-                        # A manually chosen alternate take from outside
-                        # this run cannot be replaced without review. The
-                        # selected-take signature already fences user changes;
-                        # merely having historical alternatives does NOT mean
-                        # a user selected one. Approved earlier repairs leave
-                        # multiple immutable takes and must remain repairable.
-                        for old_id in set(refreshed_context_parents.values()):
-                            choice = session.get(AudioTake, take_ids[old_id])
-                            if (
-                                choice is None
-                                or choice.generation_run_id != current_run_id
-                            ):
-                                raise _RepairNotApplied(
-                                    "selected_neighbor_take_requires_review"
-                                )
+                        # The active-take check above (choices != take_ids)
+                        # is the source-of-truth guard for manually selected
+                        # alternatives. Historical inactive takes may coexist
+                        # with valid accepted repairs and do not block them.
                     child_snapshot["generation_audio_identities"] = (
                         plan_audio_identities(
                             session, proposal["plan_revision_id"], child_snapshot
@@ -590,7 +638,7 @@ def repair_early_blocks(
                         session_id=session_id,
                         plan_revision_id=proposal["plan_revision_id"],
                         source_generation_run_id=current_run_id,
-                        job_id=source_run.job_id,
+                        job_id=stage_job_id or source_run.job_id,
                         sequence_number=sequence,
                         operation="generate",
                         status="queued",
@@ -806,7 +854,7 @@ def repair_early_blocks(
                             session, staged_revision_id, repair_status, repair_reason
                         )
     return {
-        "repair_checked_blocks": len(groups),
+        "repair_checked_blocks": checked,
         "repair_candidate_blocks": repair_candidates,
         "repair_attempted_blocks": repair_attempts,
         "repair_rejection_reasons": dict(sorted(rejection_reasons.items())),

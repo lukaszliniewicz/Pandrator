@@ -367,6 +367,20 @@ succeed and source choices remain unchanged. Original takes and plan versions
 remain available. Cancellation or failure retains the last accepted version.
 Individual selected-take regeneration does not trigger this pass.
 
+A completed voiceover that predates automatic checking can request the same
+non-destructive pass without synthesising its original blocks again:
+`POST /api/v1/generation-runs/{run_id}/repair-timing` with an empty JSON body
+and an `Idempotency-Key`. The endpoint requires run permission and accepts
+only a completed source run on the active speech plan whose **frozen settings**
+already enable early-finish repair. It queues one durable
+`generation.repair-existing` job per run; retries return the same job unless the
+previous pass failed, was canceled, or skipped without inspecting a speech block.
+In those retryable cases an explicit request queues a fresh job. The job records
+checked/candidate/applied/rejected counts, with no new root
+audio takes. A missing, incompatible or stale original semantic-context
+snapshot causes a fail-closed skipped result, not a mass re-synthesis.
+The original takes remain available throughout.
+
 Speech-plan history identifies these revisions as automatic and exposes
 `repair_status` (`pending`, `applied`, `not_applied`, `failed`, `stopped`, or
 `unknown` for older entries), `repair_reason`, the source generation run ID,

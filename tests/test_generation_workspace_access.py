@@ -65,6 +65,7 @@ def requests_for(p):
         ("post", prefix + "/generation-runs/preview"),
         ("post", f"/api/v1/generation-runs/{p.run_id}/pause"),
         ("post", f"/api/v1/generation-runs/{p.run_id}/resume"),
+        ("post", f"/api/v1/generation-runs/{p.run_id}/repair-timing"),
         ("post", f"/api/v1/generation-runs/{p.run_id}/cancel"),
         ("delete", f"/api/v1/generation-runs/{p.run_id}"),
         ("post", prefix + "/output-assemblies"),

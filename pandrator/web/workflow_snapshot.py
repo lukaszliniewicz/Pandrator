@@ -271,16 +271,17 @@ def build_workflow_snapshot(
             .limit(1)
         )
         # A resumed generation owns the card even when the workflow
-        # wrapper that originally started it has already succeeded.  Pick
-        # a running generation job first; when none is running, retain the
-        # oldest queued one so a newer queued request cannot hide work
+        # wrapper that originally started it has already succeeded. A
+        # post-run timing repair also owns the card while it is active.
+        # Pick a running generation job first; when none is running, retain
+        # the oldest queued one so a newer queued request cannot hide work
         # that is already waiting for a worker.
         generation_job_rows = list(
             session.scalars(
                 select(Job)
                 .where(
                     Job.session_id == session_id,
-                    Job.kind == "generation.run",
+                    Job.kind.in_(("generation.run", "generation.repair-existing")),
                     Job.status.in_(
                         ("running", "queued", "pausing", "cancel_requested")
                     ),

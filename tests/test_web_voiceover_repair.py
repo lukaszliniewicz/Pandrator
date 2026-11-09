@@ -150,6 +150,29 @@ class VoiceoverRepairTests(unittest.TestCase):
             self.run_id = run.id
 
     def generate(self, synth=None, event=None):
+        from pandrator.web.generation_performance_snapshot import (
+            performance_runtime_settings,
+        )
+        from pandrator.web.speech_plan_workspace import freeze_speech_snapshot
+
+        # Real generation admission freezes the complete semantic window
+        # before TTS starts. These tests invoke run_generation directly, so
+        # reproduce that admission step for contextual runs. Tests for
+        # intentionally legacy/unfrozen runs may still create one with
+        # tts_context_mode=off and mutate it after generation.
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            snapshot = dict(run.settings_snapshot_json or {})
+            settings = performance_runtime_settings(snapshot)
+            if (
+                settings.get("tts_context_mode", "off") != "off"
+                and not snapshot.get("semantic_context_snapshot")
+            ):
+                freeze_speech_snapshot(
+                    session, run.plan_revision_id, snapshot, explicit=True
+                )
+                run.settings_snapshot_json = snapshot
+
         def ordinary(text, *_args, **_kwargs):
             return Sine(440).to_audio_segment(
                 duration=2000
@@ -520,6 +543,17 @@ class VoiceoverRepairTests(unittest.TestCase):
             )
             self.assertIsNotNone(take)
             self.assertIsNone(take.parent_take_id)
+            self.assertTrue(take.is_active)
+            active_takes = list(
+                session.scalars(
+                    select(AudioTake).where(
+                        AudioTake.generation_segment_id == rows[-1].id,
+                        AudioTake.status == "completed",
+                        AudioTake.is_active.is_(True),
+                    )
+                )
+            )
+            self.assertEqual([take.id], [item.id for item in active_takes])
 
     def test_context_neighbour_duration_growth_rejects_optional_repair(self):
         self.plan()
@@ -848,6 +882,180 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertEqual(other_revision, self.active())
         self.assertEqual(0, result.get("repaired_blocks"))
 
+    def test_completed_root_can_queue_and_execute_timing_only_job(self):
+        from unittest.mock import patch
+
+        from pandrator.web.models import Job
+
+        # Simulate a root completed by an older engine: repair was configured
+        # in its frozen settings but not invoked during original generation.
+        # The original synthesis must never be invoked again for this job.
+        self.plan(enabled=False)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                    "tts_context_mode": "both",
+                    "performance_context_before": 1,
+                    "performance_context_after": 1,
+                },
+            }
+        initial, calls = self.generate()
+        self.assertEqual(2, calls)
+        self.assertEqual("completed", initial["status"])
+        self.assertEqual(self.revision_id, self.active())
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_early_repair_enabled": True,
+                },
+            }
+
+        service = GenerationService(
+            self.database, self.handlers.jobs, WorkspaceSettingsService(self.database)
+        )
+        first = service.request_timing_repair(self.run_id)
+        repeat = service.request_timing_repair(self.run_id)
+        self.assertFalse(first["reused_job"])
+        self.assertTrue(repeat["reused_job"])
+        self.assertEqual(first["job_id"], repeat["job_id"])
+        with self.database.session() as session:
+            job = session.get(Job, first["job_id"])
+            self.assertEqual("generation.repair-existing", job.kind)
+            self.assertEqual(self.record.id, job.payload_json["session_id"])
+            self.assertEqual(self.run_id, job.payload_json["generation_run_id"])
+
+        def synth(text, *_args, **_kwargs):
+            return Sine(440).to_audio_segment(duration=1000)
+
+        from pandrator.web.job_execution import current_job_lease
+
+        claimed = self.handlers.jobs.claim("repair-only-fixture", lease_seconds=300)
+        self.assertIsNotNone(claimed)
+        self.assertEqual(first["job_id"], claimed.id)
+        lease_token = current_job_lease.set({
+            "job_id": claimed.id,
+            "owner_id": claimed.lease_owner,
+            "lease_generation": claimed.lease_generation,
+        })
+        try:
+            with patch("pandrator.logic.tts_handler.text_to_audio", side_effect=synth) as mocked:
+                result = self.handlers.run_repair_existing_generation(
+                    {
+                        "generation_run_id": self.run_id,
+                        "session_id": self.record.id,
+                        "_job_id": claimed.id,
+                        "_lease_generation": claimed.lease_generation,
+                    },
+                    lambda *_args: None,
+                    threading.Event(),
+                )
+        finally:
+            current_job_lease.reset(lease_token)
+        self.assertEqual(1, result["repaired_blocks"])
+        self.assertEqual(3, mocked.call_count)
+        self.assertNotEqual(self.revision_id, self.active())
+        with self.database.session() as session:
+            root = session.get(GenerationRun, self.run_id)
+            self.assertEqual("completed", root.status)
+            original_count = session.scalar(
+                select(func.count(AudioTake.id)).where(
+                    AudioTake.generation_run_id == self.run_id,
+                    AudioTake.status == "completed",
+                )
+            )
+            self.assertEqual(2, original_count)
+            children = list(
+                session.scalars(
+                    select(GenerationRun).where(
+                        GenerationRun.session_id == self.record.id,
+                        GenerationRun.id != self.run_id,
+                    )
+                )
+            )
+            self.assertTrue(children)
+            self.assertTrue(
+                all(child.job_id == first["job_id"] for child in children)
+            )
+
+    def test_contextual_legacy_run_without_frozen_context_fails_closed(self):
+        from pandrator.web.voiceover_repair import repair_early_blocks
+
+        # A previous engine version may have generated a complete lecture
+        # without recording the neighbours that accompanied each take.
+        self.plan(enabled=False)
+        result, calls = self.generate()
+        self.assertEqual(2, calls)
+        self.assertEqual(self.revision_id, self.active())
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                    "speech_block_early_repair_enabled": True,
+                    "tts_context_mode": "both",
+                    "performance_context_before": 1,
+                    "performance_context_after": 1,
+                },
+            }
+            self.assertFalse(run.settings_snapshot_json.get("semantic_context_snapshot"))
+
+        checked = repair_early_blocks(
+            self.handlers, self.run_id, lambda *_args: None, threading.Event()
+        )
+        self.assertEqual(0, checked["repaired_blocks"])
+        self.assertEqual(0, checked["repair_checked_blocks"])
+        self.assertEqual(
+            {"missing_source_semantic_context": 1},
+            checked["repair_rejection_reasons"],
+        )
+        self.assertEqual(self.revision_id, self.active())
+        self.assertEqual([], self.repairs())
+
+    def test_unsupported_context_snapshot_schema_declines_repair_without_crashing(self):
+        from pandrator.web.voiceover_repair import repair_early_blocks
+
+        self.plan(enabled=False)
+        result, calls = self.generate()
+        self.assertEqual(2, calls)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                    "speech_block_early_repair_enabled": True,
+                    "tts_context_mode": "both",
+                    "performance_context_before": 1,
+                    "performance_context_after": 1,
+                },
+                "semantic_context_snapshot": {
+                    "schema_version": 2,
+                    "plan_revision_id": self.revision_id,
+                    "units": [{"id": self.segment_ids[0], "text": "stale"}],
+                },
+            }
+        checked = repair_early_blocks(
+            self.handlers, self.run_id, lambda *_args: None, threading.Event()
+        )
+        self.assertEqual(0, checked["repaired_blocks"])
+        self.assertEqual(0, checked["repair_checked_blocks"])
+        self.assertEqual(
+            {"missing_source_semantic_context": 1},
+            checked["repair_rejection_reasons"],
+        )
+        self.assertEqual(self.revision_id, self.active())
+        self.assertEqual([], self.repairs())
+
     def test_take_selection_before_staging_preserves_choice_without_regeneration(self):
         self.plan()
         alternate_id = None
@@ -865,6 +1073,9 @@ class VoiceoverRepairTests(unittest.TestCase):
             result, calls = self.generate()
         self.assertEqual(2, calls)
         self.assertEqual(0, result.get("repaired_blocks"))
+        self.assertGreater(
+            result.get("repair_rejection_reasons", {}).get("selection_changed", 0), 0
+        )
         self.assertEqual(self.revision_id, self.active())
         self.assert_closing_take_selected(alternate_id)
 

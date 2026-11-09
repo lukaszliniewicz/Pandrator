@@ -98,9 +98,16 @@ def job_payload(
         payload["result_json"] = public_copy_job_result(record.id) if record.status == "succeeded" else None
     if include_details and record.kind == "tts.preview":
         payload["payload_json"] = public_preview_payload(record.payload_json)
-    run_id = (record.payload_json or {}).get("generation_run_id") if record.kind == "generation.run" else None
+    run_id = (
+        (record.payload_json or {}).get("generation_run_id")
+        if record.kind in {"generation.run", "generation.repair-existing"}
+        else None
+    )
     payload["generation_run_id"] = (
-        run_id if record.kind == "generation.run" and isinstance(run_id, str) else None
+        run_id
+        if record.kind in {"generation.run", "generation.repair-existing"}
+        and isinstance(run_id, str)
+        else None
     )
     if include_details and record.kind in {"voice.publish", "voice.unpublish", "voice.google_design"}:
         effect = voice_provider_effect_summary(getattr(record, "external_effect_json", None))

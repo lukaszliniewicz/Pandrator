@@ -2084,6 +2084,174 @@ class GenerationService(GenerationHistoryReader):
         result["settings_source_receipt"] = settings_source_receipt
         return result
 
+    def request_timing_repair(self, run_id: str) -> dict[str, Any]:
+        """Queue a guarded timing-only pass for an already completed voiceover."""
+        with self.database.immediate_session() as session:
+            return self.request_timing_repair_in_session(session, run_id)
+
+    def request_timing_repair_in_session(
+        self, session: Session, run_id: str
+    ) -> dict[str, Any]:
+        from pandrator.logic.dubbing.passage_regroup import select_second_pass
+
+        require_generation_resource_access(
+            session, "run", run_id, ProjectAction.RUN
+        )
+        run = session.get(GenerationRun, run_id)
+        if run is None:
+            raise KeyError(run_id)
+        plan = session.scalar(
+            select(GenerationPlan).where(GenerationPlan.session_id == run.session_id)
+        )
+        source = session.get(SessionRecord, run.session_id)
+        if (
+            plan is None or source is None or source.workflow_kind != "voiceover"
+            or run.status != "completed"
+            or plan.active_revision_id != run.plan_revision_id
+            or run.audio_version_json is not None
+        ):
+            raise ValueError(
+                "Timing repair requires a completed voiceover on its active speech plan."
+            )
+        snapshot = dict(run.settings_snapshot_json or {})
+        if select_second_pass(
+            snapshot,
+            operation=str(run.operation or ""),
+            has_selected_ids=False,
+            workflow_kind=source.workflow_kind,
+        ) != "repair":
+            raise ValueError(
+                "The selected generation was not configured for early-finish repair."
+            )
+
+        # The exact immutable root can only be checked once successfully.
+        # A canceled or failed job can be retried using a fresh job; an active
+        # one is returned rather than racing another synthesis pass. A
+        # successful fail-closed skip is also retryable: it inspected no
+        # speech block, so it must not suppress a later explicit request.
+        existing_jobs = session.scalars(
+            select(Job)
+            .where(
+                Job.session_id == run.session_id,
+                Job.kind == "generation.repair-existing",
+                Job.status.in_(("queued", "running", "cancel_requested", "succeeded")),
+            )
+            .order_by(Job.created_at.desc())
+        ).all()
+        for previous in existing_jobs:
+            payload = previous.payload_json or {}
+            if payload.get("generation_run_id") != run_id:
+                continue
+            if previous.status == "cancel_requested":
+                # The prior optional pass is still acknowledging cancellation.
+                # Reusing it would promise work it will never run, while
+                # enqueueing now would race its worker. Start a fresh attempt
+                # only after the cancellation becomes terminal.
+                raise ValueError(
+                    "A timing repair for this generation is still stopping."
+                )
+            result = (
+                previous.result_json
+                if isinstance(previous.result_json, dict)
+                else {}
+            )
+            if previous.status == "succeeded" and not (
+                int(result.get("repair_checked_blocks") or 0) > 0
+                or int(result.get("repaired_blocks") or 0) > 0
+            ):
+                # A completed pass with zero inspected blocks is a fail-closed
+                # skip, not proof that this run has nothing to repair.
+                continue
+            return {
+                "job_id": previous.id,
+                "generation_run_id": run_id,
+                "session_id": run.session_id,
+                "status": previous.status,
+                "reused_job": True,
+            }
+        job = self.jobs.enqueue_in_session(
+            session,
+            "generation.repair-existing",
+            {"session_id": run.session_id, "generation_run_id": run_id},
+            session_id=run.session_id,
+            resource_keys=generation_resource_keys(run.session_id, snapshot),
+        )
+        return {
+            "job_id": job.id,
+            "generation_run_id": run_id,
+            "session_id": run.session_id,
+            "status": job.status,
+            "reused_job": False,
+        }
+
+    def _active_timing_repair(
+        self, session: Session, run: GenerationRun
+    ) -> tuple[Job, GenerationRun] | None:
+        """Return the active post-run repair job that owns this logical run.
+
+        Repair children carry the repair job on ``job_id`` while their frozen
+        snapshot points at the completed root. The root itself keeps its
+        original, already succeeded synthesis job. Both must resolve to the
+        same repair payload so a pause or cancel can stop the optional pass
+        without touching another session or an unrelated root.
+        """
+        snapshot = (
+            run.settings_snapshot_json
+            if isinstance(run.settings_snapshot_json, dict)
+            else {}
+        )
+        parent = snapshot.get("early_repair_parent_run_id")
+        root_id = parent if isinstance(parent, str) and parent else run.id
+        if run.id != root_id and (
+            run.job_id is None or run.source_generation_run_id is None
+        ):
+            return None
+        root = run if run.id == root_id else session.get(GenerationRun, root_id)
+        if root is None or root.session_id != run.session_id:
+            return None
+        # The optional pass is only active for the completed generation it
+        # was requested for. After a resume the root is queued/running and a
+        # stale cancel_requested repair must never pause the new attempt.
+        if root.status != "completed":
+            return None
+        root_job = session.get(Job, root.job_id) if root.job_id else None
+        newer_generation_job = None
+        if root_job is not None and root_job.kind == "generation.run":
+            root_payload = (
+                root_job.payload_json
+                if isinstance(root_job.payload_json, dict)
+                else {}
+            )
+            if str(root_payload.get("generation_run_id") or "") == str(root.id):
+                newer_generation_job = root_job
+        candidates = session.scalars(
+            select(Job)
+            .where(
+                Job.session_id == run.session_id,
+                Job.kind == "generation.repair-existing",
+                Job.status.in_(("queued", "running", "cancel_requested")),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+        ).all()
+        for job in candidates:
+            payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+            if str(payload.get("generation_run_id") or "") != root_id:
+                continue
+            if (
+                newer_generation_job is not None
+                and job.created_at < newer_generation_job.created_at
+            ):
+                # A newer generation attempt owns the root now. This repair
+                # was superseded by the resume that created it.
+                continue
+            session_id = payload.get("session_id")
+            if session_id is not None and session_id != run.session_id:
+                continue
+            if run.id != root_id and run.job_id != job.id:
+                continue
+            return job, root
+        return None
+
     def request_pause(self, run_id: str) -> dict[str, Any]:
         with self.database.immediate_session() as session:
             require_generation_resource_access(
@@ -2092,6 +2260,21 @@ class GenerationService(GenerationHistoryReader):
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
+            repair = self._active_timing_repair(session, run)
+            if repair is not None:
+                job, root = repair
+                # The optional repair has no resumable progress of its own.
+                # Stop its worker, keep the completed audio, and expose the
+                # logical root as paused so a normal resume can replay the
+                # configured pass instead of leaving ``pausing`` behind.
+                if root.status != "paused" or not root.pause_requested:
+                    root.pause_requested = True
+                    root.cancel_requested = False
+                    root.status = "paused"
+                    root.updated_at = utcnow()
+                revoke_regeneration_batons(session, root.id)
+                self.jobs.request_cancel_in_session(session, job.id)
+                return {"id": run.id, "job_id": job.id, "status": "paused"}
             if run.status not in {"queued", "running", "pausing", "paused"}:
                 raise ValueError(f"Run cannot be paused from {run.status}.")
             run.pause_requested = True
@@ -2127,17 +2310,52 @@ class GenerationService(GenerationHistoryReader):
         run = session.get(GenerationRun, run_id)
         if run is None:
             raise KeyError(run_id)
+        repair = self._active_timing_repair(session, run)
+        if repair is not None:
+            job, root = repair
+            # Canceling the optional pass must not cancel the completed
+            # generation it was derived from. A staged child can still show
+            # its own immediate stop; the finished root stays completed.
+            if run.id != root.id:
+                run.cancel_requested = True
+                run.status = "cancel_requested"
+                run.updated_at = utcnow()
+            if (
+                root.status != "completed"
+                or root.pause_requested
+                or root.cancel_requested
+            ):
+                # The completed source run's audio is always retained. Only
+                # its optional post-run repair is being canceled.
+                root.pause_requested = False
+                root.cancel_requested = False
+                root.status = "completed"
+                root.updated_at = utcnow()
+            self.jobs.request_cancel_in_session(session, job.id)
+            return {
+                "id": run.id,
+                "job_id": job.id,
+                "status": root.status if run.id == root.id else run.status,
+            }
+        if run.status == "completed":
+            # The post-run repair already ended or never existed. A completed
+            # run has nothing to cancel, and must keep its original job link.
+            return {"id": run.id, "job_id": run.job_id, "status": run.status}
         run.cancel_requested = True
         run.status = "cancel_requested"
         run.updated_at = utcnow()
         job_id = run.job_id
-        if job_id:
-            try:
-                self.jobs.request_cancel_in_session(session, job_id)
-            except KeyError:
-                run.status = "canceled"
-                run.cancel_requested = False
-                run.updated_at = utcnow()
+        job = session.get(Job, job_id) if job_id else None
+        if job is not None and (
+            job.session_id != run.session_id
+            or job.kind == "generation.repair-existing"
+        ):
+            # A stale or crafted link cannot authorize touching another
+            # session's job or a repair job whose same-root ownership was
+            # already rejected above.
+            job = None
+        if job_id and job is not None:
+            self.jobs.request_cancel_in_session(session, job_id)
         else:
             run.status = "canceled"
             run.cancel_requested = False

@@ -35,8 +35,8 @@ function snapshotSecondPass(run: GenerationRun): SecondPassKind | null {
     const repairEnabled =
       (tts as Record<string, unknown>).speech_block_early_repair_enabled ===
       true;
+    if (repairEnabled) return 'repair';
     if (mode === 'passage' && regroupEnabled) return 'regroup';
-    if (mode === 'legacy' && repairEnabled) return 'repair';
   }
   return null;
 }
@@ -124,6 +124,11 @@ export function historyHelper(run: GenerationRun): string {
   if (!repair) return '';
   const kind = secondPassKind(run);
   const { attempted, applied, rejected } = historyCounts(repair);
+  if (repair.status === 'skipped') {
+    if (repair.reason === 'missing_source_semantic_context')
+      return 'Timing repair was skipped because the original speech context could not be verified. The original audio is retained.';
+    return 'Timing repair was skipped. The original audio is retained.';
+  }
   if (repair.status === 'running') {
     if (kind === 'regroup')
       return 'Accepted groups become part of this run as they finish.';

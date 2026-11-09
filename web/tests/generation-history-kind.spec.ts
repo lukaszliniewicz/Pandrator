@@ -483,3 +483,46 @@ test('two- and three-passage groups keep member counts on versions', () => {
   expect(run.timing_repair!.versions[1].member_count).toBe(3);
   expect(historyHeading(run)).toBe('2 groups merged');
 });
+
+test('passage mode prioritizes enabled early-finish repair over regroup fallback', () => {
+  const run = baseRun({
+    settings_snapshot: {
+      tts: {
+        speech_block_generation_mode: 'passage',
+        speech_block_regroup_enabled: true,
+        speech_block_early_repair_enabled: true,
+        tts_context_mode: 'both'
+      }
+    },
+    timing_repair: {
+      result_generation_run_id: 'root',
+      result_plan_revision_id: 'plan-1',
+      result_sequence_number: 1,
+      applied_count: 0,
+      attempt_count: 0,
+      status: 'completed',
+      versions: []
+    }
+  });
+  expect(secondPassKind(run)).toBe('repair');
+});
+
+test('unverified semantic context is displayed as a skipped check', () => {
+  const run = baseRun({
+    second_pass: 'repair',
+    timing_repair: {
+      result_generation_run_id: 'root',
+      result_plan_revision_id: 'plan-1',
+      result_sequence_number: 1,
+      applied_count: 0,
+      attempt_count: 0,
+      kind: 'repair',
+      status: 'skipped',
+      reason: 'missing_source_semantic_context',
+      repair_rejection_reasons: { missing_source_semantic_context: 1 },
+      versions: []
+    }
+  });
+  expect(historyHelper(run)).toContain('could not be verified');
+  expect(historyHelper(run)).toContain('original audio is retained');
+});

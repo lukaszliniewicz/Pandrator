@@ -847,6 +847,61 @@ def register_generation_routes(
         except ValueError as error:
             return error_response("invalid_state", str(error), 409)
 
+    @app.post("/api/v1/generation-runs/<run_id>/repair-timing")
+    @require_auth
+    @require_session_action(context, ProjectAction.RUN, resource="run")
+    def generation_run_repair_timing(run_id: str):
+        """Admit a durable timing-only repair job for completed voiceover audio."""
+        body = request.get_json(silent=True)
+        if body not in (None, {}):
+            return error_response(
+                "validation_error", "Timing repair accepts no body parameters.", 422
+            )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        try:
+            with database.immediate_session() as db_session:
+                require_generation_resource_access(
+                    db_session, "run", run_id, ProjectAction.RUN
+                )
+                reservation = None
+                if idempotency_key is not None:
+                    principal = idempotency.principal()
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=principal,
+                        operation_id="repairExistingGenerationTiming",
+                        idempotency_key=idempotency_key,
+                        payload={"generation_run_id": run_id},
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = public_response(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+                result = generation.request_timing_repair_in_session(
+                    db_session, run_id
+                )
+                status_code = 200 if result["reused_job"] else 202
+                if reservation is not None:
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=status_code,
+                        resource_kind="job",
+                        resource_id=result["job_id"],
+                    )
+        except (IdempotencyConflict, IdempotencyInProgress) as error:
+            return idempotency_failure(error)
+        except KeyError:
+            return error_response("not_found", "Generation run not found.", 404)
+        except ValueError as error:
+            return error_response("invalid_state", str(error), 409)
+        return public_response(result), status_code
+
     @app.post("/api/v1/generation-runs/<run_id>/cancel")
     @require_auth
     @require_session_action(context, ProjectAction.CANCEL_ANY, resource="run")

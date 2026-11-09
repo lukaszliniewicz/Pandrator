@@ -1694,6 +1694,7 @@ export type GenerationRun = {
     kind?: string | null;
     reason?: string | null;
     no_eligible_groups?: boolean | null;
+    repair_rejection_reasons?: Record<string, number>;
     versions: {
       generation_run_id: string;
       plan_revision_id: string;

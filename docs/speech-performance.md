@@ -184,7 +184,12 @@ History remains inspectable when a performance plan becomes stale; generation
 requires a new valid adoption or disabling performance.
 
 Automatic post-generation split repair can use read-only semantic context,
-including one preceding and one following speech block. When a split is staged,
+including configurable preceding and following blocks (for example one of
+each, or the wider supported context windows). The global defaults remain two
+preceding and one following block (`performance_context_before=2`,
+`performance_context_after=1`); a session or generation can explicitly save one
+of each, and repair uses those frozen values rather than re-deriving them.
+When a split is staged,
 Pandrator freezes a fresh context window for each new child and regenerates
 neighbouring takes whose semantic windows changed. It rejects the optional
 repair if a refreshed neighbour becomes longer and could worsen timing.

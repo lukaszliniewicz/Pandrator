@@ -337,11 +337,24 @@ class JobQueue:
     @staticmethod
     def _is_generation_owner(run: GenerationRun, job: Job) -> bool:
         payload = job.payload_json if isinstance(job.payload_json, dict) else {}
-        return bool(
-            job.kind == "generation.run"
-            and job.session_id == run.session_id
-            and str(payload.get("generation_run_id") or "") == run.id
-        )
+        root_id = str(payload.get("generation_run_id") or "")
+        if job.kind == "generation.run":
+            return bool(job.session_id == run.session_id and root_id == run.id)
+        if job.kind == "generation.repair-existing":
+            snapshot = (
+                run.settings_snapshot_json
+                if isinstance(run.settings_snapshot_json, dict)
+                else {}
+            )
+            return bool(
+                job.session_id == run.session_id
+                and run.job_id == job.id
+                and root_id
+                and run.id != root_id
+                and run.source_generation_run_id is not None
+                and snapshot.get("early_repair_parent_run_id") == root_id
+            )
+        return False
 
     def _apply_generation_job_status(
         self,
@@ -353,6 +366,11 @@ class JobQueue:
         status = self.GENERATION_JOB_TERMINAL_STATUS.get(str(job.status or ""))
         if status is None or not self._is_generation_owner(run, job):
             return False
+        if job.kind == "generation.repair-existing" and status == "completed":
+            # A successful repair worker finalizes each staged child itself.
+            # A terminal queue success cannot fabricate missing audio for a
+            # child that is still queued or running; fail that orphan instead.
+            status = "failed"
         run.status = status
         run.cancel_requested = False
         run.pause_requested = False
@@ -366,6 +384,19 @@ class JobQueue:
     ) -> None:
         """Reconcile only the domain record owned by a normal job transition."""
 
+        if job.kind == "generation.repair-existing":
+            # A post-run repair job owns the children it staged, not the
+            # completed root named in its payload. Close every unfinished
+            # child so a failure or cancellation cannot leave one queued.
+            children = session.scalars(
+                select(GenerationRun).where(
+                    GenerationRun.job_id == job.id,
+                    GenerationRun.status.in_(self.GENERATION_ACTIVE_STATUSES),
+                )
+            ).all()
+            for child in children:
+                self._apply_generation_job_status(child, job)
+            return
         if job.kind != "generation.run":
             return
         run_id = str(

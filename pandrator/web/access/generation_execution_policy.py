@@ -168,7 +168,9 @@ def _read_job(session: Session, run: _RunHeader) -> _JobHeader | None:
         header.workspace_id != run.workspace_id
         or header.project_id != run.project_id
         or header.session_id != run.session_id
-        or header.kind not in _BRIDGES | {"generation.run"}
+        or header.kind not in _BRIDGES | {
+            "generation.run", "generation.repair-existing"
+        }
     ):
         _deny()
     if (
@@ -362,6 +364,53 @@ def _require_child_dispatch(
     require_generation_execution(session, scope.payload, expected=parent)
 
 
+def _require_repair_child_lineage(
+    session: Session,
+    child_id: str,
+    root_id: str,
+    *,
+    job_id: str,
+    session_id: str,
+) -> None:
+    """Prove a repair child descends from the stored root under this job.
+
+    The ordinary child path requires every hop to share the parent job. A
+    post-run repair has a different job for its staged descendants, so the
+    walk terminates at the explicitly stored root and requires every
+    intermediate run to be a marker-bearing child of this exact repair job.
+    """
+
+    current = child_id
+    seen: set[str] = set()
+    for _ in range(64):
+        if current == root_id:
+            return
+        if current in seen:
+            _deny()
+        seen.add(current)
+        row = session.execute(
+            select(
+                GenerationRun.source_generation_run_id,
+                GenerationRun.job_id,
+                GenerationRun.session_id,
+                GenerationRun.settings_snapshot_json,
+            ).where(GenerationRun.id == current)
+        ).one_or_none()
+        if row is None:
+            _deny()
+        source_id, run_job_id, run_session_id, snapshot = row
+        if (
+            run_job_id != job_id
+            or run_session_id != session_id
+            or not isinstance(snapshot, dict)
+            or snapshot.get("early_repair_parent_run_id") != root_id
+            or not _identifier(source_id)
+        ):
+            _deny()
+        current = source_id
+    _deny()
+
+
 def _check_payload(session: Session, payload: Mapping[str, Any], header: _JobHeader) -> None:
     try:
         stored = session.scalar(select(Job.payload_json).where(Job.id == header.id))
@@ -374,6 +423,49 @@ def _check_payload(session: Session, payload: Mapping[str, Any], header: _JobHea
         if header.kind == "generation.run":
             if not _same_json(supplied, stored):
                 _deny()
+        elif header.kind == "generation.repair-existing":
+            # The repair job has authority only for its own freshly staged
+            # descendants, not arbitrary generation runs in the session.
+            if (
+                set(stored) != {"generation_run_id", "session_id"}
+                or not _identifier(stored.get("generation_run_id"))
+                or stored.get("session_id") != header.session_id
+                or set(supplied) != {"generation_run_id", "operation", "segment_ids"}
+                or supplied.get("operation") != "resume"
+                or type(supplied.get("segment_ids")) is not list
+                or supplied["segment_ids"] != []
+            ):
+                _deny()
+            child = session.get(GenerationRun, supplied["generation_run_id"])
+            root = session.get(GenerationRun, stored["generation_run_id"])
+            if (
+                child is None or root is None
+                or child.session_id != header.session_id
+                or root.session_id != header.session_id
+                or child.job_id != header.id
+                or child.source_generation_run_id is None
+                or not isinstance(child.settings_snapshot_json, dict)
+                or child.settings_snapshot_json.get("early_repair_parent_run_id")
+                != root.id
+            ):
+                _deny()
+            if root.job_id is not None:
+                root_job = session.execute(
+                    select(Job.kind, Job.session_id).where(Job.id == root.job_id)
+                ).one_or_none()
+                if (
+                    root_job is None
+                    or root_job.kind != "generation.run"
+                    or root_job.session_id != header.session_id
+                ):
+                    _deny()
+            _require_repair_child_lineage(
+                session,
+                child.id,
+                root.id,
+                job_id=header.id,
+                session_id=header.session_id,
+            )
         elif (
             type(stored.get("session_id")) is not str
             or stored["session_id"] != header.session_id

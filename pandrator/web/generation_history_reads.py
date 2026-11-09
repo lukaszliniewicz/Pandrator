@@ -39,6 +39,21 @@ COMPACT_ASSEMBLY_FIELDS = (
 )
 
 
+def _snapshot_enables_early_repair(snapshot: object) -> bool:
+    """Mirror the effective-settings merge used to select the repair pass."""
+    if not isinstance(snapshot, dict) or snapshot.get("early_repair_parent_run_id"):
+        return False
+    sections = [snapshot.get("audio"), snapshot.get("tts")]
+    override = snapshot.get("selected_segment_override")
+    if isinstance(override, dict):
+        sections.append(override.get("tts"))
+    return any(
+        isinstance(section, dict)
+        and section.get("speech_block_early_repair_enabled") is True
+        for section in sections
+    )
+
+
 def project_generation_run(payload: dict[str, Any], *, view: str = "full") -> dict[str, Any]:
     """Opt-in transport projection; stored admission receipts remain full."""
     if view not in {"full", "compact"}:
@@ -97,6 +112,7 @@ class RunHistoryContext(RepairHistoryContext):
     histories: dict[str, GenerationRunHistory]
     revisions_by_id: dict[str, GenerationPlanRevision]
     jobs_by_id: dict[str, Job]
+    repair_jobs_by_root: dict[str, list[Job]]
     blocking_jobs: list[Job]
     assemblies_by_run_id: dict[str, OutputAssembly]
     assembly_versions_by_run_id: dict[str, dict[str, OutputAssembly]]
@@ -156,6 +172,72 @@ class GenerationHistoryReader:
             )
         )
 
+    @staticmethod
+    def _job_attempt_order(job: Job) -> tuple[Any, str]:
+        return (getattr(job, "created_at", None), str(getattr(job, "id", "") or ""))
+
+    @staticmethod
+    def _repair_job_is_stale(
+        root: GenerationRun, root_job: Job | None, repair_job: Job | None
+    ) -> bool:
+        """Return whether a newer generation attempt superseded this repair.
+
+        A post-run repair is requested against an already completed root. If
+        that root is paused and then resumed, the new ``generation.run`` job
+        owns the next attempt; a canceled repair from the earlier attempt must
+        not keep reporting ``stopped`` over the resumed generation's result.
+        """
+
+        if root_job is None or repair_job is None:
+            return False
+        if getattr(root_job, "kind", None) != "generation.run":
+            return False
+        payload = (
+            root_job.payload_json
+            if isinstance(root_job.payload_json, dict)
+            else {}
+        )
+        if str(payload.get("generation_run_id") or "") != str(root.id):
+            return False
+        repair_order = GenerationHistoryReader._job_attempt_order(repair_job)
+        root_order = GenerationHistoryReader._job_attempt_order(root_job)
+        return repair_order < root_order
+
+    @staticmethod
+    def _repair_attempt_children(
+        history: GenerationRunHistory,
+        root_job: Job | None,
+        repair_job: Job | None,
+    ) -> tuple[Any, ...]:
+        """Return only the children owned by the currently governing attempt."""
+
+        children = history.repair_children
+        if repair_job is not None:
+            return tuple(
+                child
+                for child in children
+                if getattr(child, "job_id", None) == repair_job.id
+            )
+        if root_job is None:
+            return children
+        governing_id = getattr(root_job, "id", None)
+        if governing_id is None:
+            return children
+        matching = tuple(
+            child
+            for child in children
+            if getattr(child, "job_id", None) == governing_id
+        )
+        if matching:
+            return matching
+        # Legacy inline repairs may not have stamped a job ID. Do not fall
+        # back to children owned by an earlier, superseded repair job.
+        return tuple(
+            child
+            for child in children
+            if getattr(child, "job_id", None) is None
+        )
+
     def _run_history_context(
         self,
         session: Session,
@@ -197,7 +279,40 @@ class GenerationHistoryReader:
             if job_ids
             else []
         )
+        # Threads of a post-run repair have no child run until one is staged,
+        # so their job ID is not reachable through GenerationRun.job_id. Probe
+        # the session only when a frozen snapshot enables that pass. Effective
+        # settings merge audio, tts and the selected-segment override, so any
+        # of those sections can carry the enabling flag.
+        repair_enabled = any(
+            _snapshot_enables_early_repair(run.settings_snapshot_json)
+            for run in runs
+        )
+        if repair_enabled:
+            seen_job_ids = {job.id for job in jobs}
+            jobs.extend(
+                job
+                for job in session.scalars(
+                    select(Job).where(
+                        Job.session_id == session_id,
+                        Job.kind == "generation.repair-existing",
+                    )
+                ).all()
+                if job.id not in seen_job_ids
+            )
         job_by_id = {job.id: job for job in jobs}
+        repair_jobs_by_root: dict[str, list[Job]] = {}
+        for repair_job in jobs:
+            if repair_job.kind != "generation.repair-existing":
+                continue
+            payload = (
+                repair_job.payload_json
+                if isinstance(repair_job.payload_json, dict)
+                else {}
+            )
+            root_id = str(payload.get("generation_run_id") or "")
+            if root_id:
+                repair_jobs_by_root.setdefault(root_id, []).append(repair_job)
         blocking_jobs: list[Job] = (
             list(
                 session.scalars(
@@ -294,6 +409,7 @@ class GenerationHistoryReader:
             "histories": histories,
             "revisions_by_id": revision_by_id,
             "jobs_by_id": job_by_id,
+            "repair_jobs_by_root": repair_jobs_by_root,
             "blocking_jobs": blocking_jobs,
             "assemblies_by_run_id": assembly_by_run_id,
             "assembly_versions_by_run_id": assembly_versions_by_run_id,
@@ -505,26 +621,40 @@ class GenerationHistoryReader:
         root: GenerationRun,
         history: GenerationRunHistory,
         root_job: Job | None,
+        repair_job: Job | None = None,
     ) -> tuple[str, bool]:
         """Infer repair state while keeping optional repair failures local."""
 
-        children = history.repair_children
-        job_active = root_job is not None and root_job.status in {
+        attempt_children = GenerationHistoryReader._repair_attempt_children(
+            history, root_job, repair_job
+        )
+        governing_job = repair_job or root_job
+        job_active = governing_job is not None and governing_job.status in {
             "queued", "running", "cancel_requested"
         }
         # A crashed/stopped job can leave a child queued or an outcome pending.
         # Such leftovers must not keep the logical run "repairing" forever.
-        if root.status == "failed" or (root_job is not None and root_job.status == "failed"):
+        if root.status == "failed" or (
+            governing_job is not None and governing_job.status == "failed"
+        ):
             return "failed", False
         if root.status in {"canceled", "stopped", "paused"} or (
-            root_job is not None and root_job.status in {"canceled", "interrupted"}
+            governing_job is not None
+            and governing_job.status in {"canceled", "interrupted"}
         ):
             return "stopped", False
-        active_child = any(GenerationHistoryReader._run_history_active(child, None) for child in children)
-        if (active_child and (root_job is None or job_active)) or (
-            root_job is not None
+        if repair_job is not None and job_active:
+            # A post-run repair job owns its own active state even before it
+            # stages the first child; progress may legitimately still be zero.
+            return "running", True
+        active_child = any(
+            GenerationHistoryReader._run_history_active(child, None)
+            for child in attempt_children
+        )
+        if (active_child and (governing_job is None or job_active)) or (
+            governing_job is not None
             and job_active
-            and (children or float(root_job.progress or 0) >= 0.85)
+            and (attempt_children or float(governing_job.progress or 0) >= 0.85)
         ):
             return "running", True
 
@@ -535,12 +665,14 @@ class GenerationHistoryReader:
                 )
                 or ""
             )
-            for child in children
+            for child in attempt_children
         }
-        if "failed" in outcomes or any(child.status == "failed" for child in children):
+        if "failed" in outcomes or any(
+            child.status == "failed" for child in attempt_children
+        ):
             return "failed", False
         if "stopped" in outcomes or any(
-            child.status in {"canceled", "stopped"} for child in children
+            child.status in {"canceled", "stopped"} for child in attempt_children
         ):
             return "stopped", False
         if "pending" in outcomes or active_child:
@@ -553,8 +685,35 @@ class GenerationHistoryReader:
         history: GenerationRunHistory,
         root: GenerationRun,
         root_job: Job | None,
+        *,
+        repair_job: Job | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        status, active = self._timing_repair_status(root, history, root_job)
+        status, active = self._timing_repair_status(
+            root, history, root_job, repair_job
+        )
+        receipt_job = repair_job or root_job
+        receipt = (
+            receipt_job.result_json
+            if receipt_job is not None and isinstance(receipt_job.result_json, dict)
+            else {}
+        )
+        attempt_children = GenerationHistoryReader._repair_attempt_children(
+            history, root_job, repair_job
+        )
+        rejections = receipt.get("repair_rejection_reasons") or {}
+        skip_reason = None
+        if (
+            status == "completed"
+            and not attempt_children
+            and isinstance(rejections, dict)
+            and rejections
+            and receipt.get("repair_checked_blocks") == 0
+        ):
+            # A fail-closed early return with no checked speech blocks is not
+            # a successful timing check. Distinguish missing or unrecognised
+            # semantic context from a completed zero-candidate pass.
+            status = "skipped"
+            skip_reason = str(next(iter(rejections)))
         result = history.result
         versions = []
         for child in history.repair_children:
@@ -624,6 +783,18 @@ class GenerationHistoryReader:
             "attempt_count": len(history.repair_children),
             "status": status,
             "kind": kind,
+            "reason": skip_reason,
+            "error_code": (
+                str(getattr(receipt_job, "error_code", None))
+                if getattr(receipt_job, "error_code", None)
+                else None
+            ),
+            "error_message": (
+                str(getattr(receipt_job, "error_message", None))
+                if getattr(receipt_job, "error_message", None)
+                else None
+            ),
+            "repair_rejection_reasons": rejections if isinstance(rejections, dict) else {},
             "versions": versions,
             "usage": usage_summary(usage_events),
         }
@@ -793,19 +964,41 @@ class GenerationHistoryReader:
         )
         timing_repair = None
         repair_active = False
+        repair_jobs = context["repair_jobs_by_root"].get(run.id, ())
+        repair_job = max(
+            repair_jobs,
+            key=lambda item: (item.created_at, item.id),
+            default=None,
+        )
+        if GenerationHistoryReader._repair_job_is_stale(run, job, repair_job):
+            # A pause followed by a resume starts a newer generation attempt.
+            # The canceled repair belongs to the superseded attempt and must
+            # not keep this logical run reporting a stopped secondary pass.
+            repair_job = None
         from pandrator.logic.dubbing.passage_regroup import select_second_pass
 
-        second_pass = None if version is not None else select_second_pass(
-            snapshot,
-            operation=str(run.operation or ""),
-            has_selected_ids=False,
-            workflow_kind=str(context["workflow_kind"] or ""),
-        )
+        if repair_job is not None:
+            # A durable post-run repair request is authoritative even when
+            # the original synthesis job did not run a second pass itself.
+            second_pass = "repair"
+        else:
+            second_pass = None if version is not None else select_second_pass(
+                snapshot,
+                operation=str(run.operation or ""),
+                has_selected_ids=False,
+                workflow_kind=str(context["workflow_kind"] or ""),
+            )
         # A historical completed run predating a repair-policy change must
         # not retrospectively claim that a newly eligible pass actually ran.
-        # A completed post-pass writes a durable result key even when it found
-        # zero repairable blocks.  Child revisions are also authoritative.
-        if job is not None and job.status == "succeeded":
+        # A post-pass writes a durable result key even when it found no
+        # repairable blocks. Repair children are also authoritative. Failed
+        # or canceled jobs cannot be shown as perpetually "repair pending"
+        # after an optional pass crashes without writing that receipt.
+        if (
+            repair_job is None
+            and job is not None
+            and job.status in {"succeeded", "failed", "canceled"}
+        ):
             receipt = job.result_json if isinstance(job.result_json, dict) else {}
             if (
                 second_pass == "repair"
@@ -829,17 +1022,19 @@ class GenerationHistoryReader:
                 history,
                 run,
                 job,
+                repair_job=repair_job,
             )
             payload["timing_repair"] = timing_repair
             if repair_active:
                 payload["status"] = "running"
                 payload["phase"] = "repairing_timing"
-                if job is not None and job.status in {
+                active_job = repair_job or job
+                if active_job is not None and active_job.status in {
                     "queued",
                     "running",
                     "cancel_requested",
                 }:
-                    payload["progress"] = float(job.progress)
+                    payload["progress"] = float(active_job.progress)
 
         payload["early_repair_parent_run_id"] = (
             history.root.id if history.is_repair_child(run.id) else None
