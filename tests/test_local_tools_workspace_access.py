@@ -778,7 +778,11 @@ def test_actorless_model_upload_denies_before_workspace_queries_or_effects(monke
     monkeypatch.setattr(policy, "voice_execution_workspace", roots)
     monkeypatch.setattr(workflow_voice, "voice_execution_workspace", roots, raising=False)
     context = SimpleNamespace(
-        database=SimpleNamespace(session=lambda: nullcontext(session)), _resolve_input=resolve
+        database=SimpleNamespace(
+            session=lambda: nullcontext(session),
+            immediate_session=lambda: nullcontext(session),
+        ),
+        _resolve_input=resolve,
     )
     denied = []
     with execution_actor_scope(None):
