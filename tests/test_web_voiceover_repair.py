@@ -20,6 +20,7 @@ from pandrator.web.models import (
     GenerationPlanRevision,
     GenerationRun,
     GenerationSegment,
+    Job,
     Segment,
 )
 from pandrator.web.sessions import SessionService
@@ -396,6 +397,141 @@ class VoiceoverRepairTests(unittest.TestCase):
             self.assertEqual(guard["base_state_hash"], repair_state_hash(session, self.revision_id))
             self.assertEqual(guard["result_state_hash"], repair_state_hash(session, self.active()))
 
+    def test_partial_timing_inspection_is_not_reused_as_completed(self):
+        self.plan()
+        import pandrator.web.voiceover_repair as repair_module
+
+        real_advance = repair_module.advance_timing
+        inspected = []
+
+        def inspect(group, cursor, slot_end, settings, work, cancel_event, **kwargs):
+            inspected.append(group.start_ms)
+            if group.start_ms == 10000:
+                raise RuntimeError("synthetic timing inspection failure")
+            return real_advance(
+                group, cursor, slot_end, settings, work, cancel_event, **kwargs
+            )
+
+        with (
+            patch.object(repair_module, "advance_timing", side_effect=inspect),
+            patch.object(repair_module, "find_repair_boundary", return_value=None),
+        ):
+            result, _calls = self.generate()
+        self.assertEqual(1, result["repair_checked_blocks"])
+        self.assertEqual(0, result["repaired_blocks"])
+        self.assertFalse(result["repair_completed"])
+        self.assertTrue(result["repair_inspection_failed"])
+        self.assertEqual(
+            {"timing_inspection_failed": 1}, result["repair_rejection_reasons"]
+        )
+        self.assertEqual(self.revision_id, self.active())
+
+        job = self.handlers.jobs.enqueue(
+            "generation.repair-existing",
+            {
+                "session_id": self.record.id,
+                "generation_run_id": self.run_id,
+            },
+            session_id=self.record.id,
+        )
+        claimed = self.handlers.jobs.claim("partial-inspection-fixture")
+        self.assertEqual(job.id, claimed.id)
+        self.handlers.jobs.complete(
+            job.id,
+            "partial-inspection-fixture",
+            result,
+            lease_generation=claimed.lease_generation,
+        )
+        service = GenerationService(
+            self.database, self.handlers.jobs, WorkspaceSettingsService(self.database)
+        )
+        retry = service.request_timing_repair(self.run_id)
+        self.assertFalse(retry["reused_job"])
+        self.assertNotEqual(job.id, retry["job_id"])
+        repeat = service.request_timing_repair(self.run_id)
+        self.assertTrue(repeat["reused_job"])
+        self.assertEqual(retry["job_id"], repeat["job_id"])
+
+    def test_partial_repair_keeps_applied_child_but_rejects_repeated_repair(self):
+        self.plan(groups=2)
+        import pandrator.web.voiceover_repair as repair_module
+
+        job = self.handlers.jobs.enqueue(
+            "generation.run",
+            {"generation_run_id": self.run_id, "operation": "generate"},
+            session_id=self.record.id,
+        )
+        with self.database.session() as session:
+            session.get(GenerationRun, self.run_id).job_id = job.id
+        claimed = self.handlers.jobs.claim("partial-applied-generation")
+        self.assertEqual(job.id, claimed.id)
+        real_advance = repair_module.advance_timing
+
+        def inspect(group, cursor, slot_end, settings, work, cancel_event, **kwargs):
+            if group.start_ms == 10000:
+                raise RuntimeError("synthetic timing inspection failure")
+            return real_advance(
+                group, cursor, slot_end, settings, work, cancel_event, **kwargs
+            )
+
+        with patch.object(repair_module, "advance_timing", side_effect=inspect):
+            result, _calls = self.generate()
+        self.handlers.jobs.complete(
+            job.id,
+            "partial-applied-generation",
+            result,
+            lease_generation=claimed.lease_generation,
+        )
+        self.assertEqual(1, result["repaired_blocks"])
+        self.assertFalse(result["repair_completed"])
+        self.assertEqual(1, result["repair_checked_blocks"])
+        applied_revision = result["repaired_plan_revision_id"]
+        applied_run = result["repaired_generation_run_id"]
+        self.assertNotEqual(self.revision_id, applied_revision)
+        self.assertEqual(applied_revision, self.active())
+        with self.database.session() as session:
+            original = list(
+                session.scalars(
+                    select(AudioTake).where(
+                        AudioTake.generation_run_id == self.run_id
+                    )
+                )
+            )
+            self.assertEqual(3, len(original))
+            self.assertTrue(all(take.is_active for take in original))
+            child = session.get(GenerationRun, applied_run)
+            self.assertEqual("completed", child.status)
+        from pandrator.web.generation_history_reads import GenerationHistoryReader
+
+        listed = next(
+            item
+            for item in GenerationHistoryReader(self.database).list_runs(
+                self.record.id
+            )
+            if item["id"] == self.run_id
+        )
+        self.assertEqual("partial", listed["timing_repair"]["status"])
+        self.assertFalse(listed["timing_repair"]["pass_completed"])
+        service = GenerationService(
+            self.database, self.handlers.jobs, WorkspaceSettingsService(self.database)
+        )
+        with self.assertRaisesRegex(ValueError, "active speech plan"):
+            service.request_timing_repair(self.run_id)
+        with self.assertRaisesRegex(ValueError, "at most once"):
+            service.request_timing_repair(applied_run)
+        with self.database.session() as session:
+            self.assertEqual(
+                0,
+                session.scalar(
+                    select(func.count())
+                    .select_from(Job)
+                    .where(
+                        Job.session_id == self.record.id,
+                        Job.kind == "generation.repair-existing",
+                    )
+                ),
+            )
+
     def test_passage_repair_rebinds_one_before_one_after_semantic_context(self):
         from pandrator.web.generation_performance_snapshot import (
             frozen_semantic_contexts,
@@ -576,7 +712,9 @@ class VoiceoverRepairTests(unittest.TestCase):
             nonlocal closing_calls
             if text == "The unchanged closing sentence.":
                 closing_calls += 1
-                duration = 1000 if closing_calls == 1 else 13000
+                # Even one extra millisecond is rejected: the pass does not
+                # attempt to prove that cue slack would absorb the growth.
+                duration = 1000 if closing_calls == 1 else 1001
             else:
                 duration = (
                     2000

@@ -1,4 +1,5 @@
 import inspect
+import json
 import re
 import subprocess
 import sys
@@ -186,6 +187,46 @@ class BackendArchitectureTests(unittest.TestCase):
                     (normalized_path, method.lower()),
                     runtime_operations,
                 )
+
+    def test_timing_repair_operation_matches_the_runtime_mutation_contract(self):
+        root = Path(__file__).resolve().parents[1]
+        document = json.loads((root / "openapi.json").read_text(encoding="utf-8"))
+        operation = document["paths"][
+            "/api/v1/generation-runs/{runId}/repair-timing"
+        ]["post"]
+        self.assertEqual("repairGenerationTiming", operation["operationId"])
+        self.assertEqual(["app.read", "app.run"], operation["x-required-scopes"])
+        self.assertIn(
+            {"nativeOAuth": ["app.read", "app.run"]}, operation["security"]
+        )
+        parameters = {item["name"]: item for item in operation["parameters"]}
+        self.assertEqual(
+            ("path", True),
+            (parameters["runId"]["in"], parameters["runId"]["required"]),
+        )
+        self.assertFalse(parameters["Idempotency-Key"]["required"])
+        body = operation["requestBody"]
+        self.assertFalse(body["required"])
+        schema = body["content"]["application/json"]["schema"]
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(0, schema["maxProperties"])
+        for status in ("200", "202"):
+            reference = operation["responses"][status]["content"][
+                "application/json"
+            ]["schema"]["$ref"]
+            self.assertEqual(
+                "#/components/schemas/GenerationTimingRepairReceipt", reference
+            )
+        receipt = document["components"]["schemas"]["GenerationTimingRepairReceipt"]
+        self.assertEqual(
+            ["job_id", "generation_run_id", "session_id", "status", "reused_job"],
+            receipt["required"],
+        )
+        client = (root / "web/src/lib/api.generated.ts").read_text(encoding="utf-8")
+        self.assertIn(
+            '"/api/v1/generation-runs/{runId}/repair-timing": {', client
+        )
+        self.assertIn("repairGenerationTiming", client)
 
     def test_generation_start_facade_forwards_arguments_and_recaptures_all_ports(self):
         from dataclasses import FrozenInstanceError, fields

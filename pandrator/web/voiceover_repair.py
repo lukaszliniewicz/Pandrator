@@ -420,6 +420,8 @@ def repair_early_blocks(
     with tempfile.TemporaryDirectory(prefix="voiceover-repair-") as directory:
         work = Path(directory)
         checked = 0
+        inspection_failed = False
+        pass_completed = False
         for index, group in enumerate(groups):
             if stop.is_set():
                 rejection_reasons["generation_stopped"] += 1
@@ -444,6 +446,7 @@ def repair_early_blocks(
                     exc_info=True,
                 )
                 rejection_reasons["timing_inspection_failed"] += 1
+                inspection_failed = True
                 break
             checked += 1
             segment = group.segments[0]
@@ -705,6 +708,12 @@ def repair_early_blocks(
                 # Shorter audio cannot worsen its original timing slot;
                 # reject the entire optional repair if any such neighbour
                 # grows, rather than adopt an unverified downstream delay.
+                # Raw take duration is deliberately used as a fail-closed
+                # bound: the neighbour's true allowed slack depends on its
+                # incoming cursor, the whole group's take totals and any tempo
+                # adjustment.  Measuring that would require another forward
+                # placement pass per neighbour, so any growth stays rejected
+                # even if the cue window might absorb it.
                 # This conservative comparison preserves the original
                 # complete run and all selected takes on rejection.
                 if refreshed_context_parents:
@@ -853,6 +862,8 @@ def repair_early_blocks(
                         _record_repair_outcome(
                             session, staged_revision_id, repair_status, repair_reason
                         )
+        else:
+            pass_completed = not stop.is_set()
     return {
         "repair_checked_blocks": checked,
         "repair_candidate_blocks": repair_candidates,
@@ -861,4 +872,10 @@ def repair_early_blocks(
         "repaired_blocks": repaired,
         "repaired_generation_run_id": current_run_id,
         "repaired_plan_revision_id": current_revision_id,
+        # A stopped or interrupted inspection is not evidence that the run has
+        # nothing left to repair. Only a pass that reached every source block
+        # may be reused as a completed result by the API.
+        "repair_completed": pass_completed,
+        "repair_inspection_failed": inspection_failed,
+        "repair_planned_blocks": len(groups),
     }

@@ -3817,6 +3817,42 @@
         "title": "GenerationSummary",
         "type": "object"
       },
+      "GenerationTimingRepairReceipt": {
+        "properties": {
+          "generation_run_id": {
+            "description": "Completed source generation run the repair was requested for.",
+            "type": "string"
+          },
+          "job_id": {
+            "description": "Durable generation.repair-existing job identifier.",
+            "type": "string"
+          },
+          "reused_job": {
+            "description": "True when an eligible existing job was returned instead of queueing a new pass.",
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "description": "Job status captured when this receipt was created. The receipt is a frozen snapshot, not live progress: an Idempotency-Key replay returns the retained value even after the job finished. Re-read the generation run or job resource for current state.",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "generation_run_id",
+          "session_id",
+          "status",
+          "reused_job"
+        ],
+        "type": "object"
+      },
       "GenerationTopologyEdit": {
         "additionalProperties": false,
         "properties": {
@@ -19887,6 +19923,126 @@
             "description": "Safe pause requested"
           }
         }
+      }
+    },
+    "/api/v1/generation-runs/{runId}/repair-timing": {
+      "post": {
+        "description": "Queue one durable generation.repair-existing job for a completed voiceover on its active speech plan. The frozen settings must enable early-finish repair; audio-version and automatic second-pass children are refused. Send no body parameters; an empty JSON object is equivalent to no body. A new job returns 202, while an eligible existing job returns 200 with reused_job=true. Reusing the same Idempotency-Key replays the retained receipt.",
+        "operationId": "repairGenerationTiming",
+        "parameters": [
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "maxProperties": 0,
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationTimingRepairReceipt"
+                }
+              }
+            },
+            "description": "Existing eligible timing repair job reused. The receipt is a frozen snapshot of the admitting call; read the job or run for live status.",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "True when replaying the retained response for this request key.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationTimingRepairReceipt"
+                }
+              }
+            },
+            "description": "Timing repair job queued",
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "True when replaying the retained response for this request key.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An automation principal omitted Idempotency-Key"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or current project RUN permission"
+          },
+          "404": {
+            "description": "Generation run not found"
+          },
+          "409": {
+            "description": "Generation is ineligible, a previous repair is still stopping, or the retry identity conflicts"
+          },
+          "422": {
+            "description": "Body parameters were supplied; timing repair accepts an empty body only"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read",
+              "app.run"
+            ]
+          }
+        ],
+        "summary": "Admit a timing-only repair for a completed voiceover",
+        "x-required-scopes": [
+          "app.read",
+          "app.run"
+        ]
       }
     },
     "/api/v1/generation-runs/{runId}/resume": {

@@ -1689,8 +1689,21 @@ export type GenerationRun = {
     result_sequence_number: number;
     applied_count: number;
     attempt_count: number;
+    checked_count?: number;
+    candidate_count?: number;
+    attempted_count?: number;
+    pass_completed?: boolean | null;
+    no_effect?: boolean | null;
     usage?: UsageSummary;
-    status: string;
+    status:
+      | 'running'
+      | 'completed'
+      | 'partial'
+      | 'failed'
+      | 'stopped'
+      | 'skipped'
+      | 'no_effect'
+      | 'rejected';
     kind?: string | null;
     reason?: string | null;
     no_eligible_groups?: boolean | null;

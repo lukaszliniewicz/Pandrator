@@ -426,10 +426,12 @@ def _check_payload(session: Session, payload: Mapping[str, Any], header: _JobHea
         elif header.kind == "generation.repair-existing":
             # The repair job has authority only for its own freshly staged
             # descendants, not arbitrary generation runs in the session.
+            repair_session_id = header.session_id
             if (
                 set(stored) != {"generation_run_id", "session_id"}
                 or not _identifier(stored.get("generation_run_id"))
-                or stored.get("session_id") != header.session_id
+                or not _identifier(repair_session_id)
+                or stored.get("session_id") != repair_session_id
                 or set(supplied) != {"generation_run_id", "operation", "segment_ids"}
                 or supplied.get("operation") != "resume"
                 or type(supplied.get("segment_ids")) is not list
@@ -464,7 +466,7 @@ def _check_payload(session: Session, payload: Mapping[str, Any], header: _JobHea
                 child.id,
                 root.id,
                 job_id=header.id,
-                session_id=header.session_id,
+                session_id=repair_session_id,
             )
         elif (
             type(stored.get("session_id")) is not str

@@ -1234,7 +1234,7 @@ def _run_generation(
         output_run_id=output_run_id,
         plan_revision_id=plan_revision_id,
         operation=operation,
-        repair_requested=repair_requested,
+        repair_requested=repair_requested or regroup_requested,
     )
     progress(
         1.0,

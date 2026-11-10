@@ -191,8 +191,10 @@ preceding and one following block (`performance_context_before=2`,
 of each, and repair uses those frozen values rather than re-deriving them.
 When a split is staged,
 Pandrator freezes a fresh context window for each new child and regenerates
-neighbouring takes whose semantic windows changed. It rejects the optional
-repair if a refreshed neighbour becomes longer and could worsen timing.
+neighbouring takes whose semantic windows changed in either direction. A
+refreshed neighbour that is longer than the take it replaces rejects that block's
+repair; raw take duration is compared with no tolerance, so even a small growth is
+refused rather than assuming cue slack. Other blocks can still be repaired.
 The original takes and plan remain available. Automatic regroup is still
 disabled with semantic context, and performance/casting-bound plans require
 explicit review and regeneration because their directions are bound to IDs.

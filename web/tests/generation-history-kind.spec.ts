@@ -258,6 +258,58 @@ test('regroup stopped keeps last accepted audio wording', () => {
   );
 });
 
+test('partial regroup names the regroup, not a repair stop', () => {
+  const run = baseRun({
+    second_pass: 'regroup',
+    timing_repair: {
+      result_generation_run_id: 'g1',
+      result_plan_revision_id: 'plan-g1',
+      result_sequence_number: 2,
+      applied_count: 1,
+      attempt_count: 2,
+      status: 'partial',
+      pass_completed: false,
+      kind: 'regroup',
+      versions: [
+        version('g1', 'applied', null, { reason: 'passage_regroup' }),
+        version('g2', 'pending', null, { reason: 'passage_regroup' })
+      ]
+    }
+  });
+  expect(secondPassKind(run)).toBe('regroup');
+  expect(historyHeading(run)).toBe('Regroup stopped early');
+  expect(historyHelper(run)).toContain(
+    'Regroup stopped before every group was checked'
+  );
+  expect(historyHelper(run)).not.toContain('Repair stopped');
+});
+
+test('rejected regroup says merges were rejected, not zero merged', () => {
+  const run = baseRun({
+    second_pass: 'regroup',
+    timing_repair: {
+      result_generation_run_id: 'root',
+      result_plan_revision_id: 'plan-1',
+      result_sequence_number: 1,
+      applied_count: 0,
+      attempt_count: 2,
+      status: 'rejected',
+      kind: 'regroup',
+      versions: [
+        version('g1', 'not_applied', 'duration_misfit', {
+          reason: 'passage_regroup'
+        }),
+        version('g2', 'not_applied', 'duration_misfit', {
+          reason: 'passage_regroup'
+        })
+      ]
+    }
+  });
+  expect(historyHeading(run)).toBe('All merges rejected');
+  expect(historyHeading(run)).not.toBe('0 groups merged');
+  expect(historyHelper(run)).toContain('every merge attempt was rejected');
+});
+
 test('pending attempts are not counted as rejected', () => {
   const run = baseRun({
     second_pass: 'regroup',
@@ -423,6 +475,84 @@ test('zero attempts: eligible-groups wording only with evidence', () => {
   expect(historyHeading(withoutEvidence)).toBe('No groups regenerated');
 });
 
+test('partial with zero versions says the check was incomplete, not no split', () => {
+  const run = baseRun({
+    second_pass: 'repair',
+    timing_repair: {
+      result_generation_run_id: 'root',
+      result_plan_revision_id: 'plan-1',
+      result_sequence_number: 1,
+      applied_count: 0,
+      attempt_count: 0,
+      checked_count: 2,
+      pass_completed: false,
+      status: 'partial',
+      kind: 'repair',
+      versions: []
+    }
+  });
+  expect(historyHeading(run)).toBe('Timing check incomplete');
+  expect(historyHeading(run)).not.toBe('No split was needed');
+  expect(historyHelper(run)).toContain(
+    'stopped before every block was checked'
+  );
+});
+
+test('rejected attempts do not read as no split needed', () => {
+  const run = baseRun({
+    second_pass: 'repair',
+    timing_repair: {
+      result_generation_run_id: 'root',
+      result_plan_revision_id: 'plan-1',
+      result_sequence_number: 1,
+      applied_count: 0,
+      attempt_count: 2,
+      checked_count: 5,
+      candidate_count: 2,
+      attempted_count: 2,
+      pass_completed: true,
+      no_effect: false,
+      status: 'rejected',
+      kind: 'repair',
+      versions: [
+        version('r1', 'not_applied', 'added_delay', {
+          reason: 'early_timing_repair'
+        }),
+        version('r2', 'not_applied', 'missed_repair_anchor', {
+          reason: 'early_timing_repair'
+        })
+      ]
+    }
+  });
+  expect(secondPassKind(run)).toBe('repair');
+  expect(historyHeading(run)).toBe('All splits rejected');
+  expect(historyHeading(run)).not.toBe('No split was needed');
+  expect(historyHelper(run)).toContain('every split attempt was rejected');
+});
+
+test('a completed check with no candidates still says no split needed', () => {
+  const run = baseRun({
+    second_pass: 'repair',
+    timing_repair: {
+      result_generation_run_id: 'root',
+      result_plan_revision_id: 'plan-1',
+      result_sequence_number: 1,
+      applied_count: 0,
+      attempt_count: 0,
+      checked_count: 4,
+      candidate_count: 0,
+      attempted_count: 0,
+      pass_completed: true,
+      no_effect: true,
+      status: 'no_effect',
+      kind: 'repair',
+      versions: []
+    }
+  });
+  expect(historyHeading(run)).toBe('No split was needed');
+  expect(historyHelper(run)).toContain('no split was applied');
+});
+
 test('explicit per-version operation reasons decide kind (serializer contract)', () => {
   const regroup = baseRun({
     timing_repair: {
@@ -525,4 +655,67 @@ test('unverified semantic context is displayed as a skipped check', () => {
   });
   expect(historyHelper(run)).toContain('could not be verified');
   expect(historyHelper(run)).toContain('original audio is retained');
+});
+
+test('skipped regroup names regroup and its recorded reason', () => {
+  const run = baseRun({
+    second_pass: 'regroup',
+    timing_repair: {
+      result_generation_run_id: 'root',
+      result_plan_revision_id: 'plan-1',
+      result_sequence_number: 1,
+      applied_count: 0,
+      attempt_count: 0,
+      kind: 'regroup',
+      status: 'skipped',
+      reason: 'active_plan_changed',
+      versions: []
+    }
+  });
+  expect(historyHeading(run)).toBe('Regroup skipped');
+  expect(historyHelper(run)).toContain('active speech plan changed');
+  expect(historyHelper(run)).toContain('original audio is retained');
+  expect(historyHelper(run)).not.toContain('Timing repair was skipped');
+});
+
+test('skipped regroup without a known reason stays regroup-specific', () => {
+  const run = baseRun({
+    second_pass: 'regroup',
+    timing_repair: {
+      result_generation_run_id: 'root',
+      result_plan_revision_id: 'plan-1',
+      result_sequence_number: 1,
+      applied_count: 0,
+      attempt_count: 0,
+      kind: 'regroup',
+      status: 'skipped',
+      versions: []
+    }
+  });
+  expect(historyHeading(run)).toBe('Regroup skipped');
+  expect(historyHelper(run)).toContain('before any group was checked');
+  expect(historyHelper(run)).not.toContain('Timing repair was skipped');
+});
+
+test('interrupted regroup after one group reads as partial, not rejected', () => {
+  const run = baseRun({
+    second_pass: 'regroup',
+    timing_repair: {
+      result_generation_run_id: 'g1',
+      result_plan_revision_id: 'plan-g1',
+      result_sequence_number: 2,
+      applied_count: 1,
+      attempt_count: 1,
+      status: 'partial',
+      pass_completed: false,
+      kind: 'regroup',
+      versions: [version('g1', 'applied', null, { reason: 'passage_regroup' })]
+    }
+  });
+  expect(historyHeading(run)).toBe('Regroup stopped early');
+  expect(historyHeading(run)).not.toBe('0 groups merged');
+  expect(historyHeading(run)).not.toBe('All merges rejected');
+  expect(historyHelper(run)).toContain(
+    'stopped before every group was checked'
+  );
 });

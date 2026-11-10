@@ -40,10 +40,11 @@ Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.2 / Manager 0.9.31
 
 ## New in 0.14.2
 
-- **Find timing problems before export.** Subtitle and recording review flag overlapping cues, overlapping word times and backwards word times without changing text or timestamps.
-- **Check transcription files first.** A new **Local model files** panel checks the recognizer, speech detector, aligner and language detector separately. Administrators can reuse an existing VAD file.
-- **Keep captions intact.** Media-edit rendering preserves whole captions with incomplete word timing, refuses cuts that would split a caption, and checks subtitle text before publishing.
-- **Preview the edit you will export.** The 12-second mix preview follows the reviewed media-edit timeline, and exports require that exact render.
+- **Repair an early finish.** Optional early-finish repair now works for passage-first voiceovers and with semantic context, reusing unaffected takes and rejecting changes that add delay or lengthen a neighbour. One automatic pass runs; repair takes precedence over passage regroup.
+- **Find timing problems before export.** Subtitle review flags overlapping cue times; recording review also flags overlapping words and backwards word starts without changing text or timestamps.
+- **Check transcription files first.** A new **Local model files** panel reports the recognizer, speech detector and applicable aligner and language-detector files. Administrators can reuse an existing VAD file.
+- **Keep captions intact.** Media-edit rendering preserves whole captions with incomplete word timing, refuses cuts inside them, and checks subtitle text before publishing.
+- **Preview the edit you will export.** The **Preview 12 seconds** preview follows the reviewed media-edit timeline, and exports require that exact render.
 - **Refresh narration length automatically.** Generation resegments untouched automatic plans when the effective target changes; edited plans keep their boundaries. Breeze and VoxCPM2 targets are shorter.
 - **More reliable automation and long jobs.** Translation branch creation is atomic and idempotent, job logs are bounded and redacted, and completed assemblies survive later progress failures.
 

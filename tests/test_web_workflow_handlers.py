@@ -4519,11 +4519,13 @@ A single reviewed cue.
 
                     def cancel_postpass(
                         handler, sent_run_id, _progress, _event, *,
+                        stage_job_id=None,
                         run_id=run_id, observed=observed, owned_job=owned_job,
                         count_key=count_key,
                     ):
                         self.assertIs(self.handlers, handler)
                         self.assertEqual(run_id, sent_run_id)
+                        observed["stage_job_id"] = stage_job_id
                         observed["status"] = service.cancel(run_id)["status"]
                         with self.database.session() as db:
                             current = db.get(GenerationRun, run_id)
@@ -4549,6 +4551,7 @@ A single reviewed cue.
                             {"generation_run_id": run_id}, self.progress, threading.Event()
                         )
                     self.assertEqual(1, synthesize.call_count)
+                    self.assertIsNone(observed["stage_job_id"])
                     expected_status = "cancel_requested" if owned_job else "canceled"
                     self.assertEqual(expected_status, observed["status"])
                     self.assertEqual(expected_status, result["status"])
@@ -4570,6 +4573,21 @@ A single reviewed cue.
                         with self.database.session() as db:
                             self.assertEqual("canceled", db.get(GenerationRun, run_id).status)
                             self.assertFalse(db.get(GenerationRun, run_id).cancel_requested)
+
+    def test_repair_early_generation_blocks_forwards_stage_job_id(self):
+        cancel = threading.Event()
+        with mock.patch(
+            "pandrator.web.voiceover_repair.repair_early_blocks",
+            return_value={"repaired_blocks": 0},
+        ) as repair:
+            result = self.handlers._repair_early_generation_blocks(
+                "run-1", self.progress, cancel, stage_job_id="repair-job-1"
+            )
+        self.assertEqual({"repaired_blocks": 0}, result)
+        repair.assert_called_once_with(
+            self.handlers, "run-1", self.progress, cancel,
+            stage_job_id="repair-job-1",
+        )
 
     def test_generation_reporting_failure_preserves_committed_take_and_resume_checkpoint(self):
         revision_id, segment_ids = self.handlers._store_generation_plan(

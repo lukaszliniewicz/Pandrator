@@ -482,6 +482,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_generation_audio_identity.py",
         "tests/test_generation_missing_only.py",
         "tests/test_generation_run_history_projection.py",
+        "tests/test_generation_repair_existing_http.py",
         "tests/test_generation_search.py",
         "tests/test_passage_regroup.py",
         "tests/test_regroup_history_batches.py",

@@ -1,3 +1,3 @@
 # Next release
 
-No changes recorded since 0.14.2. See the [current release notes](release-notes-0.14.2.md).
+No unreleased changes are recorded. See the [0.14.2 release notes](release-notes-0.14.2.md).

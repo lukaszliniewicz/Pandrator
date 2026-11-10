@@ -200,6 +200,36 @@ def build_openapi_document() -> dict:
             "poll_after_ms": {"type": "integer", "minimum": 0},
         },
     }
+    schemas["GenerationTimingRepairReceipt"] = {
+        "type": "object",
+        "required": ["job_id", "generation_run_id", "session_id", "status", "reused_job"],
+        "properties": {
+            "job_id": {
+                "type": "string",
+                "description": "Durable generation.repair-existing job identifier.",
+            },
+            "generation_run_id": {
+                "type": "string",
+                "description": "Completed source generation run the repair was requested for.",
+            },
+            "session_id": {"type": "string"},
+            "status": {
+                "type": "string",
+                "enum": ["queued", "running", "succeeded"],
+                "description": (
+                    "Job status captured when this receipt was created. The "
+                    "receipt is a frozen snapshot, not live progress: an "
+                    "Idempotency-Key replay returns the retained value even "
+                    "after the job finished. Re-read the generation run or job "
+                    "resource for current state."
+                ),
+            },
+            "reused_job": {
+                "type": "boolean",
+                "description": "True when an eligible existing job was returned instead of queueing a new pass.",
+            },
+        },
+    }
     document = {
         "openapi": "3.1.0",
         "info": {"title": "Pandrator API", "version": "1.0.0"},
@@ -3551,6 +3581,95 @@ def build_openapi_document() -> dict:
                     "pauseGenerationRun", "Safe pause requested", status="202"
                 )
             },
+            "/api/v1/generation-runs/{runId}/repair-timing": {
+                "post": {
+                    "operationId": "repairGenerationTiming",
+                    "summary": "Admit a timing-only repair for a completed voiceover",
+                    "description": (
+                        "Queue one durable generation.repair-existing job for a "
+                        "completed voiceover on its active speech plan. The frozen "
+                        "settings must enable early-finish repair; audio-version and "
+                        "automatic second-pass children are refused. Send no body "
+                        "parameters; an empty JSON object is equivalent to no body. "
+                        "A new job returns 202, while an eligible existing job "
+                        "returns 200 with reused_job=true. Reusing the same "
+                        "Idempotency-Key replays the retained receipt."
+                    ),
+                    "x-required-scopes": ["app.read", "app.run"],
+                    "security": [
+                        {"cookieAuth": []},
+                        {"bearerToken": []},
+                        {"nativeOAuth": ["app.read", "app.run"]},
+                    ],
+                    "requestBody": {
+                        "required": False,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "maxProperties": 0,
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": (
+                                "Existing eligible timing repair job reused. The "
+                                "receipt is a frozen snapshot of the admitting "
+                                "call; read the job or run for live status."
+                            ),
+                            "headers": {
+                                "Idempotency-Replayed": {
+                                    "description": "True when replaying the retained response for this request key.",
+                                    "schema": {"type": "string", "enum": ["true"]},
+                                }
+                            },
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/GenerationTimingRepairReceipt"
+                                    }
+                                }
+                            },
+                        },
+                        "202": {
+                            "description": "Timing repair job queued",
+                            "headers": {
+                                "Idempotency-Replayed": {
+                                    "description": "True when replaying the retained response for this request key.",
+                                    "schema": {"type": "string", "enum": ["true"]},
+                                }
+                            },
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/GenerationTimingRepairReceipt"
+                                    }
+                                }
+                            },
+                        },
+                        "400": {
+                            "description": "An automation principal omitted Idempotency-Key"
+                        },
+                        "401": {"description": "Authentication required"},
+                        "403": {
+                            "description": "Insufficient scope or current project RUN permission"
+                        },
+                        "404": {"description": "Generation run not found"},
+                        "409": {
+                            "description": (
+                                "Generation is ineligible, a previous repair is still "
+                                "stopping, or the retry identity conflicts"
+                            )
+                        },
+                        "422": {
+                            "description": "Body parameters were supplied; timing repair accepts an empty body only"
+                        },
+                    },
+                }
+            },
             "/api/v1/generation-runs/{runId}/resume": {
                 "post": operation(
                     "resumeGenerationRun", "Generation resumed", status="202"
@@ -3682,6 +3801,7 @@ def build_openapi_document() -> dict:
         ("/api/v1/sessions/{sessionId}/generation-segments", "patch"),
         ("/api/v1/generation-segments/{segmentId}/takes/{takeId}/select", "post"),
         ("/api/v1/sessions/{sessionId}/generation-runs", "post"),
+        ("/api/v1/generation-runs/{runId}/repair-timing", "post"),
         ("/api/v1/sessions/{sessionId}/output-assemblies", "post"),
         ("/api/v1/sessions/{sessionId}/media-edit", "put"),
         ("/api/v1/sessions/{sessionId}/media-edit/prepare", "post"),

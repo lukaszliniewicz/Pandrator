@@ -2114,6 +2114,15 @@ class GenerationService(GenerationHistoryReader):
                 "Timing repair requires a completed voiceover on its active speech plan."
             )
         snapshot = dict(run.settings_snapshot_json or {})
+        if snapshot.get("early_repair_parent_run_id") or snapshot.get(
+            "regroup_parent_run_id"
+        ):
+            # The optional second pass is intentionally single-pass. A staged
+            # child must not start another automatic repair/regroup cycle.
+            raise ValueError(
+                "This generation is already an automatic second-pass result; "
+                "timing repair runs at most once."
+            )
         if select_second_pass(
             snapshot,
             operation=str(run.operation or ""),
@@ -2161,6 +2170,27 @@ class GenerationService(GenerationHistoryReader):
             ):
                 # A completed pass with zero inspected blocks is a fail-closed
                 # skip, not proof that this run has nothing to repair.
+                continue
+            rejections = result.get("repair_rejection_reasons")
+            rejection_keys = (
+                set(rejections) if isinstance(rejections, dict) else set()
+            )
+            if previous.status == "succeeded" and (
+                result.get("repair_completed") is False
+                or bool(result.get("repair_inspection_failed"))
+                or bool(
+                    rejection_keys & {"timing_inspection_failed", "generation_stopped"}
+                )
+            ):
+                # A stop or a failed timing inspection can leave some blocks
+                # checked without proving the rest are unaffected, so this
+                # receipt is not a completed pass. Older receipts predate
+                # repair_completed and are recognised by the stop reason.
+                # If an earlier repair was already applied, the active-plan
+                # validation above rejects a retry against the stale root and
+                # the applied child is terminal for this single-pass flow, so
+                # no duplicate repair is queued. If nothing was applied, this
+                # root is still current and a fresh job is safe.
                 continue
             return {
                 "job_id": previous.id,

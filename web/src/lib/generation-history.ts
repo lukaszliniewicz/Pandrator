@@ -94,6 +94,29 @@ function plural(count: number, singular: string, pluralForm?: string) {
   return count === 1 ? singular : (pluralForm ?? `${singular}s`);
 }
 
+// Regroup skips happen before any group is checked. Explain the recorded
+// reason instead of reusing the timing-repair skip wording.
+function regroupSkipExplanation(value?: string | null) {
+  return (
+    {
+      active_plan_changed:
+        'Regroup was skipped because the active speech plan changed.',
+      invalid_regroup_settings:
+        'Regroup was skipped because the saved regroup settings were invalid.',
+      not_passage_mode:
+        'Regroup was skipped because the run did not use passage-first planning.',
+      first_pass_evidence_missing:
+        'Regroup was skipped because the first-pass takes could not be verified.',
+      edited_source_cuts_unknown:
+        'Regroup was skipped because the edited source cut mapping was unavailable.',
+      no_source_run:
+        'Regroup was skipped because the source generation run was unavailable.',
+      missing_source_semantic_context:
+        'Regroup was skipped because the original speech context could not be verified.'
+    }[value ?? ''] ?? ''
+  );
+}
+
 export function historyHeading(run: GenerationRun): string {
   const repair = run.timing_repair;
   if (!repair) return '';
@@ -103,6 +126,33 @@ export function historyHeading(run: GenerationRun): string {
     if (kind === 'regroup') return 'Combining passages';
     if (kind === 'repair') return 'Repairing timing';
     return 'Running second pass';
+  }
+  if (repair.status === 'partial') {
+    if (repair.pass_completed === false) {
+      if (kind === 'regroup') return 'Regroup stopped early';
+      if (kind === 'repair') return 'Timing check incomplete';
+      return 'Second pass incomplete';
+    }
+    if (attempted) {
+      const unit = kind === 'regroup' ? 'group' : 'block';
+      return `${applied} of ${attempted} ${plural(attempted, unit)} applied`;
+    }
+    return 'Second pass incomplete';
+  }
+  if (repair.status === 'rejected') {
+    if (kind === 'regroup') return 'All merges rejected';
+    if (kind === 'repair') return 'All splits rejected';
+    return 'All second-pass attempts rejected';
+  }
+  if (repair.status === 'no_effect') {
+    if (kind === 'regroup') return 'No passages merged';
+    if (kind === 'repair') return 'No split was needed';
+    return 'No second-pass changes';
+  }
+  if (repair.status === 'skipped') {
+    if (kind === 'regroup') return 'Regroup skipped';
+    if (kind === 'repair') return 'Timing check skipped';
+    return 'Second pass skipped';
   }
   if (!attempted) {
     // 'No eligible groups' only with explicit evidence; otherwise neutral.
@@ -125,6 +175,12 @@ export function historyHelper(run: GenerationRun): string {
   const kind = secondPassKind(run);
   const { attempted, applied, rejected } = historyCounts(repair);
   if (repair.status === 'skipped') {
+    if (kind === 'regroup') {
+      const why = regroupSkipExplanation(repair.reason);
+      return why
+        ? `${why} The original audio is retained.`
+        : 'Regroup was skipped before any group was checked. The original audio is retained.';
+    }
     if (repair.reason === 'missing_source_semantic_context')
       return 'Timing repair was skipped because the original speech context could not be verified. The original audio is retained.';
     return 'Timing repair was skipped. The original audio is retained.';
@@ -142,6 +198,33 @@ export function historyHelper(run: GenerationRun): string {
     if (kind === 'repair')
       return 'Timing repair stopped. The last accepted audio remains available.';
     return 'Second pass stopped. The last accepted audio remains available.';
+  }
+  if (repair.status === 'partial') {
+    if (repair.pass_completed === false) {
+      if (kind === 'regroup')
+        return 'Regroup stopped before every group was checked. Accepted changes are saved; the remaining audio is unchanged.';
+      return 'Repair stopped before every block was checked. Accepted changes are saved; the remaining audio is unchanged.';
+    }
+    if (!attempted)
+      return 'The second pass was incomplete. The original audio is retained.';
+    if (kind === 'regroup')
+      return `${applied} of ${attempted} ${plural(attempted, 'group')} accepted; rejected groups kept their original audio.`;
+    if (kind === 'repair')
+      return `${applied} of ${attempted} ${plural(attempted, 'split')} applied; rejected attempts kept the original audio.`;
+  }
+  if (repair.status === 'rejected') {
+    if (kind === 'regroup')
+      return 'Timing was checked; every merge attempt was rejected. The original audio is retained.';
+    if (kind === 'repair')
+      return 'Timing was checked; every split attempt was rejected. The original audio is retained.';
+    return 'The second pass was checked; every attempt was rejected. The original audio is retained.';
+  }
+  if (repair.status === 'no_effect') {
+    if (kind === 'regroup')
+      return 'Timing was checked; no passage was merged. The original audio is retained.';
+    if (kind === 'repair')
+      return 'Timing was checked; no split was applied. The original audio is retained.';
+    return 'The second pass was checked; no change was applied. The original audio is retained.';
   }
   if (!attempted) {
     if (kind === 'regroup' && repair.no_eligible_groups)

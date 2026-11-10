@@ -223,6 +223,41 @@ def test_timing_repair_skip_is_visible_and_retryable(design):
     assert reused["job_id"] == retried["job_id"]
 
 
+def test_timing_repair_legacy_stopped_receipt_is_retryable(design):
+    """Older stopped receipts lack repair_completed but are still retryable."""
+
+    p = _ready(design)
+    _install_completed_root_job(design, p)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    created = body(design.users.owner.post(url, json={}, headers=design.users.oh), 202)
+    claimed = _claim(design, created["job_id"])
+    design.services.jobs.complete(
+        claimed.id,
+        "repair-http-worker",
+        {
+            "repair_checked_blocks": 2,
+            "repaired_blocks": 0,
+            "repair_rejection_reasons": {"generation_stopped": 1},
+        },
+        lease_generation=claimed.lease_generation,
+    )
+
+    detail = body(
+        design.users.owner.get(f"/api/v1/generation-runs/{p.run_id}"), 200
+    )
+    repair = detail["timing_repair"]
+    assert repair["status"] == "partial"
+    # The legacy receipt never recorded repair_completed; it stays unknown
+    # rather than being invented as a completed pass.
+    assert repair["pass_completed"] is None
+
+    retried = body(
+        design.users.owner.post(url, json={}, headers=design.users.oh), 202
+    )
+    assert retried["reused_job"] is False
+    assert retried["job_id"] != created["job_id"]
+
+
 def test_timing_repair_cancel_closes_staged_child(design):
     p = _ready(design)
     url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
