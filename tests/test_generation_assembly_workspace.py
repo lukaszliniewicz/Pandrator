@@ -129,6 +129,34 @@ def test_assembly_membership_loss_before_publication_discards_only_own_staging(
     assert_unpublished(a)
 
 
+def test_assembly_membership_revoked_during_media_io_never_publishes_output(
+    assembly_case,
+    monkeypatch,
+):
+    a = assembly_case
+    original = a.g.handlers.assemble_generation_output
+    revoked = []
+    details = []
+
+    def render(payload, progress, cancel_event):
+        def watched(value, detail=None):
+            if value >= 0.5 and not revoked:
+                revoked.append(value)
+                details.append(detail or "")
+                revoke_member(a)
+            progress(value, detail)
+
+        return original(payload, watched, cancel_event)
+
+    monkeypatch.setattr(a.g.handlers, "assemble_generation_output", render)
+    assert a.g.worker.run_once()
+    assert revoked
+    # The assembler reports 0.75 * part_fraction, so the first value at or above
+    # 0.5 is emitted by its own part IO, not by a later durable boundary.
+    assert "segment 1 of 1" in details[0]
+    assert_unpublished(a)
+
+
 @pytest.mark.parametrize("rollback", [False, True])
 def test_assembly_collision_and_failed_publication_preserve_prior_output(
     assembly_case,

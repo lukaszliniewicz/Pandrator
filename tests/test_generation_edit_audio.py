@@ -371,7 +371,7 @@ def test_terminal_replacement_waits_for_resumed_sibling(
         assert worker.run_once()
     second = case._start(operation="regenerate", segment_ids=[selected_id],
                          speech_plan_revision_id=revision)
-    resumed_first = generation.resume(first["id"])
+    resumed_first = case._resume_run(first["id"])
     if explicit_pause:
         generation.request_pause(original["id"])
     if terminal == "failed":
@@ -609,7 +609,7 @@ def test_paused_replacement_retains_parent_resume_permission(case, edited_plan, 
     result, _ = execute(case, child, [selected_id])
     assert result["status"] == "paused"
 
-    resumed = generation.resume(child["id"])
+    resumed = case._resume_run(child["id"])
     with case.database.session() as session:
         payload = dict(session.get(Job, resumed["job_id"]).payload_json)
     assert payload["segment_ids"] == [selected_id]
@@ -640,7 +640,7 @@ def test_resuming_replacement_does_not_restore_revoked_parent_permission(case):
     assert execute(case, child, [selected_id])[0]["status"] == "paused"
     generation.request_pause(original["id"])
 
-    resumed = generation.resume(child["id"])
+    resumed = case._resume_run(child["id"])
     with case.database.session() as session:
         payload = dict(session.get(Job, resumed["job_id"]).payload_json)
     assert "auto_resume_source_generation_run_id" not in payload

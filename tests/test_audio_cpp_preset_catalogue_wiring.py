@@ -101,9 +101,24 @@ class AudioCppPresetCatalogueWiringTests(unittest.TestCase):
             )
             self.assertEqual(expected, AUDIO_CPP_MODEL_PRESETS[model])
         for family in ("kitten_tts2", "kugelaudio"):
+            family_voices = _voice_id_values(family)
             for model in models_by_family[family]:
                 self.assertIn(model, AUDIO_CPP_MODEL_PRESETS)
-                self.assertEqual(_voice_id_values(family), AUDIO_CPP_MODEL_PRESETS[model])
+                declared = next(
+                    (
+                        item.get("preset_voices")
+                        for item in AUDIO_CPP_MODEL_CATALOG
+                        if item["id"] == model
+                    ),
+                    None,
+                )
+                if declared is None:
+                    self.assertEqual(family_voices, AUDIO_CPP_MODEL_PRESETS[model])
+                else:
+                    # Package variants advertise their own shipped voice set,
+                    # which is a subset of the family catalogue.
+                    self.assertEqual(list(declared), AUDIO_CPP_MODEL_PRESETS[model])
+                    self.assertLessEqual(set(declared), set(family_voices))
         for model, family in model_families.items():
             if family == "qwen3_tts" and "customvoice" not in model:
                 self.assertNotIn(model, AUDIO_CPP_MODEL_PRESETS)

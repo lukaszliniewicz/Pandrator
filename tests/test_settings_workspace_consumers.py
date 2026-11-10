@@ -66,6 +66,21 @@ class SettingsCase:
                 record.revision = revision
 
 
+def test_resolve_noncanonical_section_names_uses_scoped_defaults(
+    settings_case: "SettingsCase",
+) -> None:
+    from pandrator.web.workspace_settings import WorkspaceSettingsService
+
+    case = settings_case
+    case.put("alpha", "defaults.subtitles", {"max_chars_per_line": 47})
+    case.put("alpha", "defaults.tts", {"language": "de"})
+    resolved, _ = WorkspaceSettingsService(case.database).resolve(
+        case.sessions["alpha"].id, ["Subtitles", " tts "]
+    )
+    assert resolved["Subtitles"]["max_chars_per_line"] == 47
+    assert resolved[" tts "]["language"] == "de"
+
+
 @pytest.fixture
 def settings_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SettingsCase]:
     monkeypatch.setattr(os, "environ", {})

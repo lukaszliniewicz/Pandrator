@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -49,6 +50,19 @@ def _get_services_value(services: Any, key: str) -> Any:
     if isinstance(services, Mapping):
         return services[key]
     return getattr(services, key)
+
+
+@dataclass(frozen=True, slots=True)
+class PlanReads:
+    """Plan and adopted-performance reads already guarded in this transaction."""
+
+    session_id: str
+    plan: m.GenerationPlan
+    revision: m.GenerationPlanRevision
+    segment: m.GenerationSegment
+    adopted: m.PerformancePlan | None
+    annotations: dict[str, Any]
+    signature: str
 
 
 def _plan_segment(
@@ -421,17 +435,39 @@ def preview_speech_segment_in_session(
     include_request: bool = False,
     _resolved_settings: dict[str, Any] | None = None,
     _controls: dict[str, Any] | None = None,
+    _plan_reads: PlanReads | None = None,
 ) -> dict[str, Any]:
     """Compile one segment within the caller's consistent database snapshot."""
 
     frozen = generation_run_id is not None
-    _plan, _revision, segment = _plan_segment(
-        session,
-        session_id,
-        revision_id,
-        segment_id,
-        frozen=frozen,
-    )
+    if _plan_reads is not None:
+        if (
+            frozen
+            or _plan_reads.session_id != session_id
+            or _plan_reads.plan.session_id != session_id
+            or _plan_reads.plan.active_revision_id != revision_id
+            or _plan_reads.revision.id != revision_id
+            or _plan_reads.revision.plan_id != _plan_reads.plan.id
+            or _plan_reads.segment.id != segment_id
+            or _plan_reads.segment.plan_revision_id != revision_id
+            or _plan_reads.segment.removed
+        ):
+            raise ValueError(
+                "Pre-read plan data cannot be reused for a different inspection."
+            )
+        _plan, _revision, segment = (
+            _plan_reads.plan,
+            _plan_reads.revision,
+            _plan_reads.segment,
+        )
+    else:
+        _plan, _revision, segment = _plan_segment(
+            session,
+            session_id,
+            revision_id,
+            segment_id,
+            frozen=frozen,
+        )
     snapshot: dict[str, Any] = {}
     run = None
     if generation_run_id is not None:
@@ -471,21 +507,35 @@ def preview_speech_segment_in_session(
         adopted_xml = None
         annotation_record = None
         if settings.get("performance_enabled") or settings.get("casting_enabled"):
-            adopted = session.scalar(
-                select(m.PerformancePlan).where(
-                    m.PerformancePlan.plan_revision_id == revision_id,
-                    m.PerformancePlan.status == "adopted",
-                )
-            )
-            if adopted is None:
-                if settings.get("performance_enabled"):
-                    raise ValueError(
-                        "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
+            if _plan_reads is not None:
+                adopted = _plan_reads.adopted
+                if adopted is None:
+                    if settings.get("performance_enabled"):
+                        raise ValueError(
+                            "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
+                        )
+                else:
+                    _assert_current(
+                        session, adopted, base_signature=_plan_reads.signature
                     )
+                    annotation_record = _plan_reads.annotations.get(segment_id)
+                    adopted_xml = record_markup(annotation_record)
             else:
-                _assert_current(session, adopted)
-                annotation_record = _annotations(session, adopted).get(segment_id)
-                adopted_xml = record_markup(annotation_record)
+                adopted = session.scalar(
+                    select(m.PerformancePlan).where(
+                        m.PerformancePlan.plan_revision_id == revision_id,
+                        m.PerformancePlan.status == "adopted",
+                    )
+                )
+                if adopted is None:
+                    if settings.get("performance_enabled"):
+                        raise ValueError(
+                            "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
+                        )
+                else:
+                    _assert_current(session, adopted)
+                    annotation_record = _annotations(session, adopted).get(segment_id)
+                    adopted_xml = record_markup(annotation_record)
             if settings.get("performance_enabled") and annotation_record is not None:
                 settings["_performance"] = record_annotation(annotation_record) or {}
         _segment_overrides(settings, segment)

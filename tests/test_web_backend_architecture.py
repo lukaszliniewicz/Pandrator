@@ -118,9 +118,9 @@ class BackendArchitectureTests(unittest.TestCase):
 
     def test_route_contract_is_partitioned_without_losing_rules(self):
         rules = list(self.app.url_map.iter_rules())
-        self.assertEqual(355, len(rules))
+        self.assertEqual(414, len(rules))
         self.assertEqual(
-            348,
+            407,
             sum(rule.rule.startswith("/api/") for rule in rules),
         )
         self.assertTrue({
@@ -316,6 +316,7 @@ class BackendArchitectureTests(unittest.TestCase):
             "_logger",
             "_repair_early_generation_blocks",
             "_regroup_generation_blocks",
+            "secret_redactor",
         )
         self.assertEqual(names, tuple(field.name for field in fields(GenerationExecutionContext)))
         global_names = {
@@ -326,6 +327,8 @@ class BackendArchitectureTests(unittest.TestCase):
             "_voiceover_second_pass": "_voiceover_second_pass",
             "_logger": "logger",
         }
+        # The facade reads the redactor from the job queue rather than the handler.
+        job_names = {"secret_redactor"}
         progress, cancel = lambda *_args: None, threading.Event()
         expected = {"result": []}
         contexts = []
@@ -333,11 +336,18 @@ class BackendArchitectureTests(unittest.TestCase):
         arguments = (payload, progress, cancel)
         for _invocation in range(2):
             ports = {name: object() for name in names}
-            instance_values = {name: value for name, value in ports.items() if name not in global_names}
+            instance_values = {
+                name: value
+                for name, value in ports.items()
+                if name not in global_names and name not in job_names
+            }
             helper_values = {global_names[name]: ports[name] for name in global_names}
+            queue_values = {name: ports[name] for name in job_names}
             with patch.multiple(handlers, **instance_values), patch.multiple(
                 workflow_handlers, **helper_values
-            ), patch.object(workflow_handlers, "_execution_run_generation") as owner:
+            ), patch.multiple(handlers.jobs, **queue_values), patch.object(
+                workflow_handlers, "_execution_run_generation"
+            ) as owner:
                 owner.return_value = expected
                 self.assertIs(expected, handlers._run_generation(*arguments))
                 self.assertEqual({}, owner.call_args.kwargs)
@@ -463,7 +473,7 @@ class BackendArchitectureTests(unittest.TestCase):
     def test_workflow_job_registry_has_domain_ownership_and_late_binding(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         registry = handlers.handler_registry
-        self.assertEqual(46, len(registry))
+        self.assertEqual(49, len(registry))
         self.assertIn("generation.admit", registry)
         self.assertIn("voice.google_design", registry)
         self.assertEqual(
@@ -474,6 +484,7 @@ class BackendArchitectureTests(unittest.TestCase):
                 "media_edit",
                 "source",
                 "sounds",
+                "system",
                 "text",
                 "transcription",
                 "voice",
@@ -1013,7 +1024,7 @@ class BackendArchitectureTests(unittest.TestCase):
             catalogue = registry.enrich_catalog(service)
 
         self.assertEqual(
-            1800,
+            350,
             catalogue["model_catalog"][0]["recommended_chunk_characters"],
         )
 
@@ -1025,7 +1036,7 @@ class BackendArchitectureTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(1800, catalogue[0]["recommended_chunk_characters"])
+        self.assertEqual(350, catalogue[0]["recommended_chunk_characters"])
 
 
 if __name__ == "__main__":

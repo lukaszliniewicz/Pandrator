@@ -2,21 +2,39 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Table, create_engine
+from flask import Flask, g
+from flask.testing import FlaskClient
+from sqlalchemy import Table, create_engine, func, select
 from sqlalchemy.exc import SQLAlchemyError
 
+from pandrator.web.access.contracts import AccessDenied
 from pandrator.web.accounts.auth_models import (
     BrowserAuthSession,
     PasswordResetGrant,
     UserCredential,
 )
+from pandrator.web.accounts.execution_actor import (
+    HostActor,
+    UserActor,
+    current_execution_actor,
+    execution_actor_scope,
+)
+from pandrator.web.api import create_app
+from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import sqlite_url
+from pandrator.web.http_lifecycle import ApiGuards
+from pandrator.web.models import Job, JobActorRecord, JobEvent
+from tests.web_test_support import prepare_web_test_data_root
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "pandrator" / "web" / "migrations"
@@ -738,3 +756,258 @@ def test_auth_constraints_reject_invalid_revision_and_partial_token_link(
                 (NOW, owner_id),
             )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@dataclass
+class AuthenticatedJobCase:
+    app: Flask
+    client: FlaskClient
+    services: dict[str, Any]
+    csrf: str
+    user_id: str
+    auth_revision: int
+    browser_session_id: str
+
+
+@pytest.fixture
+def authenticated_job_case(tmp_path: Path) -> Iterator[AuthenticatedJobCase]:
+    prepare_web_test_data_root(tmp_path)
+    bootstrap = BootstrapTokenStore()
+    launch = bootstrap.issue()
+    app = create_app(
+        data_root=tmp_path,
+        testing=True,
+        bootstrap_tokens=bootstrap,
+        background_maintenance=False,
+    )
+    services = app.extensions["pandrator"]
+    client = app.test_client()
+    try:
+        response = client.post("/api/v1/auth/bootstrap", json={"token": launch})
+        assert response.status_code == 200, response.get_json()
+        account = services["auth"].initial_account()
+        with services["database"].session() as db_session:
+            browser_session_id = db_session.scalar(select(BrowserAuthSession.id))
+        assert browser_session_id is not None
+        yield AuthenticatedJobCase(
+            app=app,
+            client=client,
+            services=services,
+            csrf=str(response.get_json()["csrf_token"]),
+            user_id=account.user_id,
+            auth_revision=account.auth_revision,
+            browser_session_id=str(browser_session_id),
+        )
+    finally:
+        services["quick_transcriptions"].stop_maintenance()
+        services["database"].dispose()
+
+
+def test_authenticated_http_job_records_the_request_actor(
+    authenticated_job_case: AuthenticatedJobCase,
+) -> None:
+    case = authenticated_job_case
+    response = case.client.post(
+        "/api/v1/jobs",
+        json={"kind": "noop"},
+        headers={"X-CSRF-Token": case.csrf},
+    )
+    assert response.status_code == 202, response.get_json()
+    job_id = response.get_json()["id"]
+    with case.services["database"].session() as db_session:
+        record = db_session.get(JobActorRecord, job_id)
+        assert record is not None
+        assert record.user_id == case.user_id
+        assert record.auth_revision == case.auth_revision
+        assert record.context_json["browser_session_id"] == case.browser_session_id
+    assert current_execution_actor.get() is None
+
+
+def test_authenticated_request_without_actor_fails_closed(
+    authenticated_job_case: AuthenticatedJobCase,
+) -> None:
+    case = authenticated_job_case
+    _record, raw_token = case.services["auth"].create_api_token("missing actor probe")
+    principal = case.services["auth"].resolve_api_token(
+        raw_token, network_zone="loopback", target_instance_id=None
+    )
+    assert principal is not None
+    database = case.services["database"]
+    queue = case.services["jobs"]
+    with case.app.test_request_context("/api/v1/jobs", method="POST"):
+        g.principal_resolved = True
+        g.principal = principal
+        assert current_execution_actor.get() is None
+        with pytest.raises(AccessDenied):
+            with database.session() as db_session:
+                queue.enqueue_in_session(db_session, "noop")
+    with database.session() as db_session:
+        assert db_session.scalar(select(func.count()).select_from(Job)) == 0
+        assert db_session.scalar(select(func.count()).select_from(JobActorRecord)) == 0
+        assert db_session.scalar(select(func.count()).select_from(JobEvent)) == 0
+
+
+def test_internal_enqueue_without_http_request_keeps_trusted_behavior(
+    authenticated_job_case: AuthenticatedJobCase,
+) -> None:
+    case = authenticated_job_case
+    database = case.services["database"]
+    queue = case.services["jobs"]
+    with execution_actor_scope(None):
+        unattributed = queue.enqueue("noop")
+    with execution_actor_scope(HostActor("pandrator-cli")):
+        host_job = queue.enqueue("noop")
+    with database.session() as db_session:
+        assert db_session.get(Job, unattributed.id) is not None
+        assert db_session.get(JobActorRecord, unattributed.id) is None
+        host_record = db_session.get(JobActorRecord, host_job.id)
+        assert host_record is not None
+        assert host_record.user_id is None
+        assert host_record.context_json["source"] == "host"
+
+
+def test_direct_principal_binding_is_scoped_to_the_request_context(
+    authenticated_job_case: AuthenticatedJobCase,
+) -> None:
+    case = authenticated_job_case
+    services = case.services["services"]
+    _record, raw_token = case.services["auth"].create_api_token("context binding probe")
+    guards = ApiGuards(case.app, services, testing=True, script_policy="'self'")
+    outer = HostActor("pandrator-cli")
+    with execution_actor_scope(outer):
+        with case.app.test_request_context(
+            "/api/v1/jobs",
+            method="GET",
+            headers={"Authorization": f"Bearer {raw_token}"},
+        ):
+            assert guards.principal() is not None
+            bound = current_execution_actor.get()
+            assert isinstance(bound, UserActor)
+            assert bound.user_id == case.user_id
+        assert current_execution_actor.get() == outer
+        with case.app.test_request_context("/api/v1/jobs", method="GET"):
+            assert guards.principal() is None
+            assert current_execution_actor.get() == outer
+    assert current_execution_actor.get() is None
+
+
+def _session_actor(user_id: str, session_id: str) -> UserActor:
+    return UserActor(
+        user_id=user_id,
+        auth_revision=1,
+        subject=f"user:{user_id}",
+        principal_kind="owner_session",
+        scopes=frozenset({"app.read", "app.run", "app.write", "app.cancel"}),
+        token_id=None,
+        browser_session_id=session_id,
+    )
+
+
+def test_nested_request_contexts_restore_actor_bindings_in_lifo_order(
+    tmp_path: Path,
+) -> None:
+    app = Flask("actor-stack-regression")
+    app.secret_key = "actor-stack-regression"
+    guards = ApiGuards(
+        app,
+        SimpleNamespace(paths=SimpleNamespace(root=tmp_path)),
+        testing=True,
+        script_policy="'self'",
+    )
+    guards.register()
+    outer_actor = _session_actor("outer-user", "outer-session")
+    inner_actor = _session_actor("inner-user", "inner-session")
+    neutral = HostActor("pandrator-cli")
+    with execution_actor_scope(neutral):
+        with app.test_request_context("/api/v1/jobs"):
+            guards._bind_execution_actor(outer_actor)
+            assert current_execution_actor.get() == outer_actor
+            with app.test_request_context("/api/v1/jobs"):
+                guards._bind_execution_actor(inner_actor)
+                assert current_execution_actor.get() == inner_actor
+            # Same-app request contexts share ``g``; the inner teardown must
+            # restore only its own binding, not consume the outer token.
+            assert current_execution_actor.get() == outer_actor
+        assert current_execution_actor.get() == neutral
+    assert current_execution_actor.get() is None
+
+
+def test_nested_dispatched_request_preserves_outer_actor_and_job_provenance(
+    authenticated_job_case: AuthenticatedJobCase,
+) -> None:
+    case = authenticated_job_case
+    services = case.services["services"]
+    database = case.services["database"]
+    queue = case.services["jobs"]
+    _record, raw_token = case.services["auth"].create_api_token("nested dispatch probe")
+    guards = ApiGuards(case.app, services, testing=True, script_policy="'self'")
+    with case.app.test_request_context(
+        "/api/v1/jobs",
+        method="GET",
+        headers={"Authorization": f"Bearer {raw_token}"},
+    ):
+        case.app.preprocess_request()
+        outer_principal = guards.principal()
+        assert outer_principal is not None
+        outer_actor = current_execution_actor.get()
+        assert isinstance(outer_actor, UserActor)
+        assert outer_actor.user_id == case.user_id
+
+        # The nested request reuses this app context (and ``g``), so its
+        # teardown used to clear the outer actor and principal.
+        response = case.app.test_client().get("/api/v1/health")
+        assert response.status_code == 200
+        assert current_execution_actor.get() == outer_actor
+        assert g.principal is outer_principal
+
+        with database.session() as db_session:
+            job = queue.enqueue_in_session(db_session, "noop")
+        job_id = job.id
+    assert current_execution_actor.get() is None
+    with database.session() as db_session:
+        record = db_session.get(JobActorRecord, job_id)
+        assert record is not None
+        assert record.user_id == case.user_id
+        assert record.auth_revision == case.auth_revision
+
+
+def test_teardown_exception_still_resets_request_actor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    @contextmanager
+    def failing_acquisition(_database):
+        yield
+        raise RuntimeError("acquisition teardown failed")
+
+    monkeypatch.setattr(
+        "pandrator.web.http_lifecycle.model_acquisition_for_actor",
+        failing_acquisition,
+    )
+    app = Flask("actor-teardown-regression")
+    app.secret_key = "actor-teardown-regression"
+    guards = ApiGuards(
+        app,
+        SimpleNamespace(
+            paths=SimpleNamespace(root=tmp_path),
+            database=None,
+            redactor=SimpleNamespace(
+                redact=lambda value: str(value),
+                redact_value=lambda value: value,
+            ),
+        ),
+        testing=True,
+        script_policy="'self'",
+    )
+    guards.register()
+    actor = _session_actor("request-user", "request-session")
+
+    @app.get("/actor-probe")
+    def actor_probe():
+        guards._bind_execution_actor(actor)
+        assert current_execution_actor.get() == actor
+        return "ok"
+
+    with execution_actor_scope(None):
+        with pytest.raises(RuntimeError, match="acquisition teardown failed"):
+            app.test_client().get("/actor-probe")
+        assert current_execution_actor.get() is None

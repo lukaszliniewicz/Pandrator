@@ -9,6 +9,7 @@ from pandrator.web import models as m
 from pandrator.web.assembly_silences import render_part_silences
 from pandrator.web.generation_review import PROJECTABLE_SEGMENT_FIELDS
 from pandrator.web.global_settings import GlobalSettingsService
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator_mcp.schemas.generation_fields import GenerationSegmentField
 from pandrator_mcp.tools.generation import _segment_projection
 
@@ -235,7 +236,12 @@ def test_page_terminal_pause_uses_next_voice_floor_and_is_not_suppressed(case):
         ]
     }
     with case["services"]["database"].session() as session:
+        ownership = resolve_artifact_ownership(
+            session, session_id=case["session_id"]
+        )
         artifact = m.Artifact(
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             session_id=case["session_id"],
             kind="audio",
             role="generation_take",
@@ -323,7 +329,12 @@ def test_marked_take_silences_are_safe_and_legacy_parts_add_no_silence(case):
 
     for index, parts in enumerate((marked_parts, legacy_parts)):
         with case["services"]["database"].session() as session:
+            ownership = resolve_artifact_ownership(
+                session, session_id=case["session_id"]
+            )
             artifact = m.Artifact(
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
                 session_id=case["session_id"],
                 kind="audio",
                 role="generation_take",

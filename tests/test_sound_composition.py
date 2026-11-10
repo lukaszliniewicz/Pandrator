@@ -265,6 +265,13 @@ def test_fresh_and_0054_to_head_migrations_pass_sqlite_foreign_key_check(case, t
         )
         assert fresh.execute("PRAGMA foreign_key_check").fetchall() == []
 
+    # Downgrading a populated attribution store is deliberately refused so
+    # actor records cannot be discarded. This disposable copy only exercises
+    # schema mechanics, so clear the sidecars before travelling back to 0054.
+    with sqlite3.connect(database_path) as populated:
+        populated.execute("DELETE FROM job_actors")
+        populated.execute("DELETE FROM audit_actors")
+
     command.downgrade(config, "0054_session_interface_mode")
     with sqlite3.connect(database_path) as legacy:
         assert (

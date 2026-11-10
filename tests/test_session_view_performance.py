@@ -967,7 +967,7 @@ class SessionViewPerformanceTests(unittest.TestCase):
         plan = self._plan(session_id, 60)
         self._seed_reusable_takes(session_id, plan["active_revision_id"], self._override())
         with patch.object(
-            tts_service_catalogue, "_default_service_configs", wraps=tts_service_catalogue._default_service_configs
+            tts_service_catalogue, "_default_service_config_templates", wraps=tts_service_catalogue._default_service_config_templates
         ) as builds:
             revision_history(self.database, session_id, limit=10)
             first_call = builds.call_count

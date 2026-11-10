@@ -3171,9 +3171,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
     ) -> dict[str, Any]:
         from .voiceover_repair import repair_early_blocks
 
-        return repair_early_blocks(
-            self, run_id, progress, cancel_event, stage_job_id=stage_job_id
-        )
+        kwargs = {"stage_job_id": stage_job_id} if stage_job_id is not None else {}
+        return repair_early_blocks(self, run_id, progress, cancel_event, **kwargs)
 
     def run_repair_existing_generation(
         self, payload: dict[str, Any], progress: Progress, cancel_event: threading.Event

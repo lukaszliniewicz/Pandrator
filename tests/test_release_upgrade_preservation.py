@@ -9,6 +9,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 from contextlib import closing
@@ -35,6 +36,17 @@ def _rows(connection: sqlite3.Connection, table: str, columns: list[str]) -> lis
     )
 
 
+def _fixture_digest(path: Path) -> str:
+    """Hash fixture bytes, tolerating Git's Windows text checkout conversion."""
+
+    data = path.read_bytes()
+    if os.name == "nt" and path.suffix in {".txt", ".srt", ".json"}:
+        # The oracle records committed LF bytes; a Windows checkout may write
+        # CRLF before Pandrator ever sees the tree.
+        data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def test_published_release_tree_survives_normal_startup(tmp_path: Path) -> None:
     metadata: dict[str, Any] = json.loads((FIXTURE / "metadata.json").read_text())
     assert metadata["wheel_sha256"] == WHEEL_SHA256
@@ -55,7 +67,7 @@ def test_published_release_tree_survives_normal_startup(tmp_path: Path) -> None:
         for table, oracle in metadata["tables"].items():
             assert _rows(connection, table, oracle["columns"]) == oracle["rows"], table
     for relative, digest in metadata["files"].items():
-        assert hashlib.sha256((paths.root / relative).read_bytes()).hexdigest() == digest
+        assert _fixture_digest(paths.root / relative) == digest
 
     # The normal service constructor owns both migration and startup, without a
     # Flask surface or a worker/provider being started by this qualification.
@@ -135,7 +147,7 @@ def test_published_release_tree_survives_normal_startup(tmp_path: Path) -> None:
         assert services.auth.verify_password(metadata["password"])
         for relative, digest in metadata["files"].items():
             if relative != "migration-web-v1.json":
-                assert hashlib.sha256((paths.root / relative).read_bytes()).hexdigest() == digest
+                assert _fixture_digest(paths.root / relative) == digest
         # This startup marker records the upgrade itself. User media/text bytes
         # stay exact; the old marker hash remains in the historical restore oracle.
         old_marker = json.loads((FIXTURE / "tree" / "migration-web-v1.json").read_text())

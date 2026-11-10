@@ -74,13 +74,15 @@ def test_rejects_symlinks_directories_and_fifo_without_blocking(tmp_path: Path) 
     (paths.uploads / "link.wav").symlink_to(paths.uploads / "real.wav")
     (paths.root / "alias").symlink_to(paths.uploads, target_is_directory=True)
     (paths.uploads / "directory.wav").mkdir()
-    os.mkfifo(paths.uploads / "fifo.wav")
-    for relative in (
+    rejected = [
         "uploads/link.wav",
         "alias/real.wav",
         "uploads/directory.wav",
-        "uploads/fifo.wav",
-    ):
+    ]
+    if hasattr(os, "mkfifo"):
+        os.mkfifo(paths.uploads / "fifo.wav")
+        rejected.append("uploads/fifo.wav")
+    for relative in rejected:
         with pytest.raises(SpeechInputError):
             read_verified_file(paths, relative, limit=1024)
 
@@ -92,8 +94,10 @@ def test_private_staging_and_cleanup_retains_replacements_and_borrowed_files(
     directory, identity = create_staging_directory(paths)
     first = stage_file(paths, directory, wav_bytes(), ".wav")
     second = stage_file(paths, directory, b"{}", ".json")
-    assert stat.S_IMODE(paths.managed_path(directory).stat().st_mode) == 0o700
-    assert stat.S_IMODE(paths.managed_path(first.relative_path).stat().st_mode) == 0o600
+    if os.name != "nt":
+        # Windows ACLs do not round-trip through POSIX mode bits.
+        assert stat.S_IMODE(paths.managed_path(directory).stat().st_mode) == 0o700
+        assert stat.S_IMODE(paths.managed_path(first.relative_path).stat().st_mode) == 0o600
     replacement = paths.uploads / "replacement"
     replacement.write_bytes(b"replacement")
     replacement.replace(paths.managed_path(first.relative_path))
@@ -120,6 +124,10 @@ def test_invalid_or_truncated_wav(data: bytes) -> None:
         validate_wav(data)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows refuses to replace a file while it is open for reading",
+)
 def test_path_replacement_during_open_is_detected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

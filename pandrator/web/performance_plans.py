@@ -133,16 +133,41 @@ def get_plan(session, session_id: str, plan_id: str) -> m.PerformancePlan:
 
 
 def _assert_current(
-    session, plan: m.PerformancePlan, *, editable: bool = False
+    session,
+    plan: m.PerformancePlan,
+    *,
+    editable: bool = False,
+    selected_plan: m.GenerationPlan | None = None,
+    base_signature: str | None = None,
 ) -> None:
-    selected = session.scalar(
-        select(m.GenerationPlan).where(m.GenerationPlan.session_id == plan.session_id)
+    """Reject stale plans, reusing reads already taken in this transaction.
+
+    ``selected_plan`` and ``base_signature`` may only be supplied by callers
+    that read them from the same database snapshot in the same unit of work.
+    """
+    selected = (
+        selected_plan
+        if selected_plan is not None
+        else session.scalar(
+            select(m.GenerationPlan).where(
+                m.GenerationPlan.session_id == plan.session_id
+            )
+        )
     )
-    if selected is None or selected.active_revision_id != plan.plan_revision_id:
+    if (
+        selected is None
+        or selected.session_id != plan.session_id
+        or selected.active_revision_id != plan.plan_revision_id
+    ):
         raise RevisionConflict(
             "The selected speech plan changed. Create a performance plan for the selected revision."
         )
-    if plan_signature(session, plan.plan_revision_id) != plan.base_signature:
+    signature = (
+        base_signature
+        if base_signature is not None
+        else plan_signature(session, plan.plan_revision_id)
+    )
+    if signature != plan.base_signature:
         raise RevisionConflict(
             "The accepted words or speech-block structure changed. This performance plan is stale."
         )
@@ -1062,23 +1087,45 @@ def adopt_plan(
 
 
 def freeze_performance_snapshot(
-    session, revision_id: str, snapshot: dict[str, Any]
+    session,
+    revision_id: str,
+    snapshot: dict[str, Any],
+    *,
+    plan: m.PerformancePlan | None = None,
+    annotations: dict[str, Any] | None = None,
+    base_signature: str | None = None,
 ) -> None:
-    plan = session.scalar(
-        select(m.PerformancePlan).where(
-            m.PerformancePlan.plan_revision_id == revision_id,
-            m.PerformancePlan.status == "adopted",
-        )
-    )
+    """Freeze adopted performance, reusing guarded reads from the same snapshot.
+
+    Optional arguments may only be supplied by callers that read them in the
+    same transaction.  Staleness is still checked against ``base_signature``.
+    """
+    if plan is not None and (
+        plan.plan_revision_id != revision_id or plan.status != "adopted"
+    ):
+        raise ValueError("Pre-read performance plan does not match the adopted revision.")
     if plan is None:
-        raise ValueError(
-            "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
+        plan = session.scalar(
+            select(m.PerformancePlan).where(
+                m.PerformancePlan.plan_revision_id == revision_id,
+                m.PerformancePlan.status == "adopted",
+            )
         )
-    if plan.base_signature != plan_signature(session, revision_id):
+        if plan is None:
+            raise ValueError(
+                "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
+            )
+    signature = (
+        base_signature
+        if base_signature is not None
+        else plan_signature(session, revision_id)
+    )
+    if plan.base_signature != signature:
         raise ValueError(
             "The adopted performance plan is stale after a speech edit. Review a new performance plan before synthesis."
         )
-    annotations = _annotations(session, plan)
+    if annotations is None:
+        annotations = _annotations(session, plan)
     snapshot["performance_snapshot"] = {
         "schema_version": 1,
         "id": plan.id,

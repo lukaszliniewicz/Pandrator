@@ -14,8 +14,17 @@ class _McpCatalogueApplication:
     def __init__(self, payload):
         self.payload = payload
 
-    def tts_catalog(self, *, refresh, service_id=None):
-        del refresh
+    def tts_catalog(
+        self,
+        *,
+        refresh,
+        service_id=None,
+        workspace_id=None,
+        session_id=None,
+        model=None,
+        view="summary",
+    ):
+        del refresh, workspace_id, session_id, model, view
         if service_id is None:
             return self.payload
         normalized_service_id = (

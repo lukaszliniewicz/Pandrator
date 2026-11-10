@@ -186,13 +186,30 @@ def subtitle_settings_provenance(
     return {"fields": fields}
 
 
-@dataclass(frozen=True, slots=True)
-class _SubtitleSettingsReadContext:
+@dataclass(slots=True)
+class _SettingsReadContext:
     session_id: str
     workspace_id: str
+    session_record: SessionRecord
     workspace_defaults: dict[str, WorkspaceSetting]
     session_overrides: dict[str, SessionSetting]
     outcome_value: dict[str, Any]
+    generation_input: str | None = None
+
+
+def _has_current_translation(session: Session, session_id: str) -> bool:
+    return (
+        session.scalar(
+            select(Artifact.id)
+            .where(
+                Artifact.session_id == session_id,
+                Artifact.role == "translation",
+                Artifact.state == "current",
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 class WorkspaceSettingsService:
@@ -371,6 +388,61 @@ class WorkspaceSettingsService:
             session, session_id, section, actual_workspace_id
         )
 
+    def _prepare_read_context(
+        self,
+        session: Session,
+        session_id: str,
+        workspace_id: str,
+        sections: list[str],
+    ) -> _SettingsReadContext:
+        """Read session-wide rows once for a multi-section resolution."""
+        # The public resolve API accepts case/whitespace variants, while the
+        # stored keys always use canonical section names. Normalize only the
+        # bulk-read keys; preserve caller-facing response keys in resolve().
+        canonical_sections = [self._validate_section(section) for section in sections]
+        keys = {f"defaults.{section}" for section in canonical_sections}
+        override_sections = set(canonical_sections)
+        if "subtitles" in override_sections:
+            keys.update({"defaults.stt", "defaults.translation"})
+            override_sections.update({"stt", "translation"})
+        with session.no_autoflush:
+            default_records = session.scalars(
+                select(WorkspaceSetting)
+                .where(
+                    WorkspaceSetting.workspace_id == workspace_id,
+                    WorkspaceSetting.key.in_(keys),
+                )
+                .execution_options(populate_existing=True)
+            ).all()
+        override_records = session.scalars(
+            select(SessionSetting).where(
+                SessionSetting.session_id == session_id,
+                SessionSetting.section.in_(override_sections),
+            )
+        ).all()
+        session_record = session.get(SessionRecord, session_id)
+        if session_record is None:
+            raise KeyError(session_id)
+        outcome = session.get(OutcomePlan, session_id)
+        outcome_value = (
+            outcome.value_json
+            if outcome and isinstance(outcome.value_json, dict)
+            else {}
+        )
+        return _SettingsReadContext(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            session_record=session_record,
+            workspace_defaults={
+                record.key.removeprefix("defaults."): record
+                for record in default_records
+            },
+            session_overrides={
+                record.section: record for record in override_records
+            },
+            outcome_value=outcome_value,
+        )
+
     def _get_in_workspace(
         self,
         session: Session,
@@ -378,7 +450,7 @@ class WorkspaceSettingsService:
         section: str,
         workspace_id: str,
         *,
-        _read_context: _SubtitleSettingsReadContext | None = None,
+        _read_context: _SettingsReadContext | None = None,
     ) -> dict[str, Any]:
         """Resolve one section inside an already validated workspace."""
         section = self._validate_section(section)
@@ -387,51 +459,19 @@ class WorkspaceSettingsService:
             or _read_context.workspace_id != workspace_id
         ):
             raise ValueError(
-                "Subtitle settings read context does not match the requested session and workspace."
+                "Settings read context does not match the requested session and workspace."
             )
-        session_record = session.get(SessionRecord, session_id)
+        session_record = (
+            _read_context.session_record
+            if _read_context is not None
+            else session.get(SessionRecord, session_id)
+        )
         if session_record is None:
             raise KeyError(session_id)
         read_context = _read_context
         if section == "subtitles" and read_context is None:
-            default_keys = (
-                "defaults.subtitles",
-                "defaults.stt",
-                "defaults.translation",
-            )
-            override_sections = ("subtitles", "stt", "translation")
-            with session.no_autoflush:
-                default_records = session.scalars(
-                    select(WorkspaceSetting)
-                    .where(
-                        WorkspaceSetting.workspace_id == workspace_id,
-                        WorkspaceSetting.key.in_(default_keys),
-                    )
-                    .execution_options(populate_existing=True)
-                ).all()
-            override_records = session.scalars(
-                select(SessionSetting).where(
-                    SessionSetting.session_id == session_id,
-                    SessionSetting.section.in_(override_sections),
-                )
-            ).all()
-            outcome = session.get(OutcomePlan, session_id)
-            outcome_value = (
-                outcome.value_json
-                if outcome and isinstance(outcome.value_json, dict)
-                else {}
-            )
-            read_context = _SubtitleSettingsReadContext(
-                session_id=session_id,
-                workspace_id=workspace_id,
-                workspace_defaults={
-                    record.key.removeprefix("defaults."): record
-                    for record in default_records
-                },
-                session_overrides={
-                    record.section: record for record in override_records
-                },
-                outcome_value=outcome_value,
+            read_context = self._prepare_read_context(
+                session, session_id, workspace_id, ["subtitles"]
             )
         if read_context is None:
             global_record = workspace_setting_in_workspace(
@@ -479,19 +519,20 @@ class WorkspaceSettingsService:
             inputs = {}
         generation_input = str(inputs.get("generation") or "").strip().lower()
         if not generation_input:
-            has_translation = (
-                session.scalar(
-                    select(Artifact.id)
-                    .where(
-                        Artifact.session_id == session_id,
-                        Artifact.role == "translation",
-                        Artifact.state == "current",
+            if read_context is not None:
+                if read_context.generation_input is None:
+                    read_context.generation_input = (
+                        "translation"
+                        if _has_current_translation(session, session_id)
+                        else "source"
                     )
-                    .limit(1)
+                generation_input = read_context.generation_input
+            else:
+                generation_input = (
+                    "translation"
+                    if _has_current_translation(session, session_id)
+                    else "source"
                 )
-                is not None
-            )
-            generation_input = "translation" if has_translation else "source"
         speech_language = (
             target_language
             if generation_input == "translation" and target_language
@@ -1060,9 +1101,18 @@ class WorkspaceSettingsService:
         workspace_id = _session_workspace_id(session, session_id)
         requested = sections or list(SETTING_SECTIONS)
         override = run_override or {}
+        read_context = (
+            self._prepare_read_context(session, session_id, workspace_id, requested)
+            if len(requested) > 1
+            else None
+        )
         snapshots = {
             section: self._get_in_workspace(
-                session, session_id, section, workspace_id
+                session,
+                session_id,
+                section,
+                workspace_id,
+                _read_context=read_context,
             )
             for section in requested
         }

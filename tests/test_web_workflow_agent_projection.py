@@ -376,12 +376,29 @@ def test_agent_snapshot_combines_kind_and_same_session(
     _set_job_status(case, "failed")
     expected_id = _add_run(case, status="failed")
     other_session = SessionService(case.database).create("Foreign agent", workflow_kind="voiceover")
+    foreign_job_id = new_id()
+    with case.database.session() as session:
+        ownership = job_creation_ownership(session, session_id=other_session.id)
+        session.add(
+            Job(
+                id=foreign_job_id,
+                session_id=other_session.id,
+                kind="dubbing.translate",
+                status="running",
+                created_at=CURRENT,
+                updated_at=CURRENT,
+                started_at=CURRENT,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
+            )
+        )
     _add_run(
         case,
         status="failed",
         updated_at=CURRENT + timedelta(hours=1),
         kind="correction" if excluded == "wrong-kind" else "translation",
         session_id=other_session.id if excluded == "foreign-session" else case.session_id,
+        job_id=foreign_job_id if excluded == "foreign-session" else None,
     )
     _assert_stage(_measure(case), case, run_id=expected_id, status="failed", resumable=True)
 

@@ -15,12 +15,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, TypeGuard
 
+from flask import g, has_request_context
 from sqlalchemy import and_, delete, false, func, or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from pandrator.logic.tts_service_identity import normalize_service_id
 
+from .access.contracts import AccessDenied
 from .accounts.administration import PRIVILEGED_JOB_SCOPES, AdministratorRequired
 from .accounts.execution_actor import (
     ExecutionActor,
@@ -73,6 +75,18 @@ def _canonical_tts_resource_key(key: str) -> str:
     if candidate.startswith(prefix):
         return prefix + normalize_service_id(candidate.removeprefix(prefix))
     return key
+
+
+def _request_principal_without_actor() -> bool:
+    """Report an authenticated HTTP request that lost its actor binding.
+
+    CLI and internal callers have no request context and legitimately enqueue
+    without an actor. Inside a request the resolved principal is authoritative:
+    when it is authenticated but no actor is bound, job provenance would be
+    silently dropped, so admission must fail closed instead.
+    """
+
+    return has_request_context() and getattr(g, "principal", None) is not None
 
 
 class JobQueue:
@@ -615,6 +629,11 @@ class JobQueue:
                 execution_options={"synchronize_session": False},
             )
             actor = current_execution_actor.get()
+            if actor is None and _request_principal_without_actor():
+                # An authenticated HTTP principal always binds an execution
+                # actor. Losing it here would create an unattributed job while
+                # authorization already succeeded, so reject before the insert.
+                raise AccessDenied()
             actor_record = None
             if actor is not None:
                 actor_record = actor_to_storage(actor)

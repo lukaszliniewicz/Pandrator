@@ -13,7 +13,9 @@ from pandrator.web import models as m
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.generation_summary import get_generation_summary
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.openapi import build_openapi_document
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.projects.identity import create_session_project
 from pandrator.web.usage import usage_summary
 from tests.web_test_support import prepare_web_test_data_root
@@ -62,8 +64,11 @@ def add_plan(case, *, session_id=None):
 def add_source_artifact(case, session_id, *, role, artifact_id=None):
     services, _, _ = case
     with services.database.session() as db:
+        ownership = resolve_artifact_ownership(db, session_id=session_id)
         artifact = m.Artifact(
             id=artifact_id,
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             session_id=session_id,
             kind="text",
             role=role,
@@ -87,7 +92,10 @@ def add_run(case, revision_id, *, status="running", sequence=1, session_id=None)
     services, _, own_session_id = case
     session_id = session_id or own_session_id
     with services.database.session() as db:
+        ownership = job_creation_ownership(db, session_id=session_id)
         job = m.Job(
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             session_id=session_id, kind="generation.run", status=status,
             progress=0.4, progress_detail="Generating block 2",
         )
@@ -126,7 +134,10 @@ def add_usage_event(
 ):
     services, _, _ = case
     with services.database.session() as db:
+        ownership = job_creation_ownership(db, session_id=session_id)
         event = m.UsageEvent(
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             session_id=session_id,
             generation_run_id=generation_run_id,
             stage=stage,
@@ -410,26 +421,13 @@ def test_active_run_usage_matches_usage_summary_and_refreshes(summary_case):
     add_usage_event(
         summary_case,
         session_id=foreign_session_id,
-        generation_run_id=run_id,
+        generation_run_id=foreign_run_id,
         stage="foreign-session",
         model_id="foreign-model",
         cost_usd=100.0,
         input_tokens=1000,
         cached_input_tokens=0,
         output_tokens=1000,
-        commercial=True,
-        estimated=True,
-    )
-    add_usage_event(
-        summary_case,
-        session_id=session_id,
-        generation_run_id=foreign_run_id,
-        stage="foreign-run",
-        model_id="foreign-model",
-        cost_usd=200.0,
-        input_tokens=2000,
-        cached_input_tokens=0,
-        output_tokens=2000,
         commercial=True,
         estimated=True,
     )
@@ -579,31 +577,36 @@ def test_latest_assembly_and_cross_session_isolation(summary_case):
     revision_id, _ = add_plan(summary_case)
     run_id = add_run(summary_case, revision_id)
     with services.database.session() as db:
-        foreign = m.SessionRecord(name="Foreign")
-        create_session_project(db, foreign)
-        foreign_id = foreign.id
-        foreign_job = m.Job(
-            session_id=foreign_id, kind="generation.assemble", status="running",
+        owner = db.get(m.SessionRecord, session_id)
+        other = m.SessionRecord(name="Other session")
+        create_session_project(db, other, project_id=owner.project_id)
+        other_id = other.id
+        other_ownership = job_creation_ownership(db, session_id=other_id)
+        other_job = m.Job(
+            workspace_id=other_ownership.workspace_id,
+            project_id=other_ownership.project_id,
+            session_id=other_id, kind="generation.assemble", status="running",
             progress=0.9, progress_detail="Private progress",
         )
-        db.add(foreign_job)
+        db.add(other_job)
         db.flush()
-        foreign_job_id = foreign_job.id
-        # Even a corrupted cross-session job reference cannot leak progress.
-        db.get(m.GenerationRun, run_id).job_id = foreign_job_id
+        other_job_id = other_job.id
+        # A valid job from another session of the same project must still not
+        # leak progress into this session's projection.
+        db.get(m.GenerationRun, run_id).job_id = other_job_id
         now = m.utcnow()
         older = m.OutputAssembly(session_id=session_id, status="completed", created_at=now)
         newest = m.OutputAssembly(
-            session_id=session_id, job_id=foreign_job.id, status="running",
+            session_id=session_id, job_id=other_job.id, status="running",
             created_at=now + timedelta(seconds=1),
         )
         db.add_all([older, newest, m.OutputAssembly(
-            session_id=foreign_id, status="completed", created_at=now + timedelta(days=1)
+            session_id=other_id, status="completed", created_at=now + timedelta(days=1)
         )])
         db.flush()
         newest_id = newest.id
-    foreign_revision, _ = add_plan(summary_case, session_id=foreign_id)
-    add_run(summary_case, foreign_revision, sequence=100, session_id=foreign_id)
+    other_revision, _ = add_plan(summary_case, session_id=other_id)
+    add_run(summary_case, other_revision, sequence=100, session_id=other_id)
     result = read(summary_case)
     assert result["active_run"] == {
         "id": run_id, "status": "running", "progress": 0.0, "progress_detail": None,
@@ -614,7 +617,10 @@ def test_latest_assembly_and_cross_session_isolation(summary_case):
         "job_id": None, "usage": None,
     }
     with services.database.session() as db:
+        ownership = job_creation_ownership(db, session_id=session_id)
         job = m.Job(
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
             session_id=session_id, kind="generation.assemble", progress=0.65,
             progress_detail="Writing output",
         )

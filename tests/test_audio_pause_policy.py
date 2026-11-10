@@ -419,7 +419,9 @@ def test_voice_gap_settings_do_not_change_multi_voice_provider_request_identity(
 
     monkeypatch.setattr(casting, "get_generation_controls", lambda session, sid: deepcopy(CONTROLS))
     monkeypatch.setattr(
-        casting, "resolve_binding", lambda session, binding, settings, cache: dict(binding)
+        casting,
+        "resolve_binding",
+        lambda session, binding, settings, cache, **kwargs: dict(binding),
     )
     with case["services"]["database"].session() as session:
         row = session.get(m.GenerationSegment, case["segment_ids"][0])

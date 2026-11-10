@@ -70,6 +70,13 @@ from tests.web_test_support import prepare_web_test_data_root
 
 class WebWorkflowHandlerTests(unittest.TestCase):
     def setUp(self):
+        # Handler unit tests exercise the trusted internal path without HTTP
+        # provenance. Bind that state explicitly so a request-context test that
+        # resolved a principal earlier in the process cannot leak its execution
+        # actor into these access checks; the HTTP lifecycle owns the real bind.
+        self.execution_actor = execution_actor_scope(None)
+        self.execution_actor.__enter__()
+        self.addCleanup(self.execution_actor.__exit__, None, None, None)
         self.temporary = tempfile.TemporaryDirectory()
         self.paths = prepare_web_test_data_root(self.temporary.name)
         self.database = Database(self.paths.database)

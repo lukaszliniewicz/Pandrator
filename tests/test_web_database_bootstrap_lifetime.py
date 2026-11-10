@@ -232,3 +232,41 @@ def test_sqlite_configuration_closes_cursor_and_keeps_valid_connection_open(
         engine.dispose()
         for connection in connections:
             connection.close()
+
+
+def test_migrations_accept_database_paths_containing_percent(tmp_path: Path) -> None:
+    # Alembic ConfigParser treats % as interpolation unless doubled on write.
+    parent = tmp_path / "data%escaped"
+    parent.mkdir()
+    path = parent / "pandrator.sqlite3"
+
+    database.upgrade_database(path)
+
+    with sqlite3.connect(path) as connection:
+        version = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    assert version == (database.SCHEMA_HEAD,)
+
+
+def test_migrations_accept_installation_paths_containing_percent(tmp_path: Path) -> None:
+    # Alembic's ConfigParser also interpolates percent signs in script_location.
+    # Avoid copying the real migration tree by capturing configuration just
+    # before upgrade; this works on Windows where symlinks may be unavailable.
+    install_dir = tmp_path / "Pandrator%Install"
+    data_dir = tmp_path / "Data%Root"
+    install_dir.mkdir()
+    data_dir.mkdir()
+    fake_module = install_dir / "database.py"
+    database_path = data_dir / "pandrator.sqlite3"
+    observed: dict[str, str] = {}
+
+    def inspect_config(config, _revision: str) -> None:
+        observed["script_location"] = config.get_main_option("script_location") or ""
+        observed["sqlalchemy.url"] = config.get_main_option("sqlalchemy.url") or ""
+
+    with mock.patch.object(database, "__file__", str(fake_module)), mock.patch.object(
+        database.command, "upgrade", side_effect=inspect_config
+    ):
+        database.upgrade_database(database_path)
+
+    assert observed["script_location"] == str(install_dir / "migrations")
+    assert observed["sqlalchemy.url"] == database.sqlite_url(database_path)

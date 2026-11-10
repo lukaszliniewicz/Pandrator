@@ -22,6 +22,7 @@ from sqlalchemy.pool import Pool
 
 from pandrator.runtime import DataPaths
 from pandrator.web import cli
+from pandrator.web.accounts.execution_actor import HostActor, execution_actor_scope
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.models import (
@@ -429,6 +430,7 @@ def test_native_fifteen_command_round_trip_disposes_before_every_output(
                 patch.object(cli, "_database", return_value=(paths, retained.database)),
                 patch.object(cli, "_emit", side_effect=emit),
                 redirect_stdout(output),
+                execution_actor_scope(HostActor("pandrator-cli")),
             ):
                 assert args.handler(args) == 0
             retained.assert_retired()

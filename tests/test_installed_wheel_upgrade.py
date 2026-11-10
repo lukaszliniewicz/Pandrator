@@ -32,7 +32,10 @@ def _quote(identifier: str) -> str:
 def _config(path: Path) -> Config:
     config = Config()
     config.set_main_option("script_location", str(MIGRATIONS))
-    config.set_main_option("sqlalchemy.url", str(URL.create("sqlite", database=str(path))))
+    url = str(URL.create("sqlite", database=str(path)))
+    # Config.set_main_option routes through ConfigParser, which treats "%" as
+    # interpolation syntax. Windows absolute paths are percent-encoded here.
+    config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
     return config
 
 

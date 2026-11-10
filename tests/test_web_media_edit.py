@@ -161,7 +161,12 @@ class MediaEditServiceTests(unittest.TestCase):
 
         bootstrap = BootstrapTokenStore()
         token = bootstrap.issue()
-        app = create_app(data_root=self.directory.name, testing=True, bootstrap_tokens=bootstrap)
+        # This class already holds a database on self.directory. A second app on
+        # the same root would migrate (and rename) that live file, which Windows
+        # refuses while the handle is open.
+        app_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(app_directory.cleanup)
+        app = create_app(data_root=app_directory.name, testing=True, bootstrap_tokens=bootstrap)
         client = app.test_client()
         csrf = client.post("/api/v1/auth/bootstrap", json={"token": token}).get_json()["csrf_token"]
         extension = app.extensions["pandrator"]

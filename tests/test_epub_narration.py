@@ -385,6 +385,24 @@ def test_page_list_cannot_create_duplicate_consumed_note_chapter(tmp_path):
         '<a id="reference" href="notes.xhtml#note1" epub:type="noteref">1</a>'
         '</td></tr></table>'
     ), explicit_toc=False)
+    # EbookLib 0.21 no longer generates an empty page-list navigation block.
+    # Insert one explicitly so this checks Pandrator rather than a library fixture.
+    with zipfile.ZipFile(path) as archive:
+        entries = [(item, archive.read(item.filename)) for item in archive.infolist()]
+    found_nav = False
+    with zipfile.ZipFile(path, "w") as archive:
+        for item, payload in entries:
+            if item.filename.endswith("/nav.xhtml") or item.filename == "nav.xhtml":
+                found_nav = True
+                if b"page-list" not in payload:
+                    markup = payload.decode("utf-8")
+                    assert "</body>" in markup
+                    payload = markup.replace(
+                        "</body>",
+                        '<nav epub:type="page-list"><ol><li><a href="body.xhtml#reference">1</a></li></ol></nav></body>',
+                    ).encode("utf-8")
+            archive.writestr(item, payload)
+    assert found_nav
     raw = unpack_epub_structure(path)
     assert any("page-list" in block["epub_types"] for block in raw["parsed_documents"]["nav.xhtml"]["blocks"])
     text = extract_clean_epub(path)
