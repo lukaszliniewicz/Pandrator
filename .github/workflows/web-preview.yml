@@ -183,7 +183,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes ffmpeg
       - name: Install Windows FFmpeg
         if: runner.os == 'Windows'
-        run: choco install ffmpeg --yes --no-progress
+        shell: pwsh
+        run: |
+          $installed = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install ffmpeg --yes --no-progress
+            if ((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and
+                (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
+              $installed = $true
+              break
+            }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+          }
+          if (-not $installed) {
+            throw 'FFmpeg and FFprobe were not provisioned after three attempts.'
+          }
+          ffmpeg -version
+          ffprobe -version
       - name: Install Python lane dependencies
         run: >-
           python -m pip install --disable-pip-version-check
@@ -285,7 +301,23 @@ jobs:
           npx --prefix web playwright install --with-deps ${{ matrix.browser }}
       - name: Install Windows FFmpeg
         if: runner.os == 'Windows'
-        run: choco install ffmpeg --yes --no-progress
+        shell: pwsh
+        run: |
+          $installed = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install ffmpeg --yes --no-progress
+            if ((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and
+                (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
+              $installed = $true
+              break
+            }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+          }
+          if (-not $installed) {
+            throw 'FFmpeg and FFprobe were not provisioned after three attempts.'
+          }
+          ffmpeg -version
+          ffprobe -version
       - name: Install selected Windows browser
         if: runner.os == 'Windows'
         run: npx --prefix web playwright install ${{ matrix.browser }}

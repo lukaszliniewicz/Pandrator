@@ -265,6 +265,19 @@ test('manual annotations preserve words, support phrase directions and protect a
   await expect(
     workspace.getByRole('region', { name: 'Annotated text preview' })
   ).toContainText(spoken);
+  // Clicking the annotated phrase must sync its existing speaker, even if the
+  // text selection already points to the same offsets.
+  const speakerPicker = workspace.getByRole('combobox', {
+    name: 'Selected words belong to',
+    exact: true
+  });
+  await speakerPicker.selectOption('__narrator');
+  await workspace
+    .getByRole('region', { name: 'Annotated text preview' })
+    .locator('button[title^="Mara"]')
+    .filter({ hasText: 'Hello 😀 there!' })
+    .click();
+  await expect(speakerPicker).toHaveValue(character);
   // A complete marked turn can be reassigned while nested phrase directions survive.
   await selectWords(page, '“Hello 😀 there!”');
   await workspace
@@ -273,6 +286,13 @@ test('manual annotations preserve words, support phrase directions and protect a
   await workspace
     .getByRole('button', { name: 'Mark selected text', exact: true })
     .click();
+  // Do not let a failed client-side mark be mistaken for a successful save.
+  await expect(
+    workspace
+      .getByRole('region', { name: 'Annotated text preview' })
+      .locator('button[title^="Narrator"]')
+      .filter({ hasText: 'Hello 😀 there!' })
+  ).toContainText('Hello 😀 there!');
   await workspace
     .getByRole('button', { name: 'Save block annotations', exact: true })
     .click();

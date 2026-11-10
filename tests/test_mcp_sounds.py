@@ -742,7 +742,9 @@ def test_voice_reference_import_forwards_only_explicit_crop_fields(monkeypatch):
 
     application = Mock()
     application.import_voice_reference.return_value = {"job_id": "job-voice", "status": "queued"}
-    monkeypatch.setattr(voice_lifecycle, "_job_outcome", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        voice_lifecycle, "_job_outcome", lambda *args, **kwargs: ToolOutcome(result={})
+    )
     no_crop = ImportVoiceReferenceInput(
         voice_id="voice-1",
         artifact_id="artifact-1",
@@ -1668,6 +1670,7 @@ def test_registration_exposes_five_fixed_tools_with_typed_signatures():
         "seed",
         "threads",
         "idempotency_key",
+        "workspace_id",
     ]
     assert list(inspect.signature(recorded["pandrator_sound_catalogue"][0]).parameters) == [
         "model_id",
