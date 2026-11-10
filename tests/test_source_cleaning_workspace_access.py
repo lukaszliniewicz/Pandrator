@@ -42,7 +42,7 @@ from tests.test_source_preparation_workspace_access import (
 
 def _input(f: Any, target: dict[str, Any], *, suffix: str = ".txt", metadata=None):
     path = f.services.paths.uploads / f"native-cleaning-{uuid4()}{suffix}"
-    path.write_text("Chapter One\n\nSource bytes remain intact.", encoding="utf-8")
+    path.write_text("Chapter One\n\nSource bytes remain intact.", encoding="utf-8", newline="\n")
     with execution_actor_scope(HostActor("pandrator-cli")):
         source = f.services.artifacts.register(
             path,

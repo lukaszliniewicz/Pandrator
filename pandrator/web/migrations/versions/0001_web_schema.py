@@ -64,6 +64,11 @@ def upgrade() -> None:
         "project_speech_references",
         # 0086 owns lease-fenced output storage reservations.
         "storage_reservations",
+        # 0087 owns this bridge table. Its browser_auth_sessions target is created
+        # by 0073, so bootstrapping it here would give an early pinned schema an
+        # inbound foreign key to a missing table. SQLite then fails cascades that
+        # traverse projects instead of reporting a dangling reference.
+        "project_link_sessions",
     }
     bootstrap_metadata = MetaData()
     for table in Base.metadata.tables.values():

@@ -15,6 +15,7 @@ from pandrator.web.accounts.execution_actor import (
     current_execution_actor,
     execution_actor_scope,
 )
+from pandrator.web.accounts.models import WorkspaceMembership
 from pandrator.web.job_execution import current_job_lease
 from pandrator.web.jobs import Worker
 from pandrator.web.media_process import MediaProcessResult
@@ -23,7 +24,7 @@ from pandrator.web.projects.models import ProjectMembership
 from pandrator.web.video_previews import PREVIEW_VERSION, VideoInfo
 from pandrator.web.waveform import WaveformPeaks
 from tests.test_job_access_routes import case as case
-from tests.test_job_access_routes import credential
+from tests.test_job_access_routes import credential, grant_workspace_content_access
 from tests.test_job_access_routes import no_network as no_network
 
 KINDS = ("audio.preview", "audio.waveform", "video.preview")
@@ -140,6 +141,7 @@ def test_current_user_worker_publishes_distinct_output_and_keeps_natural_expiry(
     kind,
     expired_transport,
 ):
+    grant_workspace_content_access(case, "editor")
     caller = credential(case, "editor")
     source, previous, previous_path = inputs(case, kind)
     identifier = enqueue(case, caller, source, kind)
@@ -206,6 +208,7 @@ def test_postmedia_authority_loss_prevents_publication_and_preserves_old_files(
     kind,
     loss,
 ):
+    grant_workspace_content_access(case, "editor")
     caller = credential(case, "editor")
     source, previous, previous_path = inputs(case, kind)
     identifier = enqueue(case, caller, source, kind)
@@ -220,6 +223,12 @@ def test_postmedia_authority_loss_prevents_publication_and_preserves_old_files(
                     delete(ProjectMembership).where(
                         ProjectMembership.project_id == case.a.project_id,
                         ProjectMembership.user_id == case.users["editor"],
+                    )
+                )
+                session.execute(
+                    delete(WorkspaceMembership).where(
+                        WorkspaceMembership.workspace_id == case.team,
+                        WorkspaceMembership.user_id == case.users["editor"],
                     )
                 )
             else:

@@ -36,7 +36,7 @@ from pandrator.web.models import AutomationClient, Job, JobEvent, new_id
 from pandrator.web.projects.models import ProjectMembership
 from tests.test_job_access_routes import SCOPES as ROUTE_SCOPES
 from tests.test_job_access_routes import case as case
-from tests.test_job_access_routes import credential
+from tests.test_job_access_routes import credential, grant_workspace_content_access
 from tests.test_job_access_routes import no_network as no_network  # noqa: F401
 
 
@@ -259,6 +259,7 @@ def test_project_diagnostics_and_bundle_exports_follow_current_run_roles(case):
 
 
 def test_project_only_token_grant_admits_its_session_but_not_private_work(case):
+    grant_workspace_content_access(case, "editor")
     caller = _project_only_credential(case)
 
     with case.database.immediate_session() as session:
@@ -311,6 +312,7 @@ def test_outside_instance_admin_without_membership_cannot_override_content_polic
 
 
 def test_client_project_grant_is_current_and_does_not_become_workspace_authority(case):
+    grant_workspace_content_access(case, "editor")
     client_id = new_id()
     with case.database.immediate_session() as session:
         session.add(

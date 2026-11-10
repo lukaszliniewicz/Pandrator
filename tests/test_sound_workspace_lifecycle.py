@@ -33,6 +33,7 @@ from pandrator.web.sound_imports import (
     prepare_import,
 )
 from pandrator.web.sound_service import SoundService
+from tests.legacy_schema_support import prepare_read_only_pinned_schema
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -42,6 +43,10 @@ def _use_pre_library_schema(database: Database) -> None:
     config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations"))
     config.set_main_option("sqlalchemy.url", sqlite_url(database.path))
     command.downgrade(config, "0077_media_scope_consistency")
+    prepare_read_only_pinned_schema(
+        database.path,
+        (Artifact, Job, SoundItem, SoundVariant, Workspace),
+    )
 
 
 @dataclass
@@ -687,6 +692,10 @@ def test_ready_replay_rejects_artifact_from_another_workspace(domain, monkeypatc
     config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations"))
     config.set_main_option("sqlalchemy.url", sqlite_url(domain.database.path))
     command.downgrade(config, "0076_project_graph_consistency")
+    prepare_read_only_pinned_schema(
+        domain.database.path,
+        (Artifact, Job, SoundItem, SoundVariant, Workspace),
+    )
     with domain.database.immediate_session() as session:
         artifact = session.get(Artifact, result["artifact_id"])
         assert artifact is not None

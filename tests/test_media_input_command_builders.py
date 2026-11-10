@@ -18,7 +18,7 @@ from pandrator.logic.book_video import BookLayout
 from pandrator.logic.dubbing import audio_sync, manual_timing, transcription, video_muxing
 from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
 
-_MEDIA_A = "source audio 'one' \"original\".mov"
+_MEDIA_A = "source audio 'one' (original).mov"
 _MEDIA_B = "speech audio 'two' \"final\".wav"
 _SUBTITLE_A = "English subtitles 'one'.srt"
 _SUBTITLE_B = 'German subtitles "two".srt'

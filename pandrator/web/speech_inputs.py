@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.tts_service_identity import normalize_service_id
 from pandrator.runtime import DataPaths
 
 from .database import Database
@@ -73,6 +74,9 @@ _ARTIFACT_FIELDS = (
     "size_bytes",
     "mime_type",
 )
+_AUDIO_CPP_ADAPTER = "audio_cpp"
+# Custom-profile aliases shared with dispatch; they select a configured endpoint.
+_CUSTOM_PROFILE_SERVICES = frozenset({"custom", "openai_compatible"})
 
 
 def _digest(value: str | bytes) -> str:
@@ -83,28 +87,50 @@ def _normalized(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().casefold()).strip("_")
 
 
+def _audio_cpp_registrations(*aliases: str) -> set[str]:
+    """audio.cpp plus any reported preview/profile alias used by old registrations."""
+    return {_AUDIO_CPP_ADAPTER, *(alias for alias in aliases if alias)}
+
+
 def speech_input_adapter(settings: dict[str, Any]) -> tuple[str, set[str]]:
-    """Resolve the selected adapter and its linked-reference registration aliases."""
+    """Resolve the selected adapter and its linked-reference registration aliases.
+
+    The canonical generation selection decides the route: ``service`` or
+    ``tts_service`` (or a configured custom endpoint). Legacy preview routing
+    keys only identify the connection when that selection is absent, so a run
+    that strips them before dispatch resolves the same adapter a saved
+    selection recorded.
+    """
     # This only resolves the frozen settings catalogue. Never resolve a secret.
     from pandrator.logic import tts_handler
 
-    explicit = _normalized(settings.get("preview_service_id") or settings.get("service_id"))
-    service = _normalized(settings.get("service") or settings.get("tts_service"))
-    selected = explicit or service
-    registration_ids = {"audio_cpp"}
-    if selected in {"audio_cpp", "audiocpp"}:
-        return "audio_cpp", registration_ids
-    if _normalized(settings.get("preview_adapter")) == "audio_cpp":
-        if explicit:
-            registration_ids.add(explicit)
-        return "audio_cpp", registration_ids
-    if selected in {"custom", "openai_compatible"} or service in {"custom", "openai_compatible"}:
+    canonical = normalize_service_id(settings.get("service") or settings.get("tts_service"))
+    reported = settings.get("preview_service_id") or settings.get("service_id")
+    preview = _normalized(reported)
+    registration_ids = {_AUDIO_CPP_ADAPTER}
+    if canonical and canonical not in _CUSTOM_PROFILE_SERVICES:
+        if canonical == _AUDIO_CPP_ADAPTER:
+            # A stale preview alias may name a different endpoint in this
+            # workspace. Never widen the canonical route's linked-voice lookup.
+            return _AUDIO_CPP_ADAPTER, registration_ids
+        return canonical, registration_ids
+    if canonical in _CUSTOM_PROFILE_SERVICES or (
+        not canonical and preview in _CUSTOM_PROFILE_SERVICES
+    ):
         endpoint, _error = tts_handler.resolve_openai_audio_endpoint(settings, {})
         if endpoint is not None:
-            if _normalized(endpoint.get("adapter")) == "audio_cpp":
-                registration_ids.add(_normalized(endpoint.get("name")))
-                return "audio_cpp", registration_ids
-    return selected, registration_ids
+            if _normalized(endpoint.get("adapter")) == _AUDIO_CPP_ADAPTER:
+                # Trust the endpoint actually selected, not a potentially
+                # stale preview alias naming another configured endpoint.
+                return _AUDIO_CPP_ADAPTER, _audio_cpp_registrations(
+                    _normalized(endpoint.get("name"))
+                )
+            return preview or canonical, registration_ids
+    if normalize_service_id(reported) == _AUDIO_CPP_ADAPTER:
+        return _AUDIO_CPP_ADAPTER, _audio_cpp_registrations(preview)
+    if _normalized(settings.get("preview_adapter")) == _AUDIO_CPP_ADAPTER:
+        return _AUDIO_CPP_ADAPTER, _audio_cpp_registrations(preview)
+    return preview or canonical, registration_ids
 
 
 def _owner(session: Session, owner: SpeechInputOwner) -> None:

@@ -84,7 +84,7 @@ def test_remembered_google_voices_merge_only_into_the_selected_owner(
             )
     monkeypatch.setattr(
         "pandrator.logic.google_voice_scope.google_voice_scope",
-        lambda *_: {"fingerprint": "same-provider-account"},
+        lambda *_args, **_kwargs: {"fingerprint": "same-provider-account"},
     )
     credential = cast(ResolvedCredential, SimpleNamespace(resolved_value=lambda: "synthetic"))
     for key in ("alpha", "beta"):

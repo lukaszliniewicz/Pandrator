@@ -12,13 +12,15 @@ from threading import Barrier
 from typing import Any
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from pandrator.runtime import DataPaths
 from pandrator.web import generation_voice_references, voice_library
 from pandrator.web.artifacts import ArtifactService
-from pandrator.web.database import Database
+from pandrator.web.database import Database, sqlite_url
 from pandrator.web.models import Artifact, Voice, VoiceSample, Workspace
 from pandrator.web.projects.identity import initial_personal_workspace
 from pandrator.web.voice_library import (
@@ -38,6 +40,7 @@ from pandrator.web.voice_queries import (
     voice_sample_in_workspace,
     voices_in_workspace,
 )
+from tests.legacy_schema_support import prepare_read_only_pinned_schema
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -65,6 +68,18 @@ def _new_workspace(database: Database, name: str, *, state: str = "active") -> s
         session.add(workspace)
         session.flush()
         return workspace.id
+
+
+def _use_pre_library_schema(database: Database) -> None:
+    """Retain legacy corrupt rows before the 0078 library insert guards."""
+    config = Config()
+    config.set_main_option(
+        "script_location",
+        str(Path(__file__).parents[1] / "pandrator" / "web" / "migrations"),
+    )
+    config.set_main_option("sqlalchemy.url", sqlite_url(database.path))
+    command.downgrade(config, "0077_media_scope_consistency")
+    prepare_read_only_pinned_schema(database.path, (Artifact, Voice, VoiceSample, Workspace))
 
 
 @pytest.fixture
@@ -225,6 +240,7 @@ def test_malformed_voice_sample_backing_artifact_is_rejected(
     beta_workspace = harness.workspaces["beta"]
     voice_id = _new_voice(harness, alpha_workspace, "Alpha voice")
     foreign_artifact = _new_sample_artifact(harness, beta_workspace, "foreign-voice-sample")
+    _use_pre_library_schema(harness.database)
     malformed_sample_id = _new_sample(harness, alpha_workspace, voice_id, foreign_artifact.id)
 
     with harness.database.session() as session:
@@ -294,6 +310,7 @@ def test_voice_projections_reject_mixed_scope_records_before_file_projection(
                     workspace_id=alpha_workspace,
                 )
 
+    _use_pre_library_schema(harness.database)
     alpha_foreign_sample_id = _new_sample(
         harness,
         beta_workspace,
@@ -332,6 +349,7 @@ def test_voice_payloads_reject_a_malformed_cross_workspace_sample_before_file_ac
     beta_workspace = harness.workspaces["beta"]
     alpha_id = _new_voice(harness, alpha_workspace, "Alpha voice")
     foreign_artifact = _new_sample_artifact(harness, beta_workspace, "alpha-voice-foreign-artifact")
+    _use_pre_library_schema(harness.database)
     _new_sample(
         harness,
         beta_workspace,

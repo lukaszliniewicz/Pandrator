@@ -35,6 +35,7 @@ from pandrator.web.training_lifecycle import TrainingNotFound, TrainingService
 from pandrator.web.training_publication import require_training_claim
 from pandrator.web.voice_recording_uploads import queue_voice_recording
 from pandrator.web.workflow_handlers import WorkflowHandlers
+from tests.legacy_schema_support import prepare_read_only_pinned_schema
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -262,6 +263,10 @@ def test_retry_and_cancel_validate_all_retained_training_links_before_refresh(
     config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations"))
     config.set_main_option("sqlalchemy.url", sqlite_url(case.database.path))
     command.downgrade(config, "0077_media_scope_consistency")
+    prepare_read_only_pinned_schema(
+        case.database.path,
+        (AppSetting, Artifact, Job, TrainingRun, Voice, VoiceSample, Workspace),
+    )
     with case.database.session() as session:
         session.get(TrainingRun, run.id).voice_id = beta_voice.id
     before = _rows(case, TrainingRun, Job)
@@ -417,6 +422,10 @@ def test_normalization_rejects_missing_archived_and_mismatched_owners_before_ffm
     config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations"))
     config.set_main_option("sqlalchemy.url", sqlite_url(case.database.path))
     command.downgrade(config, "0074_actor_attribution")
+    prepare_read_only_pinned_schema(
+        case.database.path,
+        (AppSetting, Artifact, Job, TrainingRun, Voice, VoiceSample, Workspace),
+    )
     alpha = case.workspaces["alpha"]
     beta = case.workspaces["beta"]
     missing_voice = _new_voice(case, alpha, "Missing persisted owner")

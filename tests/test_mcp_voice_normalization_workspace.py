@@ -19,7 +19,6 @@ from pandrator_mcp.clients.application_sounds import ApplicationSoundMethods
 from pandrator_mcp.clients.application_voices import ApplicationVoiceMethods
 from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.credentials import CredentialResolver
-from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.network_policy import NetworkPolicy, TargetMode
 from pandrator_mcp.schemas.sounds import ImportAudioReferenceInput
 from pandrator_mcp.schemas.voice_lifecycle import (
@@ -513,9 +512,10 @@ def test_queued_voice_normalization_jobs_keep_work_id_and_scope_fallback(
     assert "secret-sentinel" not in str(outcome.result)
 
 
-def test_raw_binary_voice_reference_query_and_sound_scope_rejection():
+def test_raw_binary_voice_reference_query_and_scoped_sound_forwarding():
     application = RecordingSoundApplication(
-        {"artifact_id": "artifact-1", "sha256": "b" * 64, "size_bytes": 11}
+        {"artifact_id": "artifact-1", "sha256": "b" * 64, "size_bytes": 11},
+        {"id": "candidate-1", "status": "queued"},
     )
     application.import_audio_reference(
         target="voice_reference",
@@ -540,15 +540,26 @@ def test_raw_binary_voice_reference_query_and_sound_scope_rejection():
         )
     ]
 
-    with pytest.raises(ValueError, match="only supported for voice_reference"):
-        application.import_audio_reference(
-            target="sound",
-            filename="sound.wav",
-            body=b"raw-audio",
-            idempotency_key="audio:sound:1",
-            workspace_id="workspace-1",
-        )
-    assert len(application.binary_calls) == 1
+    application.import_audio_reference(
+        target="sound",
+        filename="sound.wav",
+        body=b"raw-audio",
+        idempotency_key="audio:sound:1",
+        workspace_id=" workspace-1 ",
+    )
+    assert application.binary_calls[-1] == (
+        "/api/v1/sounds/import",
+        {
+            "method": "PUT",
+            "body": b"raw-audio",
+            "content_type": "application/octet-stream",
+            "extra_headers": {
+                "X-Audio-Filename": "sound.wav",
+                "Idempotency-Key": "audio:sound:1",
+            },
+            "parameters": {"workspace_id": "workspace-1"},
+        },
+    )
 
     invalid_roots: tuple[Any, ...] = ("", "   ", True, 7, "w" * 81)
     for invalid in invalid_roots:
@@ -588,18 +599,52 @@ def test_direct_raw_audio_client_keeps_sound_route_unqualified():
     ]
 
 
-def test_sound_target_workspace_is_rejected_before_approved_file_read(monkeypatch):
+def test_scoped_sound_target_forwards_workspace_before_candidate_projection(monkeypatch):
     import pandrator_mcp.tools.sound_audio_import as tool_module
 
-    def reject_read(*_args: Any, **_kwargs: Any) -> tuple[bytes, str]:
-        raise AssertionError("approved audio read must not occur for a scoped sound target")
+    reads: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(tool_module, "_read_approved_audio", reject_read)
-    application = RecordingSoundApplication()
-    with pytest.raises(PandratorMcpError) as caught:
-        import_audio_reference(_runtime(application), _audio_input("sound", "workspace-1"))
-    assert caught.value.code == "validation_error"
-    assert application.binary_calls == []
+    def read_approved_audio(*_args: Any, **kwargs: Any) -> tuple[bytes, str]:
+        reads.append((kwargs["root_name"], kwargs["relative_path"]))
+        return b"raw-audio", "sound.wav"
+
+    monkeypatch.setattr(tool_module, "_read_approved_audio", read_approved_audio)
+    application = RecordingSoundApplication(
+        {
+            "id": "candidate-1",
+            "status": "queued",
+            "artifact_id": "artifact-1",
+            "workspace_id": "private-scope",
+        }
+    )
+    outcome = import_audio_reference(
+        _runtime(application), _audio_input("sound", "workspace-1")
+    )
+    assert reads == [("approved-audio", "sample.wav")]
+    assert application.binary_calls == [
+        (
+            "/api/v1/sounds/import",
+            {
+                "method": "PUT",
+                "body": b"raw-audio",
+                "content_type": "application/octet-stream",
+                "extra_headers": {
+                    "X-Audio-Filename": "sound.wav",
+                    "Idempotency-Key": "audio:import:1",
+                },
+                "parameters": {"workspace_id": "workspace-1"},
+            },
+        )
+    ]
+    assert outcome.result == {
+        "candidate": {
+            "id": "candidate-1",
+            "status": "queued",
+            "artifact_id": "artifact-1",
+        }
+    }
+    assert "workspace-1" not in str(outcome.result)
+    assert "private-scope" not in str(outcome.result)
 
 
 def test_raw_voice_reference_result_uses_only_backend_scope(monkeypatch):

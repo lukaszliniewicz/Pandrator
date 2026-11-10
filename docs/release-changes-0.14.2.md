@@ -231,6 +231,10 @@ flush during heartbeats and terminal drains, and logging never fails the job. MC
 preserves `workflow_conflict` and `media_edit_word_timing_incomplete` with backend
 details.
 
+RVC model uploads also prove current administrator authority before inspecting
+upload identifiers or resolving artifacts. This closes a preauthorization error
+path while preserving authorized command-line host execution.
+
 ## Mobile controls and verification
 
 The Generation workspace guarantees at least a 44 CSS-pixel target for playback
