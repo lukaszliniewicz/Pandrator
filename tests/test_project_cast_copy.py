@@ -317,18 +317,32 @@ def test_registered_copy_to_team_consumes_both_destination_pins_after_creator_le
     source_settings = body(users.alice.get(settings_path))
     source_files = {item.relative_path: hashlib.sha256((f.services.paths.root / item.relative_path).read_bytes()).hexdigest() for item in snapshot.files}
 
-    # Orphans and unsupported slots remain opaque. Missing rows omit the whole
-    # ledger; a saved null pin retains its explicit selection in current format.
+    # An unsupported cast slot cannot be reconstructed and blocks the copy; its
+    # selector body is never read or projected.
     marker = "private body must stay omitted"
-    for slot in ('cast:["characters","orphan"]', "segment:00000000-0000-0000-0000-000000000000"):
-        with f.case.database.immediate_session() as session:
-            session.add(m.ProjectSpeechReference(**{**deepcopy(source_refs[0]), "slot_key": slot, "selector_json": {"private": marker}}))
-        with f.case.database.snapshot_session() as session:
-            blocked = capture_with_connections(f.case, session, context, source["project_id"], users.workspace_id, settings_service=f.services.workspace_settings)
-        assert not blocked.ready and marker not in blocked.state_json
-        assert json.loads(blocked.state_json)["unsupported_counts"]["project_speech_references"] == 1
-        with f.case.database.immediate_session() as session:
-            session.delete(session.get_one(m.ProjectSpeechReference, (source["id"], slot)))
+    orphan_slot = 'cast:["characters","orphan"]'
+    with f.case.database.immediate_session() as session:
+        session.add(m.ProjectSpeechReference(**{**deepcopy(source_refs[0]), "slot_key": orphan_slot, "selector_json": {"private": marker}}))
+    with f.case.database.snapshot_session() as session:
+        blocked = capture_with_connections(f.case, session, context, source["project_id"], users.workspace_id, settings_service=f.services.workspace_settings)
+    assert not blocked.ready and marker not in blocked.state_json
+    assert json.loads(blocked.state_json)["unsupported_counts"]["project_speech_references"] == 1
+    with f.case.database.immediate_session() as session:
+        session.delete(session.get_one(m.ProjectSpeechReference, (source["id"], orphan_slot)))
+
+    # A non-current segment slot belongs to excluded revision history: it is
+    # omitted without blocking and without hydrating its selector body.
+    segment_slot = "segment:00000000-0000-0000-0000-000000000000"
+    with f.case.database.immediate_session() as session:
+        session.add(m.ProjectSpeechReference(**{**deepcopy(source_refs[0]), "slot_key": segment_slot, "selector_json": {"private": marker}}))
+    with f.case.database.snapshot_session() as session:
+        omitted = capture_with_connections(f.case, session, context, source["project_id"], users.workspace_id, settings_service=f.services.workspace_settings)
+    omitted_state = json.loads(omitted.state_json)
+    assert omitted.ready and marker not in omitted.state_json
+    assert "project_speech_references" not in omitted_state["unsupported_counts"]
+    assert all(row["slot_key"] != segment_slot for row in omitted_state["rows"]["project_speech_references"])
+    with f.case.database.immediate_session() as session:
+        session.delete(session.get_one(m.ProjectSpeechReference, (source["id"], segment_slot)))
     for missing in (False, True):
         with f.case.database.immediate_session() as session:
             reference = session.get_one(m.ProjectSpeechReference, (source["id"], source_refs[0]["slot_key"]))

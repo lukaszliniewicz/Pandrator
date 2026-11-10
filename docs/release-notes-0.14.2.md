@@ -11,6 +11,7 @@
 - **Refresh narration length automatically.** Generation checks the effective narration length before previewing. Untouched automatic plans are resegmented when the target changes; edited plans keep their boundaries. Breeze and VoxCPM2 use shorter automatic targets.
 - **More reliable automation and long jobs.** Translation branch creation is atomic and idempotent. Job logs are bounded and redacted, and completed speech assemblies survive later progress failures.
 - **Cheaper assembly authorization.** Output assembly now uses constant-size database authorization checks per job, however many segments it renders, and still proves current access before publishing.
+- **Easier mobile controls.** On phone-sized screens, playback and Generate controls keep at least a 44-pixel touch target even when the browser uses smaller text scaling.
 
 [Detailed changes and guide links](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.14.2/docs/release-changes-0.14.2.md).
 

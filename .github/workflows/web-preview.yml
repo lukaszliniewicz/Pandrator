@@ -62,9 +62,43 @@ jobs:
           - name: ubuntu-web-06
             os: ubuntu-latest
             lanes: web-06-serial
-          - name: ubuntu-web-07
+          # Former web-07 suite split into bounded serial lanes after CI timeouts.
+          - name: ubuntu-web-07-01
             os: ubuntu-latest
-            lanes: web-07-serial
+            lanes: web-07-01-serial
+          - name: ubuntu-web-07-02
+            os: ubuntu-latest
+            lanes: web-07-02-serial
+          - name: ubuntu-web-07-03
+            os: ubuntu-latest
+            lanes: web-07-03-serial
+          - name: ubuntu-web-07-04
+            os: ubuntu-latest
+            lanes: web-07-04-serial
+          - name: ubuntu-web-07-05
+            os: ubuntu-latest
+            lanes: web-07-05-serial
+          - name: ubuntu-web-07-06
+            os: ubuntu-latest
+            lanes: web-07-06-serial
+          - name: ubuntu-web-07-07
+            os: ubuntu-latest
+            lanes: web-07-07-serial
+          - name: ubuntu-web-07-08
+            os: ubuntu-latest
+            lanes: web-07-08-serial
+          - name: ubuntu-web-07-09
+            os: ubuntu-latest
+            lanes: web-07-09-serial
+          - name: ubuntu-web-07-10
+            os: ubuntu-latest
+            lanes: web-07-10-serial
+          - name: ubuntu-web-07-11
+            os: ubuntu-latest
+            lanes: web-07-11-serial
+          - name: ubuntu-web-07-12
+            os: ubuntu-latest
+            lanes: web-07-12-serial
           - name: ubuntu-web-08
             os: ubuntu-latest
             lanes: web-08-serial
@@ -120,9 +154,43 @@ jobs:
           - name: windows-web-06
             os: windows-latest
             lanes: web-06-serial
-          - name: windows-web-07
+          # Former web-07 suite split into bounded serial lanes after CI timeouts.
+          - name: windows-web-07-01
             os: windows-latest
-            lanes: web-07-serial
+            lanes: web-07-01-serial
+          - name: windows-web-07-02
+            os: windows-latest
+            lanes: web-07-02-serial
+          - name: windows-web-07-03
+            os: windows-latest
+            lanes: web-07-03-serial
+          - name: windows-web-07-04
+            os: windows-latest
+            lanes: web-07-04-serial
+          - name: windows-web-07-05
+            os: windows-latest
+            lanes: web-07-05-serial
+          - name: windows-web-07-06
+            os: windows-latest
+            lanes: web-07-06-serial
+          - name: windows-web-07-07
+            os: windows-latest
+            lanes: web-07-07-serial
+          - name: windows-web-07-08
+            os: windows-latest
+            lanes: web-07-08-serial
+          - name: windows-web-07-09
+            os: windows-latest
+            lanes: web-07-09-serial
+          - name: windows-web-07-10
+            os: windows-latest
+            lanes: web-07-10-serial
+          - name: windows-web-07-11
+            os: windows-latest
+            lanes: web-07-11-serial
+          - name: windows-web-07-12
+            os: windows-latest
+            lanes: web-07-12-serial
           - name: windows-web-08
             os: windows-latest
             lanes: web-08-serial

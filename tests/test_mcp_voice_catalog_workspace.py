@@ -21,6 +21,7 @@ from pandrator_mcp.schemas.voice_lifecycle import (
     UpdateVoiceCollectionInput,
     VoiceCatalogCapabilitiesInput,
     VoiceCatalogInput,
+    _RevisionWriteInput,
 )
 from pandrator_mcp.server import build_server
 from pandrator_mcp.tools.voice_lifecycle import (
@@ -77,6 +78,13 @@ def _scope_input(model: type, **scope: Any) -> Any:
             "changes": {"name": "Narrator"},
             "idempotency_key": "catalog:metadata:1",
         },
+        PromoteVoiceDesignInput: {
+            "voice_id": "voice-1",
+            "artifact_id": "artifact-1",
+            "transcript": "Hello",
+            "expected_voice_revision": 1,
+            "idempotency_key": "voice:promote:1",
+        },
     }[model]
     return model.model_validate(values | scope)
 
@@ -90,6 +98,7 @@ _WRITE_INPUTS = (
     CreateVoiceCollectionInput,
     UpdateVoiceCollectionInput,
     UpdateCatalogVoiceMetadataInput,
+    PromoteVoiceDesignInput,
 )
 
 
@@ -121,19 +130,9 @@ def test_scope_roots_are_optional_trimmed_and_strict(model: type):
 
 
 def test_scope_roots_do_not_spread_to_the_shared_revision_write_base():
-    assert "workspace_id" not in PromoteVoiceDesignInput.model_fields
-    assert "session_id" not in PromoteVoiceDesignInput.model_fields
-    with pytest.raises(ValidationError):
-        PromoteVoiceDesignInput.model_validate(
-            {
-                "voice_id": "voice-1",
-                "artifact_id": "artifact-1",
-                "transcript": "Hello",
-                "expected_voice_revision": 1,
-                "idempotency_key": "voice:promote:1",
-                "workspace_id": "workspace-1",
-            }
-        )
+    # Concrete revision writes opt into a workspace root individually. The
+    # shared base must stay scope-free so new write tools cannot inherit it.
+    assert set(_RevisionWriteInput.model_fields) == {"idempotency_key"}
 
 
 def test_real_request_builders_forward_roots_only_as_fixed_query_parameters():

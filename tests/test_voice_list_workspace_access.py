@@ -334,7 +334,7 @@ def test_named_get_head_do_not_hydrate_and_workspace_policy_queries_do_not_scale
 
     monkeypatch.setattr(voice_routes, "ensure_bundled_voice", unexpected)
     monkeypatch.setattr(voice_routes, "package_metadata", unexpected)
-    monkeypatch.setattr(voice_routes, "resolve_voice_sample_transcription_settings", unexpected)
+    monkeypatch.setattr(voice_routes, "capture_voice_transcription_settings", unexpected)
     monkeypatch.setattr("pandrator.web.credentials.resolve_provider_credential", unexpected)
 
     def query_policy(client):

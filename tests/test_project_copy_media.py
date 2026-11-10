@@ -236,7 +236,9 @@ def test_active_edit_copies_independently_and_omits_unpinned_history(publication
     ]
     assert copied_source_revision["instructions"] == "Keep the reviewed excerpt."
     assert copied_source_revision["reviewed"] is True
-    assert copied_source_revision["cues_json"] == edited["plan"]["cues"]
+    # cues_json is the stored row; timing_flags are derived by the media-edit
+    # service at read time and are not persisted in the copy.
+    assert copied_source_revision["cues_json"] == original_rows["revision"][6]
     assert copied_source_revision["content_hash"] == original_rows["revision"][4]
     assert rows["media_edit_plans"] and any(
         row["active_revision_id"] is None for row in rows["media_edit_plans"]
@@ -267,7 +269,7 @@ def test_active_edit_copies_independently_and_omits_unpinned_history(publication
     assert copied_state["plan"]["revision"] == 2
     assert copied_state["plan"]["parent_revision_id"] is None
     assert copied_state["plan"]["keep_ranges"] == copied_source_revision["keep_ranges_json"]
-    assert copied_state["plan"]["cues"] == copied_source_revision["cues_json"]
+    assert copied_state["plan"]["cues"] == edited["plan"]["cues"]
     assert copied_state["plan"]["instructions"] == copied_source_revision["instructions"]
     assert copied_state["plan"]["reviewed"] is True
     assert copied_state["plan"]["content_hash"] != copied_source_revision["content_hash"]

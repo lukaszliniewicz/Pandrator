@@ -159,8 +159,12 @@ IDS = {
 
 def _config(path: Path) -> Config:
     config = Config()
-    config.set_main_option("script_location", str(MIGRATIONS))
-    config.set_main_option("sqlalchemy.url", str(URL.create("sqlite", database=str(path))))
+    # Alembic uses ConfigParser interpolation, so escape SQLAlchemy 2.1 URL %.
+    config.set_main_option("script_location", str(MIGRATIONS).replace("%", "%%"))
+    config.set_main_option(
+        "sqlalchemy.url",
+        str(URL.create("sqlite", database=str(path))).replace("%", "%%"),
+    )
     return config
 
 

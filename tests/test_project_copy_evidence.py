@@ -23,7 +23,10 @@ from pandrator.web.projects.copy_evidence import (
     validate_evidence_graph,
 )
 from pandrator.web.projects.copy_publication import copy_identity
-from pandrator.web.projects.copy_snapshot import capture_current_project
+from tests.project_copy_test_support import (
+    capture_with_connections,
+    snapshot_destination_connections,
+)
 from tests.test_project_copy_publication import (
     _publish,
     _stage,
@@ -285,14 +288,16 @@ def _insert_evidence(
     return evidence_id, clip.id, transcript.id, transcript_bytes, source_media.id
 
 
-def _capture_for(case):
+def _capture_for(case, **kwargs):
     with case.database.snapshot_session() as session:
-        return capture_current_project(
+        return capture_with_connections(
+            case,
             session,
             _context(case.principal),
             case.source.project_id,
             case.destination,
             settings_service=case.services.workspace_settings,
+            **kwargs,
         )
 
 
@@ -606,6 +611,7 @@ def test_unreferenced_active_evidence_and_files_are_omitted_and_active_reference
     assert unreferenced.ready
     assert unreferenced_rows["rows"]["subtitle_evidence"] == []
     assert not {inactive[1], inactive[2], active[1], active[2]} & copied_artifacts
+    destination_connections = snapshot_destination_connections(unreferenced)
 
     with case.database.immediate_session() as session:
         segment = session.get(m.Segment, segment_id)
@@ -619,7 +625,7 @@ def test_unreferenced_active_evidence_and_files_are_omitted_and_active_reference
 
     event.listen(case.database.engine, "before_cursor_execute", record)
     try:
-        blocked = _capture_for(case)
+        blocked = _capture_for(case, destination_connections=destination_connections)
     finally:
         event.remove(case.database.engine, "before_cursor_execute", record)
 

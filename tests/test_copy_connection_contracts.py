@@ -18,6 +18,7 @@ from pandrator.web.projects.copy_connections import (
 )
 from pandrator.web.projects.copy_contracts import (
     COPY_STATE_VERSION,
+    SUPPORTED_COPY_STATE_VERSIONS,
     ProjectCopyError,
     ProjectCopySnapshot,
 )
@@ -80,7 +81,7 @@ def state(data, bindings, version=6):
         "binding_fields": {},
         "unsupported_counts": {},
     }
-    if version in {6, 7, 8, 9, 10}:
+    if version >= 6:
         value["destination_connections"] = bindings
     return value
 
@@ -237,13 +238,13 @@ def test_frozen_targets_and_exact_saved_selectors_are_validated(mutate):
         validate_connection_state(state(data, bindings), data)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+@pytest.mark.parametrize("version", sorted(SUPPORTED_COPY_STATE_VERSIONS))
 def test_frozen_versions_retain_exact_binding_key_set(version):
     data = rows()
     value = state(data, [], version)
     assert validate_connection_state(value, data) == []
     changed = deepcopy(value)
-    if version in {6, 7, 8, 9, 10}:
+    if version >= 6:
         changed.pop("destination_connections")
     else:
         changed["destination_connections"] = []
@@ -252,7 +253,8 @@ def test_frozen_versions_retain_exact_binding_key_set(version):
     data["session_settings"][0]["value_json"]["model_name"] = "custom:private/model"
     with pytest.raises(ProjectCopyError):
         validate_connection_state(value, data)
-    assert COPY_STATE_VERSION == 10
+    # Adding a schema version must review the frozen binding-key contract here.
+    assert COPY_STATE_VERSION == max(SUPPORTED_COPY_STATE_VERSIONS) == 15
 
 
 def test_ready_state_cannot_drop_active_requirement_or_binding():

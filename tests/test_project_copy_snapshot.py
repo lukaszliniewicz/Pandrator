@@ -689,7 +689,9 @@ def test_unsupported_dependencies_and_lifecycle_never_look_ready(copy_case, kind
         elif kind == "trashed_language_versions":
             session.get(m.SessionRecord, case.branches[1]["session_id"]).trashed_at = m.utcnow()
         else:
-            session.get(m.SessionRecord, case.branches[1]["session_id"]).workflow_kind = "voiceover"
+            # Copy supports subtitles, media_edit, and voiceover. Audiobook
+            # remains outside the current copy contract and must not look ready.
+            session.get(m.SessionRecord, case.branches[1]["session_id"]).workflow_kind = "audiobook"
     snapshot = _capture(case)
     assert ("unsupported_state", kind) in snapshot.blockers
     assert not snapshot.ready
@@ -779,7 +781,9 @@ def test_artifact_scope_and_in_predicates_are_chunked_at_500(copy_case):
             wraps=capture_module.visible_artifact_ids_statement,
         ) as scoped:
             snapshot = _capture(case)
-            assert scoped.call_count <= 3
+            # Capture authorizes the artifact closure once per convergence pass;
+            # this fixture needs two passes, and each pass must chunk at 500.
+            assert scoped.call_count == 2 * -(-len(snapshot.files) // 500)
     finally:
         event.remove(case.database.engine, "before_cursor_execute", record)
     assert len(snapshot.files) >= 520

@@ -231,6 +231,20 @@ flush during heartbeats and terminal drains, and logging never fails the job. MC
 preserves `workflow_conflict` and `media_edit_word_timing_incomplete` with backend
 details.
 
+## Mobile controls and verification
+
+The Generation workspace guarantees at least a 44 CSS-pixel target for playback
+and Generate controls in narrow layouts, even when a browser's root font size
+is smaller than the default. The responsive browser test also checks layout
+after viewport changes rather than accepting transient resize measurements.
+
+Release test qualification now splits the previously oversized `web-07` Python
+suite into twelve independent serial lanes on both Windows and Linux. The
+manifest checks exact file coverage and caps serial web lanes at 60 files; the
+manual Windows workflow uses the same updated names. Cross-platform test
+fixtures were aligned with the current copy contract and workspace ownership
+rules without relaxing production authorization.
+
 ## Updates and compatibility
 
 Manager remains **0.9.31**; this release does not require a Manager update. MCP

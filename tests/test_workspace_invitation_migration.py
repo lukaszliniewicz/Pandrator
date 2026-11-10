@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL, make_url
 
 from pandrator.web.database import SCHEMA_HEAD
 from pandrator.web.models import Base, WorkspaceInvitation
@@ -25,8 +25,14 @@ TARGET = "0083_workspace_invitations"
 
 def config(path: Path) -> Config:
     result = Config()
-    result.set_main_option("script_location", str(MIGRATIONS))
-    result.set_main_option("sqlalchemy.url", str(URL.create("sqlite", database=str(path))))
+    # Config.set_main_option goes through ConfigParser interpolation, so a
+    # literal "%" must be escaped. SQLAlchemy renders Windows sqlite paths
+    # percent-encoded (C%3A%5C...), which would otherwise raise ValueError.
+    result.set_main_option("script_location", str(MIGRATIONS).replace("%", "%%"))
+    result.set_main_option(
+        "sqlalchemy.url",
+        str(URL.create("sqlite", database=str(path))).replace("%", "%%"),
+    )
     return result
 
 
@@ -34,6 +40,21 @@ def connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     connection.execute("PRAGMA foreign_keys=ON")
     return connection
+
+
+def test_config_accepts_percent_encoded_windows_database_urls(tmp_path: Path) -> None:
+    # SQLAlchemy renders Windows sqlite paths percent-encoded (C%3A%5C...) and
+    # ConfigParser rejects a raw "%". The escaped config must hand Alembic the
+    # original URL and still open the requested file, not a mangled name.
+    path = tmp_path / "percent%3Aencoded.sqlite3"
+    url = str(URL.create("sqlite", database=str(path)))
+    assert "%" in url
+    result = config(path)
+    assert result.get_main_option("sqlalchemy.url") == url
+    command.upgrade(result, TARGET)
+    assert make_url(result.get_main_option("sqlalchemy.url")).database == str(path)
+    with connect(path) as db:
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (TARGET,)
 
 
 def all_old_rows(path: Path) -> dict[str, list[tuple]]:

@@ -435,7 +435,9 @@ def test_unretained_cast_blocks_its_xml_plan_without_loading_plan_bodies(retaine
     with p.f.case.database.immediate_session() as session:
         reference = session.scalar(select(m.ProjectSpeechReference).where(m.ProjectSpeechReference.session_id == p.source["id"]).order_by(m.ProjectSpeechReference.slot_key))
         assert reference is not None
-        reference.input_artifact_id = reference.input_content_hash = None
+        # A null pin is a retained explicit selection. An absent binding row
+        # cannot be reconstructed, so its controls ledger and XML plan must block.
+        session.delete(reference)
     statements = []
     def observe(_c, _cu, statement, _p, _co, _e):
         statements.append(statement)

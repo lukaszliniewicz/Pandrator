@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import socket
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,21 @@ from tests.test_settings_workspace_access import counts, put
 
 SECRET = "synthetic-speech-secret"
 NATIVE_MODEL = "qwen3_tts_1_7b_customvoice_q8_0"
+EVIDENCE_ROOT = (
+    Path(__file__).resolve().parents[1]
+    / ".local-notes"
+    / "multi-user-2026-10-23"
+    / "continued-implementation"
+    / "workspace-sharing-r3"
+)
+
+
+def write_evidence(relative_path: str, text: str) -> None:
+    """Retain qualification evidence in the git-ignored local notes tree."""
+
+    destination = EVIDENCE_ROOT / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(text)
 
 
 @pytest.fixture(autouse=True)
@@ -578,11 +594,7 @@ def test_member_capture_sql_is_fixed_without_private_builders(
     }
     (tmp_path / "speech-member-sql.json").write_text(json.dumps(summary, indent=2))
     # Durable evidence contains SQL only, never credential/input values.
-    from pathlib import Path
-
-    Path(
-        ".local-notes/multi-user-2026-10-23/continued-implementation/workspace-sharing-r3/speech-catalogue-workspace/member-sql.json"
-    ).write_text(json.dumps(summary, indent=2))
+    write_evidence("speech-catalogue-workspace/member-sql.json", json.dumps(summary, indent=2))
 
 
 def test_nonlegacy_personal_and_team_never_inspect_host_adc(case, catalogue, monkeypatch):
@@ -1021,8 +1033,6 @@ def test_passive_capabilities_member_selected_detail_uses_only_canonical_models(
 def test_summary_payload_get_is_safe_for_manager_and_member_and_bounded(
     case, catalogue, monkeypatch
 ):
-    from pathlib import Path
-
     from pandrator.logic.tts_provider_profiles import AUDIO_CPP_MODEL_CATALOG
     from pandrator.web.speech_catalogue_projection import summary_tts_payload
 
@@ -1140,9 +1150,10 @@ def test_summary_payload_get_is_safe_for_manager_and_member_and_bounded(
     assert row["catalogue"] == {"source": "configured", "complete": False}
     assert row["model_catalog"] == [{"id": "m", "loaded": True}]
     measured["canonical_model_count"] = len(AUDIO_CPP_MODEL_CATALOG)
-    Path(
-        ".local-notes/multi-user-2026-10-23/continued-implementation/workspace-sharing-r3/speech-catalogue-workspace/summary-payload/bytes.json"
-    ).write_text(json.dumps(measured, indent=2))
+    write_evidence(
+        "speech-catalogue-workspace/summary-payload/bytes.json",
+        json.dumps(measured, indent=2),
+    )
 
 
 def test_summary_payload_post_refreshes_only_selection_then_projects(case, catalogue, monkeypatch):

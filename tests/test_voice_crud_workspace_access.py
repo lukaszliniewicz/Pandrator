@@ -15,6 +15,22 @@ from tests.test_evidence_access_routes import body, headers, team
 from tests.test_provider_workspace_access import scoped_token, sql_capture
 from tests.test_voice_lifecycle_idempotency import silent_wav
 
+EVIDENCE_ROOT = (
+    Path(__file__).resolve().parents[1]
+    / ".local-notes"
+    / "multi-user-2026-10-23"
+    / "continued-implementation"
+    / "workspace-sharing-r3"
+)
+
+
+def write_evidence(relative_path: str, text: str) -> None:
+    """Retain qualification evidence in the git-ignored local notes tree."""
+
+    destination = EVIDENCE_ROOT / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(text)
+
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
@@ -400,9 +416,7 @@ def test_busy_delete_uses_scoped_job_headers_and_cleanup_only_after_commit(case,
     monkeypatch.setattr(routes, "remove_managed_files", cleanup)
     assert users.bob.delete(target, headers={**users.bh, "If-Match": '"1"'}).status_code == 204
     assert seen == [path.resolve()] and not path.exists()
-    Path(
-        ".local-notes/multi-user-2026-10-23/continued-implementation/workspace-sharing-r3/voice-crud-workspace/job-header-sql.txt"
-    ).write_text(queries[0])
+    write_evidence("voice-crud-workspace/job-header-sql.txt", queries[0])
 
 
 def test_bundle_protection_and_strict_scope_preserve_records_and_files(case, monkeypatch):

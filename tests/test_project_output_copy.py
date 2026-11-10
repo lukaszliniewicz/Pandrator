@@ -693,7 +693,9 @@ def test_registered_saved_output_lifecycle_recopy_and_current_assembly_selection
     )
     assert preview["counts"]["saved_speech_outputs"] == 1
     state = json.loads(snapshot.state_json)
-    assert state["schema_version"] == 10 and "output_assemblies" not in state["rows"]
+    # Current capture emits the frozen schema version and keeps operational
+    # output assemblies out of the copied row families.
+    assert state["schema_version"] == 15 and "output_assemblies" not in state["rows"]
     frozen_output = next(row for row in state["rows"]["artifacts"] if row["id"] == output.id)
     assert (
         frozen_output["role"] == SAVED_SPEECH_ROLE
