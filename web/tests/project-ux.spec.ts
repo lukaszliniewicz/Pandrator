@@ -144,7 +144,11 @@ test('overview tools and narration help are discoverable; both views show run me
     name: 'About Whole-sentence threshold (characters)',
     exact: true
   });
+  // A focus-induced scroll must settle before activation: the shared help
+  // popover dismisses itself when its anchor moves.
+  await help.scrollIntoViewIfNeeded();
   await help.focus();
+  await expect(help).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(
     page.getByRole('tooltip').filter({ hasText: /separate from wtpsplit/ })
