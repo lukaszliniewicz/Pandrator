@@ -323,7 +323,7 @@ class AudioIdentityContext:
         self._service_config_cache: dict = _service_config_cache if _service_config_cache is not None else {}
         # Retained cast pins already proven in this context; a failing proof is
         # never recorded, so it runs again and raises as before.
-        self._retained_proofs: dict = {}
+        self._retained_proofs: set[tuple[Any, ...]] = set()
         self._material_settings_cache: dict[str, dict[str, Any]] = {}
         self._voice_reference_cache: dict[str, Any] = {}
         self._service_id_cache: dict[str, str] = {}
@@ -544,7 +544,10 @@ class AudioIdentityContext:
             if pinned.get("_performance_error"):
                 raise ValueError(pinned["_performance_error"])
             text = segment.optimized_text or segment.text
-            prepared = segment_performance_settings(settings, pinned, segment.id, text, contexts=contexts)
+            prepared = segment_performance_settings(
+                settings, pinned, segment.id, text, contexts=contexts,
+                _service_config_cache=self._service_config_cache,
+            )
             if settings.get("casting_enabled"):
                 from .generation_cast_runtime import (
                     segment_render_parts,

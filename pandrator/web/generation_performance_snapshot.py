@@ -121,13 +121,16 @@ def freeze_generation_performance_snapshot(
 def segment_performance_settings(
     settings: dict[str, Any], snapshot: dict[str, Any], segment_id: str, text: str,
     *, contexts: dict[str, dict[str, str]] | None = None,
+    _service_config_cache=None,
 ) -> dict[str, Any]:
     """Supply request-only metadata without changing spoken or alignment text."""
     from copy import deepcopy
 
     from .generation_cast_runtime import apply_segment_voice
 
-    result = apply_segment_voice(settings, snapshot, segment_id)
+    result = apply_segment_voice(
+        settings, snapshot, segment_id, _service_config_cache=_service_config_cache,
+    )
     result.pop("_performance", None)
     result.pop("_semantic_context", None)
     if bool(settings.get("performance_enabled")):

@@ -1,7 +1,6 @@
 """Shared audio identity work stays cheap on a cast plan with retained pins.
 
-Story 2 of the large-project responsiveness epic.  Before the change every cast
-span rebuilt and deep-copied the whole TTS service catalogue
+Before the change every cast span rebuilt and deep-copied the whole TTS service catalogue
 (``apply_resolved_binding`` called ``resolve_capabilities`` without the
 request's cache) and re-proved its retained pin against the database
 (``validate_retained_cast_resolution``).  Measured on the unchanged code with the
@@ -15,6 +14,7 @@ wall-clock assertions: the tests count builds and statements.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import ExitStack
 from typing import Any
 from unittest.mock import patch
 
@@ -24,6 +24,7 @@ from sqlalchemy import event
 from pandrator.logic import speech_performance, tts_service_catalogue
 from pandrator.web import generation_cast_runtime as cast_runtime
 from pandrator.web import models as m
+from pandrator.web import speech_inputs
 from pandrator.web.access.contracts import AccessDenied
 from pandrator.web.accounts.execution_actor import execution_actor_scope
 from pandrator.web.generation_audio_identity import (
@@ -118,7 +119,13 @@ def varied_plan(cast_project):  # noqa: F811
 
 
 def _uncached(*args, **kwargs):
-    """The capability resolver as it behaved before the cache was threaded."""
+    """Resolve capabilities with any cache dropped.
+
+    This strips the cache from every capability lookup in the cast runtime,
+    including those that already used it before the change, so the reference
+    builds the catalogue more often than the old code did. Identity equality
+    with it shows the cache never changes a result.
+    """
     original = speech_performance.resolve_capabilities
     settings = args[0]
     endpoint = args[1] if len(args) > 1 else kwargs.get("endpoint")
@@ -133,18 +140,28 @@ def _without_proof_memo(session, session_id, binding, settings, resolved, *args,
 _validate = cast_runtime.validate_retained_cast_resolution
 
 
-def _reference_patches():
-    return (
-        patch.object(cast_runtime, "resolve_capabilities", _uncached),
-        patch.object(cast_runtime, "validate_retained_cast_resolution", _without_proof_memo),
+def _reference_patches(stack: ExitStack) -> None:
+    stack.enter_context(patch.object(cast_runtime, "resolve_capabilities", _uncached))
+    stack.enter_context(
+        patch.object(cast_runtime, "validate_retained_cast_resolution", _without_proof_memo)
+    )
+
+
+def _count_builds():
+    return patch.object(
+        tts_service_catalogue,
+        "_default_service_config_templates",
+        wraps=tts_service_catalogue._default_service_config_templates,
     )
 
 
 def reference_pass(plan: Plan, actor, session_factory, *, one_at_a_time=True):
     """No catalogue cache and no proof memo; by default each segment in a fresh context."""
     result: dict[str, dict[str, Any]] = {}
-    patches = _reference_patches()
-    with execution_actor_scope(actor), patches[0], patches[1], session_factory() as session:
+    with ExitStack() as stack:
+        _reference_patches(stack)
+        stack.enter_context(execution_actor_scope(actor))
+        session = stack.enter_context(session_factory())
         if not one_at_a_time:
             return plan.run(session)
         for segment_id in plan.ids:
@@ -165,11 +182,8 @@ def measured_pass(plan: Plan, actor, session_factory, segment_ids=None):
     engine = plan.c.r.f.case.database.engine
     event.listen(engine, "before_cursor_execute", record)
     try:
-        with execution_actor_scope(actor), patch.object(
-            tts_service_catalogue,
-            "_default_service_config_templates",
-            wraps=tts_service_catalogue._default_service_config_templates,
-        ) as build, session_factory() as session:
+        with execution_actor_scope(actor), _count_builds() as build, \
+                session_factory() as session:
             identities = plan.run(session, segment_ids)
     finally:
         event.remove(engine, "before_cursor_execute", record)
@@ -186,6 +200,14 @@ def test_cast_identities_match_the_uncached_reference(varied_plan):
     whole = reference_pass(plan, actor, _factory(plan), one_at_a_time=False)
     identities, _builds, _statements = measured_pass(plan, actor, _factory(plan))
     assert identities == reference == whole
+    # Listings and history read with live cast material, one shared context.
+    with execution_actor_scope(actor), _factory(plan)() as session:
+        context = AudioIdentityContext(session, plan.snapshot)
+        live = {
+            segment_id: context.for_segment(session.get_one(m.GenerationSegment, segment_id))
+            for segment_id in plan.ids
+        }
+    assert live == identities
     assert all("performance_error" not in value for value in identities.values()), identities
     assert len({value["settings_hash"] for value in identities.values()}) >= 3
     by_kind = dict(zip(plan.ids, KINDS, strict=True))
@@ -254,7 +276,7 @@ def test_proof_memo_skips_only_repeated_successful_proofs(varied_plan):
     sid = plan.c.p.source["id"]
     with execution_actor_scope(actor), _factory(plan)() as session:
         settings, resolved = _fred_resolution(plan, session)
-        proofs: dict = {}
+        proofs: set = set()
         first = cast_runtime.validate_retained_cast_resolution(
             session, sid, plan.c.binding, settings, resolved, {}, _proofs=proofs,
         )
@@ -277,7 +299,7 @@ def test_proof_memo_never_hides_a_settings_mismatch(varied_plan):
     sid = plan.c.p.source["id"]
     with execution_actor_scope(actor), _factory(plan)() as session:
         settings, resolved = _fred_resolution(plan, session)
-        proofs: dict = {}
+        proofs: set = set()
         cast_runtime.validate_retained_cast_resolution(
             session, sid, plan.c.binding, settings, resolved, {}, _proofs=proofs,
         )
@@ -294,7 +316,7 @@ def test_failed_access_and_pin_proofs_are_not_remembered(varied_plan):
     sid = plan.c.p.source["id"]
     with execution_actor_scope(actor), _factory(plan)() as session:
         settings, resolved = _fred_resolution(plan, session)
-        proofs: dict = {}
+        proofs: set = set()
         with patch(
             "pandrator.web.access.current_session_policy.require_current_session_access",
             side_effect=AccessDenied(),
@@ -304,7 +326,7 @@ def test_failed_access_and_pin_proofs_are_not_remembered(varied_plan):
                     cast_runtime.validate_retained_cast_resolution(
                         session, sid, plan.c.binding, settings, resolved, {}, _proofs=proofs,
                     )
-        assert access.call_count == 2 and proofs == {}
+        assert access.call_count == 2 and proofs == set()
         session.get_one(m.Artifact, plan.c.fred.pin["artifact_id"]).state = "deleted"
         session.flush()
         errors = []
@@ -319,41 +341,124 @@ def test_failed_access_and_pin_proofs_are_not_remembered(varied_plan):
 
 
 def _freeze_fresh(plan: Plan, actor, *, reference: bool, carried=None):
-    """Resolve a fresh snapshot and freeze the revision once; return it and its build count."""
+    """Freeze the revision once from a fresh snapshot; return it, its builds and pin proofs."""
     r = plan.c.r
-    patches = _reference_patches() if reference else ()
-    with execution_actor_scope(actor), r.f.case.database.immediate_session() as session:
+    with ExitStack() as stack:
+        stack.enter_context(execution_actor_scope(actor))
+        session = stack.enter_context(r.f.case.database.immediate_session())
         snapshot, _digest = r.f.services.workspace_settings.resolve_in_session(
             session, plan.c.p.source["id"],
         )
-        with patch.object(
-            tts_service_catalogue,
-            "_default_service_config_templates",
-            wraps=tts_service_catalogue._default_service_config_templates,
-        ) as build:
-            for patcher in patches:
-                patcher.start()
-            try:
-                freeze_speech_snapshot(
-                    session, plan.revision_id, snapshot, _carried_cast_snapshot=carried,
-                )
-            finally:
-                for patcher in patches:
-                    patcher.stop()
-    return snapshot, build.call_count
+        build = stack.enter_context(_count_builds())
+        proof = stack.enter_context(patch(
+            "pandrator.web.speech_inputs.check_speech_input",
+            wraps=speech_inputs.check_speech_input,
+        ))
+        if reference:
+            _reference_patches(stack)
+        freeze_speech_snapshot(
+            session, plan.revision_id, snapshot, _carried_cast_snapshot=carried,
+        )
+    return snapshot, build.call_count, proof.call_count
 
 
 @pytest.mark.parametrize("carry", [False, True])
 def test_cast_freeze_matches_the_uncached_reference(varied_plan, carry):
     plan, actor = varied_plan
     carried = plan.snapshot["generation_control_snapshot"] if carry else None
-    reference, reference_builds = _freeze_fresh(plan, actor, reference=True, carried=carried)
-    frozen, builds = _freeze_fresh(plan, actor, reference=False, carried=carried)
+    reference, reference_builds, reference_proofs = _freeze_fresh(
+        plan, actor, reference=True, carried=carried,
+    )
+    frozen, builds, proofs = _freeze_fresh(plan, actor, reference=False, carried=carried)
     # The freeze writes no timestamp or generated id into the snapshot, so every
     # frozen key (cast snapshot, performance snapshot, language bindings) is compared.
     assert frozen.keys() == reference.keys()
     assert frozen["generation_control_snapshot"]["resolved_bindings"]
     for key in frozen:
         assert frozen[key] == reference[key], key
-    # Measured: 3 builds against 18 (fresh freeze) and 32 (carried) uncached.
+    # Measured: 3 builds against 18 (fresh) and 32 (carried) in the reference,
+    # and 2 pin proofs against 10 in the carried reference.
     assert builds <= 4 and builds < reference_builds, (builds, reference_builds)
+    if carry:
+        # Each carried pin (Fred's and Wilma's) is proven once, not once per segment.
+        assert proofs == 2 and reference_proofs > proofs, (proofs, reference_proofs)
+
+
+def _with_segment_voices(plan: Plan) -> dict[str, Any]:
+    """Give every segment its own frozen voice choice, retained from Fred's pin."""
+    from copy import deepcopy
+
+    snapshot = deepcopy(plan.snapshot)
+    frozen = snapshot["generation_control_snapshot"]
+    fred_key = cast_runtime.cast_resolution_key(plan.c.binding, FRED_SLOT, schema_version=2)
+    for segment_id in plan.ids:
+        entry = frozen["segments"].setdefault(segment_id, {})
+        resolutions = entry.get("resolved_bindings", frozen["resolved_bindings"])
+        fred = resolutions.get(fred_key) or frozen["resolved_bindings"][fred_key]
+        slot = cast_runtime.cast_resolution_key(
+            plan.c.binding, f"segment:{segment_id}", schema_version=2,
+        )
+        resolutions[slot] = deepcopy(fred)
+        entry["voice_binding"] = dict(plan.c.binding)
+    return snapshot
+
+
+def test_segment_voices_build_the_catalogue_once_per_pass(varied_plan):
+    plan, actor = varied_plan
+    voiced = Plan(plan.c, plan.revision_id, plan.ids, _with_segment_voices(plan))
+    reference = reference_pass(voiced, actor, _factory(plan), one_at_a_time=False)
+    identities, builds, _statements = measured_pass(voiced, actor, _factory(plan))
+    assert identities == reference
+    assert all("performance_error" not in value for value in identities.values()), identities
+    assert builds <= 2, builds
+
+
+def test_voice_change_pauses_build_the_catalogue_once(varied_plan):
+    from copy import deepcopy
+
+    from pandrator.web.speech_boundaries import freeze_boundaries
+
+    plan, actor = varied_plan
+    snapshot = deepcopy(plan.snapshot)
+    snapshot["audio"] = {**(snapshot.get("audio") or {}), "voice_change_silence_ms": 250}
+    with execution_actor_scope(actor), _factory(plan)() as session:
+        reference = deepcopy(snapshot)
+        with ExitStack() as stack:
+            _reference_patches(stack)
+            freeze_boundaries(session, plan.revision_id, reference)
+        with _count_builds() as build:
+            freeze_boundaries(session, plan.revision_id, snapshot)
+    assert snapshot["speech_boundaries"] == reference["speech_boundaries"]
+    assert any(
+        entry["silence_after_ms"] >= 250 for entry in snapshot["speech_boundaries"].values()
+    )
+    assert build.call_count <= 1, build.call_count
+
+
+def test_proof_memo_consults_a_pending_proof_once_per_revision(varied_plan):
+    plan, actor = varied_plan
+    sid = plan.c.p.source["id"]
+    calls: list[str | None] = []
+
+    def pending(_session, _owner, revision_id, _pin, _binding):
+        calls.append(revision_id)
+        return revision_id == "proven-revision"
+
+    with execution_actor_scope(actor), _factory(plan)() as session:
+        settings, resolved = _fred_resolution(plan, session)
+        proofs: set = set()
+        with patch(
+            "pandrator.web.speech_inputs.check_speech_input",
+            wraps=speech_inputs.check_speech_input,
+        ) as graph:
+            for revision_id in (
+                "proven-revision", "proven-revision", "other-revision", "other-revision",
+            ):
+                cast_runtime.validate_retained_cast_resolution(
+                    session, sid, plan.c.binding, settings, resolved, {},
+                    _pending_proof=pending, _pending_revision_id=revision_id, _proofs=proofs,
+                )
+    # A hit skips the pending proof, another revision is proven on its own, and
+    # a pending proof that declines falls through to the graph check once.
+    assert calls == ["proven-revision", "other-revision"]
+    assert graph.call_count == 1

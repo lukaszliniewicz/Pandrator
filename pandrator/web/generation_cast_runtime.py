@@ -197,12 +197,14 @@ def validate_retained_cast_resolution(
     _service_config_cache=None,
     *, _pending_proof: PendingSpeechProof | None = None,
     _pending_revision_id: str | None = None,
-    _proofs: dict | None = None,
+    _proofs: set[tuple[Any, ...]] | None = None,
 ) -> dict[str, Any]:
     """Revalidate a frozen retained cast pin against current session ownership.
 
-    ``_proofs`` is a memo owned by one identity context or one cast freeze. It
-    remembers only checks that passed, so a failing check always runs again.
+    ``_proofs`` holds the access and pin checks that already passed in one
+    identity context or one cast freeze, so a hit skips only those database
+    proofs; the selector and settings checks still run on every call. A failing
+    check is never recorded, so it runs again and raises as before.
     """
     from .access.contracts import ProjectAction
     from .access.current_session_policy import require_current_session_access
@@ -211,7 +213,7 @@ def validate_retained_cast_resolution(
     if _proofs is None or access_key not in _proofs:
         require_current_session_access(session, session_id, ProjectAction.READ)
         if _proofs is not None:
-            _proofs[access_key] = True
+            _proofs.add(access_key)
 
     if not isinstance(resolved, Mapping):
         raise ValueError("Invalid retained cast resolution.")
@@ -272,17 +274,19 @@ def validate_retained_cast_resolution(
     if checked.get("voice") != alias:
         raise ValueError("Retained cast voice is incompatible with this selection.")
 
-    input_key = None if _proofs is None else (
-        "input", session_id, _pending_revision_id,
-        canonical_json(pin), canonical_json(retained_binding),
-    )
+    input_key: tuple[Any, ...] | None = None
+    if _proofs is not None:
+        input_key = (
+            "input", session_id, _pending_revision_id,
+            canonical_json(pin), canonical_json(retained_binding),
+        )
     if _proofs is None or input_key not in _proofs:
         project = session_project(session, session_id)
         owner = SpeechInputOwner(project.workspace_id, project.id, session_id)
         if _pending_proof is None or not _pending_proof(session, owner, _pending_revision_id, pin, retained_binding):
             check_speech_input(session, pin, owner=owner)
-        if _proofs is not None:
-            _proofs[input_key] = True
+        if _proofs is not None and input_key is not None:
+            _proofs.add(input_key)
     result[PROJECT_SPEECH_INPUT_KEY] = pin
     result[PROJECT_SPEECH_BINDING_KEY] = retained_binding
     result[PROJECT_SPEECH_SELECTOR_KEY] = _binding_key(normalized)
@@ -657,7 +661,9 @@ def segment_voice_binding(segment: m.GenerationSegment, snapshot: dict | None = 
     return None
 
 
-def apply_segment_voice(settings: dict, snapshot: dict, segment_id: str) -> dict:
+def apply_segment_voice(
+    settings: dict, snapshot: dict, segment_id: str, *, _service_config_cache=None,
+) -> dict:
     from .generation_rendering import is_strict_single_voice
 
     base_tts = snapshot.get("tts")
@@ -690,6 +696,7 @@ def apply_segment_voice(settings: dict, snapshot: dict, segment_id: str) -> dict
         selected.get("resolved_bindings") or {},
         slot_key=_canonical_segment_slot(segment_id),
         schema_version=version,
+        _service_config_cache=_service_config_cache,
     )
 
 
@@ -712,7 +719,7 @@ def freeze_cast_snapshot(
     if _service_config_cache is None:
         _service_config_cache = {}
     # Retained pins proven once for this freeze; never kept past this call.
-    proofs: dict = {}
+    proofs: set[tuple[Any, ...]] = set()
     revision = session.get(m.GenerationPlanRevision, revision_id)
     plan = session.get(m.GenerationPlan, revision.plan_id) if revision else None
     if plan is None:
@@ -1132,7 +1139,8 @@ def preview_render_parts(
     def apply_at_slot(binding, base, slot_key):
         if not binding:
             return apply_resolved_binding(
-                binding, base, resolutions, slot_key=slot_key, schema_version=2
+                binding, base, resolutions, slot_key=slot_key, schema_version=2,
+                _service_config_cache=service_config_cache,
             )
         key = cast_resolution_key(binding, slot_key, schema_version=2)
         if key not in resolutions:
@@ -1168,6 +1176,7 @@ def preview_render_parts(
             resolutions,
             slot_key=slot_key,
             schema_version=2,
+            _service_config_cache=service_config_cache,
         )
 
     segment = session.scalar(
