@@ -14,7 +14,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import Artifact, Job, new_id
 from pandrator.web.video_previews import PREVIEW_ROLE, PREVIEW_VERSION
 from tests.test_job_access_routes import case as case
-from tests.test_job_access_routes import credential, error
+from tests.test_job_access_routes import credential, error, grant_workspace_content_access
 from tests.test_job_access_routes import no_network as no_network
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -125,6 +125,8 @@ def _block_paths(case, monkeypatch):
 def test_get_and_head_misses_are_read_only_with_fresh_prepare_hint(
     case, monkeypatch, media_mocks, preview, actor_name, scopes, can_prepare, method
 ):
+    if actor_name == "editor" and scopes is None:
+        grant_workspace_content_access(case, "editor")
     actor = _reader(case, actor_name, scopes)
     source = _source(case, preview)
     enqueue = _block_enqueue(case, monkeypatch)
@@ -221,6 +223,7 @@ def test_viewer_cannot_post_even_when_a_current_cache_exists(
 
 @pytest.mark.parametrize("preview", PREVIEWS, ids=lambda row: row["name"])
 def test_editor_can_post_and_observe_a_cached_preview(case, media_mocks, preview):
+    grant_workspace_content_access(case, "editor")
     editor = credential(case, "editor")
     source = _source(case, preview)
     cached = _cached_child(case, preview, source)

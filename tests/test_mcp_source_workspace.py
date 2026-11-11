@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import socket
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -22,8 +24,40 @@ from pandrator_mcp.tools import e2e
 from tests.test_account_authentication_integration import case as case  # noqa: F401
 from tests.test_evidence_access_routes import body, team
 from tests.test_mcp_e2e import _runtime
-from tests.test_provider_workspace_access import no_network as no_network  # noqa: F401
 from tests.test_purge_workspace_http import project
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Deny provider traffic while allowing asyncio's loopback self-pipe."""
+
+    def loopback(address: Any) -> bool:
+        # Windows asyncio uses a loopback socketpair for event-loop wakeups.
+        # POSIX does not need this exemption, so preserve its hard network ban.
+        return (
+            sys.platform == "win32"
+            and isinstance(address, tuple)
+            and bool(address)
+            and address[0] in _LOOPBACK_HOSTS
+        )
+
+    original_connect = socket.socket.connect
+    original_create_connection = socket.create_connection
+
+    def connect(sock: socket.socket, address: Any, *args: Any, **kwargs: Any) -> Any:
+        if not loopback(address):
+            raise AssertionError("Only synthetic loopback boundaries are permitted")
+        return original_connect(sock, address, *args, **kwargs)
+
+    def create_connection(address: Any, *args: Any, **kwargs: Any) -> Any:
+        if not loopback(address):
+            raise AssertionError("Only synthetic loopback boundaries are permitted")
+        return original_create_connection(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket, "create_connection", create_connection)
 
 
 def fake_runtime(root: Path) -> tuple[McpRuntime, Any]:

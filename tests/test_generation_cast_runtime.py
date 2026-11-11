@@ -373,7 +373,8 @@ def test_preview_service_override_keeps_cast_and_reports_cached_readiness(case):
     assert result["readiness"]["model_available"] is False
     assert result["readiness"]["compilation_only"] is True
     assert result["generation_source"]["plan_revision_id"] == case["revision_id"]
-    refresh.assert_called_once_with(refresh=False)
+    refresh.assert_called_once()
+    assert refresh.call_args.kwargs["refresh"] is False
 
 
 @pytest.mark.parametrize("cancel_at", ["part", "verification"])
@@ -748,8 +749,8 @@ def test_distinct_cast_bindings_share_one_catalogue_build(case):
         snapshot = overrides(performance_enabled=False)
         with patch.object(
             tts_service_catalogue,
-            "_default_service_configs",
-            wraps=tts_service_catalogue._default_service_configs,
+            "_default_service_config_templates",
+            wraps=tts_service_catalogue._default_service_config_templates,
         ) as build:
             runtime.freeze_cast_snapshot(
                 session, case["revision_id"], snapshot, snapshot["tts"]

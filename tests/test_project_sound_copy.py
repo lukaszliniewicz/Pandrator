@@ -179,7 +179,12 @@ def test_registered_copy_member_edit_play_mix_and_workspace_audio_lifetime(libra
     _purge(f, u.alice, u.ah, record["id"])
     assert audio_path.read_bytes() == expected
     assert u.bob.get(f"/api/v1/artifacts/{audio_id}/content").data == expected
-    _purge(f, u.bob, u.bh, target)
+    # A workspace member may edit, render, and read the copy, but purge
+    # governance remains with the workspace owner.
+    denied = u.bob.get(f"/api/v1/sessions/{target}/purge-preview")
+    assert denied.status_code == 403
+    assert denied.get_json()["error"]["code"] == "scope_denied"
+    _purge(f, u.owner, u.oh, target)
     assert audio_path.read_bytes() == expected
     remaining = body(u.bob.get(f"/api/v1/sounds/candidates/{copied['variant_id']}",
         query_string={"workspace_id": u.workspace_id}))

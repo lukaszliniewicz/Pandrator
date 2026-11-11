@@ -183,10 +183,21 @@ does not stale audio, while changed applied delivery or supplied context does.
 History remains inspectable when a performance plan becomes stale; generation
 requires a new valid adoption or disabling performance.
 
-Automatic post-generation split/regroup repair is disabled while performance or
-semantic context is enabled. It cannot silently change the accepted blocks and
-reuse now-invalid phrase directions. Explicit repair is still available; review
-its resulting plan and create/adopt matching performance before a new run.
+Automatic post-generation split repair can use read-only semantic context,
+including configurable preceding and following blocks (for example one of
+each, or the wider supported context windows). The global defaults remain two
+preceding and one following block (`performance_context_before=2`,
+`performance_context_after=1`); a session or generation can explicitly save one
+of each, and repair uses those frozen values rather than re-deriving them.
+When a split is staged,
+Pandrator freezes a fresh context window for each new child and regenerates
+neighbouring takes whose semantic windows changed in either direction. A
+refreshed neighbour that is longer than the take it replaces rejects that block's
+repair; raw take duration is compared with no tolerance, so even a small growth is
+refused rather than assuming cue slack. Other blocks can still be repaired.
+The original takes and plan remain available. Automatic regroup is still
+disabled with semantic context, and performance/casting-bound plans require
+explicit review and regeneration because their directions are bound to IDs.
 
 ## MCP and API
 

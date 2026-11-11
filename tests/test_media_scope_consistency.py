@@ -9,7 +9,7 @@ from typing import TypeAlias
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, event
+from sqlalchemy import Engine, event, text
 
 from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.accounts.models import Workspace
@@ -23,9 +23,9 @@ from pandrator.web.models import (
     SourceRecord,
     TranslationProject,
     TranslationProjectBranch,
-    UploadSessionRecord,
 )
 from pandrator.web.projects.identity import create_session_project
+from tests.legacy_schema_support import insert_upload_session
 
 MIGRATIONS = Path(__file__).parents[1] / "pandrator" / "web" / "migrations"
 TARGET_REVISION = "0077_media_scope_consistency"
@@ -306,58 +306,53 @@ def _make_valid_predecessor(path: Path) -> dict[str, str]:
             session.flush()
 
             expires_at = datetime.now(UTC) + timedelta(days=1)
-            session.add_all(
-                [
-                    UploadSessionRecord(
-                        id=IDS["upload_session"],
-                        workspace_id=workspace.id,
-                        project_id=root.id,
-                        session_id=source.id,
-                        filename="source.txt",
-                        size_bytes=10,
-                        chunk_size=10,
-                        chunk_count=1,
-                        temporary_relative_path="media-scope/source.upload",
-                        expires_at=expires_at,
+            for upload_id, project_id, session_id, filename, relative_path in (
+                (
+                    IDS["upload_session"],
+                    root.id,
+                    source.id,
+                    "source.txt",
+                    "media-scope/source.upload",
+                ),
+                (
+                    IDS["upload_project"],
+                    other_root.id,
+                    None,
+                    "project.txt",
+                    "media-scope/project.upload",
+                ),
+                (
+                    IDS["upload_workspace"],
+                    None,
+                    None,
+                    "workspace.txt",
+                    "media-scope/workspace.upload",
+                ),
+                (
+                    IDS["upload_archived"],
+                    archived_root.id,
+                    archived_source.id,
+                    "archived.txt",
+                    "media-scope/archived.upload",
+                ),
+            ):
+                insert_upload_session(
+                    session,
+                    upload_id=upload_id,
+                    workspace_id=(
+                        archived_workspace.id
+                        if upload_id == IDS["upload_archived"]
+                        else workspace.id
                     ),
-                    UploadSessionRecord(
-                        id=IDS["upload_project"],
-                        workspace_id=workspace.id,
-                        project_id=other_root.id,
-                        session_id=None,
-                        filename="project.txt",
-                        size_bytes=10,
-                        chunk_size=10,
-                        chunk_count=1,
-                        temporary_relative_path="media-scope/project.upload",
-                        expires_at=expires_at,
-                    ),
-                    UploadSessionRecord(
-                        id=IDS["upload_workspace"],
-                        workspace_id=workspace.id,
-                        project_id=None,
-                        session_id=None,
-                        filename="workspace.txt",
-                        size_bytes=10,
-                        chunk_size=10,
-                        chunk_count=1,
-                        temporary_relative_path="media-scope/workspace.upload",
-                        expires_at=expires_at,
-                    ),
-                    UploadSessionRecord(
-                        id=IDS["upload_archived"],
-                        workspace_id=archived_workspace.id,
-                        project_id=archived_root.id,
-                        session_id=archived_source.id,
-                        filename="archived.txt",
-                        size_bytes=10,
-                        chunk_size=10,
-                        chunk_count=1,
-                        temporary_relative_path="media-scope/archived.upload",
-                        expires_at=expires_at,
-                    ),
-                ]
-            )
+                    project_id=project_id,
+                    session_id=session_id,
+                    filename=filename,
+                    size_bytes=10,
+                    chunk_size=10,
+                    chunk_count=1,
+                    temporary_relative_path=relative_path,
+                    expires_at=expires_at,
+                )
             session.add_all(
                 [
                     SourceRecord(
@@ -504,20 +499,21 @@ def _make_lifecycle_predecessor(path: Path) -> dict[str, str]:
             session.flush()
 
             expires_at = datetime.now(UTC) + timedelta(days=1)
+            insert_upload_session(
+                session,
+                upload_id="45000000-0000-4000-8000-000000000001",
+                workspace_id=workspace.id,
+                project_id=root.id,
+                session_id=source.id,
+                filename="purge.txt",
+                size_bytes=1,
+                chunk_size=1,
+                chunk_count=1,
+                temporary_relative_path="media-scope/lifecycle/purge.upload",
+                expires_at=expires_at,
+            )
             session.add_all(
                 [
-                    UploadSessionRecord(
-                        id="45000000-0000-4000-8000-000000000001",
-                        workspace_id=workspace.id,
-                        project_id=root.id,
-                        session_id=source.id,
-                        filename="purge.txt",
-                        size_bytes=1,
-                        chunk_size=1,
-                        chunk_count=1,
-                        temporary_relative_path="media-scope/lifecycle/purge.upload",
-                        expires_at=expires_at,
-                    ),
                     SourceRecord(
                         id="55000000-0000-4000-8000-000000000001",
                         session_id=source.id,
@@ -1227,7 +1223,13 @@ def test_fk_deletes_clear_links_and_cascade_session_owned_media_in_order(
         with database.session() as session:
             assert session.get(SessionSource, "65000000-0000-4000-8000-000000000001") is None
             assert session.get(SessionSource, "65000000-0000-4000-8000-000000000002") is None
-            assert session.get(UploadSessionRecord, "45000000-0000-4000-8000-000000000001") is None
+            assert (
+                session.scalar(
+                    text("SELECT COUNT(*) FROM upload_sessions WHERE id = :id"),
+                    {"id": "45000000-0000-4000-8000-000000000001"},
+                )
+                == 0
+            )
             assert session.get(Artifact, ids["artifact_owned"]) is None
             assert session.get(SourceRecord, "55000000-0000-4000-8000-000000000002") is None
             retained = session.get(Artifact, ids["artifact_retained"])

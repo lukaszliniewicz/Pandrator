@@ -320,16 +320,18 @@ def test_cross_session_child_and_missing_child_are_never_exposed(rig):
         )
         session.add(foreign_revision)
         session.flush()
+        foreign_revision_id = foreign_revision.id
     child_id = rig.create_job(
         kind="generation.run",
         session_id=foreign_session_id,
         payload={"generation_run_id": "pending"},
     )
-    run_id = rig.create_run(job_id=child_id)
+    run_id = rig.create_run(
+        session_id=foreign_session_id,
+        revision_id=foreign_revision_id,
+        job_id=child_id,
+    )
     with rig.database.session() as session:
-        run = session.get(GenerationRun, run_id)
-        run.session_id = rig.session_id
-        run.plan_revision_id = rig.revision_id
         session.get(Job, child_id).payload_json = {"generation_run_id": run_id}
         session.get(Job, rig.root_id).result_json = {
             "job_id": child_id,

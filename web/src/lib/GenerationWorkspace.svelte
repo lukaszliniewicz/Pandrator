@@ -4103,8 +4103,9 @@
     }
     .header-playback :global(button),
     .drawer-actions :global(button) {
-      min-height: 2.75rem;
-      min-width: 2.75rem;
+      /* Guarantee a 44px touch target even when user/root rem sizing differs. */
+      min-height: max(2.75rem, 44px);
+      min-width: max(2.75rem, 44px);
     }
     .run-picker .mini {
       max-width: calc(100vw - 8rem);

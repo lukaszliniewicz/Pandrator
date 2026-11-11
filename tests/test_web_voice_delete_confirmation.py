@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import Table, select
 
 from pandrator.logic import tts_handler
+from pandrator.web.accounts.execution_actor import HostActor, execution_actor_scope
 from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
@@ -131,6 +132,7 @@ def test_native_unpublish_requires_confirmation_and_retains_samples(
         caught: Exception | None = None
         with (
             mock.patch.object(tts_handler, "get_service_config", return_value=SERVICE.copy()),
+            execution_actor_scope(HostActor("pandrator-cli")),
             script.installed(),
         ):
             try:

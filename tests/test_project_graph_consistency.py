@@ -18,7 +18,6 @@ from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.database import Database, create_database_engine, sqlite_url
 from pandrator.web.models import (
     Artifact,
-    Job,
     ProjectFolder,
     SessionRecord,
     TranslationProject,
@@ -34,6 +33,7 @@ from pandrator.web.project_folders import (
 )
 from pandrator.web.projects.identity import create_session_project
 from pandrator.web.projects.models import Project
+from tests.legacy_schema_support import insert_job
 
 MIGRATIONS = Path(__file__).parents[1] / "pandrator" / "web" / "migrations"
 TARGET_REVISION = "0076_project_graph_consistency"
@@ -227,22 +227,22 @@ def _make_valid_predecessor(path: Path) -> dict[str, str]:
             )
             session.add(retained_root)
             session.flush()
+            insert_job(
+                session,
+                job_id=IDS["retained_job"],
+                kind="fixture.retained",
+                workspace_id=workspace.id,
+                project_id=retained_root.id,
+            )
+            insert_job(
+                session,
+                job_id=IDS["standalone_job"],
+                kind="fixture.standalone",
+                workspace_id=workspace.id,
+                project_id=standalone_root.id,
+            )
             session.add_all(
                 [
-                    Job(
-                        id=IDS["retained_job"],
-                        kind="fixture.retained",
-                        workspace_id=workspace.id,
-                        project_id=retained_root.id,
-                        session_id=None,
-                    ),
-                    Job(
-                        id=IDS["standalone_job"],
-                        kind="fixture.standalone",
-                        workspace_id=workspace.id,
-                        project_id=standalone_root.id,
-                        session_id=None,
-                    ),
                     UsageEvent(
                         id=IDS["retained_usage"],
                         workspace_id=workspace.id,
@@ -504,17 +504,21 @@ def test_populated_graph_upgrade_preserves_rows_and_normal_producers(
             standalone_root = session.get(Project, ids["standalone_root"])
             assert standalone_root is not None
             assert standalone_root.source_session_id is None
-            standalone_job = session.get(Job, IDS["standalone_job"])
-            assert standalone_job is not None
-            assert standalone_job.project_id == standalone_root.id
+            standalone_job_project = session.execute(
+                text("SELECT project_id FROM jobs WHERE id = :id"),
+                {"id": IDS["standalone_job"]},
+            ).scalar_one_or_none()
+            assert standalone_job_project == standalone_root.id
             usage = session.get(UsageEvent, IDS["standalone_usage"])
             assert usage is not None and usage.session_id is None
             assert usage.project_id == standalone_root.id
             retained_root = session.get(Project, ids["retained_root"])
             assert retained_root is not None and retained_root.source_session_id is None
-            retained_job = session.get(Job, IDS["retained_job"])
-            assert retained_job is not None
-            assert retained_job.project_id == retained_root.id
+            retained_job_project = session.execute(
+                text("SELECT project_id FROM jobs WHERE id = :id"),
+                {"id": IDS["retained_job"]},
+            ).scalar_one_or_none()
+            assert retained_job_project == retained_root.id
             retained_usage = session.get(UsageEvent, IDS["retained_usage"])
             assert retained_usage is not None
             assert retained_usage.project_id == retained_root.id

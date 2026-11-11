@@ -11,6 +11,7 @@ import pytest
 from pydub import AudioSegment
 from sqlalchemy import delete, event, func, select
 
+from pandrator.web import speech_inputs
 from pandrator.web.access.contracts import AccessContext, AccessDenied
 from pandrator.web.access.job_policy import JobNotFound
 from pandrator.web.access.speech_preview_policy import require_preview_replay
@@ -33,14 +34,17 @@ from pandrator.web.models import (
     Job,
     JobActorRecord,
     UsageEvent,
+    Voice,
+    VoiceSample,
     WorkspaceSetting,
     new_id,
     utcnow,
 )
 from pandrator.web.projects.models import ProjectMembership
+from pandrator.web.speech_input_contracts import SpeechInputOwner
 from pandrator.web.voice_provider_settings import capture_voice_provider_settings
 from tests.test_job_access_routes import case as case
-from tests.test_job_access_routes import credential
+from tests.test_job_access_routes import credential, grant_workspace_content_access
 from tests.test_job_access_routes import no_network as no_network
 
 PREVIEW = "/api/v1/services/tts/openai/preview"
@@ -149,11 +153,11 @@ def test_actual_ordinary_user_namespace_replay_credentials_output_and_usage(case
         next(item for item in runtime["provider_configs"] if item["id"] == "openai")["api_key"]
         == "synthetic-editor-key"
     )
-    assert (
-        prepare.call_args.kwargs["workspace_id"]
-        == ensure.call_args.kwargs["workspace_id"]
-        == workspace
-    )
+    # The current preview producer always pins speech_input, including None.
+    # An explicit None means "no voice reference", so the legacy implicit
+    # preparation path must not run.
+    prepare.assert_not_called()
+    ensure.assert_called_once()
     with case.database.snapshot_session() as session:
         job = session.get(Job, identifier)
         actor = session.get(JobActorRecord, identifier)
@@ -429,7 +433,7 @@ def test_revocation_before_worker_prevents_credential_and_provider_work(case, mo
             session.get(User, case.users["editor"]).is_active = False
     before = counts(case)
     response = caller.client.post(PREVIEW, headers=headers, json=BODY)
-    assert response.status_code == (403 if loss == "grant" else 401), response.get_json()
+    assert response.status_code == (404 if loss == "grant" else 401), response.get_json()
     assert counts(case) == before
     import pandrator.web.workflow_handlers as module
 
@@ -446,7 +450,95 @@ def test_revocation_before_worker_prevents_credential_and_provider_work(case, mo
     assert counts(case)[2:] == (0, 0)
 
 
-@pytest.mark.parametrize("at", ["reference", "synthesis", "prepared_file"])
+def _publish_speech_input_reference(case, workspace):
+    """Publish a real audio.cpp reference graph for one pinned preview."""
+    path = case.services.paths.artifacts / "speech-input-tests" / f"{new_id()}.wav"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    AudioSegment.silent(25).export(path, format="wav")
+    artifact = case.services.artifacts.register(
+        path, kind="audio", role="voice_sample", workspace_id=workspace
+    )
+    with case.database.immediate_session() as session:
+        voice = Voice(
+            workspace_id=workspace,
+            name=f"Pinned reference {new_id()[:8]}",
+            language="en",
+            metadata_json={
+                "providers": {
+                    "audio_cpp": {
+                        "status": "ready",
+                        "resource_kind": "linked_reference",
+                        "voice_id": "pinned-reference",
+                    }
+                }
+            },
+        )
+        session.add(voice)
+        session.flush()
+        session.add(
+            VoiceSample(
+                workspace_id=workspace,
+                voice_id=voice.id,
+                artifact_id=artifact.id,
+                transcript="A pinned synthetic reference.",
+                transcript_language="en",
+                transcript_reviewed=True,
+            )
+        )
+        session.flush()
+        voice_id = voice.id
+    settings = {
+        "service": "audio_cpp",
+        "model": "qwen3_tts_1_7b_base_q8_0",
+        "voice": "pinned-reference",
+    }
+    with case.database.snapshot_session() as session:
+        capture = speech_inputs.capture_speech_input(
+            session,
+            case.services.paths,
+            settings,
+            owner=SpeechInputOwner(workspace),
+            voice_id=voice_id,
+        )
+    prepared = speech_inputs.prepare_speech_input(
+        case.database, case.services.paths, capture, before_io=lambda: None
+    )
+    try:
+        with case.database.immediate_session() as session:
+            pin = speech_inputs.publish_speech_input(
+                session, case.services.paths, capture, prepared
+            )
+    except BaseException:
+        speech_inputs.cleanup_speech_input(prepared)
+        raise
+    return settings, pin
+
+
+def test_pinned_speech_input_revocation_denies_before_synthesis(case, monkeypatch):
+    workspace = configure(case)
+    settings, pin = _publish_speech_input_reference(case, workspace)
+    caller, identifier, _, _ = submit(case)
+    with case.database.immediate_session() as session:
+        row = session.get(Job, identifier)
+        row.payload_json = {**row.payload_json, "settings": settings, "speech_input": pin}
+        session.execute(
+            delete(ApiTokenWorkspaceGrant).where(
+                ApiTokenWorkspaceGrant.token_id == caller.token.id
+            )
+        )
+    worker, prepare, ensure, synthesize = synthetic_worker(case, monkeypatch)
+    before = counts(case)
+    assert worker.run_once()
+    completed = case.services.jobs.get(identifier)
+    assert completed.status == "failed" and completed.error_code == "AccessDenied"
+    prepare.assert_not_called()
+    ensure.assert_not_called()
+    synthesize.assert_not_called()
+    assert counts(case) == before
+    assert not list((case.services.paths.artifacts / "tts-previews" / workspace).glob("*.wav"))
+
+
+@pytest.mark.parametrize("at", ["synthesis", "prepared_file"])
 def test_revocation_fences_next_effect_and_unpublished_audio(case, monkeypatch, at):
     workspace = configure(case)
     caller, identifier, _, _ = submit(case)
@@ -468,16 +560,7 @@ def test_revocation_fences_next_effect_and_unpublished_audio(case, monkeypatch, 
         return AudioSegment.silent(25)
 
     worker, _, ensure, synthesize_mock = synthetic_worker(case, monkeypatch, synthesis=synthesize)
-    if at == "reference":
-
-        def prepare(settings, **_kwargs):
-            revoke()
-            return settings
-
-        monkeypatch.setattr(
-            case.services.workflow_handlers, "prepare_audio_cpp_voice_reference", prepare
-        )
-    elif at == "prepared_file":
+    if at == "prepared_file":
         artifacts = case.services.workflow_handlers.artifacts
         original = artifacts.prepare_registration
 
@@ -491,15 +574,56 @@ def test_revocation_fences_next_effect_and_unpublished_audio(case, monkeypatch, 
     assert revocations == [at]
     completed = case.services.jobs.get(identifier)
     assert completed.status == "failed" and completed.error_code == "AccessDenied"
-    assert synthesize_mock.call_count == (0 if at == "reference" else 1)
-    if at == "reference":
-        ensure.assert_not_called()
+    assert synthesize_mock.call_count == 1
+    assert counts(case)[2:] == (0, 0)
+    assert not list((case.services.paths.artifacts / "tts-previews" / workspace).glob("*.wav"))
+
+
+def test_legacy_unpinned_reference_revocation_fails_closed(case, monkeypatch):
+    """A job without the producer's speech_input key still fails on revocation."""
+    workspace = configure(case)
+    caller, identifier, _, _ = submit(case)
+    with case.database.immediate_session() as session:
+        row = session.get(Job, identifier)
+        row.payload_json = {
+            key: value for key, value in row.payload_json.items() if key != "speech_input"
+        }
+
+    def revoke():
+        with case.database.immediate_session() as session:
+            session.execute(
+                delete(ApiTokenWorkspaceGrant).where(
+                    ApiTokenWorkspaceGrant.token_id == caller.token.id
+                )
+            )
+
+    def prepare(settings, **_kwargs):
+        revoke()
+        return settings
+
+    worker, _, ensure, synthesize = synthetic_worker(case, monkeypatch)
+    monkeypatch.setattr(
+        case.services.workflow_handlers, "prepare_audio_cpp_voice_reference", prepare
+    )
+    assert worker.run_once()
+    completed = case.services.jobs.get(identifier)
+    # The worker's speech transport boundary wraps the later AccessDenied in a
+    # RuntimeError; no synthesis or effect occurs after the legacy reference.
+    assert completed.status == "failed" and completed.error_code == "RuntimeError"
+    ensure.assert_not_called()
+    synthesize.assert_not_called()
     assert counts(case)[2:] == (0, 0)
     assert not list((case.services.paths.artifacts / "tts-previews" / workspace).glob("*.wav"))
 
 
 def warning(case, *, hidden=False):
-    source = case.b if hidden else case.a
+    if hidden:
+        source = case.services.sessions.create(
+            "Hidden workspace export",
+            workspace_id=case.personal[case.users["outsider"]],
+        )
+    else:
+        source = case.a
     row = case.services.jobs.enqueue(
         "export.variant",
         {"session_id": source.id, "settings": {"video_tail_extension_policy": "ask"}},
@@ -514,6 +638,7 @@ def warning(case, *, hidden=False):
 
 @pytest.mark.parametrize("action", ["stop", "extend"])
 def test_export_run_checks_roles_before_state_and_replay(case, action):
+    grant_workspace_content_access(case, "editor")
     identifier, hidden = warning(case), warning(case, hidden=True)
     viewer = credential(case, "viewer")
     outsider = credential(case, "outsider")
@@ -555,6 +680,12 @@ def test_export_run_checks_roles_before_state_and_replay(case, action):
                 ProjectMembership.user_id == case.users["editor"],
             )
         )
+        session.execute(
+            delete(WorkspaceMembership).where(
+                WorkspaceMembership.workspace_id == case.team,
+                WorkspaceMembership.user_id == case.users["editor"],
+            )
+        )
     before = counts(case)
     denied = editor.client.post(path(identifier), headers=editor.headers, json={"action": action})
     assert denied.status_code == 404
@@ -562,6 +693,7 @@ def test_export_run_checks_roles_before_state_and_replay(case, action):
 
 
 def test_export_continuation_replay_reauthorizes_actual_child(case):
+    grant_workspace_content_access(case, "editor")
     identifier, hidden = warning(case), warning(case, hidden=True)
     with case.database.immediate_session() as session:
         row = session.get(Job, identifier)

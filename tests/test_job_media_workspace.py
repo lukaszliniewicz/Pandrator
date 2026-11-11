@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from flask.testing import FlaskClient
 from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
+from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
@@ -24,7 +26,15 @@ from pandrator.web.bundles import SessionBundleService
 from pandrator.web.database import Database, sqlite_url
 from pandrator.web.job_identity import job_creation_ownership, job_ownership
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, Job, Project, SessionRecord, Workspace
+from pandrator.web.models import (
+    Artifact,
+    Job,
+    Project,
+    SessionRecord,
+    User,
+    Workspace,
+    WorkspaceMembership,
+)
 from pandrator.web.projects.identity import delete_empty_project
 from pandrator.web.sessions import SessionService
 from pandrator.web.video_previews import VideoInfo
@@ -70,11 +80,23 @@ def media_jobs(tmp_path: Path) -> Iterator[MediaJobs]:
     database: Database = services["database"]
     workspaces: dict[str, str] = {}
     with database.immediate_session() as session:
+        team_ids: list[str] = []
         for name in ("alpha", "beta"):
             workspace = Workspace(kind="team", name=name)
             session.add(workspace)
             session.flush()
             workspaces[name] = workspace.id
+            team_ids.append(workspace.id)
+        owner = session.scalar(select(User).where(User.legacy_subject == "owner"))
+        assert owner is not None
+        workspaces["personal"] = initial_personal_workspace(session).id
+        # Typed media reads require current membership in the owning team.
+        for workspace_id in team_ids:
+            session.add(
+                WorkspaceMembership(
+                    workspace_id=workspace_id, user_id=owner.id, role="owner"
+                )
+            )
     sessions = {
         name: SessionService(database).create(name, workspace_id=owner)
         for name, owner in workspaces.items()
@@ -134,7 +156,9 @@ def test_media_admission_and_generated_artifact_keep_input_owner(
         "audio.waveform": "waveform",
         "video.preview": "video-preview",
     }[kind]
-    admitted = harness.client.get(f"/api/v1/artifacts/{source.id}/{endpoint}")
+    admitted = harness.client.post(
+        f"/api/v1/artifacts/{source.id}/{endpoint}", headers=harness.headers
+    )
     assert admitted.status_code == 202, admitted.get_json()
     job_id = admitted.get_json()["job_id"]
     assert job_id != foreign.id
@@ -193,8 +217,9 @@ def test_bundle_import_admission_and_new_project_use_input_workspace(media_jobs:
 
 def test_rvc_admission_keeps_private_workspace_and_selected_project(media_jobs: MediaJobs) -> None:
     harness = media_jobs
-    weights = harness.source("weights.pth", bound=True)
-    index = harness.source("weights.index")
+    # RVC model writes remain an original-personal-owner host-local tool.
+    weights = harness.source("weights.pth", bound=True, workspace="personal")
+    index = harness.source("weights.index", workspace="personal")
     response = harness.client.post(
         "/api/v1/rvc/models",
         json={"pth_artifact_id": weights.id, "index_artifact_id": index.id},
@@ -207,7 +232,7 @@ def test_rvc_admission_keeps_private_workspace_and_selected_project(media_jobs: 
             job is not None and job.workspace_id == weights.workspace_id and job.project_id is None
         )
     other = SessionService(harness.database).create(
-        "Selected conversion project", workspace_id=harness.workspaces["alpha"]
+        "Selected conversion project", workspace_id=harness.workspaces["personal"]
     )
     response = harness.client.post(
         "/api/v1/rvc/convert",
@@ -276,6 +301,20 @@ def test_retained_job_checks_reject_inconsistent_roots_without_repair(
         config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations"))
         config.set_main_option("sqlalchemy.url", sqlite_url(harness.database.path))
         command.downgrade(config, predecessor)
+        # The downgrade targets the legacy ownership constraint shape only. The
+        # current ORM mapper still writes 0084's nullable receipt column, so add
+        # that unrelated column back instead of downgrading the whole model.
+        with sqlite3.connect(harness.database.path) as connection:
+            connection.execute("ALTER TABLE jobs ADD COLUMN external_effect_json JSON")
+    elif corruption in {"no_project", "different_session"}:
+        # 0075 makes execution roots immutable for writes; this case exercises
+        # the reader fence over a retained pre-0075 row instead.
+        config = Config()
+        config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations"))
+        config.set_main_option("sqlalchemy.url", sqlite_url(harness.database.path))
+        command.downgrade(config, "0074_actor_attribution")
+        with sqlite3.connect(harness.database.path) as connection:
+            connection.execute("ALTER TABLE jobs ADD COLUMN external_effect_json JSON")
     job = harness.queue.enqueue("test.retained", session_id=harness.sessions["alpha"].id)
     with harness.database.immediate_session() as session:
         record = session.get(Job, job.id)

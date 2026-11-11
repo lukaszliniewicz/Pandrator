@@ -282,8 +282,13 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                 value_json={"service": "kokoro"},
             ))
 
-        def replace_after_text(service, db_session, target, section, workspace_id):
-            result = original_get(service, db_session, target, section, workspace_id)
+        def replace_after_text(
+            service, db_session, target, section, workspace_id, *, _read_context=None
+        ):
+            result = original_get(
+                service, db_session, target, section, workspace_id,
+                _read_context=_read_context,
+            )
             if target == session_id and section == "text":
                 with database.session() as writer:
                     workspace_id = initial_personal_workspace(writer).id

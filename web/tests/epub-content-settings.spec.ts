@@ -35,11 +35,17 @@ async function openBookSettings(page: Page) {
     (await disclosure.getAttribute('aria-expanded')) === 'false'
   )
     await disclosure.click();
-  await card.getByRole('button', { name: 'Settings', exact: true }).click();
   const dialog = page.getByRole('dialog', {
     name: 'Clean source',
     exact: true
   });
+  // Reopening after a reload races the asynchronous voice-setup panel, which
+  // can shift the card while the click is being dispatched. Retry the open
+  // instead of assuming the first click lands.
+  await expect(async () => {
+    await card.getByRole('button', { name: 'Settings', exact: true }).click();
+    await expect(dialog).toBeVisible({ timeout: 1_000 });
+  }).toPass();
   await expect(
     dialog.getByRole('button', { name: 'Save settings', exact: true })
   ).toBeEnabled();

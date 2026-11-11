@@ -34,6 +34,29 @@ class TestLaneManifestTests(unittest.TestCase):
             message,
         )
 
+    def test_ci_workflows_reference_the_split_web07_lanes(self):
+        root = Path(__file__).resolve().parents[1]
+        preview = (root / ".github/workflows/web-preview.yml").read_text()
+        windows = (root / ".github/workflows/windows-serial-lanes.yml").read_text()
+        for index in range(1, 13):
+            lane = f"web-07-{index:02d}-serial"
+            self.assertIn(lane, test_lanes.TEST_LANES)
+            self.assertIn(f"lanes: {lane}", preview)
+            self.assertIn(f"          - {lane}\n", windows)
+        self.assertNotIn("lanes: web-07-serial", preview)
+        self.assertNotIn("          - web-07-serial\n", windows)
+
+    def test_serial_web_lane_size_is_bounded(self):
+        paths = tuple(f"tests/test_many_{i:03d}.py" for i in range(61))
+        with self.assertRaises(test_lanes.TestLaneManifestError) as raised:
+            test_lanes.validate_manifest(
+                {"web-overgrown-serial": paths}, discovered=set(paths)
+            )
+        self.assertIn(
+            "oversized serial web lanes (>60 files): web-overgrown-serial (61)",
+            str(raised.exception),
+        )
+
     def test_payload_is_manifest_ordered_and_json_serializable(self):
         manifest = {
             "second": ("tests/test_second.py",),

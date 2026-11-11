@@ -275,7 +275,10 @@
             <h2
               class="mt-1 flex items-center gap-2 break-words text-lg font-semibold"
             >
-              <Folder size={19} />{currentFolder.name}
+              <Folder size={19} class="shrink-0" />
+              <span class="min-w-0 [overflow-wrap:anywhere]"
+                >{currentFolder.name}</span
+              >
             </h2>
           </div>
           <button

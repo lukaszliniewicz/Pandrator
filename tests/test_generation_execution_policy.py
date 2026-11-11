@@ -565,6 +565,108 @@ def test_invalid_stored_json_and_cyclic_caller_use_fixed_denial(case: Any):
 
 
 @pytest.mark.parametrize(
+    "change",
+    [
+        {"operation": "generate"},
+        {"operation": "rvc"},
+        {"segment_ids": ["foreign"]},
+        {"unwanted_extra": "override"},
+    ],
+)
+def test_timing_repair_job_rejects_unauthorized_child_payload(case: Any, change: dict[str, Any]):
+    actor = credential(case, "member").actor
+    parent_id = _run(case)
+    child_id, _queued, claimed, supplied = _job(
+        case,
+        actor,
+        kind="generation.repair-existing",
+        stored={"session_id": case.a.id, "generation_run_id": parent_id},
+    )
+    _change(
+        case, GenerationRun, child_id,
+        source_generation_run_id=parent_id,
+        settings_snapshot_json={"early_repair_parent_run_id": parent_id},
+    )
+    supplied["operation"] = "resume"
+    assert _call(case, actor, claimed, supplied).run_id == child_id
+    invalid = {**supplied, **change}
+    with pytest.raises(AccessDenied):
+        _call(case, actor, claimed, invalid)
+
+
+def test_timing_repair_job_requires_root_marker_and_valid_parent(case: Any):
+    actor = credential(case, "member").actor
+    parent_id = _run(case)
+    child_id, _queued, claimed, supplied = _job(
+        case,
+        actor,
+        kind="generation.repair-existing",
+        stored={"session_id": case.a.id, "generation_run_id": parent_id},
+    )
+    supplied["operation"] = "resume"
+    with pytest.raises(AccessDenied):
+        _call(case, actor, claimed, supplied)
+    _change(
+        case, GenerationRun, child_id,
+        source_generation_run_id=parent_id,
+        settings_snapshot_json={"early_repair_parent_run_id": "unrelated"},
+    )
+    with pytest.raises(AccessDenied):
+        _call(case, actor, claimed, supplied)
+    _change(
+        case, GenerationRun, child_id,
+        settings_snapshot_json={"early_repair_parent_run_id": parent_id},
+    )
+    assert _call(case, actor, claimed, supplied).run_id == child_id
+    _change(case, GenerationRun, child_id, source_generation_run_id=None)
+    with pytest.raises(AccessDenied):
+        _call(case, actor, claimed, supplied)
+
+
+def test_timing_repair_job_proves_every_staged_lineage_hop(case: Any):
+    actor = credential(case, "member").actor
+    root_id = _run(case)
+    _first, _queued, claimed, supplied = _job(
+        case,
+        actor,
+        kind="generation.repair-existing",
+        stored={"session_id": case.a.id, "generation_run_id": root_id},
+    )
+    first_id = _child(case, root_id, claimed)
+    second_id = _child(case, first_id, claimed)
+    _change(
+        case, GenerationRun, first_id,
+        settings_snapshot_json={"early_repair_parent_run_id": root_id},
+    )
+    _change(
+        case, GenerationRun, second_id,
+        settings_snapshot_json={"early_repair_parent_run_id": root_id},
+    )
+    supplied.update(
+        generation_run_id=second_id,
+        operation="resume",
+        segment_ids=[],
+    )
+    assert _call(case, actor, claimed, supplied).run_id == second_id
+
+    _change(
+        case, GenerationRun, first_id,
+        settings_snapshot_json={"early_repair_parent_run_id": "unrelated"},
+    )
+    with pytest.raises(AccessDenied):
+        _call(case, actor, claimed, supplied)
+
+    _change(
+        case, GenerationRun, first_id,
+        settings_snapshot_json={"early_repair_parent_run_id": root_id},
+        source_generation_run_id=None,
+    )
+    with pytest.raises(AccessDenied):
+        _call(case, actor, claimed, supplied)
+
+
+
+@pytest.mark.parametrize(
     "kind", ["workflow.continue", "audiobook.generate_audio", "dubbing.generate_audio"]
 )
 @pytest.mark.parametrize("injected", [True, False])

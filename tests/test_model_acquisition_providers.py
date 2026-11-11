@@ -5,6 +5,7 @@ import json
 from contextvars import ContextVar
 from pathlib import Path
 from threading import get_ident
+from types import SimpleNamespace
 from typing import Any, Iterator
 
 import pytest
@@ -25,6 +26,10 @@ class _Response:
         self.status_code = status_code
         self._lines = lines
         self.closed = False
+        # Windows read-ahead cleanup inspects the transport for an owned
+        # socket. The synthetic response has none, but the attribute must
+        # exist on every platform the suite runs on.
+        self.raw = SimpleNamespace()
 
     def __enter__(self) -> _Response:
         return self

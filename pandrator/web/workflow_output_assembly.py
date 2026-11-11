@@ -6,6 +6,7 @@ import logging
 import os
 import stat
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -40,6 +41,13 @@ from .workflow_output_context import OutputWorkflowContext
 # Preserve the historical logger name for existing log filters and dashboards.
 logger = logging.getLogger("pandrator.web.workflow_handlers")
 
+# Repeated media IO may reuse a recent proof so SQL stays constant per assembly.
+# Between explicit proofs, reads can continue against the frozen inputs and
+# writes stay inside private staging, so a revoked membership or lease is seen
+# at the next prove() boundary. Publication always proves again before bytes
+# become visible.
+_ASSEMBLY_PROOF_REUSE_SECONDS = 30.0
+
 
 def assemble_generation_output(
     context: OutputWorkflowContext,
@@ -71,8 +79,11 @@ def assemble_generation_output(
         captured = require_assembly_execution(session, payload)
 
     cover_input: AssemblyCoverInput | None = None
+    phase_proven_at: float | None = None
 
     def prove(session: Session | None = None) -> None:
+        """Prove current authorization and start a new IO phase."""
+        nonlocal phase_proven_at
         if session is None:
             with context.database.snapshot_session() as current:
                 prove(current)
@@ -80,6 +91,25 @@ def assemble_generation_output(
         require_assembly_execution(session, payload, expected=captured)
         if cover_input is not None:
             require_assembly_cover(session, cover_input.artifact_id, expected=cover_input)
+        phase_proven_at = time.monotonic()
+
+    def _prove_once() -> None:
+        """Reuse a recent proof for repeated IO, as a cost reduction only.
+
+        IO between explicit proofs may continue against the frozen inputs, and
+        writes stay inside private staging. The reuse window only decides
+        whether the next _prove_once() call re-proves; it does not interrupt
+        reads. Durable boundaries and publication call prove() directly, so a
+        revocation is observed before any observable effect and the SQL cost
+        does not scale with segment count.
+        """
+        proven_at = phase_proven_at
+        if (
+            proven_at is not None
+            and time.monotonic() - proven_at < _ASSEMBLY_PROOF_REUSE_SECONDS
+        ):
+            return
+        prove()
 
     assembly_id = str(payload.get("output_assembly_id") or "")
     destination: Path | None = None
@@ -357,7 +387,6 @@ def assemble_generation_output(
                 0.2 * (index / len(selected)),
                 f"Validating audio segment {index + 1} of {len(selected)}",
             )
-            prove()
             path = context.paths.managed_path(artifact.relative_path)
             if not path.is_file():
                 raise ValueError(
@@ -369,7 +398,7 @@ def assemble_generation_output(
                 or 0
             )
             if duration_ms <= 0:
-                prove()
+                _prove_once()
                 duration_ms = probe_audio_stream(
                     path, cancel_event=cancel_event
                 ).duration_ms
@@ -400,7 +429,7 @@ def assemble_generation_output(
             output_format = "wav"
         bitrate = str(output_settings.get("bitrate") or "192k")
         assemblies_dir = context._session_dir(session_id) / "assemblies"
-        prove()
+        _prove_once()
         assemblies_dir.mkdir(parents=True, exist_ok=True)
         requested_destination = assemblies_dir / f"assembly-{assembly_id}.{output_format}"
         staging = tempfile.TemporaryDirectory(prefix=f".assembly-{assembly_id}-", dir=assemblies_dir)
@@ -442,7 +471,7 @@ def assemble_generation_output(
         sample_rate_hz, channels = preferred_pcm_format(
             loaded[0][3],
             cancel_event=cancel_event,
-            before_io=prove,
+            before_io=_prove_once,
         )
         # Budget before creating normalized/aligned copies. Caption-timed work
         # can retain both segment WAVs and its complete aligned timeline.
@@ -500,7 +529,7 @@ def assemble_generation_output(
                         backend=backend,
                         work_dir=temporary_path,
                         cancel_event=cancel_event,
-                        before_io=prove,
+                        before_io=_prove_once,
                     )
                     block = AudioAlignmentBlock(
                         number=str(index + 1).zfill(4),
@@ -632,7 +661,7 @@ def assemble_generation_output(
                     backend=backend,
                     work_dir=temporary_path,
                     cancel_event=cancel_event,
-                    before_io=prove,
+                    before_io=_prove_once,
                     progress=lambda fraction, detail: progress(
                         0.62 + 0.2 * fraction,
                         detail,
@@ -697,7 +726,7 @@ def assemble_generation_output(
                 backend=backend,
                 work_dir=assemblies_dir,
                 cancel_event=cancel_event,
-                before_io=prove,
+                before_io=_prove_once,
                 progress=lambda fraction, detail: progress(
                     0.2 + 0.62 * fraction,
                     detail,

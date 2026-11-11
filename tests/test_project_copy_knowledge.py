@@ -172,8 +172,9 @@ def test_capture_saves_current_ledgers_for_every_language_without_creating_rows(
     ledgers = state["rows"]["knowledge_ledgers"]
 
     assert snapshot.ready, snapshot.blockers
-    assert state["schema_version"] == COPY_STATE_VERSION == 10
-    assert len(state["rows"]) == 27
+    assert state["schema_version"] == COPY_STATE_VERSION == 15
+    # v10 had 27 families; v14 added three sound families and v15 performance_plans.
+    assert len(state["rows"]) == 31
     assert {row["id"] for row in ledgers} == set(ids)
     assert {row["session_id"] for row in ledgers} == set(session_ids)
     assert {row["kind"] for row in ledgers} == {"research", "glossary"}
@@ -506,6 +507,7 @@ def test_schema1_frozen_copy_keeps_exact_fingerprint_and_ignores_new_source_ledg
     assert state["schema_version"] == COPY_STATE_VERSION
     state["schema_version"] = 1
     prepare_legacy_copy_state(state)
+    state["rows"].pop("performance_plans")
     state["rows"].pop("project_speech_references")
     state["rows"].pop("knowledge_ledgers")
     state["rows"].pop("subtitle_evidence")
@@ -586,6 +588,7 @@ def test_schema2_frozen_copy_keeps_exact_fingerprint_and_ignores_later_evidence(
     state = json.loads(case.snapshot.state_json)
     state["schema_version"] = 2
     prepare_legacy_copy_state(state)
+    state["rows"].pop("performance_plans")
     state["rows"].pop("project_speech_references")
     state["rows"].pop("subtitle_evidence")
     state["rows"].pop("media_edit_plans")
@@ -642,6 +645,7 @@ def test_schema3_frozen_copy_ignores_later_media_edit_plan(publication_case):
     state = json.loads(case.snapshot.state_json)
     state["schema_version"] = 3
     prepare_legacy_copy_state(state)
+    state["rows"].pop("performance_plans")
     state["rows"].pop("project_speech_references")
     state["rows"].pop("media_edit_plans")
     state["rows"].pop("media_edit_plan_revisions")
@@ -677,7 +681,9 @@ def test_schema3_frozen_copy_ignores_later_media_edit_plan(publication_case):
 
 def test_durable_codec_rejects_unsupported_or_boolean_state_versions(publication_case):
     case = publication_case
-    for version in (True, 5):
+    # Legacy versions 1-5 remain decodable; only a boolean or a version beyond
+    # the frozen supported set is an invalid saved copy request.
+    for version in (True, COPY_STATE_VERSION + 1):
         state = json.loads(case.snapshot.state_json)
         state["schema_version"] = version
         invalid = _set_snapshot_state(case.snapshot, state)

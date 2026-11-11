@@ -687,6 +687,11 @@ def repair_regroup_blocks(
     current_revision_id = source_revision_id
     regrouped = 0
     rejected = len(selection.rejected)
+    # The pass is only complete when every selected group was examined and the
+    # loop ran to its end. A stop, a changed plan or take selection, or an
+    # unexpected failure breaks out early and must not look like a completed
+    # check to history, even though the source generation itself succeeds.
+    completed = False
 
     for index, group in enumerate(selection.groups):
         if stop.is_set():
@@ -905,10 +910,13 @@ def repair_regroup_blocks(
                     _record_repair_outcome(
                         session, staged_revision_id, repair_status, repair_reason
                     )
+    else:
+        completed = True
     return {
         "regrouped_groups": regrouped,
         "regroup_attempted_groups": len(selection.groups),
         "regroup_status": "completed",
+        "regroup_completed": completed,
         "regrouped_generation_run_id": current_run_id,
         "regrouped_plan_revision_id": current_revision_id,
         "regroup_rejected": rejected,

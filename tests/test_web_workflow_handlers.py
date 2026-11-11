@@ -70,6 +70,13 @@ from tests.web_test_support import prepare_web_test_data_root
 
 class WebWorkflowHandlerTests(unittest.TestCase):
     def setUp(self):
+        # Handler unit tests exercise the trusted internal path without HTTP
+        # provenance. Bind that state explicitly so a request-context test that
+        # resolved a principal earlier in the process cannot leak its execution
+        # actor into these access checks; the HTTP lifecycle owns the real bind.
+        self.execution_actor = execution_actor_scope(None)
+        self.execution_actor.__enter__()
+        self.addCleanup(self.execution_actor.__exit__, None, None, None)
         self.temporary = tempfile.TemporaryDirectory()
         self.paths = prepare_web_test_data_root(self.temporary.name)
         self.database = Database(self.paths.database)
@@ -4486,8 +4493,8 @@ A single reviewed cue.
                 with self.subTest(mode=mode, owned_job=owned_job):
                     settings = {
                         "service": "XTTS", "speech_block_generation_mode": mode,
-                        "speech_block_early_repair_enabled": True,
-                        "speech_block_regroup_enabled": True,
+                        "speech_block_early_repair_enabled": mode == "legacy",
+                        "speech_block_regroup_enabled": mode == "passage",
                     }
                     revision_id, segment_ids = self.handlers._store_generation_plan(
                         self.session.id, [{"text": "Keep this completed take."}],
@@ -4519,11 +4526,13 @@ A single reviewed cue.
 
                     def cancel_postpass(
                         handler, sent_run_id, _progress, _event, *,
+                        stage_job_id=None,
                         run_id=run_id, observed=observed, owned_job=owned_job,
                         count_key=count_key,
                     ):
                         self.assertIs(self.handlers, handler)
                         self.assertEqual(run_id, sent_run_id)
+                        observed["stage_job_id"] = stage_job_id
                         observed["status"] = service.cancel(run_id)["status"]
                         with self.database.session() as db:
                             current = db.get(GenerationRun, run_id)
@@ -4549,6 +4558,7 @@ A single reviewed cue.
                             {"generation_run_id": run_id}, self.progress, threading.Event()
                         )
                     self.assertEqual(1, synthesize.call_count)
+                    self.assertIsNone(observed["stage_job_id"])
                     expected_status = "cancel_requested" if owned_job else "canceled"
                     self.assertEqual(expected_status, observed["status"])
                     self.assertEqual(expected_status, result["status"])
@@ -4570,6 +4580,21 @@ A single reviewed cue.
                         with self.database.session() as db:
                             self.assertEqual("canceled", db.get(GenerationRun, run_id).status)
                             self.assertFalse(db.get(GenerationRun, run_id).cancel_requested)
+
+    def test_repair_early_generation_blocks_forwards_stage_job_id(self):
+        cancel = threading.Event()
+        with mock.patch(
+            "pandrator.web.voiceover_repair.repair_early_blocks",
+            return_value={"repaired_blocks": 0},
+        ) as repair:
+            result = self.handlers._repair_early_generation_blocks(
+                "run-1", self.progress, cancel, stage_job_id="repair-job-1"
+            )
+        self.assertEqual({"repaired_blocks": 0}, result)
+        repair.assert_called_once_with(
+            self.handlers, "run-1", self.progress, cancel,
+            stage_job_id="repair-job-1",
+        )
 
     def test_generation_reporting_failure_preserves_committed_take_and_resume_checkpoint(self):
         revision_id, segment_ids = self.handlers._store_generation_plan(

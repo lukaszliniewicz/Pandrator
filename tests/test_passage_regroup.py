@@ -294,10 +294,61 @@ def test_second_pass_never_combines_repair_and_regroup():
         )
         == "regroup"
     )
-    # Passage mode ignores the legacy early-repair flag.
+    # Passage mode supports duration-based cue repair when explicitly enabled.
     assert (
         _voiceover_second_pass(
             tts(speech_block_early_repair_enabled=True),
+            operation="generate",
+            has_selected_ids=False,
+            workflow_kind="voiceover",
+        )
+        == "repair"
+    )
+    # When both post-processing options are enabled, only one pass can run.
+    assert (
+        _voiceover_second_pass(
+            tts(
+                speech_block_regroup_enabled=True,
+                speech_block_early_repair_enabled=True,
+            ),
+            operation="generate",
+            has_selected_ids=False,
+            workflow_kind="voiceover",
+        )
+        == "repair"
+    )
+    # One preceding and one following segment may be used as semantic
+    # context, provided the split workflow binds a fresh context snapshot.
+    assert (
+        _voiceover_second_pass(
+            tts(
+                speech_block_early_repair_enabled=True,
+                tts_context_mode="both",
+                performance_context_before=1,
+                performance_context_after=1,
+            ),
+            operation="generate",
+            has_selected_ids=False,
+            workflow_kind="voiceover",
+        )
+        == "repair"
+    )
+    # Ad-hoc performance and multi-voice cast plans remain revision-bound.
+    for guard in ("performance_enabled", "casting_enabled"):
+        assert (
+            _voiceover_second_pass(
+                tts(speech_block_early_repair_enabled=True, **{guard: True}),
+                operation="generate",
+                has_selected_ids=False,
+                workflow_kind="voiceover",
+            )
+            is None
+        )
+    # Regroup is still disabled under semantic context until it can
+    # safely rebuild its own neighbours and performance identities.
+    assert (
+        _voiceover_second_pass(
+            tts(speech_block_regroup_enabled=True, tts_context_mode="both"),
             operation="generate",
             has_selected_ids=False,
             workflow_kind="voiceover",

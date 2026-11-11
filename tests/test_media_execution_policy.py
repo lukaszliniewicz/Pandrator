@@ -38,7 +38,7 @@ from pandrator.web.models import (
     JobActorRecord,
 )
 from pandrator.web.projects.models import ProjectMembership
-from tests.test_job_access_routes import SCOPES
+from tests.test_job_access_routes import SCOPES, grant_workspace_content_access
 from tests.test_job_access_routes import (
     case as media_case,  # noqa: F401 - pytest fixture registration
 )
@@ -223,6 +223,7 @@ def _client_credential(case: Any) -> tuple[Any, str]:
 
 
 def test_leased_project_editor_and_actual_workspace_owner_can_read(case: Any):
+    grant_workspace_content_access(case, "editor")
     source_id = _artifact(case)
     for name in ("editor", "owner"):
         caller = media_credential(case, name)
@@ -280,6 +281,7 @@ def test_noninitial_personal_workspace_owner_can_read_rootless_source(case: Any)
 
 
 def test_no_lease_user_invocation_uses_strict_current_read_and_run_scopes(case: Any):
+    grant_workspace_content_access(case, "editor")
     source_id = _artifact(case)
     allowed = media_credential(case, "editor")
     with execution_actor_scope(allowed.actor), _lease_scope(None):
@@ -364,6 +366,7 @@ def test_leased_user_rechecks_current_role_credential_and_account_state(case: An
 
 
 def test_expired_api_token_remains_valid_only_under_its_active_job_lease(case: Any):
+    grant_workspace_content_access(case, "editor")
     caller = media_credential(case, "editor")
     source_id = _artifact(case)
     queued = _enqueue_job(
@@ -497,6 +500,7 @@ def test_source_id_and_control_values_must_match_stored_job_payload(case: Any):
 
 
 def test_waveform_controls_are_checked_with_exact_types_and_values(case: Any):
+    grant_workspace_content_access(case, "editor")
     caller = media_credential(case, "editor")
     source_id = _artifact(case)
     queued = _enqueue_job(
@@ -557,6 +561,7 @@ def test_wrong_kind_job_id_and_job_roots_are_denied_before_payload_json(case: An
 
 
 def test_no_autoflush_and_caller_snapshot_are_preserved(case: Any):
+    grant_workspace_content_access(case, "editor")
     caller = media_credential(case, "editor")
     source_id = _artifact(case)
     queued = _enqueue_job(

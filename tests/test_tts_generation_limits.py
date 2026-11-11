@@ -53,7 +53,8 @@ def test_runtime_defaults_are_separate_from_model_caps(model, family, chunk, out
 
 def test_explicit_family_selects_shared_policy_for_unfamiliar_package_id():
     metadata = generation_limit_metadata(service="audio_cpp", model="custom-package", family="breeze_tts")
-    assert metadata["default_segment_characters"] == 540
+    # The 500-character application cap leaves a 10% safety margin by default.
+    assert metadata["default_segment_characters"] == 450
     assert metadata["runtime_output_budget"] == {"value": 1500, "unit": "acoustic_frames"}
 
 

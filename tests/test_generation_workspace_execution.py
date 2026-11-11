@@ -17,6 +17,8 @@ from pandrator.logic.tts_retry import TtsRetryGate
 from pandrator.web import models as m
 from pandrator.web.credentials import tts_service_credential_key, upsert_credential
 from pandrator.web.jobs import Worker
+from pandrator.web.speech_input_contracts import PROJECT_SPEECH_BINDING_KEY
+from pandrator.web.speech_inputs import speech_input_adapter
 from tests.test_evidence_access_routes import body, headers
 from tests.test_google_design_workspace_http import MODEL, SECRET
 from tests.test_google_design_workspace_http import case as case  # noqa: F401
@@ -228,6 +230,22 @@ def test_native_generation_uses_the_approved_connection_for_its_actual_route(
     assert len(calls) == 1
 
 
+def test_canonical_speech_adapter_does_not_accept_stale_endpoint_alias() -> None:
+    # This must fail with the former preview-first routing and remain narrowed
+    # even if an old preview choice points at a different audio.cpp endpoint.
+    adapter, registrations = speech_input_adapter(
+        {"service": "gemini", "preview_service_id": "audio_cpp"}
+    )
+    assert adapter == "gemini"
+    assert registrations == {"audio_cpp"}
+
+    adapter, registrations = speech_input_adapter(
+        {"service": "audio.cpp", "preview_service_id": "stale-other-endpoint"}
+    )
+    assert adapter == "audio_cpp"
+    assert registrations == {"audio_cpp"}
+
+
 @pytest.mark.parametrize(
     "generation_case",
     [
@@ -259,6 +277,14 @@ def test_generation_ignores_saved_preview_routing_metadata(generation_case, monk
         return capabilities(settings, **kwargs)
 
     monkeypatch.setattr(g.handlers.tts_providers, "synthesis_capabilities", capture_route)
+    with g.f.case.database.snapshot_session() as session:
+        snapshot = session.get_one(m.GenerationRun, g.marker["generation_run_id"])
+        recorded = dict(snapshot.settings_snapshot_json.get("tts") or {})
+    # The stale preview route must not fabricate an audio.cpp retained binding
+    # for the canonical Gemini selection that dispatch actually uses.
+    assert recorded.get(PROJECT_SPEECH_BINDING_KEY) is None, recorded.get(
+        PROJECT_SPEECH_BINDING_KEY
+    )
     assert g.worker.run_once()
     job = g.f.services.jobs.get(g.marker["job_id"])
     assert job.status == "succeeded", job.error_message

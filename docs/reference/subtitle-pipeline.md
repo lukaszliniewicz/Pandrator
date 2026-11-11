@@ -353,18 +353,75 @@ the session's `tts` settings through MCP:
 Generation uses its saved settings snapshot. Incoming-delay protection,
 reliable cue mappings, and meaningful text boundaries remain mandatory.
 
-At most one boundary is tried per original block. New children are generated
-in an inactive plan version; unchanged takes are reused. The version becomes
-active only if synthesis succeeds, the source plan and selected takes still
-match, and measured forward fitting shows no additional outgoing delay. Original
-takes and plan versions remain available. Cancellation or failure keeps the last accepted
-version. Individual selected-take regeneration does not trigger this pass.
+At most one boundary is tried per original block. Early-finish repair works
+in legacy or passage-first mode; if both repair and regroup are selected,
+repair wins and only one post-generation pass runs. Passage regroup is also
+unavailable while semantic text context is enabled. With semantic text context
+enabled, both new children receive freshly frozen context from their staged
+revision; unchanged neighbouring takes with different before/after context
+are regenerated as well. A repair is rejected if a refreshed neighbour
+grows in duration, or the split introduces later drift. Performance/casting
+plans still require manual review before changing their block IDs.
+New children are generated in an inactive plan version; unaffected takes are
+reused. The version becomes active only if synthesis and timing validation
+succeed and source choices remain unchanged. Original takes and plan versions
+remain available. Cancellation or failure retains the last accepted version.
+Individual selected-take regeneration does not trigger this pass.
+
+A completed voiceover that predates automatic checking can request the same
+non-destructive pass without synthesising its original blocks again:
+`POST /api/v1/generation-runs/{run_id}/repair-timing` with an empty JSON body
+and an optional `Idempotency-Key`. The endpoint requires run permission and
+accepts only a completed source run on the active speech plan whose **frozen
+settings** already enable early-finish repair. Audio-version runs are excluded.
+It queues one durable `generation.repair-existing` job per run. Retries reuse an
+active job, or a completed job that finished checking at least one block; a
+failed, canceled or stopped pass, a zero-checked skipped pass, or a partial pass
+that stopped or failed inspection can be retried with a fresh job while the root
+stays on the active plan. A request is refused while a previous pass is still
+stopping, and a staged second-pass child cannot be repaired again. A completed
+job that checked blocks is not run twice through this endpoint, including one
+where every attempt was rejected or no split was needed. An automatic pass inside
+a generation run writes no repair-job receipt, so it cannot be reused here: a
+later explicit request is admitted only while the original root is still the
+active plan, which in practice means the automatic pass applied no change. Once
+any second pass activates a staged revision, the root is stale and the request is
+refused. The job records checked/candidate/attempted/applied/rejected counts,
+with no new root audio takes. A missing, incompatible or stale original
+semantic-context snapshot causes a fail-closed skipped result, not a mass
+re-synthesis. The original takes remain available throughout.
 
 Speech-plan history identifies these revisions as automatic and exposes
 `repair_status` (`pending`, `applied`, `not_applied`, `failed`, `stopped`, or
 `unknown` for older entries), `repair_reason`, the source generation run ID,
-and the original block ordinal. An inactive attempted revision is not evidence
-of an applied split; the completed job's `repaired_blocks` counts accepted repairs.
+and the original block ordinal. The run-level `timing_repair` status distinguishes
+`running`, `completed`, `partial`, `rejected`, `no_effect`, `skipped`, `failed`,
+and `stopped`, and adds checked, candidate and attempted counts plus
+`pass_completed`. An inactive attempted revision is not evidence of an applied
+split; the completed job's `repaired_blocks` counts accepted repairs. Rejected
+staged revisions and takes remain inspectable and are not removed automatically.
+
+Passage regroup reports the same run-level status with group counters instead of
+repair counters. A pass that examined every selected group is `completed`
+(partly accepted groups are still `completed`) or `rejected` when no merge was
+accepted, and `no_effect` when no group was eligible. Its own
+`regroup_completed` flag is `false` when it stopped, lost the active plan or take
+selection, or failed before every selected group was examined; history then
+reports `partial` (with `pass_completed: false`) rather than `completed` or
+`rejected`. A pass that inspected no group reports `skipped` with its reason
+(no source run, changed active plan, invalid settings, not passage mode, missing
+first-pass evidence, or an unavailable edited-source cut mapping). Replay
+protection (`already_attempted`) is not a check and keeps the existing completed
+projection.
+
+Older legacy repair receipts may lack `repair_attempted_blocks` and
+`source_block_ordinal`. Pandrator then counts applied blocks from
+`repaired_blocks` and treats each non-applied staged child as its own attempt.
+It does not guess that ordinal-less applied rows are duplicates: two staged rows
+for one accepted split therefore cannot be distinguished from two accepted
+blocks without ordinal evidence, and such receipts may report one attempt where
+two were staged. Status uses the authoritative applied count, so this limitation
+does not turn an applied pass into a rejection.
 
 For timed voiceover, selected audio is mapped back through each block's source
 subtitle references. Blocks sharing an `alignment_group` are concatenated

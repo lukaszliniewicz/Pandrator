@@ -155,9 +155,11 @@ class TtsCataloguePass2Tests(unittest.TestCase):
             ))
             profile_loader.assert_not_called()
             preview_loader.assert_called_once_with(workspace_id=workspace_id)
-            snapshot_loader.assert_called_once_with(
-                refresh=False, include_profiles=False, workspace_id=workspace_id
-            )
+            snapshot_loader.assert_called_once()
+            snapshot_arguments = snapshot_loader.call_args.kwargs
+            self.assertFalse(snapshot_arguments["refresh"])
+            self.assertFalse(snapshot_arguments["include_profiles"])
+            self.assertEqual(workspace_id, snapshot_arguments["workspace_id"])
         alloy = next(item for item in payload["items"] if item["id"] == "alloy")
         self.assertEqual("provider-preview", alloy["preview_artifact_id"])
 

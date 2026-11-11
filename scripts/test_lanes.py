@@ -482,6 +482,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_generation_audio_identity.py",
         "tests/test_generation_missing_only.py",
         "tests/test_generation_run_history_projection.py",
+        "tests/test_generation_repair_existing_http.py",
         "tests/test_generation_search.py",
         "tests/test_passage_regroup.py",
         "tests/test_regroup_history_batches.py",
@@ -570,7 +571,9 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_speech_plan_audio_reuse.py",
         "tests/test_generation_provider_preflight.py",
     ),
-    "web-07-serial": (
+    # Former 304-file web-07 suite exceeded both 35/45-minute CI job budgets.
+    # Split serially by measured/collected test cost, preserving file order.
+    "web-07-01-serial": (
         "tests/test_passage_markers.py",
         "tests/test_source_passage_sentence_policy.py",
         "tests/test_passage_marker_routes.py",
@@ -598,6 +601,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_project_copy_publication.py",
         "tests/test_project_copy_flow.py",
         "tests/test_project_copy_jobs.py",
+    ),
+    "web-07-02-serial": (
         "tests/test_copy_connection_contracts.py",
         "tests/test_project_copy_connections.py",
         "tests/test_project_cast_copy.py",
@@ -612,6 +617,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_project_performance_copy.py",
         "tests/test_purge_authority_policy.py",
         "tests/test_purge_workspace_http.py",
+    ),
+    "web-07-03-serial": (
         "tests/test_retained_cast_projection.py",
         "tests/test_project_copy_knowledge.py",
         "tests/test_project_copy_evidence.py",
@@ -640,6 +647,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_project_speech_reference_store.py",
         "tests/test_project_speech_reference_capture.py",
         "tests/test_generation_retained_input_runtime.py",
+    ),
+    "web-07-04-serial": (
         "tests/test_project_tts_retention.py",
         "tests/test_generation_run_speech_preparation.py",
         "tests/test_generation_audible_speech_preparation.py",
@@ -650,6 +659,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_cast_retention_integration.py",
         "tests/test_segment_speech_reference_primitives.py",
         "tests/test_segment_reference_topology.py",
+    ),
+    "web-07-05-serial": (
         "tests/test_project_segment_retention.py",
         "tests/test_segment_retention_runtime.py",
         "tests/test_retained_speech_inputs.py",
@@ -679,20 +690,22 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_source_dispatch_workspace_http.py",
         "tests/test_source_ingress_workspace_access.py",
         "tests/test_source_ingress_workspace_http.py",
-            "tests/test_source_preparation_workspace_access.py",
-            "tests/test_source_preparation_workspace_http.py",
-            "tests/test_source_cleaning_workspace_access.py",
-            "tests/test_source_cleaning_workspace_http.py",
-            "tests/test_source_processing_children.py",
-            "tests/test_source_processing_children_http.py",
-            "tests/test_agent_run_workspace_access.py",
-            "tests/test_agent_run_workspace_http.py",
-            "tests/test_session_bundle_admission_access.py",
-            "tests/test_session_bundle_admission_http.py",
-            "tests/test_session_bundle_export_access.py",
-            "tests/test_session_bundle_export_http.py",
-            "tests/test_session_bundle_import_access.py",
-            "tests/test_session_bundle_import_http.py",
+        "tests/test_source_preparation_workspace_access.py",
+        "tests/test_source_preparation_workspace_http.py",
+        "tests/test_source_cleaning_workspace_access.py",
+    ),
+    "web-07-06-serial": (
+        "tests/test_source_cleaning_workspace_http.py",
+        "tests/test_source_processing_children.py",
+        "tests/test_source_processing_children_http.py",
+        "tests/test_agent_run_workspace_access.py",
+        "tests/test_agent_run_workspace_http.py",
+        "tests/test_session_bundle_admission_access.py",
+        "tests/test_session_bundle_admission_http.py",
+        "tests/test_session_bundle_export_access.py",
+        "tests/test_session_bundle_export_http.py",
+        "tests/test_session_bundle_import_access.py",
+        "tests/test_session_bundle_import_http.py",
         "tests/test_pdf_edit_workspace_access.py",
         "tests/test_pdf_edit_workspace_http.py",
         "tests/test_output_mix_workspace_access.py",
@@ -714,6 +727,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_sound_generation_workspace_access.py",
         "tests/test_sound_generation_io_fences.py",
         "tests/test_sound_workspace_flow_http.py",
+    ),
+    "web-07-07-serial": (
         "tests/test_project_null_speech_copy.py",
         "tests/test_copy_null_speech_contracts.py",
         "tests/test_copy_segment_speech_contracts.py",
@@ -747,6 +762,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_credential_resource_storage.py",
         "tests/test_credential_resource_policy.py",
         "tests/test_credential_resource_issuance.py",
+    ),
+    "web-07-08-serial": (
         "tests/test_private_transcription_owners.py",
         "tests/test_private_transcription_access.py",
         "tests/test_job_access_policy.py",
@@ -770,6 +787,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_project_graph_consistency.py",
         "tests/test_media_scope_consistency.py",
         "tests/test_library_scope_consistency.py",
+    ),
+    "web-07-09-serial": (
         "tests/test_execution_scope_consistency.py",
         "tests/test_configuration_scope_consistency.py",
         "tests/test_source_workspace_ownership.py",
@@ -788,6 +807,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_generation_execution_policy.py",
         "tests/test_generation_preflight_workspace.py",
         "tests/test_generation_speech_connections.py",
+    ),
+    "web-07-10-serial": (
         "tests/test_generation_speech_connection_cache.py",
         "tests/test_generation_domain_access.py",
         "tests/test_generation_workspace_access.py",
@@ -819,6 +840,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_job_required_ownership.py",
         "tests/test_job_library_workspace.py",
         "tests/test_job_media_workspace.py",
+    ),
+    "web-07-11-serial": (
         "tests/test_research_cache_ownership.py",
         "tests/test_research_cache_scope.py",
         "tests/test_usage_workspace_ownership.py",
@@ -848,6 +871,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_model_inference_authorization.py",
         "tests/test_browser_auth_sessions.py",
         "tests/test_browser_auth_activity.py",
+    ),
+    "web-07-12-serial": (
         "tests/test_account_authentication_integration.py",
         "tests/test_actor_attribution_ownership.py",
         "tests/test_execution_actor.py",
@@ -989,7 +1014,14 @@ def validate_manifest(
     duplicates = {
         path: lanes for path, lanes in sorted(assigned_to.items()) if len(lanes) > 1
     }
-    if not (unknown or missing or duplicates):
+    # Web lanes are serial because they share filesystem/SQLite test lifetimes.
+    # Without a size guard, CI silently grew a 304-file lane that timed out.
+    oversized_web_lanes = {
+        lane: len(paths)
+        for lane, paths in manifest.items()
+        if lane.startswith("web-") and lane.endswith("-serial") and len(paths) > 60
+    }
+    if not (unknown or missing or duplicates or oversized_web_lanes):
         return
 
     details: list[str] = ["Test-lane manifest is invalid:"]
@@ -1002,6 +1034,13 @@ def validate_manifest(
             f"{path} ({', '.join(lanes)})" for path, lanes in duplicates.items()
         )
         details.append(f"  duplicate paths: {duplicate_paths}")
+    if oversized_web_lanes:
+        details.append(
+            "  oversized serial web lanes (>60 files): "
+            + ", ".join(
+                f"{name} ({count})" for name, count in sorted(oversized_web_lanes.items())
+            )
+        )
     raise TestLaneManifestError("\n".join(details))
 
 

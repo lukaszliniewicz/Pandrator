@@ -758,11 +758,18 @@
     selectionEnd = end;
     textArea.focus();
     textArea.setSelectionRange(start, end);
-    updateSelection();
+    // Preview clicks must refresh the speaker picker even though the selected
+    // offsets have just been recorded programmatically.
+    updateSelection(true);
   }
-  function updateSelection() {
-    selectionStart = textArea?.selectionStart ?? 0;
-    selectionEnd = textArea?.selectionEnd ?? 0;
+  function updateSelection(force = false) {
+    const start = textArea?.selectionStart ?? 0;
+    const end = textArea?.selectionEnd ?? 0;
+    // Changing focus to a speaker picker can deliver a late textarea select
+    // event. Keep the user's explicit speaker choice if the range is unchanged.
+    if (!force && start === selectionStart && end === selectionEnd) return;
+    selectionStart = start;
+    selectionEnd = end;
     const runs = textRuns.filter(
       (run) => run.start < selectionEnd && run.end > selectionStart
     );

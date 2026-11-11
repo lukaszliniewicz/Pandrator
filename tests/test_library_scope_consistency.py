@@ -18,7 +18,6 @@ from pandrator.web.accounts.models import Workspace
 from pandrator.web.database import Database, sqlite_url
 from pandrator.web.models import (
     Artifact,
-    Job,
     ResearchCacheEntry,
     SoundItem,
     SoundVariant,
@@ -31,6 +30,7 @@ from pandrator.web.models import (
 from pandrator.web.projects.models import Project
 from pandrator.web.settings_policy import RevisionConflict
 from pandrator.web.sound_library_commands import save_in_session
+from tests.legacy_schema_support import insert_job
 
 MIGRATIONS = Path(__file__).parents[1] / "pandrator" / "web" / "migrations"
 TARGET_REVISION = "0078_library_scope_consistency"
@@ -144,6 +144,18 @@ def _make_valid_predecessor(path: Path) -> dict[str, str]:
                     ),
                 ]
             )
+            insert_job(
+                session,
+                job_id=IDS["job_main"],
+                kind="library-fixture",
+                workspace_id=workspace.id,
+            )
+            insert_job(
+                session,
+                job_id=IDS["job_other"],
+                kind="library-fixture",
+                workspace_id=other_workspace.id,
+            )
             session.add_all(
                 [
                     Artifact(
@@ -199,16 +211,6 @@ def _make_valid_predecessor(path: Path) -> dict[str, str]:
                         relative_path="library/archived.wav",
                         size_bytes=8,
                         content_hash="f" * 64,
-                    ),
-                    Job(
-                        id=IDS["job_main"],
-                        kind="library-fixture",
-                        workspace_id=workspace.id,
-                    ),
-                    Job(
-                        id=IDS["job_other"],
-                        kind="library-fixture",
-                        workspace_id=other_workspace.id,
                     ),
                     Voice(
                         id=IDS["voice_main"],

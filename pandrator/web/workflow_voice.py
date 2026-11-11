@@ -26,6 +26,7 @@ from pandrator.runtime import DataPaths
 from .access.contracts import AccessDenied
 from .access.local_tools_policy import LocalToolOperation, require_local_tool_inputs
 from .access.voice_sample_execution_policy import require_voice_sample_execution_workspace
+from .accounts import administration
 from .accounts.execution_actor import HostActor, UserActor, current_execution_actor
 from .accounts.models import Workspace
 from .artifacts import ArtifactService, sha256_file
@@ -1318,6 +1319,11 @@ def upload_rvc_model(
     progress: Callable[[float, str | None], None],
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
+    administration.require_execution_administrator_actor(
+        context.database,
+        required_scopes=frozenset({"app.write"}),
+        allow_host=True,
+    )
     _require_local_tool_worker()
     pth_artifact_id = str(payload.get("pth_artifact_id") or "").strip()
     index_artifact_id = str(payload.get("index_artifact_id") or "").strip()

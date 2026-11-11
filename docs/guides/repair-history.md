@@ -4,7 +4,7 @@ Automatic voiceover timing repair is one user-level operation, even when it trie
 
 ## Inspecting a batch
 
-A batch shows its accepted and attempted counts and whether it is running, completed, partially repaired, stopped, failed, or unchanged. The displayed result is the last **accepted** repair, not a later rejected candidate. When no repair was accepted, the preview is the original plan. The selector does not offer an extra copy of that unchanged plan.
+A batch shows its accepted and attempted counts and whether it is running, completed, partially repaired, stopped, failed, or applied no repairs. Passes that staged no revision, including skipped checks, appear in the generation run history instead. The displayed result is the last **accepted** repair, not a later rejected candidate. When no repair was accepted, the preview is the original plan. The selector does not offer an extra copy of that unchanged plan.
 
 **View repair details** loads a bounded list of internal checkpoints. Their outcomes and reasons remain available, including rejected replacements and interrupted attempts. **Preview original** or a checkpoint preview does not change the active plan or audio. An explicitly selected intermediate checkpoint is retained in the grouped entry and clearly labelled.
 

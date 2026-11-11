@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from pydub import AudioSegment
 
 from pandrator.web import audio_assembly
 from pandrator.web.audio_assembly import (
@@ -313,11 +312,11 @@ def test_pydub_late_denial_prevents_second_source_read(tmp_path: Path) -> None:
     denial = RuntimeError("second Pydub read denied")
     calls = 0
     source_reads: list[Path] = []
-    real_from_file = AudioSegment.from_file
+    real_load = audio_assembly.load_local_audio_segment
 
-    def tracked_from_file(file, *args, **kwargs):
+    def tracked_load(file, *args, **kwargs):
         source_reads.append(Path(file))
-        return real_from_file(file, *args, **kwargs)
+        return real_load(file, *args, **kwargs)
 
     def before_io() -> None:
         nonlocal calls
@@ -325,7 +324,7 @@ def test_pydub_late_denial_prevents_second_source_read(tmp_path: Path) -> None:
         if calls == 3:
             raise denial
 
-    with mock.patch.object(audio_assembly.AudioSegment, "from_file", side_effect=tracked_from_file):
+    with mock.patch.object(audio_assembly, "load_local_audio_segment", side_effect=tracked_load):
         with pytest.raises(RuntimeError) as caught:
             assemble_audio_plan(
                 _plan((first, second)),

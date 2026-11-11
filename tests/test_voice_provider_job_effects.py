@@ -9,6 +9,7 @@ from copy import deepcopy
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 
 from pandrator.web.database import SCHEMA_HEAD
 from pandrator.web.models import Job
@@ -65,8 +66,8 @@ def test_fresh_and_genuine_predecessor_upgrade_preserve_rows_and_triggers(tmp_pa
         assert old_triggers
     command.upgrade(config(old), TARGET)
     fresh = tmp_path / "fresh.sqlite3"
-    command.upgrade(config(fresh), "head")
-    assert SCHEMA_HEAD == TARGET
+    command.upgrade(config(fresh), TARGET)
+    assert ScriptDirectory.from_config(config(fresh)).get_heads() == [SCHEMA_HEAD]
     assert Job.__table__.c.external_effect_json.nullable
     assert Job.__table__.c.external_effect_json.default is None
     assert Job.__table__.c.external_effect_json.type.none_as_null

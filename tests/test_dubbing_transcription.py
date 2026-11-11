@@ -325,7 +325,11 @@ class CrispASRTranscriptionTests(unittest.TestCase):
                     Path(temp_dir) / "audio.wav",
                     session_dir=temp_dir,
                     output_name="audio",
-                    settings={"stt_engine": "whisper"},
+                    settings={
+                        "stt_engine": "whisper",
+                        "stt_language": "en",
+                        "crispasr_cache_dir": str(model_path.parent),
+                    },
                     executable="crispasr-test",
                     run_func=fake_run,
                 )

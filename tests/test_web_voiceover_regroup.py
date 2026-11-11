@@ -14,6 +14,7 @@ from pydub.generators import Sine
 from sqlalchemy import func, select
 
 from pandrator.web.database import Database
+from pandrator.web.generation_history_reads import GenerationHistoryReader
 from pandrator.web.models import (
     AudioTake,
     Document,
@@ -32,6 +33,9 @@ from tests.web_test_support import prepare_web_test_data_root
 FIRST = "First short passage."
 SECOND = "Second short passage."
 THIRD = "Third short passage."
+FOURTH = "Fourth short passage."
+FIFTH = "Fifth short passage."
+TEXTS = (FIRST, SECOND, THIRD, FOURTH, FIFTH)
 
 
 class VoiceoverRegroupTests(unittest.TestCase):
@@ -49,11 +53,10 @@ class VoiceoverRegroupTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
-    def plan(self, *, enabled=True, mode="passage", turn_ids=None):
+    def plan(self, *, enabled=True, mode="passage", turn_ids=None, passages=3):
         cues = [
-            (0, 3000, FIRST),
-            (3200, 6200, SECOND),
-            (6400, 9400, THIRD),
+            (index * 3200, index * 3200 + 3000, text)
+            for index, text in enumerate(TEXTS[:passages])
         ]
         with self.database.session() as session:
             document = Document(
@@ -311,6 +314,47 @@ class VoiceoverRegroupTests(unittest.TestCase):
         ]
         self.assertEqual("failed", attempts[-1]["repair_status"])
 
+    def test_rejected_only_regroup_history_is_rejected_not_completed(self):
+        self.plan()
+
+        def synth(text, *_args, **_kwargs):
+            return Sine(440).to_audio_segment(
+                duration=8600 if text == f"{FIRST} {SECOND} {THIRD}" else 3000
+            )
+
+        result, _ = self.generate(synth)
+        self.assertEqual(0, result.get("regrouped_groups"))
+        self.assertEqual("completed", result.get("regroup_status"))
+        job = self.handlers.jobs.enqueue(
+            "generation.run",
+            {"generation_run_id": self.run_id, "operation": "generate"},
+            session_id=self.record.id,
+        )
+        with self.database.immediate_session() as session:
+            session.get(GenerationRun, self.run_id).job_id = job.id
+        claimed = self.handlers.jobs.claim("regroup-history-fixture")
+        self.assertEqual(job.id, claimed.id)
+        self.handlers.jobs.complete(
+            job.id,
+            "regroup-history-fixture",
+            result,
+            lease_generation=claimed.lease_generation,
+        )
+
+        listed = next(
+            item
+            for item in GenerationHistoryReader(self.database).list_runs(
+                self.record.id
+            )
+            if item["id"] == self.run_id
+        )
+        repair = listed["timing_repair"]
+        self.assertEqual("regroup", repair["kind"])
+        self.assertEqual("rejected", repair["status"])
+        self.assertEqual(0, repair["applied_count"])
+        self.assertEqual(1, repair["attempt_count"])
+        self.assertFalse(repair["no_effect"])
+
     def test_cancel_during_regroup_keeps_original_selected(self):
         self.plan()
         event = threading.Event()
@@ -322,7 +366,100 @@ class VoiceoverRegroupTests(unittest.TestCase):
 
         result, _ = self.generate(synth, event)
         self.assertEqual(0, result.get("regrouped_groups"))
+        # The source generation still succeeds, but the second pass stopped
+        # before examining every selected group and must say so.
+        self.assertEqual("completed", result.get("regroup_status"))
+        self.assertFalse(result.get("regroup_completed"))
         self.assertEqual(self.revision_id, self.active())
+
+    def completed_receipt_history(self, result):
+        """Attach ``result`` as the root generation job receipt and read history."""
+
+        job = self.handlers.jobs.enqueue(
+            "generation.run",
+            {"generation_run_id": self.run_id, "operation": "generate"},
+            session_id=self.record.id,
+        )
+        with self.database.immediate_session() as session:
+            session.get(GenerationRun, self.run_id).job_id = job.id
+        claimed = self.handlers.jobs.claim("regroup-history-fixture")
+        self.assertEqual(job.id, claimed.id)
+        self.handlers.jobs.complete(
+            job.id,
+            "regroup-history-fixture",
+            result,
+            lease_generation=claimed.lease_generation,
+        )
+        return next(
+            item
+            for item in GenerationHistoryReader(self.database).list_runs(
+                self.record.id
+            )
+            if item["id"] == self.run_id
+        )
+
+    def test_interrupted_regroup_after_no_merged_group_is_not_completed(self):
+        self.plan()
+        event = threading.Event()
+
+        def synth(text, *_args, **_kwargs):
+            if text == f"{FIRST} {SECOND} {THIRD}":
+                event.set()
+            return Sine(440).to_audio_segment(duration=3000)
+
+        result, _ = self.generate(synth, event)
+        listed = self.completed_receipt_history(result)
+        repair = listed["timing_repair"]
+        self.assertEqual("regroup", repair["kind"])
+        self.assertNotEqual("completed", repair["status"])
+        self.assertEqual("stopped", repair["status"])
+        self.assertFalse(repair["pass_completed"])
+
+    def test_interrupted_regroup_after_applied_group_is_partial(self):
+        from pandrator.web import voiceover_regroup as regroup_module
+
+        self.plan(enabled=False, passages=5)
+        _result, calls = self.generate()
+        self.assertEqual(5, calls)
+        self.assertEqual(self.revision_id, self.active())
+
+        event = threading.Event()
+        original_mark = regroup_module.mark_output_assemblies_stale
+
+        def mark_then_stop(*args, **kwargs):
+            # Simulate a stop that arrives only after the first group has been
+            # accepted: the next iteration must not stage an unexamined group.
+            event.set()
+            return original_mark(*args, **kwargs)
+
+        def synth(text, *_args, **_kwargs):
+            return Sine(440).to_audio_segment(
+                duration=9200 if text == f"{FIRST} {SECOND} {THIRD}" else 3000
+            )
+
+        with patch(
+            "pandrator.logic.tts_handler.text_to_audio", side_effect=synth
+        ), patch.object(
+            regroup_module,
+            "mark_output_assemblies_stale",
+            side_effect=mark_then_stop,
+        ):
+            result = regroup_module.repair_regroup_blocks(
+                self.handlers, self.run_id, lambda *_args: None, event
+            )
+
+        self.assertEqual(1, result["regrouped_groups"])
+        self.assertEqual(2, result["regroup_attempted_groups"])
+        self.assertFalse(result["regroup_completed"])
+        self.assertEqual(
+            [f"{FIRST} {SECOND} {THIRD}", FOURTH, FIFTH], self.active_texts()
+        )
+        listed = self.completed_receipt_history(result)
+        repair = listed["timing_repair"]
+        self.assertEqual("regroup", repair["kind"])
+        self.assertEqual("partial", repair["status"])
+        self.assertFalse(repair["pass_completed"])
+        self.assertEqual(1, repair["applied_count"])
 
     def test_take_selection_during_regroup_is_not_overwritten(self):
         self.plan()
@@ -437,7 +574,7 @@ class VoiceoverRegroupTests(unittest.TestCase):
         self.assertNotIn("regrouped_groups", result)
         self.assertEqual(self.revision_id, self.active())
 
-    def test_passage_mode_ignores_early_repair_flag(self):
+    def test_passage_mode_checks_early_repair_when_enabled(self):
         self.plan(enabled=False)
         with self.database.session() as session:
             run = session.get(GenerationRun, self.run_id)
@@ -450,7 +587,9 @@ class VoiceoverRegroupTests(unittest.TestCase):
             }
         result, calls = self.generate()
         self.assertEqual(3, calls)
-        self.assertNotIn("repaired_blocks", result)
+        self.assertEqual(0, result["repaired_blocks"])
+        self.assertEqual(3, result["repair_checked_blocks"])
+        self.assertEqual(0, result["repair_candidate_blocks"])
         self.assertEqual(self.revision_id, self.active())
 
 

@@ -19,6 +19,7 @@ from pandrator_mcp.catalog import ACTION_CATALOG, RiskClass
 from pandrator_mcp.context import build_runtime
 from pandrator_mcp.project_copy_actions import PROJECT_COPY_OPERATIONS
 from pandrator_mcp.project_sharing_actions import PROJECT_SHARING_OPERATIONS
+from pandrator_mcp.public_link_actions import PUBLIC_LINK_OPERATIONS
 from pandrator_mcp.schemas.e2e import ListGenerationRunsInput
 from pandrator_mcp.schemas.generation import (
     AssembleGenerationRunInput,
@@ -69,6 +70,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         *(operation.name for operation in WORKSPACE_OPERATIONS),
                         *(operation.name for operation in PROJECT_SHARING_OPERATIONS),
                         *(operation.name for operation in PROJECT_COPY_OPERATIONS),
+                        *(operation.name for operation in PUBLIC_LINK_OPERATIONS),
                         "pandrator_list_users",
                         "pandrator_create_user",
                         "pandrator_update_user",

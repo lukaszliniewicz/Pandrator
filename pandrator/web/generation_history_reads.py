@@ -39,6 +39,148 @@ COMPACT_ASSEMBLY_FIELDS = (
 )
 
 
+def _snapshot_enables_early_repair(snapshot: object) -> bool:
+    """Mirror the effective-settings merge used to select the repair pass."""
+    if not isinstance(snapshot, dict) or snapshot.get("early_repair_parent_run_id"):
+        return False
+    sections = [snapshot.get("audio"), snapshot.get("tts")]
+    override = snapshot.get("selected_segment_override")
+    if isinstance(override, dict):
+        sections.append(override.get("tts"))
+    return any(
+        isinstance(section, dict)
+        and section.get("speech_block_early_repair_enabled") is True
+        for section in sections
+    )
+
+
+_REPAIR_RECEIPT_KEYS = (
+    "repair_checked_blocks",
+    "repair_candidate_blocks",
+    "repair_attempted_blocks",
+    "repaired_blocks",
+    "repair_completed",
+)
+
+
+#: Regroup statuses that inspected no group at all. Each carries an explicit
+#: reason in the receipt; the fallback keeps older receipts readable.
+_REGROUP_SKIP_REASONS = {
+    "skipped_no_source_run": "no_source_run",
+    "skipped_active_plan_changed": "active_plan_changed",
+    "skipped_invalid_regroup_settings": "invalid_regroup_settings",
+    "skipped_not_passage_mode": "not_passage_mode",
+    "skipped_first_pass_evidence_missing": "first_pass_evidence_missing",
+    "edited_source_cuts_unknown": "edited_source_cuts_unknown",
+}
+
+
+@dataclass(frozen=True)
+class _RegroupReceiptOutcome:
+    """Status, skip reason and pass completion proven by a regroup receipt."""
+
+    status: str
+    reason: str | None = None
+    completed: bool | None = None
+
+
+def _regroup_receipt_outcome(
+    receipt: dict[str, Any],
+) -> _RegroupReceiptOutcome | None:
+    """Return the outcome a regroup receipt proves, or ``None`` if not regroup.
+
+    Regroup receipts carry no repair counters, so a pass whose groups were all
+    rejected used to read as a completed check with zero merged groups.
+    ``regrouped_groups``/``regroup_attempted_groups`` are the authoritative
+    evidence; a completed pass that merged some groups keeps the existing
+    completed status even when other groups were rejected.
+
+    A receipt whose ``regroup_completed`` is ``False`` describes a pass that
+    broke out before examining every selected group (stop, changed plan or take
+    selection, unexpected failure). That is ``partial``, never a rejection and
+    never a completed check, even when no group was merged. Statuses that
+    inspected no group project ``skipped`` with their explicit reason.
+    """
+
+    if any(key in receipt for key in _REPAIR_RECEIPT_KEYS):
+        return None
+    regroup_status = receipt.get("regroup_status")
+    if not isinstance(regroup_status, str):
+        if "regrouped_groups" not in receipt:
+            return None
+        regroup_status = "completed"
+    completed = receipt.get("regroup_completed")
+    if not isinstance(completed, bool):
+        completed = None
+    if regroup_status == "failed":
+        return _RegroupReceiptOutcome("failed", completed=completed)
+    skip_reason = _REGROUP_SKIP_REASONS.get(regroup_status)
+    if skip_reason is not None:
+        reported = receipt.get("regroup_reason")
+        return _RegroupReceiptOutcome(
+            "skipped",
+            reason=reported if isinstance(reported, str) and reported else skip_reason,
+            completed=completed,
+        )
+    if regroup_status not in {"completed", "no_eligible_groups"}:
+        # Replays (already_attempted) and unknown legacy values never claimed
+        # to inspect anything; keep the established completed projection
+        # instead of inventing a check.
+        return _RegroupReceiptOutcome("completed", completed=completed)
+    if completed is False:
+        # The pass stopped before every selected group was examined. A zero
+        # merged count is an interruption, not proof that merges were rejected.
+        return _RegroupReceiptOutcome("partial", completed=False)
+    regrouped = receipt.get("regrouped_groups")
+    attempted_groups = receipt.get("regroup_attempted_groups")
+    if type(regrouped) is not int or type(attempted_groups) is not int:
+        return _RegroupReceiptOutcome("completed", completed=completed)
+    if attempted_groups > 0:
+        return _RegroupReceiptOutcome(
+            "rejected" if regrouped == 0 else "completed", completed=completed
+        )
+    return _RegroupReceiptOutcome("no_effect", completed=completed)
+
+
+def _legacy_attempted_blocks(
+    history: GenerationRunHistory,
+    attempt_children: Sequence[Any],
+    repaired: int,
+    rejected_attempts: int,
+) -> int:
+    """Count attempted source blocks for receipts predating the counter.
+
+    Legacy splits could stage more than one child run for a single source
+    block, so counting children overstated attempts and marked a fully applied
+    pass as partial. Prefer the persisted source ordinal. Without ordinal
+    evidence this is a documented best-effort count: applied blocks come from
+    the authoritative ``repaired_blocks`` value (or applied children when the
+    receipt predates it), and each non-applied child counts once. Ordinal-less
+    applied duplicates cannot be distinguished from distinct accepted blocks,
+    so the function never guesses them into extra attempts; status stays based
+    on the authoritative applied count.
+    """
+
+    ordinals: set[int] = set()
+    unattributed_rejections = 0
+    for child in attempt_children:
+        operation = history.repair_operations.get(str(child.id), {})
+        ordinal = operation.get("source_block_ordinal")
+        if type(ordinal) is int:
+            ordinals.add(ordinal)
+        elif str(operation.get("repair_status") or "") in {
+            "not_applied",
+            "failed",
+            "stopped",
+        }:
+            # An unattributed non-applied child cannot belong to an applied
+            # split, so it is its own rejected attempt.
+            unattributed_rejections += 1
+    if ordinals:
+        return len(ordinals) + unattributed_rejections
+    return repaired + rejected_attempts
+
+
 def project_generation_run(payload: dict[str, Any], *, view: str = "full") -> dict[str, Any]:
     """Opt-in transport projection; stored admission receipts remain full."""
     if view not in {"full", "compact"}:
@@ -97,6 +239,7 @@ class RunHistoryContext(RepairHistoryContext):
     histories: dict[str, GenerationRunHistory]
     revisions_by_id: dict[str, GenerationPlanRevision]
     jobs_by_id: dict[str, Job]
+    repair_jobs_by_root: dict[str, list[Job]]
     blocking_jobs: list[Job]
     assemblies_by_run_id: dict[str, OutputAssembly]
     assembly_versions_by_run_id: dict[str, dict[str, OutputAssembly]]
@@ -156,6 +299,72 @@ class GenerationHistoryReader:
             )
         )
 
+    @staticmethod
+    def _job_attempt_order(job: Job) -> tuple[Any, str]:
+        return (getattr(job, "created_at", None), str(getattr(job, "id", "") or ""))
+
+    @staticmethod
+    def _repair_job_is_stale(
+        root: GenerationRun, root_job: Job | None, repair_job: Job | None
+    ) -> bool:
+        """Return whether a newer generation attempt superseded this repair.
+
+        A post-run repair is requested against an already completed root. If
+        that root is paused and then resumed, the new ``generation.run`` job
+        owns the next attempt; a canceled repair from the earlier attempt must
+        not keep reporting ``stopped`` over the resumed generation's result.
+        """
+
+        if root_job is None or repair_job is None:
+            return False
+        if getattr(root_job, "kind", None) != "generation.run":
+            return False
+        payload = (
+            root_job.payload_json
+            if isinstance(root_job.payload_json, dict)
+            else {}
+        )
+        if str(payload.get("generation_run_id") or "") != str(root.id):
+            return False
+        repair_order = GenerationHistoryReader._job_attempt_order(repair_job)
+        root_order = GenerationHistoryReader._job_attempt_order(root_job)
+        return repair_order < root_order
+
+    @staticmethod
+    def _repair_attempt_children(
+        history: GenerationRunHistory,
+        root_job: Job | None,
+        repair_job: Job | None,
+    ) -> tuple[Any, ...]:
+        """Return only the children owned by the currently governing attempt."""
+
+        children = history.repair_children
+        if repair_job is not None:
+            return tuple(
+                child
+                for child in children
+                if getattr(child, "job_id", None) == repair_job.id
+            )
+        if root_job is None:
+            return children
+        governing_id = getattr(root_job, "id", None)
+        if governing_id is None:
+            return children
+        matching = tuple(
+            child
+            for child in children
+            if getattr(child, "job_id", None) == governing_id
+        )
+        if matching:
+            return matching
+        # Legacy inline repairs may not have stamped a job ID. Do not fall
+        # back to children owned by an earlier, superseded repair job.
+        return tuple(
+            child
+            for child in children
+            if getattr(child, "job_id", None) is None
+        )
+
     def _run_history_context(
         self,
         session: Session,
@@ -197,7 +406,40 @@ class GenerationHistoryReader:
             if job_ids
             else []
         )
+        # Threads of a post-run repair have no child run until one is staged,
+        # so their job ID is not reachable through GenerationRun.job_id. Probe
+        # the session only when a frozen snapshot enables that pass. Effective
+        # settings merge audio, tts and the selected-segment override, so any
+        # of those sections can carry the enabling flag.
+        repair_enabled = any(
+            _snapshot_enables_early_repair(run.settings_snapshot_json)
+            for run in runs
+        )
+        if repair_enabled:
+            seen_job_ids = {job.id for job in jobs}
+            jobs.extend(
+                job
+                for job in session.scalars(
+                    select(Job).where(
+                        Job.session_id == session_id,
+                        Job.kind == "generation.repair-existing",
+                    )
+                ).all()
+                if job.id not in seen_job_ids
+            )
         job_by_id = {job.id: job for job in jobs}
+        repair_jobs_by_root: dict[str, list[Job]] = {}
+        for repair_job in jobs:
+            if repair_job.kind != "generation.repair-existing":
+                continue
+            payload = (
+                repair_job.payload_json
+                if isinstance(repair_job.payload_json, dict)
+                else {}
+            )
+            root_id = str(payload.get("generation_run_id") or "")
+            if root_id:
+                repair_jobs_by_root.setdefault(root_id, []).append(repair_job)
         blocking_jobs: list[Job] = (
             list(
                 session.scalars(
@@ -294,6 +536,7 @@ class GenerationHistoryReader:
             "histories": histories,
             "revisions_by_id": revision_by_id,
             "jobs_by_id": job_by_id,
+            "repair_jobs_by_root": repair_jobs_by_root,
             "blocking_jobs": blocking_jobs,
             "assemblies_by_run_id": assembly_by_run_id,
             "assembly_versions_by_run_id": assembly_versions_by_run_id,
@@ -505,26 +748,40 @@ class GenerationHistoryReader:
         root: GenerationRun,
         history: GenerationRunHistory,
         root_job: Job | None,
+        repair_job: Job | None = None,
     ) -> tuple[str, bool]:
         """Infer repair state while keeping optional repair failures local."""
 
-        children = history.repair_children
-        job_active = root_job is not None and root_job.status in {
+        attempt_children = GenerationHistoryReader._repair_attempt_children(
+            history, root_job, repair_job
+        )
+        governing_job = repair_job or root_job
+        job_active = governing_job is not None and governing_job.status in {
             "queued", "running", "cancel_requested"
         }
         # A crashed/stopped job can leave a child queued or an outcome pending.
         # Such leftovers must not keep the logical run "repairing" forever.
-        if root.status == "failed" or (root_job is not None and root_job.status == "failed"):
+        if root.status == "failed" or (
+            governing_job is not None and governing_job.status == "failed"
+        ):
             return "failed", False
         if root.status in {"canceled", "stopped", "paused"} or (
-            root_job is not None and root_job.status in {"canceled", "interrupted"}
+            governing_job is not None
+            and governing_job.status in {"canceled", "interrupted"}
         ):
             return "stopped", False
-        active_child = any(GenerationHistoryReader._run_history_active(child, None) for child in children)
-        if (active_child and (root_job is None or job_active)) or (
-            root_job is not None
+        if repair_job is not None and job_active:
+            # A post-run repair job owns its own active state even before it
+            # stages the first child; progress may legitimately still be zero.
+            return "running", True
+        active_child = any(
+            GenerationHistoryReader._run_history_active(child, None)
+            for child in attempt_children
+        )
+        if (active_child and (governing_job is None or job_active)) or (
+            governing_job is not None
             and job_active
-            and (children or float(root_job.progress or 0) >= 0.85)
+            and (attempt_children or float(governing_job.progress or 0) >= 0.85)
         ):
             return "running", True
 
@@ -535,12 +792,14 @@ class GenerationHistoryReader:
                 )
                 or ""
             )
-            for child in children
+            for child in attempt_children
         }
-        if "failed" in outcomes or any(child.status == "failed" for child in children):
+        if "failed" in outcomes or any(
+            child.status == "failed" for child in attempt_children
+        ):
             return "failed", False
         if "stopped" in outcomes or any(
-            child.status in {"canceled", "stopped"} for child in children
+            child.status in {"canceled", "stopped"} for child in attempt_children
         ):
             return "stopped", False
         if "pending" in outcomes or active_child:
@@ -553,8 +812,106 @@ class GenerationHistoryReader:
         history: GenerationRunHistory,
         root: GenerationRun,
         root_job: Job | None,
+        *,
+        repair_job: Job | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        status, active = self._timing_repair_status(root, history, root_job)
+        status, active = self._timing_repair_status(
+            root, history, root_job, repair_job
+        )
+        receipt_job = repair_job or root_job
+        receipt = (
+            receipt_job.result_json
+            if receipt_job is not None and isinstance(receipt_job.result_json, dict)
+            else {}
+        )
+        attempt_children = GenerationHistoryReader._repair_attempt_children(
+            history, root_job, repair_job
+        )
+        rejections = receipt.get("repair_rejection_reasons") or {}
+        if not isinstance(rejections, dict):
+            rejections = {}
+
+        def _count(value: object) -> int:
+            return value if type(value) is int and value >= 0 else 0
+
+        checked = _count(receipt.get("repair_checked_blocks"))
+        candidates = _count(receipt.get("repair_candidate_blocks"))
+        attempt_statuses = [
+            str(
+                history.repair_operations.get(str(child.id), {}).get("repair_status")
+                or ""
+            )
+            for child in attempt_children
+        ]
+        attempt_applied = sum(1 for value in attempt_statuses if value == "applied")
+        rejected_attempts = sum(
+            1
+            for value in attempt_statuses
+            if value in {"not_applied", "failed", "stopped"}
+        )
+        repaired = _count(receipt.get("repaired_blocks"))
+        if "repaired_blocks" not in receipt:
+            repaired = attempt_applied
+        attempted = _count(receipt.get("repair_attempted_blocks"))
+        if "repair_attempted_blocks" not in receipt:
+            attempted = _legacy_attempted_blocks(
+                history, attempt_children, repaired, rejected_attempts
+            )
+        pass_completed = receipt.get("repair_completed")
+        inspection_failed = bool(receipt.get("repair_inspection_failed")) or (
+            "timing_inspection_failed" in rejections
+        )
+        # Older receipts predate repair_completed. A recorded stop is decisive
+        # evidence that the pass did not finish, even with checked blocks.
+        stopped_without_completion = (
+            pass_completed is not True and "generation_stopped" in rejections
+        )
+        regroup_outcome = _regroup_receipt_outcome(receipt)
+        skip_reason = None
+        if status == "completed":
+            if regroup_outcome is not None:
+                # Regroup receipts use group counters, not repair counters, so
+                # the repair branches below must not reinterpret them.
+                status = regroup_outcome.status
+                skip_reason = regroup_outcome.reason
+            elif not attempt_children and checked == 0 and rejections:
+                # A fail-closed early return with no checked speech blocks is
+                # not a successful timing check. Distinguish missing or
+                # unrecognised semantic context from a completed pass.
+                status = "skipped"
+                skip_reason = str(next(iter(rejections)))
+            elif (
+                pass_completed is False
+                or inspection_failed
+                or stopped_without_completion
+            ):
+                # Some blocks were checked but the pass never reached the end.
+                status = "partial"
+            elif repaired > 0 and (attempted > repaired or rejections):
+                status = "partial"
+            elif checked > 0 and repaired == 0:
+                if (
+                    candidates > 0
+                    or attempted > 0
+                    or rejected_attempts > 0
+                    or rejections
+                ):
+                    # At least one inspected block was a repair candidate, but
+                    # none was applied. That is a rejected attempt, not proof
+                    # that no split was needed.
+                    status = "rejected"
+                else:
+                    # Every inspected block kept its original audio because
+                    # none needed a split. The check itself completed.
+                    status = "no_effect"
+        reported_pass_completed = pass_completed
+        if (
+            not isinstance(reported_pass_completed, bool)
+            and regroup_outcome is not None
+        ):
+            # Regroup has no repair_completed; its own flag is the equivalent
+            # evidence, and False means the pass stopped before every group.
+            reported_pass_completed = regroup_outcome.completed
         result = history.result
         versions = []
         for child in history.repair_children:
@@ -622,8 +979,29 @@ class GenerationHistoryReader:
             "result_sequence_number": result.sequence_number,
             "applied_count": len(history.applied_children),
             "attempt_count": len(history.repair_children),
+            # Additive diagnostics: the current attempt's receipt is the
+            # authoritative evidence for a truthful status.
+            "checked_count": checked,
+            "candidate_count": candidates,
+            "attempted_count": attempted,
+            "pass_completed": reported_pass_completed
+            if isinstance(reported_pass_completed, bool)
+            else None,
+            "no_effect": status == "no_effect",
             "status": status,
             "kind": kind,
+            "reason": skip_reason,
+            "error_code": (
+                str(getattr(receipt_job, "error_code", None))
+                if getattr(receipt_job, "error_code", None)
+                else None
+            ),
+            "error_message": (
+                str(getattr(receipt_job, "error_message", None))
+                if getattr(receipt_job, "error_message", None)
+                else None
+            ),
+            "repair_rejection_reasons": rejections if isinstance(rejections, dict) else {},
             "versions": versions,
             "usage": usage_summary(usage_events),
         }
@@ -793,35 +1171,95 @@ class GenerationHistoryReader:
         )
         timing_repair = None
         repair_active = False
+        repair_jobs = context["repair_jobs_by_root"].get(run.id, ())
+        repair_job = max(
+            repair_jobs,
+            key=lambda item: (item.created_at, item.id),
+            default=None,
+        )
+        if GenerationHistoryReader._repair_job_is_stale(run, job, repair_job):
+            # A pause followed by a resume starts a newer generation attempt.
+            # The canceled repair belongs to the superseded attempt and must
+            # not keep this logical run reporting a stopped secondary pass.
+            repair_job = None
         from pandrator.logic.dubbing.passage_regroup import select_second_pass
 
-        second_pass = None if version is not None else select_second_pass(
-            snapshot,
-            operation=str(run.operation or ""),
-            has_selected_ids=False,
-            workflow_kind=str(context["workflow_kind"] or ""),
-        )
+        if repair_job is not None:
+            # A durable post-run repair request is authoritative even when
+            # the original synthesis job did not run a second pass itself.
+            second_pass = "repair"
+        else:
+            second_pass = None if version is not None else select_second_pass(
+                snapshot,
+                operation=str(run.operation or ""),
+                has_selected_ids=False,
+                workflow_kind=str(context["workflow_kind"] or ""),
+            )
+        # A historical completed run predating a repair-policy change must
+        # not retrospectively claim that a newly eligible pass actually ran.
+        # A post-pass writes a durable result key even when it found no
+        # repairable blocks. Repair children are also authoritative. Failed
+        # or canceled jobs cannot be shown as perpetually "repair pending"
+        # after an optional pass crashes without writing that receipt.
+        if (
+            repair_job is None
+            and job is not None
+            and job.status in {"succeeded", "failed", "canceled"}
+        ):
+            receipt = job.result_json if isinstance(job.result_json, dict) else {}
+            if (
+                second_pass == "repair"
+                and not history.repair_children
+                and "repaired_blocks" not in receipt
+            ):
+                second_pass = None
+            elif (
+                second_pass == "regroup"
+                and not history.repair_children
+                and "regrouped_groups" not in receipt
+            ):
+                second_pass = None
         repair_enabled = second_pass == "repair" and run.operation in {
             "generate",
             "resume",
         }
-        if is_original_root and (history.repair_children or repair_enabled):
+        # A regroup pass writes its receipt on the source generation job even
+        # when it merged nothing (skip, no eligible groups, interruption). A
+        # terminal receipt is proof the pass ran, so expose its outcome instead
+        # of silently omitting history. Only terminal jobs qualify: an active
+        # generation has not started its second pass yet.
+        regroup_receipt = bool(
+            is_original_root
+            and second_pass == "regroup"
+            and not history.repair_children
+            and repair_job is None
+            and job is not None
+            and job.status in {"succeeded", "failed", "canceled"}
+            and isinstance(job.result_json, dict)
+            and "regrouped_groups" in job.result_json
+        )
+        if (
+            is_original_root
+            and (history.repair_children or repair_enabled or regroup_receipt)
+        ):
             timing_repair, repair_active = self._timing_repair_payload(
                 context,
                 history,
                 run,
                 job,
+                repair_job=repair_job,
             )
             payload["timing_repair"] = timing_repair
             if repair_active:
                 payload["status"] = "running"
                 payload["phase"] = "repairing_timing"
-                if job is not None and job.status in {
+                active_job = repair_job or job
+                if active_job is not None and active_job.status in {
                     "queued",
                     "running",
                     "cancel_requested",
                 }:
-                    payload["progress"] = float(job.progress)
+                    payload["progress"] = float(active_job.progress)
 
         payload["early_repair_parent_run_id"] = (
             history.root.id if history.is_repair_child(run.id) else None

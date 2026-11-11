@@ -6,6 +6,10 @@ from unittest.mock import patch
 
 from sqlalchemy import event
 
+from pandrator.web.accounts.execution_actor import (
+    HostActor,
+    current_execution_actor,
+)
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.credentials import SecretRedactor
@@ -23,6 +27,12 @@ class WorkApiTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         prepare_web_test_data_root(self.temporary.name)
+        # Direct queue calls below run outside a request as the CLI host worker.
+        # Pin that validated actor instead of inheriting a stale execution
+        # context from another test module in the same pytest worker.
+        self.execution_actor_token = current_execution_actor.set(
+            HostActor("pandrator-cli")
+        )
         self.bootstrap = BootstrapTokenStore()
         self.bootstrap_token = self.bootstrap.issue()
         self.app = create_app(
@@ -41,6 +51,7 @@ class WorkApiTests(unittest.TestCase):
 
     def tearDown(self):
         self.app.extensions["pandrator"]["database"].dispose()
+        current_execution_actor.reset(self.execution_actor_token)
         self.temporary.cleanup()
 
     def test_job_activity_projects_and_recovery_survive_compact_snapshots(self):

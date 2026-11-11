@@ -43,15 +43,19 @@ def app_case(tmp_path, monkeypatch):
     services["database"].dispose()
 
 
-def configure_old_native(services):
+def configure_old_native(services, model="old_model", *, voices=()):
+    config = {
+        "id": "audio_cpp", "adapter": "audio_cpp", "connection_mode": "external",
+        "api_base": "http://native.invalid:8060", "models": [model],
+        "model_catalog": [{"id": model}], "default_model": model,
+    }
+    if voices:
+        config["voices"] = list(voices)
+        config["voice_catalogues"] = {model: list(voices)}
     with services["database"].session() as session:
         workspace_id = initial_personal_workspace(session).id
         row = session.get(WorkspaceSetting, (workspace_id, "services.tts"))
-        value = {"provider_configs": [{
-            "id": "audio_cpp", "adapter": "audio_cpp", "connection_mode": "external",
-            "api_base": "http://native.invalid:8060", "models": ["old_model"],
-            "model_catalog": [{"id": "old_model"}], "default_model": "old_model",
-        }]}
+        value = {"provider_configs": [config]}
         if row is None:
             session.add(WorkspaceSetting(
                 workspace_id=workspace_id,
@@ -313,10 +317,17 @@ def test_scoped_mcp_configuration_reaches_backend_without_unrelated_discovery(ap
     from pandrator_mcp.schemas.e2e import ConfigureTtsInput
     from pandrator_mcp.tools.e2e import configure_tts
 
-    client, _headers, services = app_case
-    configure_old_native(services)
+    client, headers, services = app_case
+    configure_old_native(services, model=BREEZE, voices=("native",))
     catalogue = services["tts_catalogue"]
     requests = []
+    created = client.post(
+        "/api/v1/sessions",
+        json={"name": "Scoped configuration", "workflow_kind": "audiobook"},
+        headers=headers,
+    )
+    assert created.status_code == 201, created.get_json()
+    session_id = created.get_json()["id"]
 
     class Application(ApplicationVoiceMethods):
         def _request_json(self, path, *, parameters=None, **kwargs):
@@ -352,11 +363,11 @@ def test_scoped_mcp_configuration_reaches_backend_without_unrelated_discovery(ap
     application = Application()
     runtime = SimpleNamespace(require_application=lambda: application)
     result = configure_tts(runtime, ConfigureTtsInput(
-        session_id="session-1", service_id="AUDIO-CPP", model=BREEZE, voice="native",
+        session_id=session_id, service_id="AUDIO-CPP", model=BREEZE,
         expected_revision=4, idempotency_key="scoped-configuration",
     ))
-    assert requests == [{"service_id": "audio_cpp"}, {"refresh": "true", "service_id": "audio_cpp"}]
-    assert health_probe.call_count == discover.call_count == 1
+    assert requests == [{"session_id": session_id, "model": BREEZE}]
+    assert health_probe.call_count == discover.call_count == 0
     assert result.result["selection"]["model"] == BREEZE
     saved = application.update_session_settings.call_args.kwargs
     assert saved["expected_revision"] == 4

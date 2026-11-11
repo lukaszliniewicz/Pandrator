@@ -3162,11 +3162,55 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         )
 
     def _repair_early_generation_blocks(
-        self, run_id: str, progress: Progress, cancel_event: threading.Event
+        self,
+        run_id: str,
+        progress: Progress,
+        cancel_event: threading.Event,
+        *,
+        stage_job_id: str | None = None,
     ) -> dict[str, Any]:
         from .voiceover_repair import repair_early_blocks
 
-        return repair_early_blocks(self, run_id, progress, cancel_event)
+        kwargs = {"stage_job_id": stage_job_id} if stage_job_id is not None else {}
+        return repair_early_blocks(self, run_id, progress, cancel_event, **kwargs)
+
+    def run_repair_existing_generation(
+        self, payload: dict[str, Any], progress: Progress, cancel_event: threading.Event
+    ) -> dict[str, Any]:
+        """Run the optional passage timing check without redoing source synthesis."""
+        from pandrator.logic.dubbing.passage_regroup import select_second_pass
+
+        from .access.contracts import ProjectAction
+        from .access.generation_resource_policy import require_generation_resource_access
+
+        run_id = str(payload.get("generation_run_id") or "")
+        session_id = str(payload.get("session_id") or "")
+        with self.database.session() as session:
+            require_generation_resource_access(session, "run", run_id, ProjectAction.RUN)
+            run = session.get(GenerationRun, run_id)
+            plan = session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            )
+            if (
+                run is None or run.session_id != session_id
+                or run.status != "completed" or plan is None
+                or plan.active_revision_id != run.plan_revision_id
+            ):
+                raise ValueError("Completed run is no longer on the active speech plan.")
+            if select_second_pass(
+                run.settings_snapshot_json or {},
+                operation=str(run.operation or ""),
+                has_selected_ids=False,
+                workflow_kind=self._session_record(session_id).workflow_kind,
+            ) != "repair":
+                raise ValueError("The frozen generation did not enable timing repair.")
+        result = self._repair_early_generation_blocks(
+            run_id,
+            progress,
+            cancel_event,
+            stage_job_id=str(payload.get("_job_id") or "") or None,
+        )
+        return {"source_generation_run_id": run_id, **result}
 
     def _regroup_generation_blocks(
         self, run_id: str, progress: Progress, cancel_event: threading.Event

@@ -156,6 +156,7 @@ class VoiceReferenceSetupTests(unittest.TestCase):
                 "sample_id": receipt["sample_id"], "sample_artifact_id": receipt["artifact_id"],
                 "sample_sha256": receipt["sample_sha256"]}
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_native_registration_reuse_and_endpoint_text_invalidation(self):
         extension, voice, _, _, _, prepared, handler = self._designed()
         settings = {"id": "audio_cpp", "name": "audio.cpp", "adapter": "audio_cpp", "api_base": "http://local/a"}
@@ -198,6 +199,7 @@ class VoiceReferenceSetupTests(unittest.TestCase):
             self.assertFalse(fifth["reused_registration"])
             upload.assert_not_called()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_worker_pins_prevent_provider_side_effects_on_hash_artifact_and_revision_drift(self):
         extension, voice, _, _, _, prepared, handler = self._designed()
         payload = self._pinned(voice, prepared)
@@ -208,7 +210,7 @@ class VoiceReferenceSetupTests(unittest.TestCase):
         def change_revision(*_):
             with extension["database"].session() as session:
                 session.get(Voice, voice["id"]).revision += 1
-        with self.assertRaisesRegex(ValueError, "changed before it could be linked"):
+        with self.assertRaisesRegex(ValueError, "changed before provider upload"):
             handler.publish_voice(payload, change_revision, threading.Event())
 
     def test_legacy_default_route_also_pins_normalized_sample(self):
@@ -231,6 +233,7 @@ class VoiceReferenceSetupTests(unittest.TestCase):
         conflict = self.client.post(path, json={**request, "recipe_signature": "b" * 64}, headers=self._headers("recipe-signature-key"))
         self.assertEqual("idempotency_conflict", conflict.get_json()["error"]["code"])
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_explicit_pins_select_older_sample_for_remote_publication(self):
         extension, voice, _, _, body, prepared, handler = self._designed()
         newer_path = extension["paths"].voices / voice["id"] / "newer.wav"
@@ -289,6 +292,7 @@ class VoiceReferenceSetupTests(unittest.TestCase):
                 artifact.metadata_json = metadata
             self.assertEqual(202, self.client.post(path, json=body, headers=self._headers()).status_code)
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_hash_change_during_provider_configuration_is_checked_before_upload(self):
         extension, voice, _, _, _, prepared, handler = self._designed()
         with extension["database"].session() as session:
@@ -303,6 +307,7 @@ class VoiceReferenceSetupTests(unittest.TestCase):
             handler.publish_voice({**self._pinned(voice, prepared), "service_id": "kobold_qwen"}, lambda *_: None, threading.Event())
         upload.assert_not_called()
 
+    @execution_actor_scope(HostActor("pandrator-cli"))
     def test_native_historical_pin_is_rejected_without_registration_or_revision_change(self):
         extension, voice, _, _, _, prepared, handler = self._designed()
         newer_path = extension["paths"].voices / voice["id"] / "current-native.wav"

@@ -45,7 +45,10 @@ async function openDrawer(page: Page, id: string) {
   await page.goto(`/sessions/${id}/generation`);
   const drawer = page.locator('[data-generation-layout]');
   // Wait for cold page hydration before testing the plan review controls.
-  await expect(drawer).toBeVisible({ timeout: 20_000 });
+  // Windows keeps the configured 20-30s cold-bundle budget; other platforms
+  // keep the previous 20s local hydration budget.
+  const coldHydrationTimeout = process.platform === 'win32' ? 35_000 : 20_000;
+  await expect(drawer).toBeVisible({ timeout: coldHydrationTimeout });
   await drawer
     .getByRole('button', { name: 'Speech plans', exact: true })
     .click();

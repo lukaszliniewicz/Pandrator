@@ -9,6 +9,11 @@ from flask import Flask, session
 from PIL import Image
 from sqlalchemy import func, select
 
+from pandrator.web.accounts.execution_actor import (
+    UserActor,
+    actor_from_principal,
+    current_execution_actor,
+)
 from pandrator.web.api import create_app
 from pandrator.web.auth import PRINCIPAL_KINDS, BootstrapTokenStore
 from pandrator.web.http_lifecycle import ApiGuards
@@ -312,9 +317,42 @@ class PrincipalContractTests(unittest.TestCase):
         )
         self.guards = ApiGuards(
             self.app,
-            SimpleNamespace(identity=SimpleNamespace(instance_id="fixture-instance"), auth=self.auth),
+            SimpleNamespace(
+                identity=SimpleNamespace(instance_id="fixture-instance"),
+                auth=self.auth,
+                # Only consulted by dispatched requests; the contract tests
+                # below push bare request contexts and never dispatch one.
+                paths=SimpleNamespace(root=Path(tempfile.gettempdir())),
+            ),
             testing=True,
             script_policy="'self'",
+        )
+        # Teardown restores the execution-actor ContextVar, so the fixture must
+        # install the real lifecycle hooks instead of hand-rolling the reset.
+        self.guards.register()
+
+    def tearDown(self):
+        self.assertIsNone(
+            current_execution_actor.get(),
+            "The execution actor leaked out of a request context.",
+        )
+
+    @staticmethod
+    def _resolved_session(
+        kind: str,
+        *,
+        user_id: str | None = "server-user-id",
+        auth_revision: int | None = 7,
+        session_id: str = "server-session-id",
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            subject="server-actor",
+            kind=kind,
+            scopes=frozenset({"app.read"}),
+            client_id=None,
+            user_id=user_id,
+            auth_revision=auth_revision,
+            session_id=session_id,
         )
 
     def test_network_zone_handles_ipv4_ipv6_and_invalid_addresses(self):
@@ -330,13 +368,13 @@ class PrincipalContractTests(unittest.TestCase):
                 self.assertEqual(expected, self.guards._network_zone())
 
     def test_session_principal_kind_scope_and_request_cache_contract(self):
-        for kind in sorted(PRINCIPAL_KINDS):
+        # The opaque browser-session record is authoritative. Cookie-stored
+        # kind/scope claims are client-controlled, so they must never be read.
+        for kind in sorted(PRINCIPAL_KINDS - {"project_link"}):
             with self.subTest(kind=kind), self.app.test_request_context():
                 self.session_store.resolve.reset_mock()
-                self.session_store.resolve.return_value = SimpleNamespace(
-                    subject="server-actor", kind=kind, scopes=frozenset({"app.read"}),
-                    client_id=None, user_id="server-user-id", auth_revision=7, session_id="server-session-id",
-                )
+                self.auth.solo_access_allowed.reset_mock()
+                self.session_store.resolve.return_value = self._resolved_session(kind)
                 session.update(
                     authenticated=True, auth_session="synthetic-opaque-session",
                     principal_kind="unknown-kind", principal_scopes=["invalid-scope"],
@@ -345,21 +383,169 @@ class PrincipalContractTests(unittest.TestCase):
                 self.assertIsNotNone(principal)
                 self.assertEqual(kind, principal.kind)
                 self.assertEqual(frozenset({"app.read"}), principal.scopes)
+                self.assertEqual("server-actor", principal.subject)
                 self.assertEqual("server-user-id", principal.user_id)
                 self.assertEqual(7, principal.auth_revision)
+                self.assertEqual("server-session-id", principal.browser_session_id)
+                self.assertIsNone(principal.token_id)
                 self.assertEqual("fixture-instance", principal.target_instance_id)
-                session["authenticated"] = False
+                self.assertEqual(
+                    actor_from_principal(principal), current_execution_actor.get()
+                )
+                self.session_store.resolve.assert_called_once_with(
+                    "synthetic-opaque-session"
+                )
+                self.auth.solo_access_allowed.assert_called_once_with("server-user-id", 7)
+                # The request cache outlives later cookie mutation and reuses
+                # the single server resolution.
+                session.update(
+                    authenticated=False, principal_kind="service",
+                    principal_scopes=["app.admin"],
+                )
                 self.assertIs(principal, self.guards.principal())
-                self.session_store.resolve.assert_called_once_with("synthetic-opaque-session")
+                self.assertEqual(
+                    actor_from_principal(principal), current_execution_actor.get()
+                )
+                self.session_store.resolve.assert_called_once_with(
+                    "synthetic-opaque-session"
+                )
+
+    def test_session_principal_rejects_project_link_kind_from_login_cookie(self):
+        # Shared-link guests authenticate through their own cookie path; a
+        # resolved record with that kind must never ride the login session.
         with self.app.test_request_context():
+            self.session_store.resolve.return_value = self._resolved_session(
+                "project_link"
+            )
+            session.update(
+                authenticated=True, auth_session="link-kind-session",
+                principal_kind="owner_session", principal_scopes=["app.read"],
+            )
+            self.assertIsNone(self.guards.principal())
+            self.assertIsNone(self.guards.principal())
+            self.session_store.resolve.assert_called_once_with("link-kind-session")
+            self.assertIsNone(current_execution_actor.get())
+
+    def test_session_cookie_claims_cannot_synthesize_a_principal(self):
+        with self.app.test_request_context():
+            self.session_store.resolve.reset_mock()
+            self.session_store.resolve.return_value = self._resolved_session(
+                "owner_session"
+            )
+            session.update(
+                authenticated=True, principal_kind="service",
+                principal_scopes=["app.admin"],
+            )
+            self.assertIsNone(self.guards.principal())
+            self.session_store.resolve.assert_not_called()
+            self.assertIsNone(current_execution_actor.get())
+        with self.app.test_request_context():
+            self.session_store.resolve.reset_mock()
             self.session_store.resolve.return_value = None
-            session.update(authenticated=True, auth_session="revoked-opaque-session", principal_scopes=["invalid-scope"])
+            session.update(
+                authenticated=True, auth_session="revoked-opaque-session",
+                principal_scopes=["invalid-scope"],
+            )
             self.assertIsNone(self.guards.principal())
-            session.pop("principal_scopes")
             self.assertIsNone(self.guards.principal())
+            self.session_store.resolve.assert_called_once_with(
+                "revoked-opaque-session"
+            )
         with self.app.test_request_context():
-            session.update(authenticated=True, principal_kind="service")
+            self.session_store.resolve.reset_mock()
+            session.update(authenticated=True, auth_session=42)
             self.assertIsNone(self.guards.principal())
+            self.session_store.resolve.assert_not_called()
+        with self.app.test_request_context():
+            self.session_store.resolve.reset_mock()
+            session.update(authenticated=False, auth_session="opaque-session")
+            self.assertIsNone(self.guards.principal())
+            self.session_store.resolve.assert_not_called()
+        with self.app.test_request_context():
+            self.session_store.resolve.return_value = self._resolved_session(
+                "owner_session"
+            )
+            self.auth.solo_access_allowed.return_value = False
+            session.update(authenticated=True, auth_session="revoked-account")
+            self.assertIsNone(self.guards.principal())
+            self.auth.solo_access_allowed.assert_called_once_with("server-user-id", 7)
+            self.assertIsNone(current_execution_actor.get())
+        with self.app.test_request_context():
+            # An internally inconsistent record must fail closed, not bind
+            # a partially identified actor.
+            self.session_store.resolve.return_value = self._resolved_session(
+                "owner_session", user_id=None
+            )
+            session.update(authenticated=True, auth_session="inconsistent-record")
+            self.assertIsNone(self.guards.principal())
+            self.assertIsNone(current_execution_actor.get())
+
+    def test_session_principal_restores_execution_actor_context(self):
+        prior = UserActor(
+            user_id="prior-user",
+            auth_revision=3,
+            subject="prior-actor",
+            principal_kind="owner_session",
+            scopes=frozenset({"app.read"}),
+            token_id=None,
+            browser_session_id="prior-session",
+            client_id=None,
+        )
+        token = current_execution_actor.set(prior)
+        try:
+            with self.app.test_request_context():
+                self.session_store.resolve.return_value = self._resolved_session(
+                    "owner_session"
+                )
+                session.update(authenticated=True, auth_session="outer-session")
+                outer = self.guards.principal()
+                self.assertEqual(
+                    actor_from_principal(outer), current_execution_actor.get()
+                )
+                # A second app gets its own app context and ``g``, so this
+                # nests a real second principal binding over the first.
+                inner_app = Flask("principal-contract-inner")
+                inner_app.secret_key = "principal-contract-inner"
+                inner_store = SimpleNamespace(
+                    resolve=Mock(
+                        return_value=self._resolved_session(
+                            "owner_session",
+                            user_id="inner-user",
+                            auth_revision=9,
+                            session_id="inner-session",
+                        )
+                    )
+                )
+                inner_guards = ApiGuards(
+                    inner_app,
+                    SimpleNamespace(
+                        identity=SimpleNamespace(instance_id="fixture-instance"),
+                        auth=SimpleNamespace(
+                            browser_sessions=inner_store,
+                            solo_access_allowed=Mock(return_value=True),
+                        ),
+                        paths=SimpleNamespace(root=Path(tempfile.gettempdir())),
+                    ),
+                    testing=True,
+                    script_policy="'self'",
+                )
+                inner_guards.register()
+                with inner_app.test_request_context():
+                    session.update(authenticated=True, auth_session="inner-session")
+                    inner = inner_guards.principal()
+                    self.assertEqual(
+                        actor_from_principal(inner), current_execution_actor.get()
+                    )
+                    self.assertNotEqual(
+                        actor_from_principal(outer), current_execution_actor.get()
+                    )
+                self.assertEqual(
+                    actor_from_principal(outer), current_execution_actor.get()
+                )
+                self.assertIs(outer, self.guards.principal())
+            self.assertIs(prior, current_execution_actor.get())
+        finally:
+            current_execution_actor.reset(token)
 
 
 if __name__ == "__main__":

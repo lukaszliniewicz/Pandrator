@@ -16,7 +16,18 @@ jobs:
       matrix:
         lane:
           - web-03-serial
-          - web-07-serial
+          - web-07-01-serial
+          - web-07-02-serial
+          - web-07-03-serial
+          - web-07-04-serial
+          - web-07-05-serial
+          - web-07-06-serial
+          - web-07-07-serial
+          - web-07-08-serial
+          - web-07-09-serial
+          - web-07-10-serial
+          - web-07-11-serial
+          - web-07-12-serial
           - web-17-serial
           - web-18-serial
 

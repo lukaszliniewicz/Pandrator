@@ -844,6 +844,50 @@ class GenerationTopologyTests(unittest.TestCase):
             self.assertEqual([1, 2, 3], [revision.revision_number for revision in revisions])
             self.assertEqual(plan.active_revision_id, revisions[-1].id)
 
+    def test_section_boundary_is_retained_on_split_and_blocks_cross_section_merge(self):
+        with self.database.session() as session:
+            left = session.get(GenerationSegment, self.initial_segment_ids[0])
+            right = session.get(GenerationSegment, self.initial_segment_ids[1])
+            left.speech_block_provenance_json = {
+                **dict(left.speech_block_provenance_json or {}),
+                "section_id": 42,
+            }
+            right.speech_block_provenance_json = {
+                **dict(right.speech_block_provenance_json or {}),
+                "section_id": "discussion",
+            }
+
+        split = self._topology(
+            self.initial_revision_id,
+            {
+                "action": "split",
+                "segment_id": self.initial_segment_ids[0],
+                "cursor": 2,
+                "text_layer": "display",
+            },
+            "section-split-1",
+        )
+        self.assertEqual(201, split.status_code, split.get_json())
+        left, right, neighbour = self._segments()["items"]
+        self.assertEqual(
+            ["42", "42"],
+            [
+                left["speech_block_provenance"]["section_id"],
+                right["speech_block_provenance"]["section_id"],
+            ],
+        )
+        merge = self._topology(
+            split.get_json()["plan_revision_id"],
+            {
+                "action": "merge",
+                "left_segment_id": right["id"],
+                "right_segment_id": neighbour["id"],
+            },
+            "section-cross-merge-1",
+        )
+        self.assertEqual(422, merge.status_code, merge.get_json())
+        self.assertIn("section", str(merge.get_json()).lower())
+
     def test_split_merge_restore_preserve_immutable_lineage(self):
         split = self._topology(
             self.initial_revision_id,

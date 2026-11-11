@@ -25,14 +25,28 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
+from datetime import timedelta
 from unittest.mock import patch
 
 from pydub import AudioSegment
 from sqlalchemy import select
 
+from pandrator.web.accounts.execution_actor import (
+    actor_from_storage,
+    execution_actor_scope,
+)
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import Artifact, AudioTake, GenerationRun, Job
+from pandrator.web.job_execution import current_job_lease
+from pandrator.web.model_base import utcnow
+from pandrator.web.models import (
+    Artifact,
+    AudioTake,
+    GenerationRun,
+    Job,
+    JobActorRecord,
+)
 from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 
 
@@ -120,31 +134,74 @@ class FirstRegenerationTests(unittest.TestCase):
             run = session.get(GenerationRun, run_id)
             run.status = "running"
 
+    @contextmanager
+    def _worker_authority(self, run_id, operation):
+        """Run the handler exactly as the durable worker would.
+
+        The queue claims the job (running + live lease), the worker decodes the
+        job's own recorded actor, and the payload it executes is the stored one
+        plus the fenced ``_job_id``/``_lease_generation`` injections.
+        """
+        owner_id = "first-regeneration-test-worker"
+        with self.database.immediate_session() as session:
+            run = session.get(GenerationRun, run_id)
+            self.assertIsNotNone(run)
+            job = session.get(Job, run.job_id)
+            self.assertIsNotNone(job)
+            stored = dict(job.payload_json or {})
+            executed = {**stored, "operation": operation}
+            if executed != stored:
+                job.payload_json = executed
+            lease_generation = int(job.lease_generation or 0) + 1
+            job.status = "running"
+            job.lease_owner = owner_id
+            job.lease_generation = lease_generation
+            job.lease_expires_at = utcnow() + timedelta(minutes=5)
+            record = session.get(JobActorRecord, job.id)
+            self.assertIsNotNone(record, "The job must record its creating actor")
+            actor = actor_from_storage(
+                record.user_id, record.auth_revision, record.context_json
+            )
+            self.assertIsNotNone(actor)
+            job_id = job.id
+        lease_token = current_job_lease.set(
+            {
+                "job_id": job_id,
+                "owner_id": owner_id,
+                "lease_generation": lease_generation,
+            }
+        )
+        try:
+            with execution_actor_scope(actor):
+                yield {
+                    **executed,
+                    "_job_id": job_id,
+                    "_lease_generation": lease_generation,
+                }
+        finally:
+            current_job_lease.reset(lease_token)
+
     def _run_worker(self, run_id, operation="regenerate"):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
-        with self.database.session() as session:
-            job = session.get(Job, session.get(GenerationRun, run_id).job_id)
-            segment_ids = list((job.payload_json or {}).get("segment_ids") or [])
-        with (
-            patch.object(handlers.tts_providers, "synthesize", side_effect=_silent),
-            patch.object(
-                handlers.tts_providers, "synthesize_batch", side_effect=_silent_batch
-            ),
-            patch.object(
-                handlers.tts_providers,
-                "synthesis_capabilities",
-                side_effect=_capabilities,
-            ),
-        ):
-            return handlers.run_generation(
-                {
-                    "generation_run_id": run_id,
-                    "segment_ids": segment_ids,
-                    "operation": operation,
-                },
-                lambda _value, _detail=None: None,
-                threading.Event(),
-            )
+        with self._worker_authority(run_id, operation) as payload:
+            with (
+                patch.object(handlers.tts_providers, "synthesize", side_effect=_silent),
+                patch.object(
+                    handlers.tts_providers,
+                    "synthesize_batch",
+                    side_effect=_silent_batch,
+                ),
+                patch.object(
+                    handlers.tts_providers,
+                    "synthesis_capabilities",
+                    side_effect=_capabilities,
+                ),
+            ):
+                return handlers.run_generation(
+                    payload,
+                    lambda _value, _detail=None: None,
+                    threading.Event(),
+                )
 
     def _synthesized_texts(self, run_id):
         with self.database.session() as session:

@@ -3,6 +3,7 @@ import io
 import ipaddress
 import json
 import logging
+import os
 import stat
 import tempfile
 import unittest
@@ -149,6 +150,11 @@ class SecurityEventLogTests(unittest.TestCase):
         )
         self.assertNotIn("**", str(inspect.signature(SecurityEventSink.emit)))
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "The file sink requires POSIX descriptor permission hardening "
+        "(os.fchmod), which Windows does not provide.",
+    )
     def test_file_target_is_private_and_symlinks_are_rejected(self):
         root = self.temporary_directory()
         target = root / "events.jsonl"
@@ -190,6 +196,11 @@ class SecurityEventLogTests(unittest.TestCase):
         self.assertFalse(private_path.exists())
         self.assertEqual(output.getvalue(), "")
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "The file sink requires POSIX descriptor permission hardening "
+        "(os.fchmod), which Windows does not provide.",
+    )
     def test_concurrent_authentication_failures_are_individual_json_lines(self):
         root = self.temporary_directory()
         target = root / "events.jsonl"

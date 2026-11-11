@@ -14,6 +14,19 @@ from pandrator.web import (
     workflow_book_export,
     workflow_export,
 )
+from pandrator.web.database import Database
+from tests.web_test_support import prepare_web_test_data_root
+
+
+@pytest.fixture
+def output_storage_database(tmp_path):
+    """Real admission database; the fake context still owns all IO callbacks."""
+    paths = prepare_web_test_data_root(tmp_path)
+    database = Database(paths.database)
+    try:
+        yield database
+    finally:
+        database.dispose()
 
 
 def test_audiobook_video_export_passes_mix_to_book_caption_and_codec_stage(
@@ -29,6 +42,8 @@ def test_audiobook_video_export_passes_mix_to_book_caption_and_codec_stage(
         settings={"include_sounds": True, "export_mode": "video_book"},
         record=record,
         output_settings_snapshot={},
+        by_role={},
+        attached_sources=[],
     )
     context = SimpleNamespace(_session_dir=lambda _session_id: tmp_path)
     events = []
@@ -73,7 +88,7 @@ def test_audiobook_video_export_passes_mix_to_book_caption_and_codec_stage(
 
 
 def test_timed_video_mixes_effects_after_the_voice_soundtrack_master(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, output_storage_database
 ):
     upload_media = SimpleNamespace(id="source-video")
     voice_audio = SimpleNamespace(id="voice-audio")
@@ -81,12 +96,19 @@ def test_timed_video_mixes_effects_after_the_voice_soundtrack_master(
     mixed_audio = SimpleNamespace(id="mixed-audio")
     voice_path = tmp_path / "voice.wav"
     mixed_path = tmp_path / "mixed.wav"
+    voice_path.write_bytes(b"voice-audio")
+    mixed_path.write_bytes(b"mixed-audio")
+    media_path = tmp_path / "source.mp4"
+    media_path.write_bytes(b"source-video")
     events = []
     resolved = {
         voice_audio.id: (voice_audio, voice_path),
         mixed_audio.id: (mixed_audio, mixed_path),
     }
-    context = SimpleNamespace(_resolve_input=lambda artifact_id: resolved[artifact_id])
+    context = SimpleNamespace(
+        _resolve_input=lambda artifact_id: resolved[artifact_id],
+        database=output_storage_database,
+    )
     settings = {
         "audio_match_source_duration": False,
         "mix_ducking": "strong",
@@ -99,7 +121,12 @@ def test_timed_video_mixes_effects_after_the_voice_soundtrack_master(
     )
     selection = SimpleNamespace(
         upload_media=upload_media,
+        upload_audio=None,
         dubbing_audio=voice_audio,
+        selected_subtitles=[],
+        export_mode="video",
+        subtitle_format="srt",
+        subtitle_mode="off",
         audio_mode="mixed",
     )
 
@@ -142,7 +169,7 @@ def test_timed_video_mixes_effects_after_the_voice_soundtrack_master(
         context,
         inputs,
         selection,
-        media_path=tmp_path / "source.mp4",
+        media_path=media_path,
         scratch_dir=tmp_path,
         ffmpeg_executable="ffmpeg-test",
         video_encoder="libx264",
@@ -162,17 +189,21 @@ def test_timed_video_mixes_effects_after_the_voice_soundtrack_master(
 
 
 def test_source_only_video_mixes_effects_over_the_source_master(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, output_storage_database
 ):
     upload_media = SimpleNamespace(id="source-video")
     master_audio = SimpleNamespace(id="source-master")
     mixed_audio = SimpleNamespace(id="mixed-audio")
     mixed_path = tmp_path / "mixed-source.wav"
+    mixed_path.write_bytes(b"mixed-source-audio")
+    media_path = tmp_path / "source.mp4"
+    media_path.write_bytes(b"source-video")
     events = []
     context = SimpleNamespace(
         _resolve_input=lambda artifact_id: (mixed_audio, mixed_path)
         if artifact_id == mixed_audio.id
-        else pytest.fail(f"unexpected audio resolution: {artifact_id}")
+        else pytest.fail(f"unexpected audio resolution: {artifact_id}"),
+        database=output_storage_database,
     )
     settings = {"audio_match_source_duration": False}
     inputs = SimpleNamespace(
@@ -182,7 +213,12 @@ def test_source_only_video_mixes_effects_over_the_source_master(
     )
     selection = SimpleNamespace(
         upload_media=upload_media,
+        upload_audio=None,
         dubbing_audio=None,
+        selected_subtitles=[],
+        export_mode="video",
+        subtitle_format="srt",
+        subtitle_mode="off",
         audio_mode="source",
     )
 
@@ -220,7 +256,7 @@ def test_source_only_video_mixes_effects_over_the_source_master(
         context,
         inputs,
         selection,
-        media_path=tmp_path / "source.mp4",
+        media_path=media_path,
         scratch_dir=tmp_path,
         ffmpeg_executable="ffmpeg-test",
         video_encoder="libx264",

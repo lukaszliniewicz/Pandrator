@@ -13,6 +13,7 @@ from pandrator.web.generation_controls import (
     get_generation_controls,
     save_generation_controls,
 )
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.speech_plan_preview import preview_speech_segment
 from pandrator.web.speech_plan_workspace import freeze_generation_performance_snapshot
 from tests.test_performance_plans import adopt, create, edit
@@ -160,7 +161,13 @@ def _segment_read_scope_parity(
 @pytest.mark.parametrize(
     ("casting_enabled", "performance_enabled", "context_mode", "query_budget"),
     # Full reads include effective assembly boundaries as well as annotations.
-    [(False, False, "off", 25), (False, True, "both", 35), (True, False, "both", 36)],
+    # Scoped reads also resolve persisted session/project authorization for the
+    # scoped section snapshot, which is fixed overhead. A directed-context sweep
+    # of the reader over 3, 6 and 12 segments stayed at a constant 86 SELECTs,
+    # so this budget still catches per-segment N+1 growth. Measured scoped
+    # counts after request-scoped read deduplication are 29/41/42; the budgets
+    # include only a small fixed-query margin, not a per-segment allowance.
+    [(False, False, "off", 32), (False, True, "both", 44), (True, False, "both", 45)],
     ids=["strict-single", "directed-context", "named-cast-context"],
 )
 def test_segment_reader_scoped_settings_preserve_rich_payload(
@@ -329,7 +336,12 @@ def test_strict_single_preview_ignores_inactive_block_binding_and_keeps_language
     sid = case["segment_ids"][0]
     text = "A block voice is inactive in strict single mode."
     with case["services"]["database"].session() as session:
-        voice = m.Voice(name="Unpublished voice", metadata_json={})
+        workspace_id = resolve_artifact_ownership(
+            session, session_id=case["session_id"]
+        ).workspace_id
+        voice = m.Voice(
+            workspace_id=workspace_id, name="Unpublished voice", metadata_json={}
+        )
         session.add(voice)
         session.flush()
         segment = session.get(m.GenerationSegment, sid)

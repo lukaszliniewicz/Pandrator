@@ -20,12 +20,12 @@ from pandrator.web.models import (
     GenerationPlan,
     GenerationPlanRevision,
     GenerationRun,
-    Job,
     SessionRecord,
     UsageEvent,
     WorkflowRun,
 )
 from pandrator.web.projects.models import Project
+from tests.legacy_schema_support import insert_job
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "pandrator" / "web" / "migrations"
@@ -138,51 +138,59 @@ def _make_case(path: Path) -> ExecutionCase:
             workflow_foreign=workflow_foreign.id,
         )
 
-        jobs = {
-            "job_workspace": Job(kind="synthetic.workspace-only", workspace_id=workspace.id),
-            "job_project": Job(
-                kind="synthetic.project-only",
-                workspace_id=workspace.id,
-                project_id=project.id,
+        job_rows = (
+            ("job_workspace", "synthetic.workspace-only", workspace.id, None, None, None),
+            ("job_project", "synthetic.project-only", workspace.id, project.id, None, None),
+            (
+                "job_exact",
+                "synthetic.exact",
+                workspace.id,
+                project.id,
+                session_a.id,
+                workflow.id,
             ),
-            "job_exact": Job(
-                kind="synthetic.exact",
-                workspace_id=workspace.id,
-                project_id=project.id,
-                session_id=session_a.id,
-                workflow_run_id=workflow.id,
+            (
+                "job_sibling",
+                "synthetic.sibling-session",
+                workspace.id,
+                project.id,
+                session_a_sibling.id,
+                workflow_sibling.id,
             ),
-            "job_sibling": Job(
-                kind="synthetic.sibling-session",
-                workspace_id=workspace.id,
-                project_id=project.id,
-                session_id=session_a_sibling.id,
-                workflow_run_id=workflow_sibling.id,
+            (
+                "job_other_project",
+                "synthetic.sibling-project",
+                workspace.id,
+                sibling_project.id,
+                session_sibling.id,
+                workflow_other_project.id,
             ),
-            "job_other_project": Job(
-                kind="synthetic.sibling-project",
-                workspace_id=workspace.id,
-                project_id=sibling_project.id,
-                session_id=session_sibling.id,
-                workflow_run_id=workflow_other_project.id,
+            (
+                "job_foreign",
+                "synthetic.foreign",
+                other_workspace.id,
+                foreign_project.id,
+                session_foreign.id,
+                workflow_foreign.id,
             ),
-            "job_foreign": Job(
-                kind="synthetic.foreign",
-                workspace_id=other_workspace.id,
-                project_id=foreign_project.id,
-                session_id=session_foreign.id,
-                workflow_run_id=workflow_foreign.id,
+            (
+                "job_workflow_only",
+                "synthetic.workflow-only",
+                workspace.id,
+                project.id,
+                None,
+                workflow.id,
             ),
-            "job_workflow_only": Job(
-                kind="synthetic.workflow-only",
-                workspace_id=workspace.id,
-                project_id=project.id,
-                workflow_run_id=workflow.id,
-            ),
-        }
-        session.add_all(jobs.values())
-        session.flush()
-        ids.update({name: job.id for name, job in jobs.items()})
+        )
+        for name, kind, job_workspace, job_project, job_session, job_workflow in job_rows:
+            ids[name] = insert_job(
+                session,
+                kind=kind,
+                workspace_id=job_workspace,
+                project_id=job_project,
+                session_id=job_session,
+                workflow_run_id=job_workflow,
+            )
 
         artifacts = {
             "artifact": Artifact(
@@ -289,7 +297,7 @@ def _make_case(path: Path) -> ExecutionCase:
             project_id=project.id,
             session_id=session_a.id,
             workflow_run_id=workflow.id,
-            job_id=jobs["job_exact"].id,
+            job_id=ids["job_exact"],
             artifact_id=artifacts["artifact"].id,
             generation_run_id=generation.id,
             agent_run_id=agent.id,

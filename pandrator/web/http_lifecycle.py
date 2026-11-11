@@ -36,10 +36,51 @@ from .public_links.contracts import ProjectLinkContext, PublicLinkError
 from .update_maintenance import update_maintenance_active
 
 ViewFunction = TypeVar("ViewFunction", bound=Callable[..., Any])
+# Flask reuses the app context (and therefore ``g``) for nested request
+# contexts of the same app. Keep lifecycle resources on the request
+# environment instead, where each request context owns its own slot.
+_ACTOR_TOKENS_ENVIRON_KEY = "pandrator.execution_actor_tokens"
+_ACQUISITION_CONTEXT_ENVIRON_KEY = "pandrator.model_acquisition_context"
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
 _TRACEPARENT = re.compile(
     r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
 )
+# ``g`` is app-context local, so nested request contexts on the same app share
+# it. Request-global overrides are therefore snapshotted per request and
+# restored on teardown; an inner request can never expose its principal,
+# request id, or audit target to the outer request.
+_REQUEST_GLOBALS_ENVIRON_KEY = "pandrator.request_globals_snapshot"
+_LIFECYCLE_GLOBALS = (
+    "audit_plan_digest",
+    "audit_plan_id",
+    "audit_resource_id",
+    "audit_resource_kind",
+    "principal",
+    "principal_resolved",
+    "project_link_context",
+    "request_id",
+    "request_started",
+    "traceparent",
+)
+
+
+def _snapshot_lifecycle_globals() -> dict[str, tuple[bool, Any]]:
+    return {
+        name: (name in g, getattr(g, name, None))
+        for name in _LIFECYCLE_GLOBALS
+    }
+
+
+def _restore_lifecycle_globals(
+    snapshot: dict[str, tuple[bool, Any]] | None,
+) -> None:
+    if not snapshot:
+        return
+    for name, (present, value) in snapshot.items():
+        if present:
+            setattr(g, name, value)
+        else:
+            g.pop(name, None)
 
 
 def load_or_create_flask_secret(paths) -> str:
@@ -154,6 +195,22 @@ class ApiGuards:
             return "private"
         return "public"
 
+    def _bind_execution_actor(self, actor: UserActor | None) -> None:
+        """Bind a resolved request actor and retain its token for teardown.
+
+        Request contexts for the same app reuse the app context, so nested
+        request contexts share ``g``. A stack kept on ``g`` would therefore
+        lose an outer request's token or reset it out of order. The request
+        environment is per request context, so each request restores its own
+        bindings in reverse order, even when it nests inside another request.
+        """
+
+        tokens = request.environ.get(_ACTOR_TOKENS_ENVIRON_KEY)
+        if tokens is None:
+            tokens = []
+            request.environ[_ACTOR_TOKENS_ENVIRON_KEY] = tokens
+        tokens.append(current_execution_actor.set(actor))
+
     def principal(self) -> Principal | None:
         if getattr(g, "principal_resolved", False):
             return getattr(g, "principal", None)
@@ -196,7 +253,7 @@ class ApiGuards:
                 auth_revision=actor.auth_revision,
                 browser_session_id=actor.browser_session_id,
             )
-            current_execution_actor.set(actor)
+            self._bind_execution_actor(actor)
             try:
                 if not request_allowed(request, shared, self.services.database):
                     raise AccessDenied()
@@ -225,7 +282,7 @@ class ApiGuards:
                 g.principal = None
             if g.principal is not None:
                 try:
-                    current_execution_actor.set(actor_from_principal(g.principal))
+                    self._bind_execution_actor(actor_from_principal(g.principal))
                 except (TypeError, ValueError):
                     g.principal = None
             return g.principal
@@ -255,7 +312,7 @@ class ApiGuards:
             browser_session_id=resolved.session_id,
         )
         try:
-            current_execution_actor.set(actor_from_principal(g.principal))
+            self._bind_execution_actor(actor_from_principal(g.principal))
         except (TypeError, ValueError):
             g.principal = None
         return g.principal
@@ -517,9 +574,13 @@ class ApiGuards:
 
         @app.before_request
         def _request_context():
-            g.execution_actor_token = current_execution_actor.set(None)
-            g.model_acquisition_context = model_acquisition_for_actor(self.services.database)
-            g.model_acquisition_context.__enter__()
+            request.environ[_REQUEST_GLOBALS_ENVIRON_KEY] = (
+                _snapshot_lifecycle_globals()
+            )
+            self._bind_execution_actor(None)
+            acquisition_context = model_acquisition_for_actor(self.services.database)
+            acquisition_context.__enter__()
+            request.environ[_ACQUISITION_CONTEXT_ENVIRON_KEY] = acquisition_context
             supplied_request_id = str(
                 request.headers.get("X-Request-ID") or ""
             ).strip()
@@ -611,12 +672,25 @@ class ApiGuards:
 
         @app.teardown_request
         def _restore_execution_actor(_error):
-            acquisition_context = g.pop("model_acquisition_context", None)
-            if acquisition_context is not None:
-                acquisition_context.__exit__(None, None, None)
-            token = g.pop("execution_actor_token", None)
-            if token is not None:
-                current_execution_actor.reset(token)
+            # The actor stack is popped first so an exception from the
+            # acquisition context cannot strand the request's actor bindings.
+            actor_tokens = request.environ.pop(_ACTOR_TOKENS_ENVIRON_KEY, None)
+            globals_before = request.environ.pop(
+                _REQUEST_GLOBALS_ENVIRON_KEY, None
+            )
+            try:
+                acquisition_context = request.environ.pop(
+                    _ACQUISITION_CONTEXT_ENVIRON_KEY, None
+                )
+                if acquisition_context is not None:
+                    acquisition_context.__exit__(None, None, None)
+            finally:
+                try:
+                    if actor_tokens:
+                        for actor_token in reversed(actor_tokens):
+                            current_execution_actor.reset(actor_token)
+                finally:
+                    _restore_lifecycle_globals(globals_before)
 
         @app.after_request
         def _security_headers(response):

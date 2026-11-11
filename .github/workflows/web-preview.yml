@@ -62,9 +62,43 @@ jobs:
           - name: ubuntu-web-06
             os: ubuntu-latest
             lanes: web-06-serial
-          - name: ubuntu-web-07
+          # Former web-07 suite split into bounded serial lanes after CI timeouts.
+          - name: ubuntu-web-07-01
             os: ubuntu-latest
-            lanes: web-07-serial
+            lanes: web-07-01-serial
+          - name: ubuntu-web-07-02
+            os: ubuntu-latest
+            lanes: web-07-02-serial
+          - name: ubuntu-web-07-03
+            os: ubuntu-latest
+            lanes: web-07-03-serial
+          - name: ubuntu-web-07-04
+            os: ubuntu-latest
+            lanes: web-07-04-serial
+          - name: ubuntu-web-07-05
+            os: ubuntu-latest
+            lanes: web-07-05-serial
+          - name: ubuntu-web-07-06
+            os: ubuntu-latest
+            lanes: web-07-06-serial
+          - name: ubuntu-web-07-07
+            os: ubuntu-latest
+            lanes: web-07-07-serial
+          - name: ubuntu-web-07-08
+            os: ubuntu-latest
+            lanes: web-07-08-serial
+          - name: ubuntu-web-07-09
+            os: ubuntu-latest
+            lanes: web-07-09-serial
+          - name: ubuntu-web-07-10
+            os: ubuntu-latest
+            lanes: web-07-10-serial
+          - name: ubuntu-web-07-11
+            os: ubuntu-latest
+            lanes: web-07-11-serial
+          - name: ubuntu-web-07-12
+            os: ubuntu-latest
+            lanes: web-07-12-serial
           - name: ubuntu-web-08
             os: ubuntu-latest
             lanes: web-08-serial
@@ -120,9 +154,43 @@ jobs:
           - name: windows-web-06
             os: windows-latest
             lanes: web-06-serial
-          - name: windows-web-07
+          # Former web-07 suite split into bounded serial lanes after CI timeouts.
+          - name: windows-web-07-01
             os: windows-latest
-            lanes: web-07-serial
+            lanes: web-07-01-serial
+          - name: windows-web-07-02
+            os: windows-latest
+            lanes: web-07-02-serial
+          - name: windows-web-07-03
+            os: windows-latest
+            lanes: web-07-03-serial
+          - name: windows-web-07-04
+            os: windows-latest
+            lanes: web-07-04-serial
+          - name: windows-web-07-05
+            os: windows-latest
+            lanes: web-07-05-serial
+          - name: windows-web-07-06
+            os: windows-latest
+            lanes: web-07-06-serial
+          - name: windows-web-07-07
+            os: windows-latest
+            lanes: web-07-07-serial
+          - name: windows-web-07-08
+            os: windows-latest
+            lanes: web-07-08-serial
+          - name: windows-web-07-09
+            os: windows-latest
+            lanes: web-07-09-serial
+          - name: windows-web-07-10
+            os: windows-latest
+            lanes: web-07-10-serial
+          - name: windows-web-07-11
+            os: windows-latest
+            lanes: web-07-11-serial
+          - name: windows-web-07-12
+            os: windows-latest
+            lanes: web-07-12-serial
           - name: windows-web-08
             os: windows-latest
             lanes: web-08-serial
@@ -183,7 +251,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes ffmpeg
       - name: Install Windows FFmpeg
         if: runner.os == 'Windows'
-        run: choco install ffmpeg --yes --no-progress
+        shell: pwsh
+        run: |
+          $installed = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install ffmpeg --yes --no-progress
+            if ((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and
+                (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
+              $installed = $true
+              break
+            }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+          }
+          if (-not $installed) {
+            throw 'FFmpeg and FFprobe were not provisioned after three attempts.'
+          }
+          ffmpeg -version
+          ffprobe -version
       - name: Install Python lane dependencies
         run: >-
           python -m pip install --disable-pip-version-check
@@ -285,7 +369,23 @@ jobs:
           npx --prefix web playwright install --with-deps ${{ matrix.browser }}
       - name: Install Windows FFmpeg
         if: runner.os == 'Windows'
-        run: choco install ffmpeg --yes --no-progress
+        shell: pwsh
+        run: |
+          $installed = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install ffmpeg --yes --no-progress
+            if ((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and
+                (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
+              $installed = $true
+              break
+            }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+          }
+          if (-not $installed) {
+            throw 'FFmpeg and FFprobe were not provisioned after three attempts.'
+          }
+          ffmpeg -version
+          ffprobe -version
       - name: Install selected Windows browser
         if: runner.os == 'Windows'
         run: npx --prefix web playwright install ${{ matrix.browser }}

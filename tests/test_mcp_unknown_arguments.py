@@ -129,7 +129,7 @@ def test_every_registered_tool_advertises_closed_top_level_arguments(tmp_path: P
             return await client.list_tools()
 
     tools = asyncio.run(discover()).tools
-    assert len(tools) == 187
+    assert len(tools) == 230
     names = {tool.name for tool in tools}
     assert "pandrator_preview_subtitle_passages" in names
     assert "pandrator_patch_subtitle_passages" in names

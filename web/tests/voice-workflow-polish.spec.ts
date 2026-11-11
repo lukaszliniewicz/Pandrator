@@ -796,10 +796,14 @@ test('phone generation controls and output actions stay inside their cards', asy
     await page.setViewportSize({ width, height: 844 });
     await expect(workspace).toBeVisible();
     for (const name of ['Play playlist', 'Generate']) {
-      const button = await workspace
-        .getByRole('button', { name, exact: true })
-        .boundingBox();
-      expect(button!.height).toBeGreaterThanOrEqual(44);
+      const control = workspace.getByRole('button', { name, exact: true });
+      await expect(control).toBeVisible();
+      // Firefox may briefly report pre-resize geometry. Poll for the settled
+      // touch target, but still fail if it remains below 44 CSS pixels.
+      await expect
+        .poll(async () => (await control.boundingBox())?.height ?? 0)
+        .toBeGreaterThanOrEqual(44);
+      const button = await control.boundingBox();
       expect(button!.x).toBeGreaterThanOrEqual(0);
       expect(button!.x + button!.width).toBeLessThanOrEqual(width);
     }
@@ -808,6 +812,17 @@ test('phone generation controls and output actions stay inside their cards', asy
         () => document.documentElement.scrollWidth <= innerWidth
       )
     ).toBeTruthy();
+  }
+  // User/browser font-size preferences must not shrink mobile touch targets.
+  await page.setViewportSize({ width: 360, height: 844 });
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = '14px';
+  });
+  for (const name of ['Play playlist', 'Generate']) {
+    const control = workspace.getByRole('button', { name, exact: true });
+    await expect
+      .poll(async () => (await control.boundingBox())?.height ?? 0)
+      .toBeGreaterThanOrEqual(44);
   }
 });
 

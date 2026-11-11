@@ -1,4 +1,9 @@
-@import 'tailwindcss';
+@import 'tailwindcss' source(none);
+
+/* Only application sources feed the utility scan. Automatic detection also
+   reads prose in tests and repository data, where ordinary words become
+   phantom utilities and change the committed CSS bundle. */
+@source '.';
 
 :root {
   color-scheme: light;

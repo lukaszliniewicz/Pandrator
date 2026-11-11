@@ -12,8 +12,9 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import CheckConstraint, Table, event, select
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import Session
 
 from pandrator.web import project_speech_references as speech_reference_store
@@ -62,9 +63,13 @@ _SELECTOR = {"voice": "Narrator", "service": "audio_cpp", "model": "model-one"}
 
 def _migration_config(path: Path) -> Config:
     config = Config()
-    config.set_main_option("script_location", str(MIGRATIONS))
+    # Config.set_main_option goes through ConfigParser interpolation, so a
+    # literal "%" must be escaped. SQLAlchemy renders Windows sqlite paths
+    # percent-encoded (C%3A%5C...), which would otherwise raise ValueError.
+    config.set_main_option("script_location", str(MIGRATIONS).replace("%", "%%"))
     config.set_main_option(
-        "sqlalchemy.url", str(URL.create("sqlite", database=str(path)))
+        "sqlalchemy.url",
+        str(URL.create("sqlite", database=str(path))).replace("%", "%%"),
     )
     return config
 
@@ -122,6 +127,24 @@ def _snapshot_existing_schema_and_rows(path: Path) -> tuple[object, ...]:
 
 def _new_database(path: Path, revision: str = TARGET) -> None:
     command.upgrade(_migration_config(path), revision)
+
+
+def test_migration_config_accepts_percent_encoded_windows_database_urls(
+    tmp_path: Path,
+) -> None:
+    # SQLAlchemy renders Windows sqlite paths percent-encoded (C%3A%5C...) and
+    # ConfigParser rejects a raw "%". The escaped config must hand Alembic the
+    # original URL and still open the requested file, not a mangled name.
+    path = tmp_path / "percent%3Aencoded.sqlite3"
+    url = str(URL.create("sqlite", database=str(path)))
+    assert "%" in url
+    config = _migration_config(path)
+    assert config.get_main_option("sqlalchemy.url") == url
+    _new_database(path)
+    assert make_url(config.get_main_option("sqlalchemy.url")).database == str(path)
+    with _sqlite(path) as connection:
+        version = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+    assert version == TARGET
 
 
 @dataclass(frozen=True)
@@ -421,7 +444,7 @@ def test_migration_matches_model_columns_indexes_checks_and_foreign_keys(
                 create_sql.lower().split()
             )
     assert Base.metadata.tables["project_speech_references"] is model
-    assert SCHEMA_HEAD == TARGET
+    assert ScriptDirectory.from_config(_migration_config(path)).get_heads() == [SCHEMA_HEAD]
 
 
 def test_unsafe_downgrade_retains_reference_and_empty_downgrade_works(
@@ -448,9 +471,10 @@ def test_unsafe_downgrade_retains_reference_and_empty_downgrade_works(
         command.downgrade(_migration_config(paths.database), PREVIOUS)
     assert _snapshot_existing_schema_and_rows(paths.database) == before
     with _sqlite(paths.database) as connection:
+        # The aborted downgrade leaves the head revision untouched.
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone()[0] == TARGET
+        ).fetchone()[0] == SCHEMA_HEAD
 
     empty_path = tmp_path / "empty-downgrade.sqlite3"
     _new_database(empty_path)

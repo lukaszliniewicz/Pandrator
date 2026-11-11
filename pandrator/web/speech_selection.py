@@ -28,7 +28,11 @@ from .performance_schemas import PerformancePlanCreateRequest
 from .settings_policy import RevisionConflict, stable_hash
 from .source_management import assert_session_idle
 from .speech_annotation_records import record_markup
-from .speech_plan_preview import _runtime_settings, preview_speech_segment_in_session
+from .speech_plan_preview import (
+    PlanReads,
+    _runtime_settings,
+    preview_speech_segment_in_session,
+)
 from .speech_plan_workspace import plan_signature
 from .speech_selection_schemas import (
     SpeechSelectionApplyRequest,
@@ -125,7 +129,11 @@ def _active_segment(
 
 
 def _current_adopted(
-    session, revision_id: str, signature: str
+    session,
+    revision_id: str,
+    signature: str,
+    *,
+    selected_plan: m.GenerationPlan | None = None,
 ) -> m.PerformancePlan | None:
     adopted = session.scalar(
         select(m.PerformancePlan).where(
@@ -136,7 +144,12 @@ def _current_adopted(
     if adopted is not None:
         # This check is required even when both runtime flags are disabled:
         # authored adopted markup remains the source for a direct edit.
-        plans._assert_current(session, adopted)
+        plans._assert_current(
+            session,
+            adopted,
+            selected_plan=selected_plan,
+            base_signature=signature,
+        )
         if adopted.base_signature != signature:
             raise RevisionConflict(
                 "The adopted performance plan is stale after a speech edit."
@@ -524,7 +537,7 @@ def get_speech_selection_context(
         request if isinstance(request, SpeechSelectionContextRequest)
         else SpeechSelectionContextRequest.model_validate(request)
     )
-    _plan, revision, segment = _active_segment(
+    plan, revision, segment = _active_segment(
         session, session_id, model.revision_id, model.segment_id,
         model.expected_segment_revision,
     )
@@ -535,10 +548,12 @@ def get_speech_selection_context(
         raise ValueError("The selected speech range exceeds the accepted text.")
     controls = get_generation_controls(session, session_id)
     characters = deepcopy(controls.get("characters") or [])
-    adopted = _current_adopted(session, revision.id, plan_signature(session, revision.id))
-    adopted_record = (
-        plans._annotations(session, adopted).get(segment.id) if adopted else None
+    signature = plan_signature(session, revision.id)
+    adopted = _current_adopted(
+        session, revision.id, signature, selected_plan=plan
     )
+    annotations = plans._annotations(session, adopted) if adopted else {}
+    adopted_record = annotations.get(segment.id) if adopted else None
     legacy = bool(
         adopted_record and not record_markup(adopted_record) and (
             any((adopted_record.get("delivery") or {}).values())
@@ -582,6 +597,15 @@ def get_speech_selection_context(
             services, session, session_id,
             revision_id=revision.id, segment_id=segment.id,
             _resolved_settings=resolved, _controls=controls,
+            _plan_reads=PlanReads(
+                session_id=session_id,
+                plan=plan,
+                revision=revision,
+                segment=segment,
+                adopted=adopted,
+                annotations=annotations,
+                signature=signature,
+            ),
         )
         preview_error = None
     except RevisionConflict:

@@ -204,6 +204,7 @@ def upgrade_database(path: Path) -> None:
             pass
     migrations = Path(__file__).with_name("migrations")
     config = Config()
-    config.set_main_option("script_location", str(migrations))
-    config.set_main_option("sqlalchemy.url", sqlite_url(path))
+    config.set_main_option("script_location", str(migrations).replace("%", "%%"))
+    # Alembic uses ConfigParser interpolation, but database paths may contain %.
+    config.set_main_option("sqlalchemy.url", sqlite_url(path).replace("%", "%%"))
     command.upgrade(config, "head")
