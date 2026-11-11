@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +32,6 @@ from pandrator.web.voice_collections import (
 )
 from pandrator.web.voice_identity import voice_creation_workspace
 
-SCRATCH_ROOT = Path("/tmp/pandrator-voice-collection-worker")
 ACTIVE_A = "collection-workspace-a"
 ACTIVE_B = "collection-workspace-b"
 ARCHIVED = "collection-workspace-archived"
@@ -47,17 +45,14 @@ def _use_legacy_schema(database: Database, revision: str) -> None:
 
 
 @pytest.fixture
-def database(request: pytest.FixtureRequest) -> Iterator[Database]:
-    SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-    database_path = SCRATCH_ROOT / f"{request.node.name}-{uuid.uuid4().hex}.sqlite3"
+def database(tmp_path: Path) -> Iterator[Database]:
+    database_path = tmp_path / "voice-collections.sqlite3"
     upgrade_database(database_path)
     database = Database(database_path)
     try:
         yield database
     finally:
         database.engine.dispose()
-        for suffix in ("", "-wal", "-shm"):
-            Path(f"{database_path}{suffix}").unlink(missing_ok=True)
 
 
 def _workspace(
