@@ -1,5 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  generatedCrLfAssets,
+  trackedEolProblems
+} from './check-build-line-endings.mjs';
 import { fileURLToPath } from 'node:url';
 import config from '../svelte.config.js';
 
@@ -15,37 +19,33 @@ const lfPaths = [
   'pandrator_manager/recovery_ui/static/model-groups.js'
 ];
 
-function crlfCopies() {
-  let listing;
-  try {
-    listing = execFileSync('git', ['ls-files', '--eol', '--', ...lfPaths], {
-      cwd: fileURLToPath(new URL('../../', import.meta.url)),
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'ignore']
-    });
-  } catch {
-    return []; // No git, or not a work tree: nothing to compare against.
-  }
-  return listing
-    .split('\n')
-    .filter((line) => /\sw\/crlf\s/.test(line))
-    .map((line) => line.slice(line.indexOf('\t') + 1));
+const root = fileURLToPath(new URL('../../', import.meta.url));
+let badEols = [];
+let eolCheckError = false;
+try {
+  badEols = [
+    ...trackedEolProblems(root, lfPaths),
+    ...generatedCrLfAssets(join(root, 'pandrator/web/static'))
+  ];
+} catch (error) {
+  eolCheckError = true;
+  console.error('Unable to verify browser build file line endings.');
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
 }
 
-const crlf = crlfCopies();
-if (crlf.length > 0) {
+if (badEols.length > 0) {
   console.error(
-    `${crlf.length} tracked build files have CRLF line endings in this checkout, for example ${crlf[0]}.`
+    `${badEols.length} browser build files have CRLF or mixed line endings, for example ${badEols[0]}.`
   );
   console.error(
     'Builds from them differ from CI. Do not rebuild or commit assets from this checkout.'
   );
   console.error(
-    `Refresh it instead: with no changes under those paths, delete their tracked files and run git checkout -- ${lfPaths.join(' ')}`
+    'Review and preserve any local edits before refreshing the checkout; for generated assets, rebuild from LF sources.'
   );
   process.exitCode = 1;
-} else {
+} else if (!eolCheckError) {
   try {
     const actual = JSON.parse(readFileSync(versionFile, 'utf8')).version;
     const expected = config.kit.version.name;

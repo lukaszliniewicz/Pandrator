@@ -65,6 +65,14 @@ def test_browser_build_inputs_and_outputs_stay_lf_on_every_platform():
         if "eol=lf" not in attrs and "-text" not in attrs
     ]
     assert not_lf == []
+    # A pre-.gitattributes Windows checkout can retain CRLF or mixed bytes
+    # even when the index and resolved attribute correctly specify LF.
+    bad_working_tree = [
+        line.split("\t", 1)[1]
+        for line in listing.splitlines()
+        if re.search(r"(?:^|\s)w/(?:crlf|mixed)(?=\s|$)", line.split("\t", 1)[0])
+    ]
+    assert bad_working_tree == []
 
 
 def test_api_core_is_the_only_direct_network_gateway():
