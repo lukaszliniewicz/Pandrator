@@ -349,6 +349,11 @@ class AudioIdentityContext:
         # separate so a context still rejects segments from another workspace.
         self._segment_workspaces: dict[str, Workspace] = {}
         self._session_ids_by_revision: dict[str, str] = {}
+        # SQLAlchemy's identity map weakly retains clean rows. Keep the plan and
+        # revision ORM objects alive for this inspection so 5,000 segments do
+        # not each fetch the same two rows again. All access/lease checks below
+        # still execute for every segment.
+        self._revision_plan_rows: dict[str, tuple[GenerationPlanRevision, GenerationPlan]] = {}
         self._segment_references = _segment_references
         self.cache: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
 
@@ -357,6 +362,7 @@ class AudioIdentityContext:
         plan = self.session.get(GenerationPlan, revision.plan_id) if revision else None
         if plan is None:
             raise ValueError("The speech plan is unavailable.")
+        self._revision_plan_rows[segment.plan_revision_id] = (revision, plan)
         known_workspace = self._segment_workspaces.get(plan.session_id)
         workspace_id = (
             known_workspace.id if known_workspace is not None

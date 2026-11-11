@@ -1322,6 +1322,19 @@ class JobQueue:
         self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
         reconcile_training_runs_in_session(session, [job_id])
 
+    def _finish_owned_cancellation_locked(self, session: Session, job: Job) -> None:
+        """Seal an owned cancellation in the same writer transaction as its check."""
+        now = utcnow()
+        job.status = "canceled"
+        job.lease_owner = None
+        job.lease_expires_at = None
+        job.finished_at = now
+        job.updated_at = now
+        self._event(session, job.id, "job.canceled")
+        self._reconcile_generation_run_for_job_locked(session, job)
+        self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
+        reconcile_training_runs_in_session(session, [job.id])
+
     def fail(
         self,
         job_id: str,
@@ -1334,6 +1347,18 @@ class JobQueue:
     ) -> bool:
         with self.database.immediate_session() as session:
             job = session.get(Job, job_id)
+            # Cancellation can commit after Worker.should_cancel() but before
+            # its failure acknowledgement. The cancellation must win, including
+            # the linked generation run, rather than strand cancel_requested.
+            if (
+                job is not None
+                and job.status == "cancel_requested"
+                and self._owns_lease(
+                    job, worker_id, lease_generation, require_running=False
+                )
+            ):
+                self._finish_owned_cancellation_locked(session, job)
+                return True
             if not self._owns_lease(job, worker_id, lease_generation):
                 return False
             retry = job.attempts < job.max_attempts
@@ -1393,16 +1418,7 @@ class JobQueue:
                 require_running=False,
             ) or job.status not in {"running", "cancel_requested"}:
                 return False
-            job.status = "canceled"
-            job.lease_owner = None
-            job.lease_expires_at = None
-            finished_at = utcnow()
-            job.finished_at = finished_at
-            job.updated_at = finished_at
-            self._event(session, job.id, "job.canceled")
-            self._reconcile_generation_run_for_job_locked(session, job)
-            self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
-            reconcile_training_runs_in_session(session, [job_id])
+            self._finish_owned_cancellation_locked(session, job)
             return True
 
     def events_after(self, event_id: int = 0, limit: int = 250) -> list[JobEvent]:
