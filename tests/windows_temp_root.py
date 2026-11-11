@@ -90,7 +90,9 @@ def short_root_path(temp_dir: str | Path) -> Path:
     return Path(anchor, *ROOT_PARTS)
 
 
-def _current_account() -> str:
+def _current_account_from_env() -> str:
+    # Used by non-Windows tests. USERDOMAIN on a workgroup PC can be
+    # "WORKGROUP", which is NOT a resolvable account authority for icacls.
     user = os.environ.get("USERNAME")
     if not user:
         raise ShortRootUnavailable("cannot restrict the temp root: USERNAME is not set")
@@ -98,14 +100,52 @@ def _current_account() -> str:
     return f"{domain}\\{user}" if domain else user
 
 
+def _current_account() -> str:
+    if sys.platform != "win32":
+        return _current_account_from_env()
+    # A Windows user has a stable security identifier independent of the
+    # localized machine/domain display name. icacls accepts raw SIDs when
+    # prefixed with *, both for /grant:r and /setowner.
+    try:
+        result = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ShortRootUnavailable(
+            f"cannot resolve current Windows account SID: {error}"
+        ) from error
+    matched = re.search(r"(?<![\w-])S-1-\d+(?:-\d+)+(?![\w-])", result.stdout or "")
+    if result.returncode != 0 or matched is None:
+        raise ShortRootUnavailable("cannot resolve current Windows account SID")
+    return f"*{matched.group()}"
+
+
 def _icacls(root: Path, arguments: list[str]) -> None:
     command = ["icacls", str(root), *arguments]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            # Windows icacls uses the active console code page; on localized
+            # machines an undecodable byte must not crash the pytest hook.
+            errors="replace",
+            check=False,
+        )
     except OSError as error:
         raise ShortRootUnavailable(f"cannot run icacls for {root}: {error}") from error
     if result.returncode != 0:
-        detail = (result.stdout + result.stderr).strip() or f"exit code {result.returncode}"
+        # subprocess reader-thread decoding failures can leave a stream unset.
+        # A failed ACL operation must always raise our recoverable exception.
+        detail = " ".join(f"{result.stdout or ''} {result.stderr or ''}".split())
+        if len(detail) > ACL_DIAGNOSTIC_LIMIT:
+            detail = f"{detail[:ACL_DIAGNOSTIC_LIMIT]}..."
+        detail = detail or f"exit code {result.returncode}"
         hint = " (another user may own it)" if "access is denied" in detail.lower() else ""
         raise ShortRootUnavailable(f"cannot restrict {root}: {detail}{hint}")
 
@@ -130,7 +170,7 @@ def _assert_no_reparse_ancestors(root: Path) -> None:
 # Keep every statement on one line and avoid syntax newer than 5.1.
 _ACL_VERIFY_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
-$acl = Get-Acl -LiteralPath $env:PANDRATOR_PYTEST_ACL_ROOT
+$acl = [System.IO.DirectoryInfo]::new($env:PANDRATOR_PYTEST_ACL_ROOT).GetAccessControl()
 $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
 $rules = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))
@@ -189,8 +229,7 @@ def _verify_private_root(root: Path) -> None:
         detail = f"{detail[:ACL_DIAGNOSTIC_LIMIT]}..."
     suffix = f": {detail}" if detail else ""
     raise ShortRootUnavailable(
-        f"temp root {root} has unverified ownership or ACL{suffix}; "
-        "use pytest's default temp root"
+        f"temp root {root} has unverified ownership or ACL{suffix}; use pytest's default temp root"
     )
 
 

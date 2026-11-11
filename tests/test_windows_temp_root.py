@@ -476,6 +476,7 @@ class RestrictionTests(unittest.TestCase):
         self.root = Path(tmp.name) / "pt"
         self.root.mkdir()
         patch.dict(os.environ, {"USERNAME": "luke", "USERDOMAIN": "PC"}, clear=True).start()
+        patch.object(wtr, "_current_account", return_value="PC\\luke").start()
         self.addCleanup(patch.stopall)
 
     def icacls(self, *results: object):
@@ -506,7 +507,28 @@ class RestrictionTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            run.call_args_list[0].kwargs, {"capture_output": True, "text": True, "check": False}
+            run.call_args_list[0].kwargs,
+            {"capture_output": True, "text": True, "errors": "replace", "check": False},
+        )
+
+    def test_numeric_sid_is_used_for_both_grant_and_owner(self):
+        sid = "*S-1-5-21-2730875474-2431422095-1321150244-1000"
+        with patch.object(wtr, "_current_account", return_value=sid):
+            run = self.icacls(self.result(), self.result(), self.result())
+            wtr.restrict_to_current_user(self.root)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "icacls",
+                str(self.root),
+                "/inheritance:r",
+                "/grant:r",
+                f"{sid}:(OI)(CI)F",
+            ],
+        )
+        self.assertEqual(
+            run.call_args_list[2].args[0],
+            ["icacls", str(self.root), "/setowner", sid],
         )
 
     def test_failed_grant_restores_inherited_access(self):
@@ -556,6 +578,24 @@ class RestrictionTests(unittest.TestCase):
         with self.assertRaises(wtr.ShortRootUnavailable):
             wtr.restrict_to_current_user(self.root)
 
+    def test_failed_icacls_with_missing_stderr_fails_closed(self):
+        run = self.icacls(SimpleNamespace(returncode=5, stdout="Access is denied.", stderr=None))
+        with self.assertRaisesRegex(wtr.ShortRootUnavailable, "another user may own it"):
+            wtr.restrict_to_current_user(self.root)
+        self.assertEqual(len(run.call_args_list), 1)
+        self.assertEqual(run.call_args_list[0].kwargs["errors"], "replace")
+
+    def test_failed_icacls_with_missing_output_reports_exit_code(self):
+        self.icacls(SimpleNamespace(returncode=23, stdout=None, stderr=None))
+        with self.assertRaisesRegex(wtr.ShortRootUnavailable, "exit code 23"):
+            wtr.restrict_to_current_user(self.root)
+
+    def test_failed_icacls_diagnostic_is_bounded(self):
+        self.icacls(SimpleNamespace(returncode=5, stdout="a" * 2000, stderr=None))
+        with self.assertRaises(wtr.ShortRootUnavailable) as result:
+            wtr.restrict_to_current_user(self.root)
+        self.assertLess(len(str(result.exception)), 500)
+
     def test_missing_icacls_is_reported(self):
         run = self.icacls(FileNotFoundError("icacls not found"))
         with self.assertRaisesRegex(wtr.ShortRootUnavailable, "cannot run icacls"):
@@ -563,15 +603,64 @@ class RestrictionTests(unittest.TestCase):
         self.assertEqual(len(run.call_args_list), 1)
 
     def test_missing_username_is_reported(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(wtr, "_current_account", wtr._current_account_from_env),
+        ):
             with self.assertRaisesRegex(wtr.ShortRootUnavailable, "USERNAME"):
                 wtr.restrict_to_current_user(self.root)
 
     def test_local_account_without_a_domain_is_granted_by_name(self):
-        with patch.dict(os.environ, {"USERNAME": "luke"}, clear=True):
+        with (
+            patch.dict(os.environ, {"USERNAME": "luke"}, clear=True),
+            patch.object(wtr, "_current_account", wtr._current_account_from_env),
+        ):
             run = self.icacls(self.result(), self.result(), self.result())
             wtr.restrict_to_current_user(self.root)
         self.assertEqual(run.call_args_list[1].args[0][-1], "luke:(OI)(CI)F")
+
+
+class WindowsAccountIdentityTests(unittest.TestCase):
+    """SID resolution must not rely on USERDOMAIN on workgroup laptops."""
+
+    def test_windows_current_user_uses_sid_even_if_domain_is_workgroup(self):
+        answer = SimpleNamespace(
+            returncode=0,
+            stdout='"DESKTOP\\user","S-1-5-21-1-2-3-1000"\n',
+            stderr=None,
+        )
+        with (
+            patch.object(wtr.sys, "platform", "win32"),
+            patch.dict(os.environ, {"USERNAME": "user", "USERDOMAIN": "WORKGROUP"}),
+            patch.object(wtr.subprocess, "run", return_value=answer) as run,
+        ):
+            self.assertEqual(wtr._current_account(), "*S-1-5-21-1-2-3-1000")
+        self.assertEqual(run.call_args.args[0], ["whoami", "/user", "/fo", "csv", "/nh"])
+
+    def test_unrecognized_or_failed_sid_resolution_fails_closed(self):
+        with (
+            patch.object(wtr.sys, "platform", "win32"),
+            patch.object(
+                wtr.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=1, stdout="", stderr="bad account"),
+            ),
+        ):
+            with self.assertRaisesRegex(wtr.ShortRootUnavailable, "SID"):
+                wtr._current_account()
+
+    def test_sid_resolution_handles_unexpected_characters(self):
+        with (
+            patch.object(wtr.sys, "platform", "win32"),
+            patch.object(
+                wtr.subprocess,
+                "run",
+                return_value=SimpleNamespace(
+                    returncode=0, stdout='"user","S-1-5-21-5-6-7-1002"\n', stderr=""
+                ),
+            ),
+        ):
+            self.assertEqual(wtr._current_account(), "*S-1-5-21-5-6-7-1002")
 
 
 class AclVerifierScriptTests(unittest.TestCase):
@@ -639,9 +728,7 @@ class AclVerifierScriptTests(unittest.TestCase):
                 )
 
     def test_no_line_ends_with_and_or_or(self):
-        lines = [
-            line.rstrip() for line in wtr._ACL_VERIFY_SCRIPT.splitlines() if line.strip()
-        ]
+        lines = [line.rstrip() for line in wtr._ACL_VERIFY_SCRIPT.splitlines() if line.strip()]
         for operator in ("-and", "-or"):
             self.assertFalse(
                 any(line.endswith(operator) for line in lines),
@@ -660,21 +747,17 @@ class AclVerifierScriptTests(unittest.TestCase):
     def test_script_enforces_owner_protected_dacl_and_one_full_control_ace(self):
         script = wtr._ACL_VERIFY_SCRIPT
         expected = {
-            "reads the configured root literally": (
-                "Get-Acl -LiteralPath $env:PANDRATOR_PYTEST_ACL_ROOT"
+            "reads the configured root without requiring PowerShell module autoload": (
+                "[System.IO.DirectoryInfo]::new($env:PANDRATOR_PYTEST_ACL_ROOT).GetAccessControl()"
             ),
-            "compares against the caller's SID": (
-                "WindowsIdentity]::GetCurrent().User.Value"
-            ),
+            "compares against the caller's SID": ("WindowsIdentity]::GetCurrent().User.Value"),
             "reads the owner as a SID": (
                 "$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value"
             ),
             "ignores inherited rules": "$acl.GetAccessRules($true, $false",
             "requires a protected DACL": "$acl.AreAccessRulesProtected",
             "requires exactly one explicit rule": "($rules.Count -eq 1)",
-            "requires an allow rule": (
-                "[System.Security.AccessControl.AccessControlType]::Allow"
-            ),
+            "requires an allow rule": ("[System.Security.AccessControl.AccessControlType]::Allow"),
             "checks the rule's identity": "$rule.IdentityReference.Value -eq $current",
             "requires full control": (
                 "[System.Security.AccessControl.FileSystemRights]::FullControl"
