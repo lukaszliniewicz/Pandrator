@@ -58,9 +58,10 @@ Fetch only the session, settings, and catalogues relevant to the requested job.
 Use compact status and admission responses by default; retrieve full frozen
 settings for diagnosis or an explicit review. Keep detailed receipts outside
 routine conversation payloads while retaining recovery IDs and revisions.
-Where a tool advertises `response_mode`, use `structured` and consume its
-structured envelope once; the text marker is not a second result. Cache tool
-schemas only for the current server build and `mcp_contract_revision`; reconnect
+Where a tool advertises `response_mode`, select `structured` only when the
+host consumes `structuredContent`; the text is then a receipt, not another
+result. Text-only hosts must use `standard`. Cache tool schemas only for the
+current server build and `mcp_contract_revision`; reconnect
 after an update. Never invent an unsupported argument. Start with summary plan
 lists, bounded annotation reads, and explicit segment IDs. For several speech
 changes, use one batch preview/apply rather than copying a plan per phrase.

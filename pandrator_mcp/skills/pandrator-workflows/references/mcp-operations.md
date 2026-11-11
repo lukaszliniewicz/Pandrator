@@ -121,8 +121,10 @@ including reused audio. Current active audio is a separate selection.
 
 `pandrator_regenerate_segments` and `pandrator_generate_speech_plan` default to
 `settings_source="current"`. Use `settings_source="run"` with
-`settings_generation_run_id` to reproduce frozen settings, or `matching` for the
-latest compatible snapshot. `generation_run_id` identifies the audio origin;
+`settings_source_run_id` to reproduce frozen settings, or
+`settings_source="matching_run"` for the latest compatible snapshot.
+`settings_source_run_id` is valid only with `settings_source="run"`.
+`generation_run_id` identifies the audio origin;
 it does not select historical settings. A missing historical snapshot fails
 instead of substituting current settings. Returned origins make this explicit.
 
@@ -140,7 +142,12 @@ instead of substituting current settings. Returned origins make this explicit.
    `pandrator_assemble_generation_run` and wait for it to finish.
 5. Create one `pandrator_plan_export_variant` per requested output, inspect
    its media/text/subtitle options, and execute the exact plan with
-   `pandrator_execute_workflow_plan`. Poll again.
+   `pandrator_execute_workflow_plan`. For a requested bilingual video,
+   `subtitle_selection="dual"` selects source then translation, provided
+   both documents exist: `subtitle_mode="soft"` retains separate selectable
+   tracks, while `subtitle_mode="burned"` makes one bilingual overlay.
+   Do not substitute a missing language or confuse this with speech-only text.
+   Poll again.
 6. Locate outputs with `pandrator_list_artifacts` and deliver them with
    `pandrator_download_artifact`. Supply an optional plain `filename`, not a
    destination path. The configured output root determines the destination.
@@ -162,6 +169,36 @@ The output preserves loudness, uses an explicit `gap_ms`, and creates audio plus
 a manifest recording chosen takes, hashes, clip boundaries and settings origins.
 It compares speech takes; separately rendered environmental SFX are excluded.
 Use the returned artifact IDs with the checked downloader for delivery.
+
+## Automatic timing repair and history (0.14.2)
+
+For voiceovers, an enabled early-finish check may run **one** automatic pass after
+synthesis. It can split an early speech block at a whole-cue boundary while
+reusing unaffected takes; changed semantic-context neighbours may be refreshed.
+A rejected change leaves the original selected audio active. Applied repairs
+may activate a new plan revision, while the original takes remain available.
+Repair takes precedence over passage regroup, and regroup is also disabled
+with semantic text context. Performance or casting plans are not automatically
+repaired.
+
+Inspect the root and child generation history before interpreting the result:
+`completed` means repairs were applied and the pass finished, `partial`
+means applied and rejected repairs were mixed or a pass stopped before
+inspection finished, `rejected` means checked attempts were rejected
+without an applied change, `no_effect` means blocks were checked
+but required no split, and `skipped` means **no block was checked**. `failed`
+and `stopped` retain the last accepted plan/audio. Inspect checked, candidate,
+attempted, applied and rejected counts, plus `pass_completed` and skip reason;
+a successful synthesis job alone does not establish repair completion.
+
+An explicit check of an older completed voiceover is available through the
+application's `POST /api/v1/generation-runs/{run_id}/repair-timing` with an
+empty JSON body and optional idempotency key, **not** through a dedicated MCP
+tool. It requires run permission, frozen settings that enabled repair, and the
+original run still active on its speech plan. Do not invent an MCP repair call
+or silently make a raw HTTP mutation; explain the limitation and use an
+authorized browser/application route when available. Retain history and
+selection identity on retries. See [recovery](recovery.md).
 
 ## Recording edits
 
@@ -191,6 +228,20 @@ Render only a reviewed revision. Apply the user's review policy and obtain
 any missing approval required by the returned action. Preserve the original
 recording and verify the requested rendered outputs.
 
+In 0.14.2, `pandrator_get_media_edit` exposes read-only
+`plan.timing_diagnostics` in summary and per-cue `timing_flags` in full
+state: overlapping cues/words and backwards word starts need review against
+the actual recording, not silent timestamp sorting. Simultaneous speech may be
+intentional. When word timing is incomplete, rendering retains the entire
+caption with its cue timing; a cut inside that cue fails with
+`media_edit_word_timing_incomplete` rather than guessing a word boundary.
+
+The 12-second mix preview reflects the **current reviewed media-edit render**,
+not the raw recording. Render and review the exact active revision first.
+Export requires that same current rendered revision and source/content hash:
+when an edit or source changes, render again and create a fresh export plan
+instead of reusing a stale preview or plan.
+
 For delivery/emotion changes on a whole segment or part, use
 `pandrator_preview_speech_selection` then `pandrator_apply_speech_selection`
 with its preview token, or edit and adopt a performance plan. Inspect the full
@@ -219,7 +270,8 @@ exact tool contracts. Do not put native provider tags in the saved transcript.
   revision: inspect the export's text snapshot rather than assuming a current
   display edit changes a historical-run export.
 - For existing audio, prefer `plan_export_variant` with the exact run ID and
-  `response_mode="structured"`. It creates an immutable export-only snapshot
+  `response_mode="structured"` when the host reads `structuredContent`
+  (otherwise use `standard`). It creates an immutable export-only snapshot
   without language/synthesis prerequisites. `plan_workflow(continuation=false)`
   provides the same direct-stage control with arbitrary safe settings overrides.
   Orchestration accepts `generation_run_id` for export from completed audio;
