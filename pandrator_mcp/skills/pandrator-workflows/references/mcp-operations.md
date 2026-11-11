@@ -19,8 +19,10 @@ an operation is unfamiliar or the server differs from this reference.
 - Inspect provider, TTS, and voice catalogues only when those choices matter.
   Use actual service/model/voice IDs, not labels guessed from user examples.
   For routine voice choice, use `get_voice_catalog` with `service_id`, `model`,
-  `view="compact"` and `response_mode="structured"`. Optional `fields` projects
-  only requested safe fields; full profiles remain available when relevant.
+  `view="compact"`; choose `response_mode="structured"` only when the
+  host consumes `structuredContent` (otherwise use `standard`). Optional
+  `fields` projects only requested safe fields; full profiles remain available
+  when relevant.
 
 For new local speech work, the catalogue recommends `audio_cpp`; XTTS,
 Silero, Kokoro, and Voxtral remain dedicated providers. Compatibility entries
@@ -187,15 +189,18 @@ means applied and rejected repairs were mixed or a pass stopped before
 inspection finished, `rejected` means checked attempts were rejected
 without an applied change, `no_effect` means blocks were checked
 but required no split, and `skipped` means **no block was checked**. `failed`
-and `stopped` retain the last accepted plan/audio. Inspect checked, candidate,
+and `stopped` retain the last accepted plan/audio. A `skipped` result is
+a fail-closed pass with no checked blocks, not proof that timing was reviewed.
+Inspect checked, candidate,
 attempted, applied and rejected counts, plus `pass_completed` and skip reason;
 a successful synthesis job alone does not establish repair completion.
 
 An explicit check of an older completed voiceover is available through the
 application's `POST /api/v1/generation-runs/{run_id}/repair-timing` with an
 empty JSON body and optional idempotency key, **not** through a dedicated MCP
-tool. It requires run permission, frozen settings that enabled repair, and the
-original run still active on its speech plan. Do not invent an MCP repair call
+tool. It requires run permission, frozen settings that enabled repair, an active
+original speech plan and a run that is **not** an assembled/recast audio version.
+Second-pass child runs are ineligible. Do not invent an MCP repair call
 or silently make a raw HTTP mutation; explain the limitation and use an
 authorized browser/application route when available. Retain history and
 selection identity on retries. See [recovery](recovery.md).
@@ -236,8 +241,8 @@ intentional. When word timing is incomplete, rendering retains the entire
 caption with its cue timing; a cut inside that cue fails with
 `media_edit_word_timing_incomplete` rather than guessing a word boundary.
 
-The 12-second mix preview reflects the **current reviewed media-edit render**,
-not the raw recording. Render and review the exact active revision first.
+The mix preview (12 seconds by default, selectable from 4 to 30 seconds)
+reflects the **current reviewed media-edit render**, not the raw recording. Render and review the exact active revision first.
 Export requires that same current rendered revision and source/content hash:
 when an edit or source changes, render again and create a fresh export plan
 instead of reusing a stale preview or plan.

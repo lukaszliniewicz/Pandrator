@@ -58,10 +58,12 @@ def test_historical_generation_selector_matches_documentation(model: type) -> No
 def test_structured_payload_requires_structured_host() -> None:
     entrypoint = (SKILL / "SKILL.md").read_text(encoding="utf-8")
     reference = (SKILL / "references" / "semantic-dispatch.md").read_text(encoding="utf-8")
-    for doc in (entrypoint, reference):
+    ops = (SKILL / "references" / "mcp-operations.md").read_text(encoding="utf-8")
+    recovery = (SKILL / "references" / "recovery.md").read_text(encoding="utf-8")
+    for doc in (entrypoint, reference, ops, recovery):
         assert "`structuredContent`" in doc
         assert "`standard`" in doc
-        assert "text-only" in doc.lower()
+        assert "host" in doc.lower()
 
 
 def test_recent_release_semantics_are_documented_without_fake_mcp_tools() -> None:
