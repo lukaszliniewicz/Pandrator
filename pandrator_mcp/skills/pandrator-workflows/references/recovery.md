@@ -3,8 +3,10 @@
 ## Follow one generation operation
 
 Retain `generation_operation_id` from the generation or regeneration receipt.
-When advertised, poll `pandrator_get_generation_operation(operation_id=...,
-wait_seconds=60, response_mode="structured")`. Its stable ID follows preparation
+When advertised, poll `pandrator_get_generation_operation` with the stable
+`operation_id` and a bounded `wait_seconds` (up to 60); choose
+`response_mode="structured"` only when the host consumes `structuredContent`,
+otherwise use `standard`. Its stable ID follows preparation
 and the committed synthesis job across reloads. Phase and state describe work;
 `coverage.export_ready` describes whether every included block has available
 selected audio. Coverage is computed at terminal synthesis, or independently
@@ -15,6 +17,25 @@ or guarantee successful rendering. Event pages and full settings are for diagnos
 a validated child after preparation has completed. Keep the original root ID.
 On older servers, poll `get_work` and follow `result.followup_work` to synthesis;
 preparation success alone does not mean audio exists.
+
+## Post-generation timing-repair results (0.14.2)
+
+Generation success and optional timing repair are different outcomes. For a
+voiceover with automatic early-finish repair, inspect the selected root, its
+repair/regroup children and pass receipt before reporting timing work complete.
+`no_effect` confirms checked blocks needed no split; `skipped` means a
+fail-closed pass with **no blocks checked**, not a timing review; `partial`
+must not be reported as a completed pass. Distinguish
+rejected, failed and stopped attempts from a failure of the original audio:
+the last accepted takes/plan remain available. Never retry by deleting them.
+Use checked/candidate/applied counts, `pass_completed` and skip reasons when
+available; older receipts may lack these fields.
+
+The explicit repair trigger is an application HTTP endpoint, not an MCP tool.
+It is eligible only for the original, completed, active voiceover with frozen
+repair-enabled settings, not an audio-version/recast run or a second-pass child. If this endpoint is not exposed through an approved
+client, report the limitation rather than constructing an unapproved request.
+Do not trigger recursive repair on child runs or combine it with regroup.
 
 ## Lost response or reload
 

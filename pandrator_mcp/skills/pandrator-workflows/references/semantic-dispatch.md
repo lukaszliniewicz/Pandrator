@@ -139,7 +139,10 @@ selection before continuing to translation or generation.
 Evidence defaults to a text/provenance summary. Request `detail=full` only when
 raw timing evidence is needed. Review subtitle artifact diagnostics before
 delivery: speed/layout violations and text-integrity mismatches remain actionable
-even when every language batch has been accepted. Keep display text in normal
+even when every language batch has been accepted. Version 0.14.2 also adds a
+**Timing overlaps** filter in the browser's subtitle review; it is read-only
+and not an MCP filter. Inspect available cue timing/evidence instead of
+claiming the UI warning was checked by an MCP tool. Keep display text in normal
 written language while resolving those delivery issues.
 
 ## PDF/EPUB source cleanup

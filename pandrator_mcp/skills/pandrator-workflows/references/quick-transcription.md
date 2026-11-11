@@ -20,6 +20,14 @@ when provider, language, or model choice matters.
    available. Do not use session artifact-download tools for these temporary
    results; follow the transcription tool's result actions.
 
+The browser's **Local model files** panel (0.14.2) is a read-only check of
+the selected recognizer and speech detector (VAD), plus an aligner or language
+detector when applicable. A cached recognizer does not prove those other files
+exist. The panel does not download or install models; administrators can point
+the VAD selector at an existing local file. Do not present this UI panel as
+a dedicated MCP tool. Check live capabilities or supported provider catalogue
+and report any model-availability uncertainty without inventing file paths.
+
 `pandrator_transcription_cancel` stops work;
 `pandrator_transcription_delete` removes temporary data. This workflow leaves
 no permanent session or source-library entry, but uses temporary disk storage

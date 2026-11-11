@@ -1,4 +1,6 @@
 interface:
   display_name: "Pandrator Workflows"
   short_description: "Create and recover Pandrator media workflows"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
   default_prompt: "Use $pandrator-workflows to run this Pandrator job and deliver its files."
