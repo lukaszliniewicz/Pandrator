@@ -272,6 +272,37 @@ def test_turbo_websocket_sends_one_session_and_aggregates_through_is_final(monke
     assert connection.closed
 
 
+def test_turbo_websocket_timeout_never_exceeds_the_budget_when_float_rounds_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Even without elapsed time, (start + 300) - start can round *above* 300.
+    # The exact value reproduces the Windows fast-xdist CI failure.
+    tick = 409.1362275278752
+    assert (tick + 300.0) - tick > 300.0
+    monkeypatch.setattr(elevenlabs_v4_audio.time, "monotonic", lambda: tick)
+    connection = FakeConnection([_frame(audio=base64.b64encode(b"ok").decode(), is_final=True)])
+    connects: list[dict[str, Any]] = []
+
+    def connect(_uri: str, **options: Any) -> FakeConnection:
+        connects.append(options)
+        return connection
+
+    _install_fake_connect(monkeypatch, connect)
+    response = elevenlabs_v4_audio.stream_turbo_dialogue_audio(
+        base_url="https://eleven.example.test",
+        api_key="secret-key",
+        model_id=ELEVENLABS_V4_TURBO_MODEL,
+        voice_id="voice-id",
+        text="hello",
+        output_format="mp3_44100_128",
+        timeout_seconds=300.0,
+    )
+
+    assert response.content == b"ok"
+    assert connects[0]["open_timeout"] == 300.0
+    assert connection.receive_timeouts == [300.0]
+
+
 def test_turbo_omits_empty_voice_settings_and_passes_remaining_receive_timeout(monkeypatch):
     connection = FakeConnection([_frame(audio=base64.b64encode(b"ok").decode(), is_final=True)])
     connects: list[dict[str, Any]] = []
