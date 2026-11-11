@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +30,6 @@ from pandrator.web.voice_identity import (
 MIGRATIONS = Path(__file__).parents[1] / "pandrator" / "web" / "migrations"
 VOICE_REVISION = "0063_voice_workspace"
 SOUND_REVISION = "0062_sound_workspace"
-SCRATCH_ROOT = Path("/tmp/pandrator-voice-schema-worker")
 FIXED_TIME = "2026-10-23 12:00:00.000000"
 ACTIVE_A = "workspace-active-a"
 ACTIVE_B = "workspace-active-b"
@@ -93,12 +91,8 @@ LEGACY_COLUMNS = {
 
 
 @pytest.fixture
-def database_path(request: pytest.FixtureRequest) -> Iterator[Path]:
-    SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-    path = SCRATCH_ROOT / f"{request.node.name}-{uuid.uuid4().hex}.sqlite"
-    yield path
-    for suffix in ("", "-wal", "-shm"):
-        Path(f"{path}{suffix}").unlink(missing_ok=True)
+def database_path(tmp_path: Path) -> Path:
+    return tmp_path / "voice-schema.sqlite"
 
 
 def _config(path: Path) -> Config:
