@@ -68,7 +68,13 @@ CASES = [
             "radius": 2,
         },
     ),
-    Case("pandrator_get_speech_plan_status", BASE, "get_speech_plan_status", (SESSION,), {}),
+    Case(
+        "pandrator_get_speech_plan_status",
+        BASE,
+        "get_speech_plan_status",
+        (SESSION,),
+        {"summary": True},
+    ),
     Case(
         "pandrator_prepare_speech_plan",
         {**GUARD, "expected_revision": 4, "source_artifact_id": "source-1"},
@@ -93,7 +99,7 @@ CASES = [
         BASE,
         "list_speech_plan_revisions",
         (SESSION,),
-        {"limit": 50, "before_revision_number": None},
+        {"limit": 50, "before_revision_number": None, "summary": True},
     ),
     Case(
         "pandrator_revise_speech_block_plan_batch",
@@ -449,3 +455,186 @@ def test_registered_generation_admission_schema_defaults_true(tmp_path: Path) ->
             assert properties["missing_only"]["default"] is False
         else:
             assert "generation_run_id" in properties
+
+
+REUSE = {
+    "reusable_segment_count": 7,
+    "stale_segment_count": 2,
+    "audio_settings_stale_segment_count": 1,
+    "audio_identity_unknown_segment_count": 0,
+    "audio_reuse_checked": True,
+}
+
+
+def _unchecked(revision_id: str) -> dict[str, Any]:
+    return {
+        "id": revision_id,
+        "reusable_segment_count": None,
+        "stale_segment_count": None,
+        "audio_settings_stale_segment_count": None,
+        "audio_identity_unknown_segment_count": None,
+        "audio_reuse_checked": False,
+    }
+
+
+def _reuse_runtime(
+    root: Path,
+    *,
+    summary: dict[str, Any],
+    detail_error: str | None = None,
+) -> tuple[
+    McpRuntime, list[tuple[str, tuple[Any, ...], dict[str, Any]]], list[dict[str, str]]
+]:
+    runtime = build_runtime(
+        McpSettings(target_name="unconfigured", configuration_path=root / "absent.json")
+    )
+    application = create_autospec(ApplicationClient, instance=True)
+    calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+    headers: list[dict[str, str]] = []
+
+    def summary_call(method: str):
+        def invoke(*args, **kwargs):
+            calls.append((method, args, kwargs))
+            headers.append(correlation_headers())
+            return copy.deepcopy(summary)
+
+        return invoke
+
+    def detail(*args, **kwargs):
+        calls.append(("get_speech_plan_revision", args, kwargs))
+        headers.append(correlation_headers())
+        if detail_error:
+            raise PandratorMcpError(detail_error, "Fixture detail failure.")
+        return {"revision": {"id": args[1], **REUSE}, "active_revision_id": args[1]}
+
+    application.get_speech_plan_status.side_effect = summary_call("get_speech_plan_status")
+    application.list_speech_plan_revisions.side_effect = summary_call("list_speech_plan_revisions")
+    application.get_speech_plan_revision.side_effect = detail
+    runtime.application = application
+    runtime.startup_error = None
+    return runtime, calls, headers
+
+
+def _call_with_headers(root: Path, tool: str, arguments: dict[str, Any], **kwargs):
+    runtime, calls, headers = _reuse_runtime(root, **kwargs)
+
+    async def run():
+        async with Client(build_server(runtime), mode="auto", raise_exceptions=False) as client:
+            return await client.call_tool(tool, arguments)
+
+    return asyncio.run(run()), calls, headers
+
+
+def _call(root: Path, tool: str, arguments: dict[str, Any], **kwargs):
+    result, calls, _ = _call_with_headers(root, tool, arguments, **kwargs)
+    return result, calls
+
+
+ACTIVE_SUMMARY = {
+    "active_revision_id": "rev-2",
+    "selected_revision_id": "rev-2",
+    "audio_reuse_checked": False,
+    "items": [_unchecked("rev-3"), _unchecked("rev-2"), _unchecked("rev-1")],
+}
+
+
+def test_status_merges_reuse_counts_for_active_revision_only(tmp_path: Path) -> None:
+    result, calls = _call(tmp_path, "pandrator_get_speech_plan_status", BASE, summary=ACTIVE_SUMMARY)
+    value = envelope(result)
+    assert calls == [
+        ("get_speech_plan_status", (SESSION,), {"summary": True}),
+        ("get_speech_plan_revision", (SESSION, "rev-2"), {}),
+    ]
+    items = {item["id"]: item for item in value["result"]["items"]}
+    assert {key: items["rev-2"][key] for key in REUSE} == REUSE
+    assert items["rev-3"] == _unchecked("rev-3")
+    assert items["rev-1"] == _unchecked("rev-1")
+    assert value["result"]["audio_reuse_checked"] is False
+    assert not value.get("warnings")
+
+
+def test_list_passes_paging_and_merges_active_counts(tmp_path: Path) -> None:
+    result, calls = _call(
+        tmp_path,
+        "pandrator_list_speech_plan_revisions",
+        {**BASE, "limit": 3, "before_revision_number": 9},
+        summary=ACTIVE_SUMMARY,
+    )
+    value = envelope(result)
+    assert calls == [
+        (
+            "list_speech_plan_revisions",
+            (SESSION,),
+            {"limit": 3, "before_revision_number": 9, "summary": True},
+        ),
+        ("get_speech_plan_revision", (SESSION, "rev-2"), {}),
+    ]
+    items = {item["id"]: item for item in value["result"]["items"]}
+    assert items["rev-2"]["audio_reuse_checked"] is True
+    assert items["rev-3"] == _unchecked("rev-3")
+    assert items["rev-1"] == _unchecked("rev-1")
+    assert value["result"]["audio_reuse_checked"] is False
+    assert value["result"]["session_id"] == SESSION
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        {"active_revision_id": None, "selected_revision_id": None, "items": []},
+        {"active_revision_id": None, "selected_revision_id": None, "items": [_unchecked("rev-1")]},
+        {"active_revision_id": "rev-9", "selected_revision_id": "rev-9", "items": [_unchecked("rev-1")]},
+    ],
+    ids=["no-plan", "null-active-with-page", "active-on-another-page"],
+)
+@pytest.mark.parametrize(
+    "tool", ["pandrator_get_speech_plan_status", "pandrator_list_speech_plan_revisions"]
+)
+def test_no_detail_request_without_active_item(tmp_path: Path, tool: str, summary) -> None:
+    result, calls = _call(tmp_path, tool, BASE, summary=summary)
+    envelope(result)
+    assert "get_speech_plan_revision" not in [call[0] for call in calls]
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("code", ["not_found", "application_response_timeout"])
+@pytest.mark.parametrize(
+    "tool", ["pandrator_get_speech_plan_status", "pandrator_list_speech_plan_revisions"]
+)
+def test_detail_race_or_timeout_degrades_with_warning(tmp_path: Path, tool: str, code: str) -> None:
+    result, calls = _call(tmp_path, tool, BASE, summary=ACTIVE_SUMMARY, detail_error=code)
+    value = envelope(result)
+    assert len(calls) == 2
+    assert [item["audio_reuse_checked"] for item in value["result"]["items"]] == [False] * 3
+    assert [warning["code"] for warning in value["warnings"]] == [code]
+    assert "Fixture detail failure." in value["warnings"][0]["message"]
+
+
+@pytest.mark.parametrize(
+    "tool", ["pandrator_get_speech_plan_status", "pandrator_list_speech_plan_revisions"]
+)
+def test_detail_request_shares_the_tool_calls_correlation_headers(
+    tmp_path: Path, tool: str
+) -> None:
+    result, calls, headers = _call_with_headers(tmp_path, tool, BASE, summary=ACTIVE_SUMMARY)
+    envelope(result)
+    assert [call[0] for call in calls][1:] == ["get_speech_plan_revision"]
+    traceparent = re.compile(r"00-([0-9a-f]{32})-[0-9a-f]{16}-01")
+    summary_headers, detail_headers = headers
+    summary_trace = traceparent.fullmatch(summary_headers["traceparent"])
+    detail_trace = traceparent.fullmatch(detail_headers["traceparent"])
+    assert summary_trace and detail_trace
+    assert detail_trace.group(1) == summary_trace.group(1)
+    assert detail_headers["X-Request-ID"] == summary_headers["X-Request-ID"]
+
+
+@pytest.mark.parametrize(
+    "tool", ["pandrator_get_speech_plan_status", "pandrator_list_speech_plan_revisions"]
+)
+def test_detail_other_failure_propagates(tmp_path: Path, tool: str) -> None:
+    result, calls = _call(tmp_path, tool, BASE, summary=ACTIVE_SUMMARY, detail_error="scope_denied")
+    assert result.is_error
+    assert len(calls) == 2
+    block = next(item for item in result.content if isinstance(item, TextContent))
+    prefix = f"Error executing tool {tool}: "
+    assert block.text.startswith(prefix)
+    assert json.loads(block.text[len(prefix) :])["code"] == "scope_denied"

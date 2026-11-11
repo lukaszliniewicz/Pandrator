@@ -138,7 +138,7 @@ def register_generation_plan_tools(
         annotations=read_only,
     )
     def speech_plan_status_tool(session_id: str, response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
-        """Inspect current text input, active plan compatibility, review state, and revision guards."""
+        """Inspect current text input, active plan compatibility, review state, and revision guards. Revisions are summaries: reuse counts are checked for the active revision only, and repair-batch undo eligibility is not evaluated (can_undo, undo_disabled_reason, expected_revision_id and expected_state_hash are null, undo_checked is false). Read each item's audio_reuse_checked; the top-level flag describes the summary and stays false. If the active revision's counts time out or it is gone, its item stays unchecked and a warning names the code."""
         return response(_call_with_validated_input(
             speech_plan_status,
             runtime,
@@ -203,7 +203,7 @@ def register_generation_plan_tools(
     def speech_plan_revisions_tool(
         session_id: str, limit: int = 50, before_revision_number: int | None = None
     , response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
-        """Inspect automatic/manual revision history, ancestry and reusable/stale take counts."""
+        """Inspect automatic/manual revision history and ancestry as summaries; reusable/stale take counts are checked for the active revision only, when it is on the returned page. Read each item's audio_reuse_checked; the top-level flag describes the summary and stays false. If the active revision's counts time out or it is gone, its item stays unchecked and a warning names the code."""
         return response(_call_with_validated_input(
             list_speech_plan_revisions,
             runtime,

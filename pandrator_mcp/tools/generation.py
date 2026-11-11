@@ -7,6 +7,7 @@ from typing import Any
 from ..context import McpRuntime
 from ..errors import NextAction, PandratorMcpError
 from ..results import ToolOutcome
+from ..schemas.common import WarningMessage
 from ..schemas.generation import (
     AdoptSubtitleSourceInput,
     AssembleGenerationRunInput,
@@ -239,9 +240,68 @@ def revise_speech_block_plan(
     )
 
 
-def speech_plan_status(runtime: McpRuntime, arguments: SpeechPlanStatusInput) -> dict[str, Any]:
-    payload = runtime.require_application().get_speech_plan_status(arguments.session_id)
-    return {"schema_version": "1", **payload}
+_REUSE_FIELDS = (
+    "reusable_segment_count",
+    "stale_segment_count",
+    "audio_settings_stale_segment_count",
+    "audio_identity_unknown_segment_count",
+    "audio_reuse_checked",
+)
+_DEGRADABLE_DETAIL_CODES = frozenset({"not_found", "application_response_timeout"})
+
+
+def _with_active_reuse_counts(
+    application: Any,
+    session_id: str,
+    payload: dict[str, Any],
+    active_revision_id: Any,
+) -> tuple[dict[str, Any], list[WarningMessage]]:
+    """Fill the reuse counts of the one active revision from its own detail request.
+
+    The summary read skips the audio identity pass; the detail read runs it for one
+    revision only, so each request stays under the client timeout.
+    """
+
+    items = payload.get("items")
+    if not isinstance(active_revision_id, str) or not active_revision_id:
+        return payload, []
+    if not isinstance(items, list) or not any(
+        isinstance(item, dict) and item.get("id") == active_revision_id for item in items
+    ):
+        return payload, []
+    try:
+        detail = application.get_speech_plan_revision(session_id, active_revision_id)
+    except PandratorMcpError as error:
+        if error.code not in _DEGRADABLE_DETAIL_CODES:
+            raise
+        return payload, [
+            WarningMessage(
+                code=error.code,
+                message=(
+                    "Reuse counts for the active speech-plan revision could not be loaded "
+                    f"({error.code}: {error}); the summary is returned without them."
+                ),
+            )
+        ]
+    revision = detail.get("revision") if isinstance(detail, dict) else None
+    if not isinstance(revision, dict):
+        return payload, []
+    merged = [
+        {**item, **{key: revision[key] for key in _REUSE_FIELDS if key in revision}}
+        if isinstance(item, dict) and item.get("id") == active_revision_id
+        else item
+        for item in items
+    ]
+    return {**payload, "items": merged}, []
+
+
+def speech_plan_status(runtime: McpRuntime, arguments: SpeechPlanStatusInput) -> ToolOutcome:
+    application = runtime.require_application()
+    payload = application.get_speech_plan_status(arguments.session_id, summary=True)
+    payload, warnings = _with_active_reuse_counts(
+        application, arguments.session_id, payload, payload.get("active_revision_id")
+    )
+    return ToolOutcome(result={"schema_version": "1", **payload}, warnings=warnings)
 
 
 def prepare_speech_plan(runtime: McpRuntime, arguments: PrepareSpeechPlanInput) -> ToolOutcome:
@@ -267,11 +327,21 @@ def review_speech_plan(runtime: McpRuntime, arguments: ReviewSpeechPlanInput) ->
     return ToolOutcome(result={"schema_version": "1", **result})
 
 
-def list_speech_plan_revisions(runtime: McpRuntime, arguments: ListSpeechPlanRevisionsInput) -> dict[str, Any]:
-    payload = runtime.require_application().list_speech_plan_revisions(
-        arguments.session_id, limit=arguments.limit, before_revision_number=arguments.before_revision_number,
+def list_speech_plan_revisions(runtime: McpRuntime, arguments: ListSpeechPlanRevisionsInput) -> ToolOutcome:
+    application = runtime.require_application()
+    payload = application.list_speech_plan_revisions(
+        arguments.session_id,
+        limit=arguments.limit,
+        before_revision_number=arguments.before_revision_number,
+        summary=True,
     )
-    return {"schema_version": "1", "session_id": arguments.session_id, **payload}
+    payload, warnings = _with_active_reuse_counts(
+        application, arguments.session_id, payload, payload.get("active_revision_id")
+    )
+    return ToolOutcome(
+        result={"schema_version": "1", "session_id": arguments.session_id, **payload},
+        warnings=warnings,
+    )
 
 
 def revise_speech_block_plan_batch(runtime: McpRuntime, arguments: ReviseSpeechBlockPlanBatchInput) -> ToolOutcome:
