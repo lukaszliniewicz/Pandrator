@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import requests
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from pandrator.logic import tts_handler
 from pandrator.logic.tts_retry import TtsRetryGate
@@ -513,6 +513,95 @@ def test_cancel_during_identity_check_stops_before_provider_send(generation_case
     with g.f.case.database.snapshot_session() as session:
         assert session.get_one(m.GenerationRun, g.marker["generation_run_id"]).status == "canceled"
     assert not calls
+
+
+def test_cancel_after_failure_decision_keeps_job_and_run_terminal_states_aligned(
+    generation_case, monkeypatch
+):
+    """A cancellation arriving after Worker.should_cancel must still win."""
+    g = generation_case
+    sent = fake_post(monkeypatch)
+    queue = g.f.services.jobs
+    job_id = g.marker["job_id"]
+    original_fail = queue.fail
+    callbacks = []
+
+    def cancel_just_before_failure(*args, **kwargs):
+        assert args[0] == job_id
+        callbacks.append(True)
+        queue.request_cancel(job_id)
+        return original_fail(*args, **kwargs)
+
+    during_identity_check(monkeypatch, lambda _session: None, identities={})
+    monkeypatch.setattr(queue, "fail", cancel_just_before_failure)
+    assert g.worker.run_once()
+
+    assert callbacks == [True]
+    job = queue.get(job_id)
+    assert job.status == "canceled"
+    with g.f.case.database.snapshot_session() as session:
+        run = session.get_one(m.GenerationRun, g.marker["generation_run_id"])
+        assert (run.status, run.cancel_requested, run.pause_requested) == ("canceled", False, False)
+    assert not sent
+
+
+def test_large_identity_check_reuses_plan_rows_without_skipping_workspace_checks(
+    generation_case, monkeypatch
+):
+    """Query count is bounded by revision count, not the segment count."""
+    from pandrator.web import generation_audio_identity
+
+    g = generation_case
+    with g.f.case.database.snapshot_session() as session:
+        run = session.get_one(m.GenerationRun, g.marker["generation_run_id"])
+        revision_id = run.plan_revision_id
+        snapshot = dict(run.settings_snapshot_json or {})
+    count = 125
+    with g.f.case.database.immediate_session() as session:
+        for index in range(1, count):
+            session.add(
+                m.GenerationSegment(
+                    plan_revision_id=revision_id,
+                    ordinal=index,
+                    text=f"Repeated plan row stress test {index}.",
+                    language="en",
+                    voice="Kore",
+                    status="ready",
+                )
+            )
+
+    authorizations = []
+    original_check = generation_audio_identity.voice_creation_workspace
+
+    def checked_workspace(*args, **kwargs):
+        authorizations.append(True)
+        return original_check(*args, **kwargs)
+
+    monkeypatch.setattr(generation_audio_identity, "voice_creation_workspace", checked_workspace)
+    query_count = 0
+
+    def count_queries(_conn, _cursor, statement, _parameters, _context, _many):
+        nonlocal query_count
+        if statement.lstrip().upper().startswith("SELECT"):
+            query_count += 1
+
+    engine = g.f.case.database.engine
+    event.listen(engine, "before_cursor_execute", count_queries)
+    try:
+        with g.f.case.database.session() as session:
+            identities = generation_audio_identity.plan_audio_identities(
+                session, revision_id, snapshot
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_queries)
+
+    assert len(identities) == count
+    assert len(authorizations) >= count
+    assert query_count <= 25, f"Repeated plan SELECTs: {query_count} for {count} segments"
+    with g.f.case.database.session() as session:
+        assert identities == generation_audio_identity.plan_audio_identities(
+            session, revision_id, snapshot
+        )
 
 
 def test_take_name_collision_preserves_existing_file(generation_case, monkeypatch):

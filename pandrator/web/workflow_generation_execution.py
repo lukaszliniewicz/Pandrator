@@ -287,19 +287,13 @@ def _run_generation(
         audio_identity_changed = bool(settings_snapshot.get("generation_audio_identities") and settings_snapshot["generation_audio_identities"] != audio_identities)
 
     if plan_changed or audio_identity_changed:
-        with context.database.immediate_session() as session:
-            # An expired lease denies voice access, and the identity check swallows
-            # that denial. Prove the lease before blaming the inputs. A lease cannot
-            # recover once expired, so passing here means it held throughout the check.
+        # An expired lease denies voice access and the identity check can omit
+        # those unavailable references. Re-prove ownership before attributing a
+        # mismatch to the inputs. Let the owning queue transition the run with
+        # its terminal job event; failing the run here would race with a cancel
+        # arriving after this check and leave job/run terminal states divergent.
+        with context.database.session() as session:
             prove(session)
-            run = session.get(GenerationRun, run_id)
-            if run is not None:
-                run.status = "failed"
-                # A pause or cancel can land during the check now that it holds no
-                # writer, and job reconciliation skips runs that are already terminal.
-                run.cancel_requested = False
-                run.pause_requested = False
-                run.updated_at = utcnow()
     if plan_changed:
         raise ValueError("The selected speech plan changed after generation was queued. Review and submit it again.")
     if audio_identity_changed:
