@@ -241,6 +241,8 @@ The Generation workspace guarantees at least a 44 CSS-pixel target for playback
 and Generate controls in narrow layouts, even when a browser's root font size
 is smaller than the default. The responsive browser test also checks layout
 after viewport changes rather than accepting transient resize measurements.
+Long course-folder titles now wrap inside their flex layout on narrow screens,
+without introducing horizontal page overflow.
 
 Release test qualification now splits the previously oversized `web-07` Python
 suite into twelve independent serial lanes on both Windows and Linux. The
