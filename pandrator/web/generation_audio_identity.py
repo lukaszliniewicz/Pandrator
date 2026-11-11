@@ -321,6 +321,9 @@ class AudioIdentityContext:
         # hashes the complete input settings, never a subset, so a settings,
         # voice, or casting change always misses and recomputes.
         self._service_config_cache: dict = _service_config_cache if _service_config_cache is not None else {}
+        # Retained cast pins already proven in this context; a failing proof is
+        # never recorded, so it runs again and raises as before.
+        self._retained_proofs: dict = {}
         self._material_settings_cache: dict[str, dict[str, Any]] = {}
         self._voice_reference_cache: dict[str, Any] = {}
         self._service_id_cache: dict[str, str] = {}
@@ -555,11 +558,13 @@ class AudioIdentityContext:
                             binding, base, resolved, self._service_config_cache,
                             _pending_proof=self._pending_proof,
                             _pending_revision_id=segment.plan_revision_id,
+                            _proofs=self._retained_proofs,
                         )
                 parts = segment_render_parts(
                     prepared, pinned, segment.id, text,
                     _settings_copy=self._copy_inspection_settings,
                     _validate_binding=validate_binding,
+                    _service_config_cache=self._service_config_cache,
                 )
                 requests = []
                 has_source_identity = False
@@ -746,6 +751,7 @@ class AudioIdentityContext:
                             self.session, session_id, binding, settings, recorded_resolution,
                             self._service_config_cache, _pending_proof=self._pending_proof,
                             _pending_revision_id=segment.plan_revision_id,
+                            _proofs=self._retained_proofs,
                         )
                     elif binding.get("voice_id"):
                         # Legacy snapshots still depend on the current source;
@@ -773,6 +779,7 @@ class AudioIdentityContext:
                     resolutions = {cast_resolution_key(binding, slot_key, schema_version=version): resolved}
                 settings = apply_resolved_binding(
                     binding, settings, resolutions, slot_key=slot_key, schema_version=version,
+                    _service_config_cache=self._service_config_cache,
                 )
             except (ValueError, AccessDenied, WorkspaceNotFound) as error:
                 # Keep history inspectable when a managed voice is unavailable.

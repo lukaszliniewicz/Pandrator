@@ -197,12 +197,21 @@ def validate_retained_cast_resolution(
     _service_config_cache=None,
     *, _pending_proof: PendingSpeechProof | None = None,
     _pending_revision_id: str | None = None,
+    _proofs: dict | None = None,
 ) -> dict[str, Any]:
-    """Revalidate a frozen retained cast pin against current session ownership."""
+    """Revalidate a frozen retained cast pin against current session ownership.
+
+    ``_proofs`` is a memo owned by one identity context or one cast freeze. It
+    remembers only checks that passed, so a failing check always runs again.
+    """
     from .access.contracts import ProjectAction
     from .access.current_session_policy import require_current_session_access
 
-    require_current_session_access(session, session_id, ProjectAction.READ)
+    access_key = ("access", session_id)
+    if _proofs is None or access_key not in _proofs:
+        require_current_session_access(session, session_id, ProjectAction.READ)
+        if _proofs is not None:
+            _proofs[access_key] = True
 
     if not isinstance(resolved, Mapping):
         raise ValueError("Invalid retained cast resolution.")
@@ -263,10 +272,17 @@ def validate_retained_cast_resolution(
     if checked.get("voice") != alias:
         raise ValueError("Retained cast voice is incompatible with this selection.")
 
-    project = session_project(session, session_id)
-    owner = SpeechInputOwner(project.workspace_id, project.id, session_id)
-    if _pending_proof is None or not _pending_proof(session, owner, _pending_revision_id, pin, retained_binding):
-        check_speech_input(session, pin, owner=owner)
+    input_key = None if _proofs is None else (
+        "input", session_id, _pending_revision_id,
+        canonical_json(pin), canonical_json(retained_binding),
+    )
+    if _proofs is None or input_key not in _proofs:
+        project = session_project(session, session_id)
+        owner = SpeechInputOwner(project.workspace_id, project.id, session_id)
+        if _pending_proof is None or not _pending_proof(session, owner, _pending_revision_id, pin, retained_binding):
+            check_speech_input(session, pin, owner=owner)
+        if _proofs is not None:
+            _proofs[input_key] = True
     result[PROJECT_SPEECH_INPUT_KEY] = pin
     result[PROJECT_SPEECH_BINDING_KEY] = retained_binding
     result[PROJECT_SPEECH_SELECTOR_KEY] = _binding_key(normalized)
@@ -526,6 +542,7 @@ def apply_resolved_binding(
     *,
     slot_key: str | None = None,
     schema_version: int = 1,
+    _service_config_cache=None,
 ) -> dict:
     result = dict(settings)
     if not binding:
@@ -556,7 +573,7 @@ def apply_resolved_binding(
         retained_binding = normalize_speech_reference_binding(
             resolved[PROJECT_SPEECH_BINDING_KEY]
         )
-        capability = resolve_capabilities(settings)
+        capability = resolve_capabilities(settings, None, _service_config_cache)
         selected_model = str(
             capability.get("model")
             or settings.get("xtts_model")
@@ -694,6 +711,8 @@ def freeze_cast_snapshot(
 
     if _service_config_cache is None:
         _service_config_cache = {}
+    # Retained pins proven once for this freeze; never kept past this call.
+    proofs: dict = {}
     revision = session.get(m.GenerationPlanRevision, revision_id)
     plan = session.get(m.GenerationPlan, revision.plan_id) if revision else None
     if plan is None:
@@ -818,6 +837,7 @@ def freeze_cast_snapshot(
                     _scoped_resolutions,
                     slot_key=slot_key,
                     schema_version=2,
+                    _service_config_cache=_service_config_cache,
                 )
             key = cast_resolution_key(binding, slot_key, schema_version=2)
             if key not in _scoped_resolutions:
@@ -835,6 +855,7 @@ def freeze_cast_snapshot(
                             part_settings,
                             carried,
                             _service_config_cache,
+                            _proofs=proofs,
                         )
                         use_carried = True
                 if not use_carried:
@@ -873,7 +894,8 @@ def freeze_cast_snapshot(
                             from .speech_inputs import speech_input_adapter
 
                             eligible = retained_speech_selection(selected,
-                                speech_input_adapter(selected)[0], resolve_capabilities(selected))
+                                speech_input_adapter(selected)[0],
+                                resolve_capabilities(selected, None, _service_config_cache))
                             fresh = (_missing_selection(session, normalized, eligible[1])
                                      if eligible is not None and not normalized["voice_description"] else None)
                             if fresh is not None:
@@ -965,6 +987,7 @@ def freeze_cast_snapshot(
                 _scoped_resolutions,
                 slot_key=slot_key,
                 schema_version=2,
+                _service_config_cache=_service_config_cache,
             )
 
         try:
@@ -1005,6 +1028,7 @@ def segment_render_parts(
     settings: dict, snapshot: dict, segment_id: str, text: str,
     *, _settings_copy=None,
     _validate_binding: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], None] | None = None,
+    _service_config_cache=None,
 ) -> list[dict[str, Any]]:
     from .generation_rendering import build_render_parts
 
@@ -1053,6 +1077,7 @@ def segment_render_parts(
                 base,
                 selected["resolved_bindings"],
                 schema_version=1,
+                _service_config_cache=_service_config_cache,
             ),
             _settings_copy=_settings_copy,
         )
@@ -1063,7 +1088,8 @@ def segment_render_parts(
                 raise ValueError("The cast assignment is absent from this run snapshot.")
             _validate_binding(binding, base, resolved)
         return apply_resolved_binding(binding, base, selected["resolved_bindings"],
-            slot_key=slot_key, schema_version=2)
+            slot_key=slot_key, schema_version=2,
+            _service_config_cache=_service_config_cache)
 
     return build_render_parts(
         text,
