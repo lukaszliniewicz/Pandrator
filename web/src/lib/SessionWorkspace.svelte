@@ -869,6 +869,11 @@
     await run(stage);
   }
 
+  // SSR renders stage buttons before their client click handlers are attached.
+  // Expose an explicit readiness signal for browser tests and scripted clients;
+  // a visible card alone does not mean the initial workflow fetch is complete.
+  let initialWorkflowReady = $state(false);
+
   onMount(async () => {
     if (manageMode)
       workspaceMode =
@@ -883,6 +888,7 @@
       );
       if (stage) await openSettings(stage);
     }
+    initialWorkflowReady = true;
   });
 
   $effect(() => {
@@ -930,7 +936,11 @@
   });
 </script>
 
-<div class="min-w-0 max-w-full overflow-x-hidden">
+<div
+  class="min-w-0 max-w-full overflow-x-hidden"
+  data-testid="session-workflow-root"
+  data-initialized={initialWorkflowReady ? 'true' : 'false'}
+>
   {#if scope !== 'language'}
     <header
       class="workflow-toolbar mb-6 flex flex-wrap items-end justify-between gap-6"

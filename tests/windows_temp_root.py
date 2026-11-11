@@ -123,16 +123,12 @@ def _assert_no_reparse_ancestors(root: Path) -> None:
             raise ShortRootUnavailable(f"refusing symlink or junction in temp root: {part}")
 
 
-def _verify_private_root(root: Path) -> None:
-    """Fail closed if a marked Windows root is not *actually* private.
-
-    A marker is public text and can be forged by another local user. Query the
-    Windows security descriptor, not localized icacls output, to establish the
-    current user's SID owns the root and is its only explicit full-control ACE.
-    """
-    if sys.platform != "win32":
-        return
-    script = r"""
+# Windows runners invoke powershell.exe, which is Windows PowerShell 5.1, not
+# PowerShell 7. The 5.1 parser rejects a line break after a binary operator
+# (5.1 needs the operator at the start of the next line or a backtick), so a
+# multi-line expression here would fail to parse and fail every ACL check closed.
+# Keep every statement on one line and avoid syntax newer than 5.1.
+_ACL_VERIFY_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 $acl = Get-Acl -LiteralPath $env:PANDRATOR_PYTEST_ACL_ROOT
 $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -142,28 +138,60 @@ $full = [int][System.Security.AccessControl.FileSystemRights]::FullControl
 $valid = ($owner -eq $current) -and $acl.AreAccessRulesProtected -and ($rules.Count -eq 1)
 if ($valid) {
   $rule = $rules[0]
-  $valid = ($rule.IdentityReference.Value -eq $current) -and
-    ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) -and
-    (([int]$rule.FileSystemRights -band $full) -eq $full)
+  $same_user = $rule.IdentityReference.Value -eq $current
+  $allowed = $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow
+  $full_control = (([int]$rule.FileSystemRights -band $full) -eq $full)
+  $valid = $same_user -and $allowed -and $full_control
 }
-if (-not $valid) { Write-Error 'Unexpected owner or access rules'; exit 3 }
+if (-not $valid) {
+  [Console]::Error.WriteLine('Unexpected owner or access rules')
+  exit 3
+}
 """
+ACL_DIAGNOSTIC_LIMIT = 300
+
+
+def _verify_private_root(root: Path) -> None:
+    """Fail closed if a marked Windows root is not *actually* private.
+
+    A marker is public text and can be forged by another local user. Query the
+    Windows security descriptor, not localized icacls output, to establish the
+    current user's SID owns the root and is its only explicit full-control ACE.
+    """
+    if sys.platform != "win32":
+        return
     env = {**os.environ, "PANDRATOR_PYTEST_ACL_ROOT": str(root)}
     try:
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                _ACL_VERIFY_SCRIPT,
+            ],
             capture_output=True,
             text=True,
+            # Localized PowerShell errors must never turn a refusal into a crash.
+            errors="replace",
             check=False,
             env=env,
             timeout=20,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ShortRootUnavailable(f"cannot verify private temp root {root}: {error}") from error
-    if result.returncode != 0:
-        raise ShortRootUnavailable(
-            f"temp root {root} has unverified ownership or ACL; use pytest's default temp root"
-        )
+    if result.returncode == 0:
+        return
+    # Surface the reason (for example a parser error) instead of an opaque refusal,
+    # but keep the message bounded and single-line.
+    detail = " ".join(f"{result.stdout or ''} {result.stderr or ''}".split())
+    if len(detail) > ACL_DIAGNOSTIC_LIMIT:
+        detail = f"{detail[:ACL_DIAGNOSTIC_LIMIT]}..."
+    suffix = f": {detail}" if detail else ""
+    raise ShortRootUnavailable(
+        f"temp root {root} has unverified ownership or ACL{suffix}; "
+        "use pytest's default temp root"
+    )
 
 
 def _restore_inherited_access(root: Path, account: str) -> None:

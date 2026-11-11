@@ -574,6 +574,197 @@ class RestrictionTests(unittest.TestCase):
         self.assertEqual(run.call_args_list[1].args[0][-1], "luke:(OI)(CI)F")
 
 
+class AclVerifierScriptTests(unittest.TestCase):
+    """The PowerShell verifier itself, inspectable and mockable on any OS."""
+
+    # Windows PowerShell 5.1 rejects a line break after one of these, while
+    # PowerShell 7 accepts it. powershell.exe is 5.1 on Windows runners, so a
+    # trailing operator makes the script unparsable and every root fail closed.
+    TRAILING_OPERATORS = (
+        "-and",
+        "-or",
+        "-xor",
+        "-not",
+        "-eq",
+        "-ne",
+        "-lt",
+        "-le",
+        "-gt",
+        "-ge",
+        "-band",
+        "-bor",
+        "-bxor",
+        "-like",
+        "-match",
+        "-contains",
+        "-in",
+        "-join",
+        "-f",
+        "-replace",
+        "|",
+        ",",
+        "+",
+        "=",
+    )
+
+    def setUp(self):
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "pt"
+        self.root.mkdir()
+
+    def verify(self, code: int = 0, stdout: str = "", stderr: str = ""):
+        result = SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+        with (
+            patch.object(wtr.sys, "platform", "win32"),
+            patch.object(wtr.subprocess, "run", return_value=result) as powershell,
+        ):
+            try:
+                wtr._verify_private_root(self.root)
+            except wtr.ShortRootUnavailable as error:
+                return powershell, error
+        return powershell, None
+
+    def test_script_never_ends_a_line_with_an_operator(self):
+        for number, line in enumerate(wtr._ACL_VERIFY_SCRIPT.splitlines(), start=1):
+            stripped = line.rstrip()
+            self.assertFalse(
+                stripped.endswith("`"),
+                f"line {number} uses a fragile backtick continuation: {stripped!r}",
+            )
+            for operator in self.TRAILING_OPERATORS:
+                self.assertFalse(
+                    stripped.endswith(operator),
+                    f"line {number} ends with {operator!r}, which 5.1 cannot parse: {stripped!r}",
+                )
+
+    def test_no_line_ends_with_and_or_or(self):
+        lines = [
+            line.rstrip() for line in wtr._ACL_VERIFY_SCRIPT.splitlines() if line.strip()
+        ]
+        for operator in ("-and", "-or"):
+            self.assertFalse(
+                any(line.endswith(operator) for line in lines),
+                f"Windows PowerShell 5.1 cannot parse a line ending with {operator}",
+            )
+
+    def test_script_has_balanced_delimiters(self):
+        script = wtr._ACL_VERIFY_SCRIPT
+        for opening, closing in ("{}", "()", "[]"):
+            self.assertEqual(
+                script.count(opening),
+                script.count(closing),
+                f"unbalanced {opening}{closing} in the verifier script",
+            )
+
+    def test_script_enforces_owner_protected_dacl_and_one_full_control_ace(self):
+        script = wtr._ACL_VERIFY_SCRIPT
+        expected = {
+            "reads the configured root literally": (
+                "Get-Acl -LiteralPath $env:PANDRATOR_PYTEST_ACL_ROOT"
+            ),
+            "compares against the caller's SID": (
+                "WindowsIdentity]::GetCurrent().User.Value"
+            ),
+            "reads the owner as a SID": (
+                "$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value"
+            ),
+            "ignores inherited rules": "$acl.GetAccessRules($true, $false",
+            "requires a protected DACL": "$acl.AreAccessRulesProtected",
+            "requires exactly one explicit rule": "($rules.Count -eq 1)",
+            "requires an allow rule": (
+                "[System.Security.AccessControl.AccessControlType]::Allow"
+            ),
+            "checks the rule's identity": "$rule.IdentityReference.Value -eq $current",
+            "requires full control": (
+                "[System.Security.AccessControl.FileSystemRights]::FullControl"
+            ),
+            "compares the full control mask": "([int]$rule.FileSystemRights -band $full) -eq $full",
+        }
+        for description, fragment in expected.items():
+            self.assertIn(fragment, script, description)
+
+    def test_accepts_zero_exit_and_passes_the_root_and_timeout(self):
+        powershell, error = self.verify(code=0)
+        self.assertIsNone(error)
+        self.assertEqual(
+            powershell.call_args.args[0],
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                wtr._ACL_VERIFY_SCRIPT,
+            ],
+        )
+        kwargs = powershell.call_args.kwargs
+        self.assertEqual(kwargs["env"]["PANDRATOR_PYTEST_ACL_ROOT"], str(self.root))
+        self.assertEqual(kwargs["timeout"], 20)
+        self.assertTrue(kwargs["capture_output"])
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["errors"], "replace")
+
+    def test_reports_the_powershell_reason_and_stays_fail_closed(self):
+        powershell, error = self.verify(
+            code=1,
+            stderr=(
+                "At line:8 char:1\n"
+                "ParserError: You must provide a value expression following the "
+                "'-and' operator.\n"
+            ),
+        )
+        self.assertIsNotNone(error)
+        self.assertIn("unverified ownership or ACL", str(error))
+        self.assertIn("ParserError", str(error))
+        self.assertNotIn("\n", str(error), "diagnostics must be collapsed to one line")
+        self.assertEqual(len(powershell.call_args_list), 1, "verification never mutates the root")
+        self.assertEqual(list(self.root.iterdir()), [], "verification must not write files")
+
+    def test_refusal_is_short_enough_for_a_pytest_warning(self):
+        _, error = self.verify(code=3, stdout="x" * 5_000)
+        self.assertIsNotNone(error)
+        message = str(error)
+        self.assertIn("unverified ownership or ACL", message)
+        self.assertLess(len(message), wtr.ACL_DIAGNOSTIC_LIMIT + 200)
+        self.assertIn("...", message)
+        self.assertNotIn("x" * 1_000, message)
+
+    def test_nonzero_result_fails_closed_without_poisoning_the_fallback(self):
+        # A refused verification must raise the type conftest turns into pytest's
+        # default temp root, leave the root untouched, and still accept it once
+        # PowerShell reports a valid descriptor.
+        powershell, error = self.verify(code=1, stderr="denied")
+        self.assertIsNotNone(error)
+        self.assertIn("unverified ownership or ACL", str(error))
+        self.assertEqual(list(self.root.iterdir()), [])
+        powershell, error = self.verify(code=0)
+        self.assertIsNone(error, "a later successful check must still accept the root")
+
+    def test_empty_diagnostics_keep_the_generic_failure(self):
+        _, error = self.verify(code=3)
+        self.assertIsNotNone(error)
+        self.assertIn("unverified ownership or ACL; use pytest's default temp root", str(error))
+
+    def test_unreadable_output_is_replaced_instead_of_crashing(self):
+        # text=True with errors="replace" is a mock check: decoding is exercised
+        # by the real powershell.exe process, not by SimpleNamespace output.
+        powershell, error = self.verify(code=1, stderr="denied")
+        self.assertIsNotNone(error)
+        self.assertEqual(
+            powershell.call_args.kwargs["errors"],
+            "replace",
+            "localized PowerShell errors must not escape as UnicodeDecodeError",
+        )
+
+    def test_does_nothing_off_windows(self):
+        with (
+            patch.object(wtr.sys, "platform", "linux"),
+            patch.object(wtr.subprocess, "run") as powershell,
+        ):
+            wtr._verify_private_root(self.root)
+        powershell.assert_not_called()
+
+
 @unittest.skipUnless(sys.platform == "win32", "Windows file sharing and ACL behaviour")
 class WindowsOnlyTests(unittest.TestCase):
     def setUp(self):

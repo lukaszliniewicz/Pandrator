@@ -99,6 +99,15 @@ async function openTranscribeSettings(
   stageTitle = 'Transcribe'
 ) {
   await page.goto(`/sessions/${sessionId}`);
+  // The workflow card can be visible in server-rendered HTML before Svelte
+  // attaches the Settings handler or finishes its initial workflow fetch.
+  // Do not click the SSR button and silently lose the interaction.
+  const hydrationTimeout = process.platform === 'win32' ? 45_000 : 20_000;
+  await expect(page.getByTestId('session-workflow-root')).toHaveAttribute(
+    'data-initialized',
+    'true',
+    { timeout: hydrationTimeout }
+  );
   const card = page
     .getByRole('heading', { name: stageTitle, exact: true })
     .locator('xpath=ancestor::article');
