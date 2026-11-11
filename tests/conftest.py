@@ -14,7 +14,19 @@ if repo_root_str not in sys.path:
     sys.path.insert(0, repo_root_str)
 
 
-def _retention_count(config: pytest.Config) -> int:
+def _retention_keep(config: pytest.Config) -> int:
+    """The number of finished runs pytest itself would keep under this config.
+
+    pytest's tmpdir plugin uses keep=0 for the ``none`` policy and
+    ``tmp_path_retention_count`` otherwise; a value it cannot parse is left to
+    pytest to reject, so fall back to the default here instead of crashing first.
+    """
+    try:
+        policy = config.getini("tmp_path_retention_policy")
+    except (TypeError, ValueError):
+        policy = "all"
+    if policy == "none":
+        return 0
     try:
         return max(0, int(config.getini("tmp_path_retention_count")))
     except (TypeError, ValueError):
@@ -28,7 +40,7 @@ def pytest_configure(config: pytest.Config) -> None:
     tryfirst: pytest's tmpdir plugin reads ``option.basetemp`` in its own pytest_configure.
     """
     try:
-        run = make_run_dir(explicit_basetemp=config.option.basetemp, keep=_retention_count(config))
+        run = make_run_dir(explicit_basetemp=config.option.basetemp, keep=_retention_keep(config))
     except ShortRootUnavailable as error:
         config.issue_config_time_warning(
             pytest.PytestConfigWarning(
