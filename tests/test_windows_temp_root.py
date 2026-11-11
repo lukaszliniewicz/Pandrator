@@ -207,11 +207,15 @@ class WindowsTempRootTests(unittest.TestCase):
         outside.mkdir()
         (outside / "keep.txt").write_text("not ours")
         (self.root / f"abcd{wtr.LOCK_SUFFIX}").write_text("")
+        (self.root / f"abcd{wtr.RUN_MARKER_SUFFIX}").write_text(wtr.RUN_MARKER_TEXT)
         try:
             (self.root / "abcd").symlink_to(outside, target_is_directory=True)
         except (OSError, NotImplementedError):
             self.skipTest("this host cannot create directory symlinks")
-        self.run_dir(keep=0)
+        self.assertIn("abcd", wtr._owned_run_names(self.root))
+        with patch.object(wtr, "remove_tree", side_effect=AssertionError("pruned a symlink")):
+            self.run_dir(keep=0)
+        self.assertTrue((self.root / "abcd").is_symlink())
         self.assertTrue((outside / "keep.txt").exists())
 
     def test_pruning_is_refused_on_an_unmarked_root(self):
@@ -946,8 +950,14 @@ def test_session_basetemp_is_under_the_short_root(request, tmp_path_factory):
     if "--basetemp" in given or os.environ.get("PYTEST_DEBUG_TEMPROOT"):
         pytest.skip("an explicit temp root was given")
     root = wtr.short_root_path(tempfile.gettempdir()).resolve()
+    basetemp = tmp_path_factory.getbasetemp().resolve()
+    # A local machine may legitimately fall back to pytest's default root,
+    # for example when a foreign, unmarked C:\tmp\pt is already present.
+    # In CI that is a regression, not a reason to silently skip this check.
+    if root not in basetemp.parents and not os.environ.get("CI"):
+        pytest.skip("the short root was unavailable; pytest is using its default temp root")
     # Under xdist a worker's basetemp is <run>/popen-gwN, so check ancestry.
-    assert root in tmp_path_factory.getbasetemp().parents
+    assert root in basetemp.parents
 
 
 class PytestConfigureHookTests(unittest.TestCase):

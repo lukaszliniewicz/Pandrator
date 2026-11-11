@@ -888,12 +888,23 @@
       );
       if (stage) await openSettings(stage);
     }
-    initialWorkflowReady = true;
+    if (scope !== 'language') initialWorkflowReady = true;
   });
 
   $effect(() => {
-    if (scope === 'language' && active)
-      void untrack(() => load({ initial: true }));
+    if (scope !== 'language') return;
+    if (!active) {
+      initialWorkflowReady = false;
+      return;
+    }
+    initialWorkflowReady = false;
+    let superseded = false;
+    void untrack(() => load({ initial: true })).then(() => {
+      if (!superseded) initialWorkflowReady = true;
+    });
+    return () => {
+      superseded = true;
+    };
   });
 
   $effect(() => {
