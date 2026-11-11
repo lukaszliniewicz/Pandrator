@@ -712,8 +712,13 @@ def freeze_cast_snapshot(
     _missing_selection: MissingSpeechSelection | None = None,
     _root_binding: RootSpeechBinding | None = None,
     _carried_snapshot: Mapping[str, Any] | None = None,
+    _freeze_segment_ids: Collection[str] | None = None,
 ) -> None:
-    """Freeze all entries, resolving voices only for requested validation IDs."""
+    """Freeze all entries, resolving voices only for requested validation IDs.
+
+    ``_freeze_segment_ids`` limits the freeze itself to those segments (a page
+    listing); the default freezes every non-removed segment of the revision.
+    """
     from .generation_rendering import build_render_parts
 
     if _service_config_cache is None:
@@ -750,12 +755,13 @@ def freeze_cast_snapshot(
     # Validated characters and cast of the controls shared by those segments.
     validated_controls: dict[str, tuple[object, Any]] = {}
 
-    for segment in session.scalars(
-        select(m.GenerationSegment).where(
-            m.GenerationSegment.plan_revision_id == revision_id,
-            m.GenerationSegment.removed.is_(False),
-        )
-    ):
+    segment_query = select(m.GenerationSegment).where(
+        m.GenerationSegment.plan_revision_id == revision_id,
+        m.GenerationSegment.removed.is_(False),
+    )
+    if _freeze_segment_ids is not None:
+        segment_query = segment_query.where(m.GenerationSegment.id.in_(list(_freeze_segment_ids)))
+    for segment in session.scalars(segment_query):
         carried_entry = None
         if _carried_snapshot is not None:
             if (cast_snapshot_version(_carried_snapshot) != 2

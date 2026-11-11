@@ -23,6 +23,15 @@ stores one copy of the controls per segment and keeps the deep copies it needs.
 entry: the reference pass (no memos, controls copied) validates the fixture's
 three characters 14 times over 12 segments (42 calls), and the identity pass
 validates them once (3 calls), also for 6.
+
+Listing a page of segments paid for the whole plan.  Measured on the unchanged
+code through ``services.generation.list_segments`` on the 12-segment plan, with
+statements, ``build_render_parts`` calls and segments the cast freeze visited:
+(a) ``limit=1, fields=["id"]`` made 70, 13 and 12; (b) ``limit=1`` made 74, 13
+and 12; (c) the default page of all 12 made 100, 24 and 12.  The identity pass
+ran for every listing and froze the cast over every segment.  Now (a) makes 24,
+0 and 0 (no identity pass), (b) makes 46, 2 and 1, and (c) is unchanged at 100,
+24 and 12.
 """
 
 from __future__ import annotations
@@ -55,11 +64,13 @@ from pandrator.web import models as m
 from pandrator.web.access.contracts import AccessDenied
 from pandrator.web.accounts.execution_actor import execution_actor_scope
 from pandrator.web.generation_audio_identity import (
+    IDENTITY_KEY,
     AudioIdentityContext,
     _hash,
     plan_audio_identities,
 )
 from pandrator.web.generation_performance_snapshot import performance_runtime_settings
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.speech_plan_workspace import freeze_speech_snapshot
 from tests.test_cast_retention_integration import cast_project as cast_project  # noqa: F401
 from tests.test_evidence_access_routes import body, headers
@@ -328,6 +339,55 @@ def work_pass(plan: Plan, actor, session_factory, segment_ids=None) -> Work:
     return work
 
 
+@dataclass
+class Listing:
+    """What one ``list_segments`` call returned and the work it made."""
+
+    payload: dict[str, Any]
+    statements: int
+    render_parts: int
+    # Segments each cast freeze visited (its entries), one number per freeze.
+    freezes: list[int]
+    for_segment_calls: int
+
+
+def measured_listing(plan: Plan, **kwargs: Any) -> Listing:
+    statements: list[str] = []
+    freezes: list[int] = []
+    for_segment_calls = [0]
+
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    real_freeze = cast_runtime.freeze_cast_snapshot
+    real_for_segment = AudioIdentityContext.for_segment
+
+    def counting_freeze(session, revision_id, snapshot, *args, **freeze_kwargs):
+        real_freeze(session, revision_id, snapshot, *args, **freeze_kwargs)
+        frozen = snapshot.get("generation_control_snapshot") or {}
+        freezes.append(len(frozen.get("segments") or {}))
+
+    def counting_for_segment(self, segment):
+        for_segment_calls[0] += 1
+        return real_for_segment(self, segment)
+
+    engine = plan.c.r.f.case.database.engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        with ExitStack() as stack:
+            parts = stack.enter_context(patch.object(
+                generation_rendering, "build_render_parts", wraps=_build_render_parts,
+            ))
+            stack.enter_context(patch.object(cast_runtime, "freeze_cast_snapshot", counting_freeze))
+            stack.enter_context(
+                patch.object(AudioIdentityContext, "for_segment", counting_for_segment)
+            )
+            payload = plan.c.r.f.services.generation.list_segments(plan.c.p.source["id"], **kwargs)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    return Listing(payload, len(statements), parts.call_count, freezes, for_segment_calls[0])
+
+
 def _factory(plan: Plan) -> Callable:
     return plan.c.r.f.case.database.immediate_session
 
@@ -398,6 +458,217 @@ def test_deleted_pin_fails_identically_for_every_user_of_it(varied_plan):
     for segment_id, kind in zip(plan.ids, KINDS, strict=True):
         if kind in {"narration", "wilma", "uncast"}:
             assert "performance_error" not in one_at_a_time[segment_id]
+
+
+def _live_snapshot(plan: Plan, actor) -> dict[str, Any]:
+    """The unfrozen settings a listing resolves, so identity passes freeze the cast."""
+    with execution_actor_scope(actor):
+        snapshot, _digest = plan.c.r.f.services.workspace_settings.resolve(
+            plan.c.p.source["id"], sections=["tts", "audio"],
+        )
+    assert "generation_control_snapshot" not in snapshot
+    return snapshot
+
+
+def _context_identities(plan: Plan, actor, ids, *, scope) -> tuple[dict, AudioIdentityContext]:
+    """Identities of ``ids`` from a fresh context with ``scope`` as its cast scope."""
+    snapshot = copy.deepcopy(_live_snapshot(plan, actor))
+    with execution_actor_scope(actor), _factory(plan)() as session:
+        context = AudioIdentityContext(session, snapshot, _cast_segment_ids=scope)
+        identities = {
+            segment_id: context.for_segment(session.get_one(m.GenerationSegment, segment_id))
+            for segment_id in ids
+        }
+    return identities, context
+
+
+def _whole_plan_identities(plan: Plan, actor) -> dict[str, dict[str, Any]]:
+    identities, _context = _context_identities(plan, actor, plan.ids, scope=None)
+    return identities
+
+
+@contextmanager
+def _whole_plan_scope():
+    """Listings as they were: every identity pass freezes the whole plan."""
+    real_init = AudioIdentityContext.__init__
+
+    def init(self, *args, _cast_segment_ids=None, **kwargs):
+        real_init(self, *args, _cast_segment_ids=None, **kwargs)
+
+    with patch.object(AudioIdentityContext, "__init__", init):
+        yield
+
+
+def _add_matching_takes(plan: Plan, actor) -> None:
+    """Complete every segment with a take whose recorded identity is today's."""
+    identities = _whole_plan_identities(plan, actor)
+    sid = plan.c.p.source["id"]
+    with plan.c.r.f.case.database.immediate_session() as session:
+        ownership = resolve_artifact_ownership(session, session_id=sid)
+        for segment_id in plan.ids:
+            artifact = m.Artifact(
+                session_id=sid, workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id, kind="audio", role="generation_take",
+                relative_path=f"test/{segment_id}.wav", content_hash="a" * 64,
+                metadata_json={IDENTITY_KEY: identities[segment_id]},
+            )
+            session.add(artifact)
+            session.flush()
+            session.get_one(m.GenerationSegment, segment_id).status = "completed"
+            session.add(m.AudioTake(
+                generation_segment_id=segment_id, artifact_id=artifact.id,
+                status="completed", is_active=True, duration_ms=100,
+            ))
+
+
+def _reasons(payload: dict[str, Any]) -> list[Any]:
+    return [item["audio_reuse_reason"] for item in payload["items"]]
+
+
+def test_scoped_identities_equal_the_whole_plan_identities(varied_plan):
+    plan, actor = varied_plan
+    whole = _whole_plan_identities(plan, actor)
+    assert all("performance_error" not in value for value in whole.values()), whole
+    assert len({value["settings_hash"] for value in whole.values()}) >= 3
+    pages = [[segment_id] for segment_id in plan.ids]
+    pages += [plan.ids[start:start + 6] for start in range(6)]
+    for page in pages:
+        scoped, context = _context_identities(plan, actor, page, scope=page)
+        assert scoped == {segment_id: whole[segment_id] for segment_id in page}
+        # The freeze really covered the page and nothing else.
+        [(pinned, _contexts)] = context.performance_states.values()
+        assert set(pinned["generation_control_snapshot"]["segments"]) == set(page)
+
+
+@pytest.mark.parametrize("view", ["full", "compact"])
+def test_default_and_compact_listings_equal_the_whole_plan_listing(varied_plan, view):
+    plan, actor = varied_plan
+    _add_matching_takes(plan, actor)
+    service = plan.c.r.f.services.generation
+    sid = plan.c.p.source["id"]
+    pages = [*((index, 1) for index in range(len(KINDS))), (0, 50),
+             *((index, 6) for index in range(6))]
+    for cursor, limit in pages:
+        listing = service.list_segments(sid, cursor=cursor, limit=limit, view=view)
+        with _whole_plan_scope():
+            reference = service.list_segments(sid, cursor=cursor, limit=limit, view=view)
+        assert listing == reference
+        assert set(_reasons(listing)) == {"reusable"}, listing["items"]
+    # A reuse field alone is answered the same way.
+    fields = ["id", "ordinal", "audio_reuse_reason", "has_reusable_take"]
+    listing = service.list_segments(sid, cursor=3, limit=4, fields=fields)
+    with _whole_plan_scope():
+        assert listing == service.list_segments(sid, cursor=3, limit=4, fields=fields)
+    assert [item["has_reusable_take"] for item in listing["items"]] == [True] * 4
+
+
+def test_a_page_without_a_reuse_field_runs_no_identity_pass(varied_plan):
+    plan, _actor = varied_plan
+    full = measured_listing(plan, limit=100)
+    by_id = {item["id"]: item for item in full.payload["items"]}
+    for kwargs in (
+        {"limit": 1, "fields": ["id"]},
+        {"limit": 6, "fields": ["id", "ordinal", "status"], "view": "provenance"},
+        {"limit": 6, "view": "provenance"},
+    ):
+        listing = measured_listing(plan, **kwargs)
+        assert listing.for_segment_calls == 0, kwargs
+        assert listing.freezes == [], kwargs
+        assert listing.render_parts == 0, kwargs
+        assert listing.statements < full.statements, kwargs
+        # The same rows as the full listing holds for them.
+        fields = listing.payload["fields"]
+        assert listing.payload["items"]
+        for item in listing.payload["items"]:
+            assert item == {key: by_id[item["id"]][key] for key in fields}, kwargs
+
+
+@pytest.mark.parametrize("field", ["audio_reuse_reason", "has_reusable_take"])
+def test_a_reuse_field_runs_the_pass_for_the_page_only(varied_plan, field):
+    plan, _actor = varied_plan
+    listing = measured_listing(plan, limit=2, cursor=3, fields=["id", field])
+    assert listing.for_segment_calls == 2
+    assert listing.freezes == [2]
+    assert field in listing.payload["items"][0]
+
+
+def test_a_single_row_page_freezes_one_segment(varied_plan):
+    plan, _actor = varied_plan
+    full = measured_listing(plan, limit=100)
+    assert full.freezes == [len(KINDS)]
+    assert full.for_segment_calls == len(KINDS)
+    for view in ("full", "compact"):
+        page = measured_listing(plan, limit=1, view=view)
+        assert page.freezes == [1]
+        assert page.for_segment_calls == 1
+        assert page.render_parts < full.render_parts
+        assert page.statements < full.statements
+        with _whole_plan_scope():
+            whole = measured_listing(plan, limit=1, view=view)
+        assert whole.freezes == [len(KINDS)]
+        assert whole.payload == page.payload
+        assert page.render_parts < whole.render_parts
+    id_only = measured_listing(plan, limit=1, fields=["id"])
+    assert id_only.statements < measured_listing(plan, limit=1).statements
+
+
+def test_a_segment_outside_the_cast_scope_is_a_programming_error(varied_plan):
+    plan, actor = varied_plan
+    snapshot = copy.deepcopy(_live_snapshot(plan, actor))
+    with execution_actor_scope(actor), _factory(plan)() as session:
+        context = AudioIdentityContext(session, snapshot, _cast_segment_ids=plan.ids[:2])
+        assert context.for_segment(session.get_one(m.GenerationSegment, plan.ids[0]))
+        with pytest.raises(RuntimeError, match="cast scope"):
+            context.for_segment(session.get_one(m.GenerationSegment, plan.ids[2]))
+
+
+def test_a_cast_voice_failing_elsewhere_does_not_mark_the_page_unknown(varied_plan):
+    plan, actor = varied_plan
+    _add_matching_takes(plan, actor)
+    service = plan.c.r.f.services.generation
+    sid = plan.c.p.source["id"]
+    with plan.c.r.f.case.database.immediate_session() as session:
+        session.get_one(m.Artifact, plan.c.fred.pin["artifact_id"]).state = "deleted"
+    users = {index for index, kind in enumerate(KINDS) if kind in {"fred", "both", "german"}}
+    for cursor in range(len(KINDS)):
+        page = service.list_segments(sid, cursor=cursor, limit=1)
+        with _whole_plan_scope():
+            reference = service.list_segments(sid, cursor=cursor, limit=1)
+        # The whole-plan freeze fails on the one deleted pin, so every row was unknown.
+        assert _reasons(reference) == ["audio_identity_unknown"]
+        if cursor in users:
+            assert page == reference
+        else:
+            assert _reasons(page) == ["reusable"], (cursor, KINDS[cursor])
+            assert page["items"][0]["has_reusable_take"] is True
+    # A page that holds a failing segment reports every one of its rows unknown.
+    page = service.list_segments(sid, cursor=0, limit=6)
+    assert set(_reasons(page)) == {"audio_identity_unknown"}
+
+
+def test_a_removed_row_never_marks_the_rest_of_its_page_unknown(varied_plan):
+    plan, actor = varied_plan
+    _add_matching_takes(plan, actor)
+    service = plan.c.r.f.services.generation
+    sid = plan.c.p.source["id"]
+    removed = plan.ids[1]
+    with plan.c.r.f.case.database.immediate_session() as session:
+        session.get_one(m.GenerationSegment, removed).removed = True
+    for cursor, limit in ((1, 1), (0, 3), (0, 50)):
+        for view in ("full", "compact"):
+            page = service.list_segments(sid, cursor=cursor, limit=limit, view=view)
+            with _whole_plan_scope():
+                reference = service.list_segments(sid, cursor=cursor, limit=limit, view=view)
+            assert page == reference, (cursor, limit, view)
+            assert removed in {item["id"] for item in page["items"]}
+            # The removed row's failure stays its own: every other row is reusable.
+            reasons = {item["id"]: item["audio_reuse_reason"] for item in page["items"]}
+            assert reasons.pop(removed) == "audio_identity_unknown"
+            assert set(reasons.values()) <= {"reusable"}, reasons
+    # Removed rows were never frozen, so a page of only that row freezes nothing.
+    listing = measured_listing(plan, cursor=1, limit=1)
+    assert listing.freezes == [0]
+    assert listing.for_segment_calls == 1
 
 
 FRED_SLOT = 'cast:["characters","fred"]'

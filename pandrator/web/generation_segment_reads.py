@@ -726,9 +726,20 @@ class GenerationSegmentReader:
                 take_reuse_reason,
             )
 
+            # Only a response that carries a reuse field pays for the identity
+            # pass; project_segments drops the fields otherwise. The pass freezes
+            # the cast for this page's segments, not the whole plan.
+            needs_reuse = (
+                fields is None and view in {"full", "compact"}
+            ) or (
+                fields is not None
+                and bool({"audio_reuse_reason", "has_reusable_take"} & set(fields))
+            )
             audio_identity = AudioIdentityContext(
                 session, identity_snapshot, _segment_references=segment_reference_index,
-            )
+                _cast_segment_ids=[row.id for row in rows],
+            ) if needs_reuse else None
+            reuse_inputs: list[tuple[GenerationSegment, dict[str, Any], Any, Any]] = []
             for row, item in zip(rows, items, strict=True):
                 active_take = next((take for take in takes_by_segment.get(row.id, [])
                                     if take.id == pinned.get(row.id)), None) if pinned is not None else next(
@@ -748,9 +759,17 @@ class GenerationSegmentReader:
                     and active_take.status in {"completed", "stale"}
                     else None
                 )
-                reason = take_reuse_reason(row, active_take, artifact, audio_identity.for_segment(row))
-                item["audio_reuse_reason"] = reason
-                item["has_reusable_take"] = reason == "reusable"
+                reuse_inputs.append((row, item, active_take, artifact))
+            if audio_identity is not None:
+                # A removed row has no frozen cast entry, so its identity fails,
+                # and the context keeps that failure for the whole revision.
+                # Work removed rows out last so they cannot mark later rows unknown.
+                for row, item, active_take, artifact in sorted(
+                    reuse_inputs, key=lambda inputs: bool(inputs[0].removed),
+                ):
+                    reason = take_reuse_reason(row, active_take, artifact, audio_identity.for_segment(row))
+                    item["audio_reuse_reason"] = reason
+                    item["has_reusable_take"] = reason == "reusable"
             total = int(
                 session.scalar(
                     select(func.count()).select_from(GenerationSegment).where(*filters)
