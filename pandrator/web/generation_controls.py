@@ -491,16 +491,30 @@ def resolve_cast_voice(
     dialogue: bool = False,
     span_voice: str | None = None,
     source_speaker: str | None = None,
+    _validated: dict[str, tuple[object, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Resolve one span to the most specific configured binding."""
+    """Resolve one span to the most specific configured binding.
+
+    ``_validated`` is a caller-owned memo that remembers the validated
+    characters and cast of the last ``controls`` it saw, matched by object
+    identity. Only a caller that never changes those objects passes it. A
+    failed validation is never remembered.
+    """
 
     if not isinstance(controls, Mapping):
         raise ValueError("Generation controls must be an object.")
     category = str(voice_category or "").strip().lower()
     if category not in _VOICE_CATEGORIES:
         raise ValueError(f"Unsupported voice category: {voice_category}")
-    characters = _characters(controls.get("characters", []))
-    character_by_id = {str(item["id"]): item for item in characters}
+    raw_characters = controls.get("characters", [])
+    remembered = _validated.get("characters") if _validated is not None else None
+    if remembered is not None and remembered[0] is raw_characters:
+        character_by_id = remembered[1]
+    else:
+        characters = _characters(raw_characters)
+        character_by_id = {str(item["id"]): item for item in characters}
+        if _validated is not None:
+            _validated["characters"] = (raw_characters, character_by_id)
     normalized_speaker = speaker_id.strip() if speaker_id is not None else None
     if normalized_speaker and normalized_speaker not in character_by_id:
         raise ValueError(f"Unknown character ID: {normalized_speaker}")
@@ -509,7 +523,14 @@ def resolve_cast_voice(
             character_by_id[normalized_speaker].get("voice_category") or category
         )
 
-    cast = _cast_model(controls.get("cast", {}))
+    raw_cast = controls.get("cast", {})
+    remembered = _validated.get("cast") if _validated is not None else None
+    if remembered is not None and remembered[0] is raw_cast:
+        cast = remembered[1]
+    else:
+        cast = _cast_model(raw_cast)
+        if _validated is not None:
+            _validated["cast"] = (raw_cast, cast)
     selected: VoiceBinding | None = None
     source = "inherited"
     slot_key: str | None = None

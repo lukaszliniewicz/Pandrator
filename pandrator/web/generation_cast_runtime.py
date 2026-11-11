@@ -743,6 +743,12 @@ def freeze_cast_snapshot(
     reference_index = _voice_reference_index
     reference_index_denied = False
     validate_ids = set(validate_segment_ids) if validate_segment_ids is not None else None
+    # One private copy shared by every segment without its own controls. Only
+    # top-level keys are set on a segment's scoped controls, so each segment
+    # takes a shallow copy of it; every stored copy is still a deep copy.
+    shared_controls = deepcopy(controls)
+    # Validated characters and cast of the controls shared by those segments.
+    validated_controls: dict[str, tuple[object, Any]] = {}
 
     for segment in session.scalars(
         select(m.GenerationSegment).where(
@@ -758,13 +764,17 @@ def freeze_cast_snapshot(
             carried_entry = (_carried_snapshot.get("segments") or {}).get(segment.id)
             if carried_entry is None or carried_entry.get("text_hash") != content_hash(segment.optimized_text or segment.text):
                 raise ValueError("Carried cast text changed after freezing.")
-        scoped_controls = deepcopy((controls_by_segment or {}).get(segment.id, controls))
+        scoped_controls: Any
         if carried_entry is not None:
             assert _carried_snapshot is not None
             scoped_controls = deepcopy(carried_entry.get("controls", _carried_snapshot["controls"]))
             scoped_controls["_retained_cast_resolutions"] = segment_cast_snapshot(
                 _carried_snapshot, segment.id,
             )["resolved_bindings"]
+        elif controls_by_segment is not None and segment.id in controls_by_segment:
+            scoped_controls = deepcopy(controls_by_segment[segment.id])
+        else:
+            scoped_controls = dict(shared_controls)
         text = segment.optimized_text or segment.text
         record = (performance.get(segment.id) or {}).get("annotation") or {}
         xml = record.get("_speech_xml") or (segment.speech_plan_json or {}).get(
@@ -1009,6 +1019,8 @@ def freeze_cast_snapshot(
                 apply_binding_at_slot=apply_at_slot,
                 _settings_copy=_settings_copy,
                 _bind_base=_root_binding is not None,
+                _read_only_controls=True,
+                _validated_controls=validated_controls,
             )
         except (ValueError, AccessDenied, WorkspaceNotFound):
             if requested:
@@ -1036,6 +1048,8 @@ def segment_render_parts(
     *, _settings_copy=None,
     _validate_binding: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], None] | None = None,
     _service_config_cache=None,
+    _read_only_controls: bool = False,
+    _validated_controls: dict[str, tuple[object, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     from .generation_rendering import build_render_parts
 
@@ -1087,6 +1101,8 @@ def segment_render_parts(
                 _service_config_cache=_service_config_cache,
             ),
             _settings_copy=_settings_copy,
+            _read_only_controls=_read_only_controls,
+            _validated_controls=_validated_controls,
         )
     def apply_at_slot(binding, base, slot_key):
         if binding is not None and _validate_binding is not None:
@@ -1109,6 +1125,8 @@ def segment_render_parts(
         apply_binding_at_slot=apply_at_slot,
         _settings_copy=_settings_copy,
         _bind_base=True,
+        _read_only_controls=_read_only_controls,
+        _validated_controls=_validated_controls,
     )
 
 

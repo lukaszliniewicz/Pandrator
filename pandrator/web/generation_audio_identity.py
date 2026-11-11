@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.speech_performance import copy_record
 from pandrator.runtime import DataPaths
 
 from .access.contracts import AccessDenied, WorkspaceNotFound
@@ -325,6 +326,8 @@ class AudioIdentityContext:
         # never recorded, so it runs again and raises as before.
         self._retained_proofs: set[tuple[Any, ...]] = set()
         self._material_settings_cache: dict[str, dict[str, Any]] = {}
+        # Validated characters and cast of the pinned controls, for this pass.
+        self._validated_controls: dict[str, tuple[object, Any]] = {}
         self._voice_reference_cache: dict[str, Any] = {}
         self._service_id_cache: dict[str, str] = {}
         self._inspection_catalogue_copies: dict[int, Any] = {}
@@ -484,8 +487,8 @@ class AudioIdentityContext:
         result = self._material_settings_cache.get(key)
         if result is None:
             result = _material_settings({"tts": settings}, self._service_config_cache)
-            self._material_settings_cache[key] = deepcopy(result)
-        return deepcopy(result)
+            self._material_settings_cache[key] = copy_record(result)
+        return copy_record(result)
 
     def _copy_inspection_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
         """Own catalogue copies once for transient, read-only identity planning.
@@ -504,7 +507,9 @@ class AudioIdentityContext:
                 self._inspection_catalogue_sources[source_id] = source
                 self._inspection_catalogue_copies[source_id] = owned
                 self._inspection_catalogue_copies[id(owned)] = owned
-        return deepcopy(settings, dict(self._inspection_catalogue_copies))
+        # The same result as deepcopy(settings, memo), without a call for each
+        # of the many immutable top-level values.
+        return copy_record(settings, dict(self._inspection_catalogue_copies))
 
     def _with_performance(
         self, segment: GenerationSegment, identity: dict[str, Any], settings: dict[str, Any]
@@ -568,6 +573,9 @@ class AudioIdentityContext:
                     _settings_copy=self._copy_inspection_settings,
                     _validate_binding=validate_binding,
                     _service_config_cache=self._service_config_cache,
+                    # The pinned snapshot is shared by every segment; only read it.
+                    _read_only_controls=True,
+                    _validated_controls=self._validated_controls,
                 )
                 requests = []
                 has_source_identity = False

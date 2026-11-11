@@ -83,3 +83,55 @@ def test_default_public_planner_keeps_nested_catalogues_and_parts_independent():
     for key in ("provider_configs", "service_configs", "mutable"):
         assert second[key] == expected[key]
     assert settings == expected
+
+
+def _settings_with_aliases():
+    shared = {"values": ["one", ("two", [3])]}
+    return {
+        "name": "voice",
+        "count": 3,
+        "enabled": True,
+        "ratio": 0.5,
+        "nothing": None,
+        "provider_configs": [{"id": "test", "models": [{"id": "model"}]}],
+        "service_configs": {"nested": {"voices": ["narrator"]}},
+        "first": shared,
+        "second": shared,
+        "pair": ("a", ["b"]),
+    }
+
+
+def test_inspection_copy_equals_a_deep_copy_and_keeps_aliasing_and_independence():
+    context = object.__new__(AudioIdentityContext)
+    context._inspection_catalogue_copies = {}
+    context._inspection_catalogue_sources = {}
+    settings = _settings_with_aliases()
+    expected = deepcopy(settings)
+    copied = context._copy_inspection_settings(settings)
+    assert copied == expected == settings
+    assert type(copied) is dict
+    # Aliasing inside the settings is kept, as deepcopy keeps it.
+    assert copied["first"] is copied["second"] and copied["first"] is not settings["first"]
+    assert copied["pair"] is not settings["pair"] and copied["pair"][1] is not settings["pair"][1]
+    copied["first"]["values"].append("changed")
+    copied["pair"][1].append("changed")
+    again = context._copy_inspection_settings(settings)
+    assert settings == expected and again == expected
+    assert again["first"] is not copied["first"]
+
+
+def test_copy_record_equals_deepcopy_without_sharing_containers():
+    from collections import OrderedDict
+
+    from pandrator.logic.speech_performance import copy_record
+
+    record = _settings_with_aliases()
+    expected = deepcopy(record)
+    copied = copy_record(record)
+    assert copied == expected and copied is not record
+    assert copied["first"] is copied["second"] and copied["first"] is not record["first"]
+    copied["provider_configs"][0]["id"] = "changed"
+    assert record == expected
+    ordered = OrderedDict(record)
+    assert type(copy_record(ordered)) is OrderedDict
+    assert copy_record(None) is None

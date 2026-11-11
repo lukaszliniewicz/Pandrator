@@ -9,22 +9,49 @@ request's cache) and re-proved its retained pin against the database
 against 139 for 6, so statements grew by 132 for 6 more segments.  After the
 change the same pass makes 1 build and 75 statements against 63 for 6.  No
 wall-clock assertions: the tests count builds and statements.
+
+The pass also repeated language and controls work per segment.  Measured with
+``_count_work`` on the code before a pass remembered language support and read
+the controls in place, the identity pass over 12 segments made 14
+``package_metadata`` calls, 14 language-support lookups that reach
+``_selected_endpoint`` and 12 deep copies of a controls mapping (7, 7 and 6 for
+6 segments).  The cast freeze over the same 12 segments made 12, 12 and 25 (49
+when carrying a snapshot).  Now the identity pass makes 1, 1 and 0 for 6 and
+for 12 segments, and the fresh freeze makes 1, 1 and 2; a carried freeze still
+stores one copy of the controls per segment and keeps the deep copies it needs.
+``character_validations`` counts ``_character_model`` calls, one per character
+entry: the reference pass (no memos, controls copied) validates the fixture's
+three characters 14 times over 12 segments (42 calls), and the identity pass
+validates them once (3 calls), also for 6.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextlib import ExitStack
+import builtins
+import copy
+from collections.abc import Callable, Mapping
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy import event
 
-from pandrator.logic import speech_performance, tts_service_catalogue
+from pandrator.logic import (
+    audio_cpp_catalogue,
+    speech_performance,
+    tts_language_preflight,
+    tts_service_catalogue,
+)
+from pandrator.web import (
+    generation_audio_identity,
+    generation_controls,
+    generation_rendering,
+    speech_inputs,
+)
 from pandrator.web import generation_cast_runtime as cast_runtime
 from pandrator.web import models as m
-from pandrator.web import speech_inputs
 from pandrator.web.access.contracts import AccessDenied
 from pandrator.web.accounts.execution_actor import execution_actor_scope
 from pandrator.web.generation_audio_identity import (
@@ -140,8 +167,61 @@ def _without_proof_memo(session, session_id, binding, settings, resolved, *args,
 _validate = cast_runtime.validate_retained_cast_resolution
 
 
+_language_support = tts_language_preflight.resolve_tts_language_support
+_build_render_parts = generation_rendering.build_render_parts
+
+
+def _language_support_without_memo(settings, endpoint=None, _service_config_cache=None):
+    """Language support as it was resolved before a pass remembered it."""
+    return _language_support(settings, endpoint)
+
+
+def _build_render_parts_copying_controls(*args, **kwargs):
+    """Render parts as they were planned before controls were read in place."""
+    kwargs["_read_only_controls"] = False
+    kwargs["_validated_controls"] = None
+    return _build_render_parts(*args, **kwargs)
+
+
+class _BuiltinDictCheck(type):
+    def __instancecheck__(cls, instance: object) -> bool:
+        return isinstance(instance, builtins.dict)
+
+
+class _CopyingDict(dict, metaclass=_BuiltinDictCheck):
+    """``dict`` as the freeze saw it before segments shared one controls copy.
+
+    Patched over the name ``dict`` in the cast runtime: a controls mapping (one
+    with ``characters`` and ``cast``) is deep-copied, so every segment gets its
+    own copy as it used to; everything else, ``isinstance`` checks included, is
+    the builtin.
+    """
+
+    def __new__(cls, *args, **kwargs):
+        if args and _is_controls(args[0]):
+            return cast_runtime.deepcopy(args[0])
+        return builtins.dict(*args, **kwargs)
+
+
+def _copy_record_by_deepcopy(record, memo=None):
+    return copy.deepcopy(record, memo)
+
+
 def _reference_patches(stack: ExitStack) -> None:
+    stack.enter_context(patch.object(cast_runtime, "dict", _CopyingDict, create=True))
+    stack.enter_context(
+        patch.object(speech_performance, "copy_record", _copy_record_by_deepcopy)
+    )
+    stack.enter_context(
+        patch.object(generation_audio_identity, "copy_record", _copy_record_by_deepcopy)
+    )
     stack.enter_context(patch.object(cast_runtime, "resolve_capabilities", _uncached))
+    stack.enter_context(patch.object(
+        tts_language_preflight, "resolve_tts_language_support", _language_support_without_memo,
+    ))
+    stack.enter_context(patch.object(
+        generation_rendering, "build_render_parts", _build_render_parts_copying_controls,
+    ))
     stack.enter_context(
         patch.object(cast_runtime, "validate_retained_cast_resolution", _without_proof_memo)
     )
@@ -153,6 +233,58 @@ def _count_builds():
         "_default_service_config_templates",
         wraps=tts_service_catalogue._default_service_config_templates,
     )
+
+
+@dataclass
+class Work:
+    """Per-segment work a pass repeats: lookups and copies of the controls."""
+
+    package_metadata: int = 0
+    endpoint_lookups: int = 0
+    controls_copies: int = 0
+    # ``_character_model`` calls: one per character entry validated.
+    character_validations: int = 0
+
+
+def _is_controls(value: Any) -> bool:
+    return isinstance(value, Mapping) and "characters" in value and "cast" in value
+
+
+@contextmanager
+def _count_work():
+    """Count package-metadata lookups, endpoint lookups for language support and
+    deep copies of a controls mapping made by the rendering and cast runtime."""
+    work = Work()
+    real_package = audio_cpp_catalogue.package_metadata
+    real_endpoint = tts_language_preflight._selected_endpoint
+    real_character = generation_controls._character_model
+
+    def package_metadata(*args, **kwargs):
+        work.package_metadata += 1
+        return real_package(*args, **kwargs)
+
+    def selected_endpoint(*args, **kwargs):
+        work.endpoint_lookups += 1
+        return real_endpoint(*args, **kwargs)
+
+    def character_model(*args, **kwargs):
+        work.character_validations += 1
+        return real_character(*args, **kwargs)
+
+    def counting_deepcopy(value, *args, **kwargs):
+        if _is_controls(value):
+            work.controls_copies += 1
+        return copy.deepcopy(value, *args, **kwargs)
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(audio_cpp_catalogue, "package_metadata", package_metadata))
+        stack.enter_context(
+            patch.object(tts_language_preflight, "_selected_endpoint", selected_endpoint)
+        )
+        stack.enter_context(patch.object(generation_controls, "_character_model", character_model))
+        stack.enter_context(patch.object(cast_runtime, "deepcopy", counting_deepcopy))
+        stack.enter_context(patch.object(generation_rendering, "deepcopy", counting_deepcopy))
+        yield work
 
 
 def reference_pass(plan: Plan, actor, session_factory, *, one_at_a_time=True):
@@ -190,12 +322,20 @@ def measured_pass(plan: Plan, actor, session_factory, segment_ids=None):
     return identities, build.call_count, len(statements)
 
 
+def work_pass(plan: Plan, actor, session_factory, segment_ids=None) -> Work:
+    with execution_actor_scope(actor), _count_work() as work, session_factory() as session:
+        plan.run(session, segment_ids)
+    return work
+
+
 def _factory(plan: Plan) -> Callable:
     return plan.c.r.f.case.database.immediate_session
 
 
 def test_cast_identities_match_the_uncached_reference(varied_plan):
     plan, actor = varied_plan
+    # Identity passes read the pinned controls in place; none may write into them.
+    unchanged = copy.deepcopy(plan.snapshot)
     reference = reference_pass(plan, actor, _factory(plan))
     whole = reference_pass(plan, actor, _factory(plan), one_at_a_time=False)
     identities, _builds, _statements = measured_pass(plan, actor, _factory(plan))
@@ -208,6 +348,7 @@ def test_cast_identities_match_the_uncached_reference(varied_plan):
             for segment_id in plan.ids
         }
     assert live == identities
+    assert plan.snapshot == unchanged
     assert all("performance_error" not in value for value in identities.values()), identities
     assert len({value["settings_hash"] for value in identities.values()}) >= 3
     by_kind = dict(zip(plan.ids, KINDS, strict=True))
@@ -340,8 +481,12 @@ def test_failed_access_and_pin_proofs_are_not_remembered(varied_plan):
         assert {key[0] for key in proofs} == {"access"}
 
 
-def _freeze_fresh(plan: Plan, actor, *, reference: bool, carried=None):
-    """Freeze the revision once from a fresh snapshot; return it, its builds and pin proofs."""
+def _freeze_fresh(
+    plan: Plan, actor, *, reference: bool, carried=None, work_out: list[Work] | None = None,
+):
+    """Freeze the revision once from a fresh snapshot; return it, its builds and pin proofs.
+
+    ``work_out`` receives the lookups and controls copies the freeze made."""
     r = plan.c.r
     with ExitStack() as stack:
         stack.enter_context(execution_actor_scope(actor))
@@ -356,6 +501,9 @@ def _freeze_fresh(plan: Plan, actor, *, reference: bool, carried=None):
         ))
         if reference:
             _reference_patches(stack)
+        work = stack.enter_context(_count_work())
+        if work_out is not None:
+            work_out.append(work)
         freeze_speech_snapshot(
             session, plan.revision_id, snapshot, _carried_cast_snapshot=carried,
         )
@@ -462,3 +610,253 @@ def test_proof_memo_consults_a_pending_proof_once_per_revision(varied_plan):
     # a pending proof that declines falls through to the graph check once.
     assert calls == ["proven-revision", "other-revision"]
     assert graph.call_count == 1
+
+
+def test_identity_pass_repeats_no_lookup_or_copy_per_segment(varied_plan):
+    plan, actor = varied_plan
+    full = work_pass(plan, actor, _factory(plan))
+    half = work_pass(plan, actor, _factory(plan), segment_ids=plan.ids[:6])
+    # Six more segments that repeat the first six kinds add nothing, and the
+    # whole pass looks each thing up at most a small constant number of times.
+    assert full == half, (full, half)
+    assert full.package_metadata <= 2 and full.endpoint_lookups <= 2, full
+    assert full.controls_copies <= 2, full
+    assert full.character_validations <= 12, full
+    with _count_work() as reference:
+        reference_pass(plan, actor, _factory(plan))
+    assert reference.package_metadata >= len(KINDS) and reference.controls_copies >= len(KINDS)
+    assert reference.character_validations > full.character_validations
+
+
+def test_cast_freeze_repeats_no_lookup_or_copy_per_segment(varied_plan):
+    plan, actor = varied_plan
+    out: list[Work] = []
+    _freeze_fresh(plan, actor, reference=False, work_out=out)
+    work = out[0]
+    assert work.package_metadata <= 2 and work.endpoint_lookups <= 2, work
+    # The controls are copied once for the shared segments and once for the snapshot.
+    assert work.controls_copies <= 4 < len(KINDS), work
+    assert work.character_validations <= 12, work
+    reference_out: list[Work] = []
+    _freeze_fresh(plan, actor, reference=True, work_out=reference_out)
+    assert reference_out[0].controls_copies >= len(KINDS), reference_out[0]
+
+
+def test_freezing_neither_mutates_the_controls_nor_changes_the_snapshot(varied_plan):
+    from copy import deepcopy
+
+    from pandrator.web.generation_controls import get_generation_controls
+
+    plan, actor = varied_plan
+    sid = plan.c.p.source["id"]
+    received: list[tuple[Any, Any]] = []
+
+    def recording(*args, **kwargs):
+        controls = get_generation_controls(*args, **kwargs)
+        received.append((controls, deepcopy(controls)))
+        return controls
+
+    with execution_actor_scope(actor), _factory(plan)() as session:
+        before = deepcopy(get_generation_controls(session, sid))
+        scoped = {plan.ids[1]: deepcopy(before)}
+        scoped[plan.ids[1]]["cast"] = {}
+        passed = deepcopy(scoped)
+        settings = performance_runtime_settings(plan.snapshot)
+        frozen = []
+        for _attempt in range(2):
+            snapshot = deepcopy(plan.snapshot)
+            with patch.object(cast_runtime, "get_generation_controls", recording):
+                cast_runtime.freeze_cast_snapshot(
+                    session, plan.revision_id, snapshot, settings, controls_by_segment=scoped,
+                )
+            frozen.append(snapshot["generation_control_snapshot"])
+        # The object each freeze actually received is untouched by it.
+        assert len(received) == 2
+        for controls, original in received:
+            assert controls == original == before
+        assert scoped == passed
+    assert frozen[0] == frozen[1]
+    entries = frozen[0]["segments"]
+    assert entries[plan.ids[1]]["controls"]["cast"] == {}
+    assert all("controls" not in entries[i] for i in plan.ids if i != plan.ids[1])
+    assert frozen[0]["controls"] == before
+
+
+def test_a_package_without_a_tts_route_raises_each_time_and_is_not_remembered():
+    settings = {"service": "audio.cpp", "model": "edit_only_package", "language": "en"}
+    package = {"language_support_by_operation": {"edit": {"languages": ["en"]}}}
+    cache: dict = {}
+    with patch.object(audio_cpp_catalogue, "package_metadata", return_value=package) as lookup:
+        for _attempt in range(2):
+            with pytest.raises(ValueError, match="has no text-to-speech request route"):
+                tts_language_preflight.validate_tts_language(settings, _service_config_cache=cache)
+    assert lookup.call_count == 2
+    assert not any(key[0] == "tts_language_support" for key in cache)
+
+
+def test_unknown_models_and_missing_models_are_remembered_with_their_record():
+    cache: dict = {}
+    for settings in (
+        {"service": "Silero", "silero_model": "v9_not_a_model"},
+        {"service": "future-service"},
+    ):
+        first = tts_language_preflight.resolve_tts_language_support(
+            settings, _service_config_cache=cache,
+        )
+        again = tts_language_preflight.resolve_tts_language_support(
+            settings, _service_config_cache=cache,
+        )
+        assert first == again == tts_language_preflight.resolve_tts_language_support(settings)
+    with patch.object(
+        tts_language_preflight, "_selected_endpoint",
+        side_effect=AssertionError("a remembered lookup was repeated"),
+    ):
+        tts_language_preflight.resolve_tts_language_support(
+            {"service": "future-service"}, _service_config_cache=cache,
+        )
+
+
+_ENDPOINTS = [
+    {"id": name, "api_base": f"http://{name}.example/v1", "adapter": "openai_compatible",
+     "default_model": f"model-{name}"}
+    for name in ("alpha", "beta")
+]
+# Alpha's model moved: the same selectors, different catalogue inputs.
+_MOVED_ENDPOINTS = [{**_ENDPOINTS[0], "default_model": "model-gamma"}, _ENDPOINTS[1]]
+# Each setting the lookup reads, and the catalogue inputs, separate at least
+# one pair of variants that differ in nothing else.
+_LANGUAGE_VARIANTS = [
+    {"service": "audio.cpp", "model": "qwen3_tts_1_7b_base_q8_0"},
+    {"service": "audio.cpp", "model": "magpie_tts_q8_0"},
+    {"service": "Silero", "silero_model": "v3_en"},
+    {"service": "Silero", "silero_model": "v5_cis_base"},
+    {"service": "Silero", "model": "v3_en"},
+    {"service": "ElevenLabs", "model": "v3_en"},
+    {"silero_model": "v3_en"},
+    {"tts_service": "Silero", "silero_model": "v3_en"},
+    {"tts_service": "Silero", "silero_model": "v5_cis_base"},
+    {"service": "Silero", "xtts_model": "v3_en"},
+    {"service": "Silero", "xtts_model": "v5_cis_base"},
+    {"service": "ElevenLabs", "elevenlabs_model": "eleven_multilingual_v2"},
+    {"service": "ElevenLabs", "elevenlabs_model": "eleven_flash_v2_5"},
+    {"service": "audio.cpp", "model": "magpie_tts_q8_0", "audio_cpp_base_url": "http://a:1"},
+    {"service": "zzz", "openai_audio_endpoint": "alpha", "provider_configs": _ENDPOINTS},
+    {"service": "zzz", "openai_audio_endpoint": "beta", "provider_configs": _ENDPOINTS},
+    {"service": "zzz", "openai_audio_endpoint": "alpha", "provider_configs": _MOVED_ENDPOINTS},
+]
+
+
+def _remember_variants() -> tuple[int, dict]:
+    """Look every variant up in one cache; return the distinct keys and the cache."""
+    cache: dict = {}
+    for settings in _LANGUAGE_VARIANTS:
+        remembered = tts_language_preflight.resolve_tts_language_support(
+            settings, _service_config_cache=cache,
+        )
+        assert remembered == tts_language_preflight.resolve_tts_language_support(settings)
+    return len({key for key in cache if key[0] == "tts_language_support"}), cache
+
+
+class _NoCatalogueKey:
+    """The catalogue module with its cache key dropped from the language memo."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(tts_service_catalogue, name)
+
+    @staticmethod
+    def _service_config_cache_key(_settings) -> str:
+        return ""
+
+
+def test_language_support_is_keyed_by_every_setting_it_reads():
+    count, cache = _remember_variants()
+    assert count == len(_LANGUAGE_VARIANTS)
+    by_endpoint = [
+        tts_language_preflight.resolve_tts_language_support(
+            {"service": "zzz", "openai_audio_endpoint": name, "provider_configs": configs},
+            _service_config_cache=cache,
+        )["model_id"]
+        for name, configs in (
+            ("alpha", _ENDPOINTS), ("beta", _ENDPOINTS), ("alpha", _MOVED_ENDPOINTS),
+        )
+    ]
+    assert by_endpoint == ["model-alpha", "model-beta", "model-gamma"]
+
+
+@pytest.mark.parametrize(
+    "dropped", [*tts_language_preflight._LANGUAGE_SUPPORT_SETTING_KEYS, "catalogue"],
+)
+def test_language_variants_notice_any_key_component_dropped(dropped):
+    """Without any one key component, two variants share a memo entry."""
+    if dropped == "catalogue":
+        narrowed = patch.object(tts_language_preflight, "catalogue", _NoCatalogueKey())
+    else:
+        narrowed = patch.object(
+            tts_language_preflight, "_LANGUAGE_SUPPORT_SETTING_KEYS",
+            tuple(
+                name for name in tts_language_preflight._LANGUAGE_SUPPORT_SETTING_KEYS
+                if name != dropped
+            ),
+        )
+    with narrowed, pytest.raises(AssertionError):
+        count, _cache = _remember_variants()
+        assert count == len(_LANGUAGE_VARIANTS)
+
+
+def test_a_remembered_language_support_is_a_private_copy():
+    cache: dict = {}
+    settings = {"service": "audio.cpp", "model": "qwen3_tts_1_7b_base_q8_0"}
+    first = tts_language_preflight.resolve_tts_language_support(
+        settings, _service_config_cache=cache,
+    )
+    assert first
+    expected = copy.deepcopy(first)
+    first.clear()
+    again = tts_language_preflight.resolve_tts_language_support(
+        settings, _service_config_cache=cache,
+    )
+    assert again == expected
+    again.clear()
+    assert tts_language_preflight.resolve_tts_language_support(
+        settings, _service_config_cache=cache,
+    ) == expected
+
+
+def test_cast_voice_resolution_remembers_validated_controls_by_identity():
+    from pandrator.web.generation_controls import resolve_cast_voice
+
+    controls = {
+        "characters": [{"id": "fred", "display_name": "Fred"}],
+        "cast": {"characters": {"fred": {"voice": "fred-voice"}}, "narrator": {"voice": "nar"}},
+    }
+    memo: dict = {}
+    with _count_work() as work:
+        first = resolve_cast_voice(controls, speaker_id="fred", dialogue=True, _validated=memo)
+        again = resolve_cast_voice(controls, speaker_id="fred", dialogue=True, _validated=memo)
+        narrator = resolve_cast_voice(controls, _validated=memo)
+    assert work.character_validations == 1
+    assert first == again == resolve_cast_voice(controls, speaker_id="fred", dialogue=True)
+    assert narrator == resolve_cast_voice(controls)
+    first["binding"]["voice"] = "changed"
+    assert resolve_cast_voice(controls, speaker_id="fred", _validated=memo) == again
+    # Another characters list is validated on its own, whatever the memo holds.
+    other = {**controls, "characters": [{"id": "wilma", "display_name": "Wilma"}], "cast": controls["cast"]}
+    with pytest.raises(ValueError, match="Unknown character ID: fred"):
+        resolve_cast_voice(other, speaker_id="fred", _validated=memo)
+    assert resolve_cast_voice(other, speaker_id="wilma", _validated=memo)["source"] == "narrator"
+
+
+def test_cast_voice_resolution_does_not_remember_a_failed_validation():
+    from pandrator.web.generation_controls import resolve_cast_voice
+
+    controls = {"characters": [{"id": "fred", "display_name": "Fred"}] * 2, "cast": {}}
+    memo: dict = {}
+    for _attempt in range(2):
+        with pytest.raises(ValueError, match="Duplicate character ID: fred"):
+            resolve_cast_voice(controls, _validated=memo)
+    assert memo == {}
+    controls = {"characters": [{"id": "fred", "display_name": "Fred"}], "cast": {"narrator": "not a binding"}}
+    for _attempt in range(2):
+        with pytest.raises(ValueError):
+            resolve_cast_voice(controls, _validated=memo)
+    assert "cast" not in memo

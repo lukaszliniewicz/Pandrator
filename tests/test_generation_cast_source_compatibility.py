@@ -618,6 +618,7 @@ def test_missing_live_material_suppresses_mixed_alternate_without_database(monke
     context._live_cast_material = True
     context._live_cast_references = {}
     context._service_config_cache = {}
+    context._validated_controls = {}
     context._session_ids_by_revision = {"revision": "session"}
     context._pending_proof = None
     context.selected_rvc = {}
