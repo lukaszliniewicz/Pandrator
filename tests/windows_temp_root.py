@@ -63,6 +63,8 @@ RUN_NAME_PATTERN = re.compile(rf"[{NAME_ALPHABET}]{{{NAME_LENGTH}}}")
 DEFAULT_KEEP = 3
 ROOT_LOCK_TIMEOUT = 30.0
 ROOT_LOCK_POLL = 0.05
+BOOTSTRAP_LOCK_NAME = ".pandrator-pytest-root-init.lock"
+BOOTSTRAP_LOCK_TIMEOUT = 90.0
 
 
 class ShortRootUnavailable(Exception):
@@ -108,6 +110,62 @@ def _icacls(root: Path, arguments: list[str]) -> None:
         raise ShortRootUnavailable(f"cannot restrict {root}: {detail}{hint}")
 
 
+def _assert_no_reparse_ancestors(root: Path) -> None:
+    """Never create or change ACLs through symlinks or Windows junctions."""
+    for part in (*root.parents, root):
+        try:
+            metadata = part.lstat()
+        except FileNotFoundError:
+            continue
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if part.is_symlink() or (attributes & reparse):
+            raise ShortRootUnavailable(f"refusing symlink or junction in temp root: {part}")
+
+
+def _verify_private_root(root: Path) -> None:
+    """Fail closed if a marked Windows root is not *actually* private.
+
+    A marker is public text and can be forged by another local user. Query the
+    Windows security descriptor, not localized icacls output, to establish the
+    current user's SID owns the root and is its only explicit full-control ACE.
+    """
+    if sys.platform != "win32":
+        return
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$acl = Get-Acl -LiteralPath $env:PANDRATOR_PYTEST_ACL_ROOT
+$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+$rules = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))
+$full = [int][System.Security.AccessControl.FileSystemRights]::FullControl
+$valid = ($owner -eq $current) -and $acl.AreAccessRulesProtected -and ($rules.Count -eq 1)
+if ($valid) {
+  $rule = $rules[0]
+  $valid = ($rule.IdentityReference.Value -eq $current) -and
+    ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) -and
+    (([int]$rule.FileSystemRights -band $full) -eq $full)
+}
+if (-not $valid) { Write-Error 'Unexpected owner or access rules'; exit 3 }
+"""
+    env = {**os.environ, "PANDRATOR_PYTEST_ACL_ROOT": str(root)}
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ShortRootUnavailable(f"cannot verify private temp root {root}: {error}") from error
+    if result.returncode != 0:
+        raise ShortRootUnavailable(
+            f"temp root {root} has unverified ownership or ACL; use pytest's default temp root"
+        )
+
+
 def _restore_inherited_access(root: Path, account: str) -> None:
     """Undo a half-applied restriction; best effort, the caller already failed."""
     for arguments in (["/inheritance:e"], ["/grant:r", f"{account}:F"]):
@@ -128,6 +186,11 @@ def restrict_to_current_user(root: Path) -> None:
     _icacls(root, ["/reset"])
     try:
         _icacls(root, ["/inheritance:r", "/grant:r", f"{account}:(OI)(CI)F"])
+        # Some elevated Windows runners create directories owned by the
+        # Administrators group. Set the actual caller as owner too, so the
+        # verified private root cannot subsequently be re-ACLed by another
+        # non-administrative account.
+        _icacls(root, ["/setowner", account])
     except ShortRootUnavailable:
         _restore_inherited_access(root, account)
         raise
@@ -195,20 +258,16 @@ def _unlock_fd(fd: int) -> None:
 
 
 @contextmanager
-def _root_lock(root: Path) -> Iterator[None]:
-    """Hold the root's cross-process lock, or give up after ROOT_LOCK_TIMEOUT.
-
-    Locks belong to the open file, so the OS drops them when a process dies; a
-    crashed lane cannot leave the root permanently unusable.
-    """
-    path = root / ROOT_LOCK_NAME
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+def _file_lock(path: Path, *, timeout: float) -> Iterator[None]:
+    """Hold an OS file lock, including across crashed worker processes."""
+    _assert_no_reparse_ancestors(path)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         if os.fstat(fd).st_size == 0:
-            # Windows locks a byte range and is happiest locking bytes that exist.
+            # Windows requires a byte to exist before msvcrt locks its range.
             os.write(fd, b"0")
         os.lseek(fd, 0, os.SEEK_SET)
-        deadline = time.monotonic() + ROOT_LOCK_TIMEOUT
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 _lock_fd(fd)
@@ -229,35 +288,93 @@ def _root_lock(root: Path) -> Iterator[None]:
         os.close(fd)
 
 
-def prepare_root(root: Path, restrict: Callable[[Path], None] = restrict_to_current_user) -> None:
-    """Create, restrict and mark the root, or accept one this code already marked."""
-    marker = root / MARKER_NAME
+@contextmanager
+def _bootstrap_lock() -> Iterator[None]:
+    """Serialize first creation, before a shared root is even present.
+
+    This lock lives in the caller's private temp directory, outside the shared root.
+    Concurrent lanes cannot mistake an unmarked, partly initialized root for
+    a foreign directory, nor can a late lane reset another lane's ACL.
+    """
+    path = Path(tempfile.gettempdir()) / BOOTSTRAP_LOCK_NAME
+    with _file_lock(path, timeout=BOOTSTRAP_LOCK_TIMEOUT):
+        yield
+
+
+@contextmanager
+def _root_lock(root: Path) -> Iterator[None]:
+    with _file_lock(root / ROOT_LOCK_NAME, timeout=ROOT_LOCK_TIMEOUT):
+        yield
+
+
+def _cleanup_abandoned_root(root: Path) -> None:
+    """Best-effort cleanup ONLY for a root created by the failing lane.
+
+    Called after closing the root lock, while still holding the user-private
+    bootstrap lock. Never remove a marked root or any foreign child.
+    """
     try:
-        # exist_ok: a concurrent lane may create the root first.
-        root.mkdir(parents=True, exist_ok=True)
+        _assert_no_reparse_ancestors(root)
+        if not root.is_dir() or _read_marker(root / MARKER_NAME) == MARKER_TEXT:
+            return
+        if _foreign_children(root):
+            return
+        shutil.rmtree(root)
+    except (OSError, ShortRootUnavailable):
+        # Failure to prove ownership or remove a root must fail closed; the
+        # next lane refuses an unmarked root rather than modifying foreign data.
+        pass
+
+
+def prepare_root(root: Path, restrict: Callable[[Path], None] = restrict_to_current_user) -> None:
+    """Create and mark a fresh private root, or verify a previously marked root."""
+    marker = root / MARKER_NAME
+    verify = restrict is restrict_to_current_user and sys.platform == "win32"
+    try:
+        _assert_no_reparse_ancestors(root)
         text = _read_marker(marker)
         if text == MARKER_TEXT:
+            if verify:
+                _verify_private_root(root)
             return
         if text is not None:
-            # A partial or unknown marker is not proof of ownership. Rewriting it
-            # would reset ACLs on a directory somebody else may be using.
             raise _foreign_root(root, MARKER_NAME)
-        foreign = _foreign_children(root)
-        if foreign:
-            # Refuse before creating any file in a folder we do not own.
-            raise _foreign_root(root, foreign[0].name)
-        with _root_lock(root):
-            # Another lane may have adopted the empty root while we waited.
-            text = _read_marker(marker)
-            if text == MARKER_TEXT:
-                return
-            if text is not None:
-                raise _foreign_root(root, MARKER_NAME)
-            foreign = _foreign_children(root)
-            if foreign:
-                raise _foreign_root(root, foreign[0].name)
-            restrict(root)
-            _publish_marker(root)
+
+        # The root's own lock cannot prevent a second lane winning the race
+        # before its creator opens that lock. Use a private bootstrap lock
+        # outside the shared root to serialize creation and ACL restriction.
+        with _bootstrap_lock():
+            created = False
+            try:
+                _assert_no_reparse_ancestors(root)
+                try:
+                    root.mkdir(parents=True)
+                    created = True
+                except FileExistsError:
+                    pass
+                _assert_no_reparse_ancestors(root)
+                text = _read_marker(marker)
+                if text == MARKER_TEXT:
+                    if verify:
+                        _verify_private_root(root)
+                    return
+                if text is not None:
+                    raise _foreign_root(root, MARKER_NAME)
+                if not created:
+                    # An unmarked old/foreign root is never adopted.
+                    raise _foreign_root(root, "unmarked pre-existing folder")
+                with _root_lock(root):
+                    _assert_no_reparse_ancestors(root)
+                    if _foreign_children(root):
+                        raise _foreign_root(root, "foreign child")
+                    restrict(root)
+                    if verify:
+                        _verify_private_root(root)
+                    _publish_marker(root)
+            except Exception:
+                if created:
+                    _cleanup_abandoned_root(root)
+                raise
     except OSError as error:
         raise ShortRootUnavailable(f"cannot prepare {root}: {error}") from error
 

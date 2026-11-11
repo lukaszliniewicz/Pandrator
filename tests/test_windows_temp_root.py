@@ -234,6 +234,61 @@ class WindowsTempRootTests(unittest.TestCase):
         self.assertTrue((checkout / "pyproject.toml").exists())
         self.assertTrue(notes.exists())
 
+    def test_acl_verifier_refuses_foreign_rules_without_rewriting_them(self):
+        self.root.mkdir(parents=True)
+        with (
+            patch.object(wtr.sys, "platform", "win32"),
+            patch.object(
+                wtr.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=3, stdout="", stderr="denied"),
+            ) as powershell,
+        ):
+            with self.assertRaisesRegex(wtr.ShortRootUnavailable, "unverified ownership"):
+                wtr._verify_private_root(self.root)
+        command = powershell.call_args.args[0]
+        self.assertEqual(command[:3], ["powershell.exe", "-NoProfile", "-NonInteractive"])
+        self.assertEqual(
+            powershell.call_args.kwargs["env"]["PANDRATOR_PYTEST_ACL_ROOT"], str(self.root)
+        )
+
+    @unittest.skipUnless(sys.platform == "win32", "requires actual Windows ACLs")
+    def test_real_acl_validation_accepts_a_fresh_restricted_root(self):
+        wtr.prepare_root(self.root)
+        wtr.prepare_root(self.root)
+        wtr._verify_private_root(self.root)
+
+    def test_foreign_junction_or_symlink_root_is_refused_before_acl_change(self):
+        outside = self.drive / "outside"
+        outside.mkdir()
+        (outside / "notes").write_text("leave this alone")
+        self.root.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.root.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("directory symlinks unavailable")
+        with self.assertRaisesRegex(wtr.ShortRootUnavailable, "symlink or junction"):
+            self.run_dir()
+        self.assertEqual(self.restricted, [])
+        self.assertEqual((outside / "notes").read_text(), "leave this alone")
+
+    def test_existing_valid_marker_requires_private_acl_verification_on_windows(self):
+        self.run_dir()
+        # An attacker can write the public marker text. Windows must verify
+        # the real owner and DACL even if the text matches.
+        with (
+            patch.object(wtr.sys, "platform", "win32"),
+            patch.object(
+                wtr, "_verify_private_root", side_effect=wtr.ShortRootUnavailable("bad ACL")
+            ) as verify,
+            patch.object(wtr, "restrict_to_current_user", self.restricted.append),
+        ):
+            # Invoke default function explicitly, rather than our fake restrict,
+            # so the real policy's ACL-check branch is exercised.
+            with self.assertRaisesRegex(wtr.ShortRootUnavailable, "bad ACL"):
+                wtr.prepare_root(self.root, wtr.restrict_to_current_user)
+            self.assertEqual(verify.call_count, 1)
+
     def test_foreign_folder_is_left_alone(self):
         self.root.mkdir(parents=True)
         foreign = self.root / "personal_notes"
@@ -280,25 +335,23 @@ class WindowsTempRootTests(unittest.TestCase):
         self.assertEqual(self.marker_path().read_bytes(), b"\xff\xfe\x00not utf-8")
         self.assertEqual(self.restricted, [])
 
-    def test_empty_unmarked_root_is_adopted_restricted_and_marked(self):
+    def test_existing_empty_unmarked_root_is_not_adopted(self):
         self.root.mkdir(parents=True)
-        run = self.run_dir()
-        self.assertEqual(run.path.parent, self.root)
-        self.assertEqual(self.restricted, [self.root])
-        self.assertEqual(self.marker_path().read_text(encoding="utf-8"), wtr.MARKER_TEXT)
-        self.assertFalse((self.root / wtr.MARKER_TEMP_NAME).exists())
+        with self.assertRaisesRegex(wtr.ShortRootUnavailable, "not made by these tests"):
+            self.run_dir()
+        self.assertFalse(self.marker_path().exists())
+        self.assertEqual(self.restricted, [])
 
-    def test_reserved_files_from_a_crashed_writer_do_not_make_the_root_foreign(self):
+    def test_crashed_unmarked_root_fails_closed(self):
         self.root.mkdir(parents=True)
         (self.root / wtr.MARKER_TEMP_NAME).write_text(wtr.MARKER_TEXT[:5])
         (self.root / wtr.ROOT_LOCK_NAME).write_text("0")
-        run = self.run_dir()
-        self.assertEqual(run.path.parent, self.root)
-        self.assertEqual(self.marker_path().read_text(encoding="utf-8"), wtr.MARKER_TEXT)
-        self.assertFalse((self.root / wtr.MARKER_TEMP_NAME).exists())
+        with self.assertRaises(wtr.ShortRootUnavailable):
+            self.run_dir()
+        self.assertFalse(self.marker_path().exists())
+        self.assertEqual(self.restricted, [])
 
     def test_concurrent_starts_adopt_once_and_publish_a_complete_marker(self):
-        self.root.mkdir(parents=True)
         calls: list[Path] = []
 
         def slow_restrict(root: Path) -> None:
@@ -331,16 +384,36 @@ class WindowsTempRootTests(unittest.TestCase):
                 os.close(run.lock_fd)
 
     def test_marker_write_failure_leaves_no_marker_and_no_temp_file(self):
-        self.root.mkdir(parents=True)
         with patch.object(wtr.os, "replace", side_effect=OSError("disk full")):
             with self.assertRaisesRegex(wtr.ShortRootUnavailable, "cannot prepare"):
                 self.run_dir()
         self.assertFalse(self.marker_path().exists())
         self.assertFalse((self.root / wtr.MARKER_TEMP_NAME).exists())
-        # The root is still adoptable once writing works again.
+        # The lane that created the failed root removes it. A later lane
+        # can initialize cleanly without anyone deleting shared data by hand.
+        self.assertFalse(self.root.exists())
         run = self.run_dir()
         self.assertEqual(run.path.parent, self.root)
         self.assertEqual(self.marker_path().read_text(encoding="utf-8"), wtr.MARKER_TEXT)
+
+    def test_failed_new_root_permission_setup_does_not_poison_the_next_run(self):
+        def reject(_root: Path) -> None:
+            raise wtr.ShortRootUnavailable("bad ACL")
+
+        with self.assertRaisesRegex(wtr.ShortRootUnavailable, "bad ACL"):
+            wtr.prepare_root(self.root, restrict=reject)
+        self.assertFalse(self.root.exists())
+        run = self.run_dir()
+        self.assertEqual(run.path.parent, self.root)
+
+    @unittest.skipUnless(sys.platform == "win32", "requires Windows file locks")
+    def test_failed_real_windows_acl_verification_cleans_up_created_root(self):
+        with patch.object(
+            wtr, "_verify_private_root", side_effect=wtr.ShortRootUnavailable("bad ACL")
+        ):
+            with self.assertRaisesRegex(wtr.ShortRootUnavailable, "bad ACL"):
+                wtr.prepare_root(self.root)
+        self.assertFalse(self.root.exists())
 
     def test_failed_restriction_falls_back_without_marking(self):
         def refuse(root):
@@ -349,7 +422,7 @@ class WindowsTempRootTests(unittest.TestCase):
         with self.assertRaisesRegex(wtr.ShortRootUnavailable, "icacls refused"):
             self.run_dir(restrict=refuse)
         self.assertFalse(self.marker_path().exists())
-        self.assertEqual(list(self.root.iterdir()), [self.root / wtr.ROOT_LOCK_NAME])
+        self.assertFalse(self.root.exists(), "a failed new root must not persist")
 
     def test_uncreatable_root_raises(self):
         blocker = self.drive / "blocker"
@@ -359,7 +432,6 @@ class WindowsTempRootTests(unittest.TestCase):
                 self.run_dir()
 
     def test_unwritable_c_drive_falls_back_instead_of_crashing(self):
-        self.root.mkdir(parents=True)
         # A read-only drive refuses even the root lock file.
         with patch.object(wtr.os, "open", side_effect=PermissionError("denied")):
             with self.assertRaisesRegex(wtr.ShortRootUnavailable, "cannot prepare"):
@@ -378,9 +450,8 @@ class WindowsTempRootTests(unittest.TestCase):
                 self.run_dir(temp_dir=None)
 
     def test_root_lock_timeout_is_reported(self):
-        self.root.mkdir(parents=True)
         with (
-            patch.object(wtr, "ROOT_LOCK_TIMEOUT", 0.0),
+            patch.object(wtr, "BOOTSTRAP_LOCK_TIMEOUT", 0.0),
             patch.object(wtr, "_lock_fd", side_effect=OSError(wtr.errno.EACCES, "busy")),
         ):
             with self.assertRaisesRegex(wtr.ShortRootUnavailable, "timed out"):
@@ -418,7 +489,7 @@ class RestrictionTests(unittest.TestCase):
         return SimpleNamespace(returncode=code, stdout=output, stderr="")
 
     def test_restriction_resets_then_grants_the_current_user_only(self):
-        run = self.icacls(self.result(), self.result())
+        run = self.icacls(self.result(), self.result(), self.result())
         wtr.restrict_to_current_user(self.root)
         self.assertEqual(
             [call.args[0] for call in run.call_args_list],
@@ -431,6 +502,7 @@ class RestrictionTests(unittest.TestCase):
                     "/grant:r",
                     "PC\\luke:(OI)(CI)F",
                 ],
+                ["icacls", str(self.root), "/setowner", "PC\\luke"],
             ],
         )
         self.assertEqual(
@@ -449,6 +521,24 @@ class RestrictionTests(unittest.TestCase):
         rollback = [call.args[0] for call in run.call_args_list[2:]]
         self.assertEqual(rollback[0], ["icacls", str(self.root), "/inheritance:e"])
         self.assertEqual(rollback[1], ["icacls", str(self.root), "/grant:r", "PC\\luke:F"])
+
+    def test_failed_owner_change_rolls_back_inherited_access(self):
+        run = self.icacls(
+            self.result(),
+            self.result(),
+            self.result(5, "Access is denied."),
+            self.result(),
+            self.result(),
+        )
+        with self.assertRaises(wtr.ShortRootUnavailable):
+            wtr.restrict_to_current_user(self.root)
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list[3:]],
+            [
+                ["icacls", str(self.root), "/inheritance:e"],
+                ["icacls", str(self.root), "/grant:r", "PC\\luke:F"],
+            ],
+        )
 
     def test_failed_reset_touches_nothing_else(self):
         run = self.icacls(self.result(5, "Access is denied."))
@@ -479,7 +569,7 @@ class RestrictionTests(unittest.TestCase):
 
     def test_local_account_without_a_domain_is_granted_by_name(self):
         with patch.dict(os.environ, {"USERNAME": "luke"}, clear=True):
-            run = self.icacls(self.result(), self.result())
+            run = self.icacls(self.result(), self.result(), self.result())
             wtr.restrict_to_current_user(self.root)
         self.assertEqual(run.call_args_list[1].args[0][-1], "luke:(OI)(CI)F")
 

@@ -360,7 +360,7 @@ class AudioIdentityContext:
     def _ensure_segment_workspace(self, segment: GenerationSegment) -> None:
         revision = self.session.get(GenerationPlanRevision, segment.plan_revision_id)
         plan = self.session.get(GenerationPlan, revision.plan_id) if revision else None
-        if plan is None:
+        if revision is None or plan is None:
             raise ValueError("The speech plan is unavailable.")
         self._revision_plan_rows[segment.plan_revision_id] = (revision, plan)
         known_workspace = self._segment_workspaces.get(plan.session_id)
