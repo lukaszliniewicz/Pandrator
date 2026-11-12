@@ -254,6 +254,36 @@ class ApplicationClientTests(unittest.TestCase):
         )
         self.assertEqual({"limit": 1, "view": "compact"}, session.calls[2]["params"])
 
+    def test_speech_plan_summary_flag_and_revision_detail_reach_the_http_request(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession([FakeResponse(200, {"items": []}) for _ in range(5)])
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        client.get_speech_plan_status("session-1", summary=True)
+        client.get_speech_plan_status("session-1")
+        client.list_speech_plan_revisions(
+            "session-1", limit=3, before_revision_number=9, summary=True
+        )
+        client.list_speech_plan_revisions("session-1")
+        client.get_speech_plan_revision("session-1", "rev/2")
+        plan = f"{origin}/api/v1/sessions/session-1/generation-plan"
+        self.assertEqual(f"{plan}/status", session.calls[0]["url"])
+        self.assertEqual({"summary": "true"}, session.calls[0]["params"])
+        self.assertEqual(f"{plan}/status", session.calls[1]["url"])
+        self.assertFalse(session.calls[1].get("params"))
+        self.assertEqual(f"{plan}/revisions", session.calls[2]["url"])
+        self.assertEqual(
+            {"limit": 3, "summary": "true", "before_revision_number": 9},
+            session.calls[2]["params"],
+        )
+        self.assertEqual({"limit": 50}, session.calls[3]["params"])
+        self.assertEqual(f"{plan}/revisions/rev%2F2", session.calls[4]["url"])
+        self.assertFalse(session.calls[4].get("params"))
+
     def test_upload_catalog_and_generation_helpers_use_bounded_routes(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(

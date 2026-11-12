@@ -151,3 +151,19 @@ the same document, exact cue boundaries, spoken text, model, voice and delivery
 identity agree. Changed or uncertain inputs need new audio. Narration without
 document provenance also requires the same source artifact and exact source
 references. Historical recordings and sound-cue placement remain separate.
+
+Plan status and revision history return revision summaries. Reuse counts are
+checked only for the active revision, and only when it is listed: in the returned
+page of revision history, or among the latest 100 entries of plan status. Other
+revisions show `audio_reuse_checked: false` with null counts. Read each item's
+flag; the top-level `audio_reuse_checked` describes the summary and stays false.
+Reading the active revision is a second request after the summary, so a call can
+take up to twice the application request timeout. If that request times out, the
+application is unavailable, the answer is too large, the revision is gone or its
+answer lacks the counts, the active item also shows `audio_reuse_checked: false`
+and a warning names the code.
+Plan status also leaves repair-batch undo eligibility unevaluated
+(`repair_batch.can_undo`, `undo_disabled_reason`, `expected_revision_id` and
+`expected_state_hash` are null, and `undo_checked` is false). No MCP tool reads
+reuse counts of other revisions or undo eligibility; the web app's speech plan
+history shows both.

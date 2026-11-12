@@ -234,9 +234,16 @@ class ApplicationGenerationMethods(ApplicationRequests):
             parameters=params,
         )
 
-    def get_speech_plan_status(self, session_id: str) -> dict[str, Any]:
+    def get_speech_plan_status(self, session_id: str, *, summary: bool = False) -> dict[str, Any]:
+        path = f"/api/v1/sessions/{quote(session_id, safe='')}/generation-plan/status"
+        if summary:
+            return self._request_json(path, parameters={"summary": "true"})
+        return self._request_json(path)
+
+    def get_speech_plan_revision(self, session_id: str, revision_id: str) -> dict[str, Any]:
         return self._request_json(
-            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-plan/status"
+            f"/api/v1/sessions/{quote(session_id, safe='')}"
+            f"/generation-plan/revisions/{quote(revision_id, safe='')}"
         )
 
     def prepare_speech_plan(
@@ -276,9 +283,16 @@ class ApplicationGenerationMethods(ApplicationRequests):
         )
 
     def list_speech_plan_revisions(
-        self, session_id: str, *, limit: int = 50, before_revision_number: int | None = None
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+        before_revision_number: int | None = None,
+        summary: bool = False,
     ) -> dict[str, Any]:
         parameters: dict[str, Any] = {"limit": limit}
+        if summary:
+            parameters["summary"] = "true"
         if before_revision_number is not None:
             parameters["before_revision_number"] = before_revision_number
         return self._request_json(
