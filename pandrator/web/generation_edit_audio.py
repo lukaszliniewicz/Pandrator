@@ -211,16 +211,17 @@ def inherit_edit_copy_audio(session: Any, revision_id: str) -> int:
     ).all()
     if not candidates:
         return 0
-    sources = _load_by_id(session, GenerationSegment, {row[0] for row in candidates})
-    takes = _load_by_id(session, AudioTake, {row[1] for row in candidates})
-    targets = _load_by_id(session, GenerationSegment, {row[2] for row in candidates})
+    sources = _load_by_id(session, GenerationSegment, {source for source, _, _ in candidates})
+    takes = _load_by_id(session, AudioTake, {take for _, take, _ in candidates})
+    targets = _load_by_id(session, GenerationSegment, {target for _, _, target in candidates})
     artifacts = _load_by_id(session, Artifact, {value.artifact_id for value in takes.values()})
     existing_by_id: dict[str, list[AudioTake]] = {}
     target_ids = list(targets)
     for start in range(0, len(target_ids), _BATCH):
+        # Ordered, so which take counts as a target's current one never depends on row order.
         for value in session.scalars(select(AudioTake).where(
             AudioTake.generation_segment_id.in_(target_ids[start:start + _BATCH])
-        )):
+        ).order_by(AudioTake.created_at, AudioTake.id)):
             existing_by_id.setdefault(value.generation_segment_id, []).append(value)
     changed = 0
     for source_id, take_id, target_id in candidates:

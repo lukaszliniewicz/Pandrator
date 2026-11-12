@@ -1104,7 +1104,9 @@ def test_reconcile_candidate_query_avoids_the_global_status_index(case):
     captured = []
 
     def capture_sql(_connection, _cursor, statement, parameters, _context, _many):
-        if statement.lstrip().upper().startswith("SELECT") and "EXISTS" in statement.upper():
+        # Only the candidate query compares `status || ''`; other SELECTs, such as the
+        # ancestor walk or session setup, never match.
+        if "AUDIO_TAKES.STATUS ||" in " ".join(statement.upper().split()):
             captured.append((statement, parameters))
 
     event.listen(case.database.engine, "before_cursor_execute", capture_sql)
@@ -1118,7 +1120,8 @@ def test_reconcile_candidate_query_avoids_the_global_status_index(case):
         plan = connection.exec_driver_sql(f"EXPLAIN QUERY PLAN {statement}", parameters).all()
     details = [str(row[3]).upper() for row in plan]
     # The status index holds every take of every project; the query must start from the
-    # revision's segments instead.
+    # revision's segments instead. This holds on any SQLite version, with or without
+    # statistics: comparing `status || ''` leaves no status index usable for the filter.
     assert not any("IX_AUDIO_TAKES_STATUS" in detail
                    or "IDX_AUDIO_TAKES_ACTIVE_STATUS_SEGMENT_CREATED" in detail
                    for detail in details), details
