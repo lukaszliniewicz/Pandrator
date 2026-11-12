@@ -563,13 +563,17 @@ def test_default_and_compact_listings_equal_the_whole_plan_listing(varied_plan, 
 
 
 def test_a_page_without_a_reuse_field_runs_no_identity_pass(varied_plan):
-    plan, _actor = varied_plan
+    plan, actor = varied_plan
+    _add_matching_takes(plan, actor)
     full = measured_listing(plan, limit=100)
     by_id = {item["id"]: item for item in full.payload["items"]}
+    # effective_take is worked out without the identity pass.
+    assert all(item["effective_take"] for item in full.payload["items"])
     for kwargs in (
         {"limit": 1, "fields": ["id"]},
         {"limit": 6, "fields": ["id", "ordinal", "status"], "view": "provenance"},
         {"limit": 6, "view": "provenance"},
+        {"limit": 6, "fields": ["id", "effective_take"]},
     ):
         listing = measured_listing(plan, **kwargs)
         assert listing.for_segment_calls == 0, kwargs
@@ -581,6 +585,18 @@ def test_a_page_without_a_reuse_field_runs_no_identity_pass(varied_plan):
         assert listing.payload["items"]
         for item in listing.payload["items"]:
             assert item == {key: by_id[item["id"]][key] for key in fields}, kwargs
+
+
+def test_an_empty_page_builds_no_identity_context(varied_plan):
+    plan, _actor = varied_plan
+    with patch.object(
+        generation_audio_identity, "AudioIdentityContext", wraps=AudioIdentityContext,
+    ) as context:
+        listing = measured_listing(plan, cursor=len(KINDS), limit=5)
+        assert listing.payload["items"] == []
+        assert context.call_count == 0
+        measured_listing(plan, limit=1)
+        assert context.call_count == 1
 
 
 @pytest.mark.parametrize("field", ["audio_reuse_reason", "has_reusable_take"])
@@ -669,6 +685,59 @@ def test_a_removed_row_never_marks_the_rest_of_its_page_unknown(varied_plan):
     listing = measured_listing(plan, cursor=1, limit=1)
     assert listing.freezes == [0]
     assert listing.for_segment_calls == 1
+
+
+def test_a_failure_after_a_past_runs_freeze_stays_with_its_own_rows(varied_plan):
+    """A past run's pinned snapshot is not frozen again, so a pin deleted since
+    fails per row; it once marked every later row of the page unknown."""
+    plan, actor = varied_plan
+    sid = plan.c.p.source["id"]
+    with execution_actor_scope(actor), _factory(plan)() as session:
+        context = AudioIdentityContext(session, copy.deepcopy(plan.snapshot))
+        identities = {
+            segment_id: context.for_segment(session.get_one(m.GenerationSegment, segment_id))
+            for segment_id in plan.ids
+        }
+    assert all("performance_error" not in value for value in identities.values()), identities
+    with plan.c.r.f.case.database.immediate_session() as session:
+        ownership = resolve_artifact_ownership(session, session_id=sid)
+        run = m.GenerationRun(session_id=sid, plan_revision_id=plan.revision_id,
+            sequence_number=1, status="completed", settings_snapshot_json=copy.deepcopy(plan.snapshot))
+        session.add(run)
+        session.flush()
+        for segment_id in plan.ids:
+            artifact = m.Artifact(
+                session_id=sid, workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id, kind="audio", role="generation_take",
+                relative_path=f"test/{segment_id}.wav", content_hash="a" * 64,
+                metadata_json={IDENTITY_KEY: identities[segment_id]},
+            )
+            session.add(artifact)
+            session.flush()
+            session.get_one(m.GenerationSegment, segment_id).status = "completed"
+            session.add(m.AudioTake(
+                generation_segment_id=segment_id, artifact_id=artifact.id,
+                status="completed", is_active=True, duration_ms=100,
+                generation_run_id=run.id,
+            ))
+        session.flush()
+        run_id = run.id
+    service = plan.c.r.f.services.generation
+    before = _reasons(service.list_segments(sid, generation_run_id=run_id, limit=50))
+    assert set(before) == {"reusable"}, before
+    with plan.c.r.f.case.database.immediate_session() as session:
+        session.get_one(m.Artifact, plan.c.fred.pin["artifact_id"]).state = "deleted"
+    after = _reasons(service.list_segments(sid, generation_run_id=run_id, limit=50))
+    expected = [
+        "audio_identity_unknown" if kind in {"fred", "both", "german"} else "reusable"
+        for kind in KINDS
+    ]
+    assert after == expected, list(zip(KINDS, after, strict=True))
+    # Each row answers the same on a page of its own.
+    for cursor, reason in enumerate(expected):
+        assert _reasons(service.list_segments(
+            sid, generation_run_id=run_id, cursor=cursor, limit=1,
+        )) == [reason], (cursor, KINDS[cursor])
 
 
 FRED_SLOT = 'cast:["characters","fred"]'

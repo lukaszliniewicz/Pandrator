@@ -308,6 +308,7 @@ class AudioIdentityContext:
         _pending_proof: PendingSpeechProof | None = None,
         _live_cast_material: bool = True,
         _cast_segment_ids: Collection[str] | None = None,
+        _isolate_segment_errors: bool = False,
     ):
         from .generation_cast_runtime import filter_segment_tts_override
         from .settings_policy import adapt_runtime_settings
@@ -317,6 +318,9 @@ class AudioIdentityContext:
         # A listing page freezes the cast for its own segments only; None keeps
         # the whole-revision freeze every other caller relies on.
         self._cast_segment_ids = frozenset(_cast_segment_ids) if _cast_segment_ids is not None else None
+        # A listing keeps a failure that comes after a successful freeze with
+        # its own segment; other callers keep the first failure for the revision.
+        self._isolate_segment_errors = _isolate_segment_errors
         self._live_cast_material = _live_cast_material and "generation_audio_identities" not in snapshot
         self._live_cast_references: dict[tuple[str, str, str, str], list[dict[str, Any]] | None] = {}
         self.session = session
@@ -650,7 +654,10 @@ class AudioIdentityContext:
                 baseline_settings.pop(key, None)
             baseline = compile_performance(text, baseline_settings, None, self._service_config_cache)
         except (ValueError, AccessDenied, WorkspaceNotFound) as error:
-            self.performance_states[revision_id] = ({"_performance_error": str(error)}, {})
+            state = self.performance_states.get(revision_id)
+            frozen_cleanly = state is not None and not state[0].get("_performance_error")
+            if not (self._isolate_segment_errors and frozen_cleanly):
+                self.performance_states[revision_id] = ({"_performance_error": str(error)}, {})
             return {**identity, "performance_request_hash": "unavailable", "performance_error": str(error)}
         if compiled.fingerprint == baseline.fingerprint:
             return identity

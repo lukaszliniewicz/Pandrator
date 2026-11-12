@@ -738,7 +738,8 @@ class GenerationSegmentReader:
             audio_identity = AudioIdentityContext(
                 session, identity_snapshot, _segment_references=segment_reference_index,
                 _cast_segment_ids=[row.id for row in rows],
-            ) if needs_reuse else None
+                _isolate_segment_errors=True,
+            ) if needs_reuse and rows else None
             reuse_inputs: list[tuple[GenerationSegment, dict[str, Any], Any, Any]] = []
             for row, item in zip(rows, items, strict=True):
                 active_take = next((take for take in takes_by_segment.get(row.id, [])
@@ -761,9 +762,9 @@ class GenerationSegmentReader:
                 )
                 reuse_inputs.append((row, item, active_take, artifact))
             if audio_identity is not None:
-                # A removed row has no frozen cast entry, so its identity fails,
-                # and the context keeps that failure for the whole revision.
-                # Work removed rows out last so they cannot mark later rows unknown.
+                # A removed row has no frozen cast entry, so its identity fails;
+                # the context keeps a failure after the freeze with its own row.
+                # Removed rows are worked out last all the same.
                 for row, item, active_take, artifact in sorted(
                     reuse_inputs, key=lambda inputs: bool(inputs[0].removed),
                 ):

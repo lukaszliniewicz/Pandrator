@@ -48,6 +48,11 @@ def freeze_generation_performance_snapshot(
 
     Resume/retry consumes the existing run snapshot rather than reselecting it.
     The text is stored once, not repeated for every context window in a book.
+
+    ``cast_segment_ids`` names the segments whose cast voices must resolve; the
+    cast is still frozen for every segment. ``_freeze_segment_ids`` limits the
+    cast freeze itself to those segments, for a listing page. Performance and
+    semantic context are always frozen for the whole revision.
     """
     if _service_config_cache is None:
         _service_config_cache = {}

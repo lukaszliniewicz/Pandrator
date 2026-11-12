@@ -714,10 +714,11 @@ def freeze_cast_snapshot(
     _carried_snapshot: Mapping[str, Any] | None = None,
     _freeze_segment_ids: Collection[str] | None = None,
 ) -> None:
-    """Freeze all entries, resolving voices only for requested validation IDs.
+    """Freeze cast entries, resolving voices only for requested validation IDs.
 
+    By default every non-removed segment of the revision is frozen.
     ``_freeze_segment_ids`` limits the freeze itself to those segments (a page
-    listing); the default freezes every non-removed segment of the revision.
+    listing); ``validate_segment_ids`` only limits which entries must resolve.
     """
     from .generation_rendering import build_render_parts
 
