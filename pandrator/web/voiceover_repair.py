@@ -36,6 +36,7 @@ from .audio_assembly import (
     preferred_pcm_format,
 )
 from .generation_audio_identity import plan_audio_identities
+from .generation_start_preparation import snapshot_guard
 from .models import (
     Artifact,
     AudioTake,
@@ -535,6 +536,15 @@ def repair_early_blocks(
                         raise ValueError(
                             "Cue boundary no longer maps to the spoken text."
                         )
+                    source_signature = plan_signature(session, current_revision_id)
+                # The staged split is committed; if anything below fails it stays
+                # in history unapplied, like a repair whose audio adds delay.
+                # Freezing it and its audio identities reads the whole plan, which
+                # can take minutes on a long cast plan, so it runs outside the
+                # writer. The guard is taken first, and the writer below rechecks
+                # it with the take choices and the source plan.
+                with handler.database.session() as session:
+                    guard = snapshot_guard(session, session_id, staged_revision_id)
                     child_snapshot = deepcopy(snapshot)
                     child_snapshot["speech_plan_revision_id"] = proposal[
                         "plan_revision_id"
@@ -626,6 +636,20 @@ def repair_early_blocks(
                             session, proposal["plan_revision_id"], child_snapshot
                         )
                     )
+                if stop.is_set():
+                    repair_status, repair_reason = "stopped", "generation_stopped"
+                    break
+                with handler.database.immediate_session() as session:
+                    if (
+                        _selection_state(session, current_revision_id)
+                        != (choices, source_take_signature)
+                        or plan_signature(session, current_revision_id) != source_signature
+                        or snapshot_guard(session, session_id, staged_revision_id) != guard
+                    ):
+                        repair_status, repair_reason = (
+                            "not_applied", "selection_changed"
+                        )
+                        break
                     sequence = (
                         int(
                             session.scalar(
@@ -681,7 +705,6 @@ def repair_early_blocks(
                             clone.generation_run_id = None
                         else:
                             clone.generation_run_id = staged.id
-                    source_signature = plan_signature(session, current_revision_id)
                 repair_attempts += 1
                 progress(
                     index / len(groups),

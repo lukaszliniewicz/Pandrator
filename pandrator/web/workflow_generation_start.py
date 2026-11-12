@@ -198,19 +198,28 @@ def run_reviewable_generation(
             default=str,
         ).encode("utf-8")
     ).hexdigest()
+    if expected_revision_id and expected_revision_id != plan_revision_id:
+        raise RevisionConflict(
+            "The selected speech plan revision changed before workflow generation could start."
+        )
+    from .generation_audio_identity import plan_audio_identities
+    from .generation_start_preparation import require_snapshot_guard, snapshot_guard
+    from .speech_plan_workspace import freeze_speech_snapshot
+
+    # The freeze and the audio identity pass read the whole plan and can take
+    # minutes on a long cast plan; under the writer they would stop every other
+    # write, audit rows and job heartbeats included. Prepare them in a plain
+    # session, as generation admission does: the guard is taken first, so any
+    # input change during the pass fails the recheck under the writer below.
+    with context.database.session() as session:
+        assert_current_revision(session, plan_revision_id)
+        guard = snapshot_guard(session, session_id, plan_revision_id)
+        freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(expected_revision_id))
+        snapshot["generation_audio_identities"] = plan_audio_identities(session, plan_revision_id, snapshot)
+    frozen_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     with context.database.immediate_session() as session:
         assert_current_revision(session, plan_revision_id)
-        if expected_revision_id and expected_revision_id != plan_revision_id:
-            raise RevisionConflict(
-                "The selected speech plan revision changed before workflow generation could start."
-            )
-        from .speech_plan_workspace import freeze_speech_snapshot
-
-        freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(expected_revision_id))
-        from .generation_audio_identity import plan_audio_identities
-
-        snapshot["generation_audio_identities"] = plan_audio_identities(session, plan_revision_id, snapshot)
-        frozen_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        require_snapshot_guard(session, session_id, plan_revision_id, guard)
         sequence_number = (
             int(
                 session.scalar(

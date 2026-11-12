@@ -397,6 +397,57 @@ class VoiceoverRepairTests(unittest.TestCase):
             self.assertEqual(guard["base_state_hash"], repair_state_hash(session, self.revision_id))
             self.assertEqual(guard["result_state_hash"], repair_state_hash(session, self.active()))
 
+    def _generate_with_identity_probe(self, probe):
+        """Generate, calling ``probe`` while a staged split's audio identities are computed."""
+        from pandrator.web import voiceover_repair
+
+        original = voiceover_repair.plan_audio_identities
+
+        def plan_audio_identities(*args, **kwargs):
+            probe()
+            return original(*args, **kwargs)
+
+        self.plan()
+        with patch.object(
+            voiceover_repair, "plan_audio_identities", side_effect=plan_audio_identities
+        ):
+            return self.generate()
+
+    def test_staged_split_computes_audio_identities_outside_the_writer(self):
+        probes = []
+
+        def take_the_writer():
+            # A held writer would make this fail at once with "database is locked".
+            with self.database.immediate_session(busy_timeout_ms=0):
+                probes.append("writer free")
+
+        result, calls = self._generate_with_identity_probe(take_the_writer)
+
+        self.assertEqual(["writer free"], probes)
+        self.assertEqual(1, result.get("repaired_blocks"))
+        self.assertEqual(4, calls)
+
+    def test_inputs_changed_while_staged_identities_are_computed_are_not_applied(self):
+        from pandrator.web.models import SessionRecord
+
+        def change_the_session():
+            with self.database.immediate_session() as session:
+                session.get(SessionRecord, self.record.id).revision += 1
+
+        result, calls = self._generate_with_identity_probe(change_the_session)
+
+        self.assertEqual(0, result.get("repaired_blocks"))
+        # The two first-pass takes only: the staged split is never generated.
+        self.assertEqual(2, calls)
+        self.assertEqual(self.revision_id, self.active())
+        self.assertEqual(
+            1, result.get("repair_rejection_reasons", {}).get("selection_changed")
+        )
+        self.assertEqual(
+            [("not_applied", "selection_changed")],
+            [(item["repair_status"], item["repair_reason"]) for item in self.repairs()],
+        )
+
     def test_partial_timing_inspection_is_not_reused_as_completed(self):
         self.plan()
         import pandrator.web.voiceover_repair as repair_module
