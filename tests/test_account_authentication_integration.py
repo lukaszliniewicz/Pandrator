@@ -370,52 +370,44 @@ def test_narrowing_client_approval_fences_old_tokens_and_unexchanged_codes(case:
     assert error.value.code == "invalid_grant"
 
 
-@pytest.mark.parametrize("credential_kind", ["api_token", "authorization_code"])
-def test_expiry_is_checked_after_writer_admission(case: AuthCase, credential_kind: str) -> None:
+def test_expiry_is_checked_after_writer_admission(case: AuthCase) -> None:
+    # Bearer tokens resolve in a read snapshot and take no writer; their expiry is
+    # covered in test_routine_request_writes.py.
     start = datetime(2035, 1, 1, tzinfo=UTC)
     clock = [start]
-    if credential_kind == "api_token":
-        _record, raw = case.auth.create_api_token(
-            "synthetic admission-expiry token", expires_at=start + timedelta(seconds=1)
-        )
-        resolve = lambda: case.auth.resolve_api_token(  # noqa: E731
-            raw, network_zone="loopback", target_instance_id=None
-        )
-        clock_target = "pandrator.web.auth.utcnow"
-    else:
-        enrollment = case.app.extensions["pandrator"]["automation_enrollment"]
-        client_id = str(uuid4())
-        verifier = "a" * 64
-        redirect_uri = "http://127.0.0.1:43123/callback"
-        code = enrollment.issue_code(
-            client_id=client_id,
-            client_name="Synthetic expiring client",
-            redirect_uri=redirect_uri,
-            scopes=["app.read"],
-            code_challenge=create_s256_code_challenge(verifier),
-            code_challenge_method="S256",
-            expires_in_days=1,
-            target_instance_id="synthetic-instance",
-            canonical_origin="https://synthetic.example",
-            approved_by=current_browser_principal(case),
-        )
-        with case.database.immediate_session() as session:
-            grant = session.scalar(
-                select(AutomationEnrollmentGrant).where(
-                    AutomationEnrollmentGrant.client_id == client_id
-                )
+    enrollment = case.app.extensions["pandrator"]["automation_enrollment"]
+    client_id = str(uuid4())
+    verifier = "a" * 64
+    redirect_uri = "http://127.0.0.1:43123/callback"
+    code = enrollment.issue_code(
+        client_id=client_id,
+        client_name="Synthetic expiring client",
+        redirect_uri=redirect_uri,
+        scopes=["app.read"],
+        code_challenge=create_s256_code_challenge(verifier),
+        code_challenge_method="S256",
+        expires_in_days=1,
+        target_instance_id="synthetic-instance",
+        canonical_origin="https://synthetic.example",
+        approved_by=current_browser_principal(case),
+    )
+    with case.database.immediate_session() as session:
+        grant = session.scalar(
+            select(AutomationEnrollmentGrant).where(
+                AutomationEnrollmentGrant.client_id == client_id
             )
-            assert grant is not None
-            grant.expires_at = start + timedelta(seconds=1)
-        resolve = lambda: enrollment.exchange_code(  # noqa: E731
-            code=code,
-            client_id=client_id,
-            redirect_uri=redirect_uri,
-            code_verifier=verifier,
-            target_instance_id="synthetic-instance",
-            canonical_origin="https://synthetic.example",
         )
-        clock_target = "pandrator.web.automation_enrollment.utcnow"
+        assert grant is not None
+        grant.expires_at = start + timedelta(seconds=1)
+    resolve = lambda: enrollment.exchange_code(  # noqa: E731
+        code=code,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        code_verifier=verifier,
+        target_instance_id="synthetic-instance",
+        canonical_origin="https://synthetic.example",
+    )
+    clock_target = "pandrator.web.automation_enrollment.utcnow"
 
     original_writer = case.database.immediate_session
 
@@ -429,9 +421,6 @@ def test_expiry_is_checked_after_writer_admission(case: AuthCase, credential_kin
         patch(clock_target, side_effect=lambda: clock[0]),
         patch.object(case.database, "immediate_session", delayed_admission),
     ):
-        if credential_kind == "api_token":
-            assert resolve() is None
-        else:
-            with pytest.raises(EnrollmentError) as error:
-                resolve()
-            assert error.value.code == "invalid_grant"
+        with pytest.raises(EnrollmentError) as error:
+            resolve()
+        assert error.value.code == "invalid_grant"

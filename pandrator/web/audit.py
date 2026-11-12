@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 import uuid
+from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import islice
 from pathlib import Path
@@ -38,6 +41,7 @@ AUDIT_METADATA_KEYS = frozenset(
     }
 )
 AUDIT_WRITE_TIMEOUT_MS = 250
+AUDIT_BATCH_LIMIT = 200
 AUDIT_REPLAY_LIMIT = 25
 AUDIT_RECORD_REPLAY_LIMIT = 5
 AUDIT_RECORD_REPLAY_BUDGET_MS = 250
@@ -63,6 +67,21 @@ _EVENT_FIELDS = (
 )
 
 
+@dataclass(eq=False, slots=True)
+class _PendingAudit:
+    """One request's audit event waiting for, or finished by, a group commit."""
+
+    fields: dict[str, Any]
+    actor: ExecutionActor | None
+    done: bool = False
+    committed: bool = False
+    error: BaseException | None = None
+
+    def event(self) -> AuditEvent:
+        # A rolled-back flush leaves the old instance with a stale id.
+        return AuditEvent(**self.fields)
+
+
 class AuditService:
     def __init__(
         self,
@@ -76,6 +95,9 @@ class AuditService:
         self.redactor = redactor
         self.maximum_events = max(1_000, int(maximum_events))
         self.retention_days = max(1, int(retention_days))
+        self._commit_condition = threading.Condition()
+        self._commit_queue: deque[_PendingAudit] = deque()
+        self._commit_leader = False
 
     def record_command_in_session(
         self,
@@ -152,47 +174,120 @@ class AuditService:
                 safe_metadata[key] = value
             else:
                 safe_metadata[key] = self.redactor.redact(value)[:160]
-        event = AuditEvent(
-            request_id=str(request_id)[:80],
-            traceparent=(str(traceparent)[:80] if traceparent else None),
-            principal_subject=principal.subject[:200],
-            principal_kind=principal.kind,
-            scopes_json=sorted(principal.scopes),
-            action=str(action or "unknown")[:160],
-            method=str(method)[:12],
-            path=self.redactor.redact(path)[:500],
-            idempotency_key=(
+        fields: dict[str, Any] = {
+            "request_id": str(request_id)[:80],
+            "traceparent": (str(traceparent)[:80] if traceparent else None),
+            "principal_subject": principal.subject[:200],
+            "principal_kind": principal.kind,
+            "scopes_json": sorted(principal.scopes),
+            "action": str(action or "unknown")[:160],
+            "method": str(method)[:12],
+            "path": self.redactor.redact(path)[:500],
+            "idempotency_key": (
                 self.redactor.redact(idempotency_key)[:200] if idempotency_key else None
             ),
-            plan_id=str(plan_id)[:120] if plan_id else None,
-            plan_digest=(str(plan_digest)[:128] if plan_digest else None),
-            resource_kind=(str(resource_kind)[:80] if resource_kind else None),
-            resource_id=(str(resource_id)[:160] if resource_id else None),
-            outcome=outcome,
-            status_code=max(100, min(int(status_code), 599)),
-            duration_ms=max(0, min(int(duration_ms), 86_400_000)),
-            metadata_json=safe_metadata,
-            created_at=utcnow(),
-        )
-        try:
-            with self.database.immediate_session(busy_timeout_ms=AUDIT_WRITE_TIMEOUT_MS) as session:
-                session.add(event)
-                session.flush()
-                self._add_actor(session, event.id, actor)
-                if event.id % 100 == 0:
-                    self._prune_in_session(session)
-        except Exception as error:
-            if not is_sqlite_busy(error):
-                raise
-            self._spool(event, actor)
-            _LOGGER.warning("Audit writer busy; event saved to pending audit spool")
-        else:
+            "plan_id": str(plan_id)[:120] if plan_id else None,
+            "plan_digest": (str(plan_digest)[:128] if plan_digest else None),
+            "resource_kind": (str(resource_kind)[:80] if resource_kind else None),
+            "resource_id": (str(resource_id)[:160] if resource_id else None),
+            "outcome": outcome,
+            "status_code": max(100, min(int(status_code), 599)),
+            "duration_ms": max(0, min(int(duration_ms), 86_400_000)),
+            "metadata_json": safe_metadata,
+            "created_at": utcnow(),
+        }
+        entry = _PendingAudit(fields, actor)
+        led = self._commit(entry)
+        if entry.error is not None:
+            raise entry.error
+        if led and entry.committed:
             self._drain_pending(
                 limit=AUDIT_RECORD_REPLAY_LIMIT,
                 budget_ms=AUDIT_RECORD_REPLAY_BUDGET_MS,
                 # Replay is opportunistic after the current event has committed.
                 busy_timeout_ms=0,
             )
+
+    def _commit(self, entry: _PendingAudit) -> bool:
+        """Return once the entry is committed or spooled; report whether this thread led.
+
+        Concurrent requests share one write transaction per batch. The thread that
+        finds no leader writes batches from the queue front until its own entry is
+        done, then hands leadership to a waiting request.
+        """
+        condition = self._commit_condition
+        with condition:
+            self._commit_queue.append(entry)
+            while not entry.done and self._commit_leader:
+                condition.wait()
+            lead = not entry.done
+            if lead:
+                self._commit_leader = True
+        if lead:
+            try:
+                while True:
+                    with condition:
+                        if entry.done:
+                            break
+                        batch = [
+                            self._commit_queue.popleft()
+                            for _ in range(min(AUDIT_BATCH_LIMIT, len(self._commit_queue)))
+                        ]
+                    self._write_batch(batch)
+            finally:
+                with condition:
+                    self._commit_leader = False
+                    condition.notify_all()
+        return lead
+
+    def _write_batch(self, batch: list[_PendingAudit]) -> None:
+        try:
+            self._write_entries(batch)
+        except BaseException as error:  # noqa: BLE001 - every entry must be resolved
+            for entry in batch:
+                if not entry.done and not entry.committed and entry.error is None:
+                    entry.error = error
+            if not isinstance(error, Exception):
+                raise
+        finally:
+            with self._commit_condition:
+                for entry in batch:
+                    entry.done = True
+                self._commit_condition.notify_all()
+
+    def _write_entries(self, batch: list[_PendingAudit]) -> None:
+        try:
+            self._insert(batch)
+        except Exception as error:
+            if is_sqlite_busy(error):
+                for entry in batch:
+                    self._spool_entry(entry)
+            elif len(batch) > 1:
+                for entry in batch:
+                    self._write_entries([entry])
+            else:
+                batch[0].error = error
+        else:
+            for entry in batch:
+                entry.committed = True
+
+    def _insert(self, batch: list[_PendingAudit]) -> None:
+        with self.database.immediate_session(busy_timeout_ms=AUDIT_WRITE_TIMEOUT_MS) as session:
+            events = [entry.event() for entry in batch]
+            session.add_all(events)
+            session.flush()
+            for event, entry in zip(events, batch, strict=True):
+                self._add_actor(session, event.id, entry.actor)
+            if any(event.id % 100 == 0 for event in events):
+                self._prune_in_session(session)
+
+    def _spool_entry(self, entry: _PendingAudit) -> None:
+        try:
+            self._spool(entry.event(), entry.actor)
+        except Exception as error:
+            entry.error = error
+            return
+        _LOGGER.warning("Audit writer busy; event saved to pending audit spool")
 
     @property
     def _pending_dir(self) -> Path:

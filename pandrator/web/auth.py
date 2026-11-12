@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
 import threading
 import time
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from .accounts import installation_mode
@@ -46,8 +47,12 @@ from .accounts.passwords import (
     password_needs_rehash,
     verify_password,
 )
-from .database import Database
+from .database import Database, is_sqlite_busy
 from .models import ApiToken, AutomationClient, utcnow
+
+_LOGGER = logging.getLogger(__name__)
+API_TOKEN_ACTIVITY_INTERVAL = timedelta(seconds=60)
+API_TOKEN_TOUCH_TIMEOUT_MS = 250
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -533,104 +538,170 @@ class AuthService:
     ) -> Principal | None:
         prefix = str(raw or "")[:12]
         digest = _token_digest(str(raw or ""))
-        with self.database.immediate_session() as session:
+        with self.database.snapshot_session() as session:
             now = utcnow()
-            candidates = list(
-                session.scalars(
-                    select(ApiToken).where(
-                        ApiToken.token_prefix == prefix,
-                        ApiToken.revoked_at.is_(None),
-                    )
-                ).all()
+            resolved = self._resolve_api_token_in_session(
+                session,
+                prefix,
+                digest,
+                now=now,
+                network_zone=network_zone,
+                target_instance_id=target_instance_id,
+                canonical_origin=canonical_origin,
             )
-            for candidate in candidates:
-                if not hmac.compare_digest(candidate.token_hash, digest):
-                    continue
-                expires_at = _aware(candidate.expires_at)
-                if expires_at is not None and expires_at <= now:
-                    return None
+        if resolved is None:
+            return None
+        principal, token_due, client_due = resolved
+        if token_due or client_due:
+            self._touch_api_token(principal, now, token_due=token_due, client_due=client_due)
+        return principal
+
+    @staticmethod
+    def _activity_due(last_used_at: datetime | None, now: datetime) -> bool:
+        last_used = _aware(last_used_at)
+        return last_used is None or now - last_used >= API_TOKEN_ACTIVITY_INTERVAL
+
+    def _resolve_api_token_in_session(
+        self,
+        session: Session,
+        prefix: str,
+        digest: str,
+        *,
+        now: datetime,
+        network_zone: NetworkZone,
+        target_instance_id: str | None,
+        canonical_origin: str | None,
+    ) -> tuple[Principal, bool, bool] | None:
+        candidates = list(
+            session.scalars(
+                select(ApiToken).where(
+                    ApiToken.token_prefix == prefix,
+                    ApiToken.revoked_at.is_(None),
+                )
+            ).all()
+        )
+        for candidate in candidates:
+            if not hmac.compare_digest(candidate.token_hash, digest):
+                continue
+            expires_at = _aware(candidate.expires_at)
+            if expires_at is not None and expires_at <= now:
+                return None
+            if (
+                candidate.target_instance_id
+                and target_instance_id is not None
+                and candidate.target_instance_id != target_instance_id
+            ):
+                return None
+            if (
+                candidate.canonical_origin
+                and canonical_origin is not None
+                and candidate.canonical_origin != canonical_origin
+            ):
+                return None
+            try:
+                scopes = normalize_scopes(candidate.scopes_json)
+            except ValueError:
+                return None
+            raw_kind = str(candidate.principal_kind or "api_token")
+            if raw_kind not in PRINCIPAL_KINDS:
+                return None
+            if (
+                candidate.user_id is None
+                or candidate.user_auth_revision is None
+                or (raw_kind == "manager_bootstrap" and "app.admin" in scopes)
+            ):
+                return None
+            try:
+                state = account_state_in_session(
+                    session,
+                    candidate.user_id,
+                    auth_revision=candidate.user_auth_revision,
+                    require_admin="app.admin" in scopes,
+                )
+            except PermissionError:
+                return None
+            client_due = False
+            if candidate.client_id:
+                client = session.get(
+                    AutomationClient,
+                    candidate.client_id,
+                )
                 if (
-                    candidate.target_instance_id
-                    and target_instance_id is not None
-                    and candidate.target_instance_id != target_instance_id
+                    client is None
+                    or client.revoked_at is not None
+                    or client.user_id != state.user_id
+                    or client.user_auth_revision != state.auth_revision
                 ):
                     return None
                 if (
-                    candidate.canonical_origin
-                    and canonical_origin is not None
-                    and candidate.canonical_origin != canonical_origin
+                    target_instance_id is not None
+                    and client.target_instance_id != target_instance_id
                 ):
+                    return None
+                if canonical_origin is not None and client.canonical_origin != canonical_origin:
                     return None
                 try:
-                    scopes = normalize_scopes(candidate.scopes_json)
+                    if not scopes <= normalize_scopes(client.allowed_scopes_json):
+                        return None
                 except ValueError:
                     return None
-                raw_kind = str(candidate.principal_kind or "api_token")
-                if raw_kind not in PRINCIPAL_KINDS:
-                    return None
-                if (
-                    candidate.user_id is None
-                    or candidate.user_auth_revision is None
-                    or (raw_kind == "manager_bootstrap" and "app.admin" in scopes)
-                ):
-                    return None
-                try:
-                    state = account_state_in_session(
-                        session,
-                        candidate.user_id,
-                        auth_revision=candidate.user_auth_revision,
-                        require_admin="app.admin" in scopes,
-                    )
-                except PermissionError:
-                    return None
-                if candidate.client_id:
-                    client = session.get(
-                        AutomationClient,
-                        candidate.client_id,
-                    )
-                    if (
-                        client is None
-                        or client.revoked_at is not None
-                        or client.user_id != state.user_id
-                        or client.user_auth_revision != state.auth_revision
-                    ):
-                        return None
-                    if (
-                        target_instance_id is not None
-                        and client.target_instance_id != target_instance_id
-                    ):
-                        return None
-                    if (
-                        canonical_origin is not None
-                        and client.canonical_origin != canonical_origin
-                    ):
-                        return None
-                    try:
-                        if not scopes <= normalize_scopes(client.allowed_scopes_json):
-                            return None
-                    except ValueError:
-                        return None
-                    client.last_used_at = now
-                candidate.last_used_at = now
-                return Principal(
-                    subject=(
-                        str(candidate.subject)
-                        if candidate.subject
-                        else f"api-token:{candidate.id}"
-                    ),
-                    kind=cast(PrincipalKind, raw_kind),
-                    scopes=scopes,
-                    token_id=candidate.id,
-                    network_zone=network_zone,
-                    target_instance_id=(
-                        target_instance_id
-                        or str(candidate.target_instance_id or "")
-                    ),
-                    client_id=candidate.client_id,
-                    user_id=state.user_id,
-                    auth_revision=state.auth_revision,
-                )
+                client_due = self._activity_due(client.last_used_at, now)
+            principal = Principal(
+                subject=(
+                    str(candidate.subject) if candidate.subject else f"api-token:{candidate.id}"
+                ),
+                kind=cast(PrincipalKind, raw_kind),
+                scopes=scopes,
+                token_id=candidate.id,
+                network_zone=network_zone,
+                target_instance_id=(
+                    target_instance_id or str(candidate.target_instance_id or "")
+                ),
+                client_id=candidate.client_id,
+                user_id=state.user_id,
+                auth_revision=state.auth_revision,
+            )
+            return principal, self._activity_due(candidate.last_used_at, now), client_due
         return None
+
+    def _touch_api_token(
+        self, principal: Principal, now: datetime, *, token_due: bool, client_due: bool
+    ) -> None:
+        """Record "last used" at most once per interval; contention never fails a request."""
+        cutoff = now - API_TOKEN_ACTIVITY_INTERVAL
+        try:
+            with self.database.immediate_session(
+                busy_timeout_ms=API_TOKEN_TOUCH_TIMEOUT_MS
+            ) as session:
+                if token_due and principal.token_id is not None:
+                    session.execute(
+                        update(ApiToken)
+                        .where(
+                            ApiToken.id == principal.token_id,
+                            ApiToken.revoked_at.is_(None),
+                            or_(ApiToken.last_used_at.is_(None), ApiToken.last_used_at <= cutoff),
+                        )
+                        .values(last_used_at=now)
+                        .execution_options(synchronize_session=False)
+                    )
+                if client_due and principal.client_id:
+                    session.execute(
+                        update(AutomationClient)
+                        .where(
+                            AutomationClient.id == principal.client_id,
+                            AutomationClient.revoked_at.is_(None),
+                            or_(
+                                AutomationClient.last_used_at.is_(None),
+                                AutomationClient.last_used_at <= cutoff,
+                            ),
+                        )
+                        .values(last_used_at=now)
+                        .execution_options(synchronize_session=False)
+                    )
+        except Exception as error:
+            if not is_sqlite_busy(error):
+                raise
+            _LOGGER.debug("API token activity update skipped: database busy")
 
     def verify_api_token(self, raw: str) -> bool:
         """Compatibility helper for non-request callers."""
