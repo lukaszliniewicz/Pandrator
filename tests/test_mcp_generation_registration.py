@@ -630,6 +630,13 @@ def test_incomplete_detail_merges_nothing_and_warns(tmp_path: Path, tool: str, d
     result, calls = _call(tmp_path, tool, BASE, summary=ACTIVE_SUMMARY, detail_payload=detail)
     value = envelope(result)
     assert len(calls) == 2
+    summary_method = {
+        "pandrator_get_speech_plan_status": "get_speech_plan_status",
+        "pandrator_list_speech_plan_revisions": "list_speech_plan_revisions",
+    }[tool]
+    assert calls[0][:2] == (summary_method, (SESSION,))
+    assert calls[0][2]["summary"] is True
+    assert calls[1] == ("get_speech_plan_revision", (SESSION, "rev-2"), {})
     assert value["result"]["items"] == ACTIVE_SUMMARY["items"]
     assert [warning["code"] for warning in value["warnings"]] == ["revision_detail_incomplete"]
 
