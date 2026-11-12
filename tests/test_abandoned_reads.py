@@ -442,10 +442,14 @@ def test_waitress_reports_a_closed_client_to_the_running_request_and_skips_queue
         # Queued behind the only thread; its client closes before it is served.
         second = _send_get(server, "/second")
         _wait_until(lambda: len(server.task_dispatcher.queue) == 1, "the request to queue")
+        queued = server.task_dispatcher.queue[0]
         second.close()
         # The running request's client closes while the app is blocked.
         first.close()
         _wait_until(lambda: probes["/first"]() is True, "the running request's disconnect")
+        # Waitress skips a queued channel only once the loop has seen its close, so
+        # release the worker after that, or it could serve /second first.
+        _wait_until(lambda: not queued.connected, "the queued request's disconnect")
         release.set()
         _wait_until(
             lambda: not server.task_dispatcher.queue and server.task_dispatcher.active_count == 0,
