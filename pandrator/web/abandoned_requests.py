@@ -29,7 +29,11 @@ _PROBE: ContextVar[_BoundProbe | None] = ContextVar("pandrator_disconnect_probe"
 
 
 def bind_disconnect_probe(probe: DisconnectProbe) -> Token[_BoundProbe | None]:
-    """Arm checkpoints in the current context with a waitress-style probe."""
+    """Arm checkpoints in the current context with a waitress-style probe.
+
+    A new thread starts without it, but ``contextvars.copy_context()`` carries it
+    along, so work run that way from a request can still stop at a checkpoint.
+    """
 
     return _PROBE.set(_BoundProbe(probe))
 

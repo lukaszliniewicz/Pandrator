@@ -31,6 +31,9 @@ class ReadDisconnectChannel(HTTPChannel):
     """
 
     def readable(self) -> bool:
+        # Relies on waitress internals, checked against waitress 3.0.2: the channel's
+        # queue is ``self.requests`` and each parsed request has ``command``. Re-check
+        # when the waitress range moves; a rename would quietly stop disconnect checks.
         try:
             head = self.requests[0]
         except IndexError:

@@ -216,6 +216,9 @@ def test_each_heavy_read_of_a_cast_plan_with_takes_answers_499(varied_plan, rout
 
 
 def test_a_worker_thread_never_sees_the_request_threads_probe(varied_plan):  # noqa: F811
+    # Guards the threading model the probe relies on rather than code in this
+    # change: a plain thread starts with an empty context, so a job started from
+    # a request never sees that request's probe.
     plan, actor = varied_plan
     probe = mock.Mock(return_value=True)
     outcome: list[object] = []
@@ -390,14 +393,24 @@ def _waitress(app):
     try:
         yield server
     finally:
+        # A test that failed before closing its clients must not leave them open.
+        while _OPEN_CLIENTS:
+            _OPEN_CLIENTS.pop().close()
         stop.set()
         thread.join(WAIT_SECONDS)
         server.task_dispatcher.shutdown(cancel_pending=True, timeout=WAIT_SECONDS)
         server.close()
 
 
+_OPEN_CLIENTS: list[socket.socket] = []
+
+
 def _send_get(server, path: str, method: str = "GET") -> socket.socket:
-    client = socket.create_connection(("127.0.0.1", int(server.effective_port)))
+    # Bounded, so a server that never answers fails the test instead of hanging CI.
+    client = socket.create_connection(
+        ("127.0.0.1", int(server.effective_port)), timeout=WAIT_SECONDS
+    )
+    _OPEN_CLIENTS.append(client)
     length = "" if method == "GET" else "Content-Length: 0\r\n"
     client.sendall(f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n{length}\r\n".encode("ascii"))
     return client
