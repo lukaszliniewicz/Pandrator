@@ -403,9 +403,9 @@ class VoiceoverRepairTests(unittest.TestCase):
 
         original = voiceover_repair.plan_audio_identities
 
-        def plan_audio_identities(*args, **kwargs):
-            probe()
-            return original(*args, **kwargs)
+        def plan_audio_identities(session, revision_id, *args, **kwargs):
+            probe(revision_id)
+            return original(session, revision_id, *args, **kwargs)
 
         self.plan()
         with patch.object(
@@ -416,7 +416,7 @@ class VoiceoverRepairTests(unittest.TestCase):
     def test_staged_split_computes_audio_identities_outside_the_writer(self):
         probes = []
 
-        def take_the_writer():
+        def take_the_writer(_revision_id):
             # A held writer would make this fail at once with "database is locked".
             with self.database.immediate_session(busy_timeout_ms=0):
                 probes.append("writer free")
@@ -430,7 +430,7 @@ class VoiceoverRepairTests(unittest.TestCase):
     def test_inputs_changed_while_staged_identities_are_computed_are_not_applied(self):
         from pandrator.web.models import SessionRecord
 
-        def change_the_session():
+        def change_the_session(_revision_id):
             with self.database.immediate_session() as session:
                 session.get(SessionRecord, self.record.id).revision += 1
 
@@ -440,6 +440,27 @@ class VoiceoverRepairTests(unittest.TestCase):
         # The two first-pass takes only: the staged split is never generated.
         self.assertEqual(2, calls)
         self.assertEqual(self.revision_id, self.active())
+        self.assertEqual(
+            1, result.get("repair_rejection_reasons", {}).get("selection_changed")
+        )
+        self.assertEqual(
+            [("not_applied", "selection_changed")],
+            [(item["repair_status"], item["repair_reason"]) for item in self.repairs()],
+        )
+
+    def test_active_revision_changed_while_staged_identities_are_computed_is_not_generated(self):
+        def activate_another_revision(revision_id):
+            with self.database.immediate_session() as session:
+                plan = session.scalar(
+                    select(GenerationPlan).where(GenerationPlan.session_id == self.record.id)
+                )
+                plan.active_revision_id = revision_id
+
+        result, calls = self._generate_with_identity_probe(activate_another_revision)
+
+        self.assertEqual(0, result.get("repaired_blocks"))
+        # The two first-pass takes only: the staged split is never generated.
+        self.assertEqual(2, calls)
         self.assertEqual(
             1, result.get("repair_rejection_reasons", {}).get("selection_changed")
         )

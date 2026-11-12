@@ -640,8 +640,17 @@ def repair_early_blocks(
                     repair_status, repair_reason = "stopped", "generation_stopped"
                     break
                 with handler.database.immediate_session() as session:
+                    plan = session.scalar(
+                        select(GenerationPlan).where(
+                            GenerationPlan.session_id == session_id
+                        )
+                    )
                     if (
-                        _selection_state(session, current_revision_id)
+                        # Staging checked the active revision; recheck it, since
+                        # the pass above ran outside the writer.
+                        plan is None
+                        or plan.active_revision_id != current_revision_id
+                        or _selection_state(session, current_revision_id)
                         != (choices, source_take_signature)
                         or plan_signature(session, current_revision_id) != source_signature
                         or snapshot_guard(session, session_id, staged_revision_id) != guard

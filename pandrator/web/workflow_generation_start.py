@@ -218,6 +218,12 @@ def run_reviewable_generation(
         snapshot["generation_audio_identities"] = plan_audio_identities(session, plan_revision_id, snapshot)
     frozen_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     with context.database.immediate_session() as session:
+        if cancel_event.is_set():
+            # Stop before the run exists, so a cancel during the pass leaves no
+            # run behind to be marked failed.
+            from .media_process import MediaProcessCancelled
+
+            raise MediaProcessCancelled("Audio generation was canceled.")
         assert_current_revision(session, plan_revision_id)
         require_snapshot_guard(session, session_id, plan_revision_id, guard)
         sequence_number = (

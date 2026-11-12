@@ -2790,8 +2790,10 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         _path, _source_bytes, source = self._reviewable_start_source()
         original = generation_audio_identity.plan_audio_identities
 
+        cancel = threading.Event()
+
         def plan_audio_identities(*args, **kwargs):
-            probe()
+            probe(cancel)
             return original(*args, **kwargs)
 
         started = []
@@ -2804,14 +2806,14 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self.handlers._run_reviewable_generation(
                 {"session_id": self.session.id, "source_artifact_id": source.id,
                  "settings": {"service": "XTTS"}},
-                self.progress, threading.Event(),
+                self.progress, cancel,
             )
         return started
 
     def test_reviewable_start_computes_audio_identities_outside_the_writer(self):
         probes = []
 
-        def take_the_writer():
+        def take_the_writer(_cancel):
             # A held writer would make this fail at once with "database is locked".
             with self.database.immediate_session(busy_timeout_ms=0):
                 probes.append("writer free")
@@ -2828,7 +2830,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         from pandrator.web.generation_start_preparation import SNAPSHOT_GUARD_CONFLICT
         from pandrator.web.settings_policy import RevisionConflict
 
-        def change_the_session():
+        def change_the_session(_cancel):
             with self.database.immediate_session() as db:
                 db.get(SessionRecord, self.session.id).revision += 1
 
@@ -2836,6 +2838,15 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self._reviewable_start_with_identity_probe(change_the_session)
 
         self.assertEqual(SNAPSHOT_GUARD_CONFLICT, str(raised.exception))
+        with self.database.session() as db:
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationRun)))
+
+    def test_reviewable_start_canceled_while_identities_are_computed_creates_no_run(self):
+        from pandrator.web.media_process import MediaProcessCancelled
+
+        with self.assertRaises(MediaProcessCancelled):
+            self._reviewable_start_with_identity_probe(lambda cancel: cancel.set())
+
         with self.database.session() as db:
             self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationRun)))
 
