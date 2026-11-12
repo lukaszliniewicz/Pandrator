@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, select
+from sqlalchemy.orm import aliased
 
 from .generation_scheduling import regeneration_baton_descendants
 from .models import (
@@ -20,6 +21,17 @@ from .models import (
     GenerationSegment,
     utcnow,
 )
+
+_BATCH = 500
+
+
+def _load_by_id(session: Any, model: Any, identifiers: set[str]) -> dict[str, Any]:
+    ids = sorted(identifiers)
+    result: dict[str, Any] = {}
+    for start in range(0, len(ids), _BATCH):
+        for row in session.scalars(select(model).where(model.id.in_(ids[start:start + _BATCH]))):
+            result[row.id] = row
+    return result
 
 
 def edit_copy_ancestors(session: Any, revision: GenerationPlanRevision) -> list[str]:
@@ -177,28 +189,46 @@ def inherit_edit_copy_audio(session: Any, revision_id: str) -> int:
     ancestors = edit_copy_ancestors(session, revision)
     if not ancestors:
         return 0
-    targets = {row.ordinal: row for row in session.scalars(
-        select(GenerationSegment).where(GenerationSegment.plan_revision_id == revision_id)
-    )}
-    existing_by_id: dict[str, list[AudioTake]] = {}
-    for take in session.scalars(select(AudioTake).join(
-        GenerationSegment, GenerationSegment.id == AudioTake.generation_segment_id
-    ).where(GenerationSegment.plan_revision_id == revision_id)):
-        existing_by_id.setdefault(take.generation_segment_id, []).append(take)
-    rows = session.execute(
-        select(GenerationSegment, AudioTake, Artifact)
+    # Find the takes still to copy in SQL: in a long plan almost every ancestor
+    # take is already on its target, so hydrating each segment and take to find
+    # that out held the writer for most of a second.
+    target = aliased(GenerationSegment)
+    held = aliased(AudioTake)
+    candidates = session.execute(
+        select(GenerationSegment.id, AudioTake.id, target.id)
         .join(AudioTake, AudioTake.generation_segment_id == GenerationSegment.id)
         .join(Artifact, Artifact.id == AudioTake.artifact_id)
+        .join(target, and_(target.plan_revision_id == revision_id,
+                           target.ordinal == GenerationSegment.ordinal))
         .where(GenerationSegment.plan_revision_id.in_(ancestors),
-               AudioTake.status.in_(("completed", "stale")))
+               # Concatenating keeps the planner on the revision's segments: the
+               # status index would scan every take of every project.
+               (AudioTake.status + "").in_(("completed", "stale")),
+               target.removed.is_(False),
+               ~exists().where(held.generation_segment_id == target.id,
+                               held.artifact_id == AudioTake.artifact_id))
         .order_by(AudioTake.created_at.desc(), AudioTake.id)
     ).all()
+    if not candidates:
+        return 0
+    sources = _load_by_id(session, GenerationSegment, {row[0] for row in candidates})
+    takes = _load_by_id(session, AudioTake, {row[1] for row in candidates})
+    targets = _load_by_id(session, GenerationSegment, {row[2] for row in candidates})
+    artifacts = _load_by_id(session, Artifact, {value.artifact_id for value in takes.values()})
+    existing_by_id: dict[str, list[AudioTake]] = {}
+    target_ids = list(targets)
+    for start in range(0, len(target_ids), _BATCH):
+        for value in session.scalars(select(AudioTake).where(
+            AudioTake.generation_segment_id.in_(target_ids[start:start + _BATCH])
+        )):
+            existing_by_id.setdefault(value.generation_segment_id, []).append(value)
     changed = 0
-    for source, take, artifact in rows:
-        target = targets.get(source.ordinal)
-        if target is not None:
-            changed += _copy_take(session, source, target, take, artifact,
-                                  existing_by_id.setdefault(target.id, []))
+    for source_id, take_id, target_id in candidates:
+        take = takes[take_id]
+        changed += _copy_take(
+            session, sources[source_id], targets[target_id], take, artifacts[take.artifact_id],
+            existing_by_id.setdefault(target_id, []),
+        )
     if changed:
         session.flush()
     return changed
