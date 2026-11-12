@@ -1,3 +1,5 @@
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.3/PandratorManager-0.9.31-windows-x86_64.exe) [![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.3/PandratorManager-0.9.31-x86_64.AppImage)
+
 # Pandrator 0.14.3
 
 **A maintenance release improving generation reliability, cross-platform builds and Windows test setup.**
@@ -7,6 +9,6 @@
 - **Safer Windows tests.** Pytest uses a short, private temporary directory when available, with ownership and ACL checks, cross-process initialisation locking and safe cleanup. Local fallback to the normal pytest directory remains supported.
 - **Additional stability fixes.** ElevenLabs streaming timeouts are clamped to valid bounds, and language-scoped workflow readiness waits for the initial settings load.
 
-[Detailed changes](release-changes-0.14.3.md).
+[Detailed changes](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.14.3/docs/release-changes-0.14.3.md).
 
 Includes **Pandrator 0.14.3**, **Manager 0.9.31** (unchanged), and **MCP 0.7.1** (unchanged). Use the Windows or Linux Manager download to install or update; the Windows launcher is unsigned. `SHA256SUMS` covers release assets. GitHub's source archives are intended for developers.
