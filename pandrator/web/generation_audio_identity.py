@@ -316,7 +316,9 @@ class AudioIdentityContext:
 
         self._pending_proof = _pending_proof
         # A listing page freezes the cast for its own segments only; None keeps
-        # the whole-revision freeze every other caller relies on.
+        # the whole-revision freeze every other caller relies on. The scope
+        # applies to every revision this context freezes, so pass it only for
+        # a page of one revision, as the segment listing does.
         self._cast_segment_ids = frozenset(_cast_segment_ids) if _cast_segment_ids is not None else None
         # A listing keeps a failure that comes after a successful freeze with
         # its own segment; other callers keep the first failure for the revision.
