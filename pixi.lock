@@ -7485,7 +7485,7 @@ packages:
   - psutil>=6,<8
   - requests>=2.32,<3
   - sqlalchemy>=2.0,<3
-  - waitress>=3.0,<4
+  - waitress>=3.0.1,<4
   - websockets>=15,<16
   - pandrator-mcp[manager]>=0.3,<1 ; extra == 'automation'
   - onnxruntime>=1.20,<2 ; extra == 'ocr'
@@ -7523,7 +7523,7 @@ packages:
   - pystray>=0.19,<1
   - pydantic>=2.10,<3
   - requests>=2.32,<3
-  - waitress>=3.0,<4
+  - waitress>=3.0.1,<4
   - build>=1.6,<2 ; extra == 'build'
   - pyinstaller==6.22.3 ; extra == 'build'
   - pytest>=9.2,<10 ; extra == 'dev'

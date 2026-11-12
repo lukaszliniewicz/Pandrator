@@ -42,7 +42,7 @@ dependencies = [
   "psutil>=6,<8",
   "requests>=2.32,<3",
   "sqlalchemy>=2.0,<3",
-  "waitress>=3.0,<4",
+  "waitress>=3.0.1,<4",
   "websockets>=15,<16",
 ]
 
