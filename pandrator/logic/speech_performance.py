@@ -257,7 +257,7 @@ def _azure_speech_selection(
     return canonical_model, canonical_voice or raw_voice
 
 
-IMMUTABLE_LEAVES = frozenset({str, int, float, bool, type(None), bytes})
+_IMMUTABLE_LEAVES = frozenset({str, int, float, bool, type(None), bytes})
 
 
 def copy_record(record: Any, memo: dict[int, Any] | None = None) -> Any:
@@ -265,17 +265,21 @@ def copy_record(record: Any, memo: dict[int, Any] | None = None) -> Any:
 
     The result equals ``deepcopy(record)``: immutable leaves are shared, which
     is what ``deepcopy`` does for them, and every other value is deep-copied
-    with one shared memo so aliasing inside the record is kept. Anything but a
-    plain ``dict`` takes the ordinary ``deepcopy`` path.
+    with one shared memo, registered for the record itself first, so aliasing
+    and self-references inside the record are kept. Anything but a plain
+    ``dict`` takes the ordinary ``deepcopy`` path.
     """
 
     if type(record) is not dict:
         return deepcopy(record, memo)
     memo = {} if memo is None else memo
-    return {
-        key: value if type(value) in IMMUTABLE_LEAVES else deepcopy(value, memo)
-        for key, value in record.items()
-    }
+    if id(record) in memo:
+        return memo[id(record)]
+    copied: dict[Any, Any] = {}
+    memo[id(record)] = copied
+    for key, value in record.items():
+        copied[key] = value if type(value) in _IMMUTABLE_LEAVES else deepcopy(value, memo)
+    return copied
 
 
 def resolve_capabilities(

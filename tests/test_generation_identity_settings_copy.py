@@ -135,3 +135,15 @@ def test_copy_record_equals_deepcopy_without_sharing_containers():
     ordered = OrderedDict(record)
     assert type(copy_record(ordered)) is OrderedDict
     assert copy_record(None) is None
+
+
+def test_copy_record_keeps_a_record_that_contains_itself():
+    from pandrator.logic.speech_performance import copy_record
+
+    record: dict = {"name": "loop", "nested": {}}
+    record["self"] = record
+    record["nested"]["back"] = record
+    copied = copy_record(record)
+    assert copied is not record
+    assert copied["self"] is copied
+    assert copied["nested"]["back"] is copied

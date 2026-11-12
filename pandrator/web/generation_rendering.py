@@ -508,13 +508,14 @@ def build_render_parts(
 ) -> list[dict[str, Any]]:
     """Plan ordered provider requests for one logical segment.
 
-    ``_read_only_controls`` takes a shallow copy of ``controls`` instead of a
-    deep copy. The planner only reads control values; a caller may still set
-    top-level keys on ``controls`` (a binding callback does), but nothing may
-    change a nested value such as ``characters`` or ``cast`` while it is shared.
-    ``_validated_controls`` is a memo for ``resolve_cast_voice``; pass it only
-    together with ``_read_only_controls``, since it matches the controls by
-    object identity.
+    ``_read_only_controls`` gives the planner a shallow copy of ``controls``
+    instead of a deep copy. The planner only reads control values, so nothing
+    may change a nested value such as ``characters`` or ``cast`` while it is
+    shared. A top-level key a binding callback later sets on the caller's
+    ``controls`` is not seen by the planner, as with a deep copy.
+    ``_validated_controls`` is a memo for ``resolve_cast_voice`` that matches
+    the controls by object identity; it is used only with
+    ``_read_only_controls`` and ignored otherwise.
     """
 
     if not isinstance(text, str):
