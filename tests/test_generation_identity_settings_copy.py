@@ -147,3 +147,21 @@ def test_copy_record_keeps_a_record_that_contains_itself():
     assert copied is not record
     assert copied["self"] is copied
     assert copied["nested"]["back"] is copied
+
+
+def test_copy_record_copies_a_mutable_key_with_its_aliases():
+    from pandrator.logic.speech_performance import copy_record
+
+    class Key:
+        def __init__(self) -> None:
+            self.items: list[str] = []
+
+    key = Key()
+    record = {key: key, "alias": key}
+    copied = copy_record(record)
+    (copied_key,) = [item for item in copied if item != "alias"]
+    assert copied_key is not key
+    assert copied[copied_key] is copied_key
+    assert copied["alias"] is copied_key
+    copied_key.items.append("changed")
+    assert key.items == []

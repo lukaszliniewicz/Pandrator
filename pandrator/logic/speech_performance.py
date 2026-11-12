@@ -264,10 +264,11 @@ def copy_record(record: Any, memo: dict[int, Any] | None = None) -> Any:
     """Deep-copy a flat record without a call per immutable value.
 
     The result equals ``deepcopy(record)``: immutable leaves are shared, which
-    is what ``deepcopy`` does for them, and every other value is deep-copied
-    with one shared memo, registered for the record itself first, so aliasing
-    and self-references inside the record are kept. Anything but a plain
-    ``dict`` takes the ordinary ``deepcopy`` path.
+    is what ``deepcopy`` does for them, and every other key and value is
+    deep-copied, key first as ``deepcopy`` does, with one shared memo that is
+    registered for the record itself first, so aliasing and self-references
+    inside the record are kept. Anything but a plain ``dict`` takes the
+    ordinary ``deepcopy`` path.
     """
 
     if type(record) is not dict:
@@ -278,6 +279,8 @@ def copy_record(record: Any, memo: dict[int, Any] | None = None) -> Any:
     copied: dict[Any, Any] = {}
     memo[id(record)] = copied
     for key, value in record.items():
+        if type(key) not in _IMMUTABLE_LEAVES:
+            key = deepcopy(key, memo)
         copied[key] = value if type(value) in _IMMUTABLE_LEAVES else deepcopy(value, memo)
     return copied
 
