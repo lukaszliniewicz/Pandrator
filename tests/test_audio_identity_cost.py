@@ -872,3 +872,23 @@ def test_cache_keys_read_catalogue_inputs_from_any_mapping():
     changed = {**settings, "provider_configs": {"local": {"enabled": False}}}
     assert key(MappingProxyType(settings)) == key(settings)
     assert key(MappingProxyType(settings)) != key(MappingProxyType(changed))
+
+
+def test_language_support_reads_a_provider_override_from_any_mapping():
+    # The catalogue builder and the cache key must read a read-only Mapping the
+    # same way, or a proxy and a dict would share one entry for different models.
+    from types import MappingProxyType
+
+    resolve = tts_language_preflight.resolve_tts_language_support
+    settings = {
+        "service": "silero",
+        "tts_service": "silero",
+        "provider_configs": [{"id": "silero", "default_model": "v3_en"}],
+    }
+    shared: dict = {}
+    through_proxy = resolve(MappingProxyType(settings), _service_config_cache=shared)
+    through_dict = resolve(settings, _service_config_cache=shared)
+    uncached = resolve(settings, _service_config_cache={})
+    assert uncached is not None and uncached["model_id"] == "v3_en"
+    assert through_proxy == uncached
+    assert through_dict == uncached

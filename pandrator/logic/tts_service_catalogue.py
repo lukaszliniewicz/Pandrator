@@ -590,7 +590,7 @@ ELEVENLABS_NATIVE_ADAPTER = "elevenlabs_native"
 def _read_setting(settings, key: str, default=None):
     if settings is None:
         return default
-    if isinstance(settings, dict):
+    if isinstance(settings, Mapping):
         return settings.get(key, default)
     return getattr(settings, key, default)
 
