@@ -1075,7 +1075,8 @@ def _reconcile_outcome(case, reconcile, revision_id, *, keep=False):
 
 
 @pytest.mark.usefixtures("host_execution_actor")
-def test_reconcile_copies_the_same_takes_as_the_full_scan(case):
+def test_reconcile_copies_the_same_takes_as_the_full_scan(case, monkeypatch):
+    from pandrator.web import generation_edit_audio
     from pandrator.web.generation_edit_audio import inherit_edit_copy_audio
 
     revision_id = _build_edit_copy_with_two_ancestors(case)
@@ -1089,6 +1090,38 @@ def test_reconcile_copies_the_same_takes_as_the_full_scan(case):
     assert sorted(item[0] for item in copied) == [1, 2, 3, 3, 6, 7, 8]
     assert any(item[7] for item in copied) and any(item[4] == "stale" for item in copied)
     assert actual == expected
+
+    # Batches of two make every batched load span several batches, as a long plan does.
+    monkeypatch.setattr(generation_edit_audio, "_BATCH", 2)
+    assert _reconcile_outcome(case, inherit_edit_copy_audio, revision_id) == expected
+
+
+@pytest.mark.usefixtures("host_execution_actor")
+def test_reconcile_candidate_query_avoids_the_global_status_index(case):
+    from pandrator.web.generation_edit_audio import inherit_edit_copy_audio
+
+    revision_id = _build_edit_copy_with_two_ancestors(case)
+    captured = []
+
+    def capture_sql(_connection, _cursor, statement, parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT") and "EXISTS" in statement.upper():
+            captured.append((statement, parameters))
+
+    event.listen(case.database.engine, "before_cursor_execute", capture_sql)
+    try:
+        _reconcile_outcome(case, inherit_edit_copy_audio, revision_id)
+    finally:
+        event.remove(case.database.engine, "before_cursor_execute", capture_sql)
+
+    (statement, parameters), = captured
+    with case.database.engine.connect() as connection:
+        plan = connection.exec_driver_sql(f"EXPLAIN QUERY PLAN {statement}", parameters).all()
+    details = [str(row[3]).upper() for row in plan]
+    # The status index holds every take of every project; the query must start from the
+    # revision's segments instead.
+    assert not any("IX_AUDIO_TAKES_STATUS" in detail
+                   or "IDX_AUDIO_TAKES_ACTIVE_STATUS_SEGMENT_CREATED" in detail
+                   for detail in details), details
 
 
 @pytest.mark.usefixtures("host_execution_actor")

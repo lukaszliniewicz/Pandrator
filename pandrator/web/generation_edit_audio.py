@@ -111,8 +111,8 @@ def capture_selection_guards(session: Any, revision_id: str) -> dict[str, Any]:
         GenerationSegment.plan_revision_id == revision_id
     )))
     guards = {segment_id: selection_guard(None) for segment_id in segment_ids}
-    for start in range(0, len(segment_ids), 500):
-        batch = segment_ids[start:start + 500]
+    for start in range(0, len(segment_ids), _BATCH):
+        batch = segment_ids[start:start + _BATCH]
         # Filter active rows after the segment-ID lookup so SQLite uses the
         # segment index rather than scanning the global active-take index.
         for segment_id, artifact_id, revision, is_active in session.execute(
