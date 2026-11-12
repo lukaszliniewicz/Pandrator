@@ -555,17 +555,15 @@ class AuthService:
         if resolved is None:
             return None
         principal, token_due, client_due = resolved
-        # Claim and touch against the clock as it is now, not as the snapshot read
-        # it: a request that stalled after its snapshot must not take a newer time
-        # stored meanwhile for a clock step back and write its older time over it.
-        touch_now = utcnow()
+        # The claim and the touch each read the clock where no other request can
+        # record a later time first: the claim under its lock, the touch once it
+        # holds the writer. A request that stalls anywhere before them then never
+        # takes a newer stored time for a clock step back.
         token_due, client_due = self._claim_touch(
-            principal, touch_now, token_due=token_due, client_due=client_due
+            principal, token_due=token_due, client_due=client_due
         )
         if token_due or client_due:
-            self._touch_api_token(
-                principal, touch_now, token_due=token_due, client_due=client_due
-            )
+            self._touch_api_token(principal, token_due=token_due, client_due=client_due)
         return principal
 
     @staticmethod
@@ -581,17 +579,19 @@ class AuthService:
         )
 
     def _claim_touch(
-        self, principal: Principal, now: datetime, *, token_due: bool, client_due: bool
+        self, principal: Principal, *, token_due: bool, client_due: bool
     ) -> tuple[bool, bool]:
         """Let one request per interval in this process attempt a due touch.
 
         Concurrent requests that all see the touch due then take the writer once, and
         a touch skipped because the writer was busy is not retried by every following
-        request. The conditional UPDATE still settles races between processes.
+        request. The conditional UPDATE still settles races between processes. The
+        clock is read under the lock, so no claim recorded before it is later.
         """
         if not (token_due or client_due):
             return False, False
         with self._touch_claims_lock:
+            now = utcnow()
             claims = self._touch_claims
             if len(claims) >= API_TOKEN_TOUCH_CLAIMS_LIMIT:
                 for key in [key for key, at in claims.items() if self._activity_due(at, now)]:
@@ -718,16 +718,21 @@ class AuthService:
         return None
 
     def _touch_api_token(
-        self, principal: Principal, now: datetime, *, token_due: bool, client_due: bool
+        self, principal: Principal, *, token_due: bool, client_due: bool
     ) -> None:
-        """Record "last used" at most once per interval; contention never fails a request."""
-        cutoff = now - API_TOKEN_ACTIVITY_INTERVAL
-        # Same rule as _activity_due: an earlier clock never moves the time back.
-        stepped_back = now + API_TOKEN_ACTIVITY_INTERVAL
+        """Record "last used" at most once per interval; contention never fails a request.
+
+        The clock is read only once this request holds the writer, so every stored
+        time was written before it and none is later unless the clock stepped back.
+        """
         try:
             with self.database.immediate_session(
                 busy_timeout_ms=API_TOKEN_TOUCH_TIMEOUT_MS
             ) as session:
+                now = utcnow()
+                cutoff = now - API_TOKEN_ACTIVITY_INTERVAL
+                # Same rule as _activity_due, for a clock that really stepped back.
+                stepped_back = now + API_TOKEN_ACTIVITY_INTERVAL
                 if token_due and principal.token_id is not None:
                     session.execute(
                         update(ApiToken)

@@ -14,7 +14,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, select, update
 
 from pandrator.web.accounts.actor_models import AuditActorRecord
 from pandrator.web.accounts.auth_contracts import ALL_SCOPES
@@ -284,8 +284,48 @@ def test_a_touch_with_an_earlier_clock_leaves_a_later_time_alone(case: ActorCase
     with patch(_AUTH_CLOCK, return_value=later):
         principal = _resolve(case, raw)
     assert principal is not None
-    case.auth._touch_api_token(principal, _BASE, token_due=True, client_due=False)
+    with patch(_AUTH_CLOCK, return_value=_BASE):
+        case.auth._touch_api_token(principal, token_due=True, client_due=False)
     assert _last_used(case, token.id)[0] == later
+
+
+@pytest.mark.parametrize("separate_processes", [False, True], ids=["one-process", "two-processes"])
+def test_a_newer_time_stored_before_the_touch_takes_the_writer_is_kept(
+    case: ActorCase, separate_processes: bool
+) -> None:
+    # Request A claims its touch, then stalls before taking the writer while
+    # request B stores a time more than one interval later. A reads the clock
+    # only once it holds the writer, so B's time is not ahead and is kept.
+    token, raw = case.auth.create_api_token("stalled before the writer")
+    newer = _BASE + timedelta(seconds=120)
+    other_request_wrote: list[bool] = []
+    original = case.database.immediate_session
+
+    def clock() -> datetime:
+        return newer + timedelta(seconds=1) if other_request_wrote else _BASE
+
+    @contextmanager
+    def other_request_first(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        if not other_request_wrote:
+            with original() as other:
+                other.execute(
+                    update(ApiToken).where(ApiToken.id == token.id).values(last_used_at=newer)
+                )
+            other_request_wrote.append(True)
+        with original(*args, **kwargs) as session:
+            yield session
+
+    service = AuthService(case.database) if separate_processes else case.auth
+    with (
+        patch(_AUTH_CLOCK, side_effect=clock),
+        patch.object(case.database, "immediate_session", other_request_first),
+    ):
+        principal = service.resolve_api_token(
+            raw, network_zone="loopback", target_instance_id=None
+        )
+    assert principal is not None
+    assert other_request_wrote == [True]
+    assert _last_used(case, token.id)[0] == newer
 
 
 @pytest.mark.parametrize("separate_processes", [False, True], ids=["one-process", "two-processes"])
