@@ -1122,8 +1122,10 @@ def test_reconcile_candidate_query_avoids_the_global_status_index(case):
     # The status index holds every take of every project; the query must start from the
     # revision's segments instead. This holds on any SQLite version, with or without
     # statistics: comparing `status || ''` leaves no status index usable for the filter.
+    # A full scan of the takes would cost the same, so it is rejected too.
     assert not any("IX_AUDIO_TAKES_STATUS" in detail
                    or "IDX_AUDIO_TAKES_ACTIVE_STATUS_SEGMENT_CREATED" in detail
+                   or detail.startswith(("SCAN AUDIO_TAKES", "SCAN TABLE AUDIO_TAKES"))
                    for detail in details), details
 
 
