@@ -13,6 +13,10 @@ from waitress import wasyncore
 from waitress.channel import HTTPChannel
 from waitress.server import create_server
 
+# Waitress stops reading a socket while its request is queued or running unless
+# this is at least 1, so a client that gave up would never be noticed.
+REQUEST_LOOKAHEAD = 1
+
 
 def close_waitress_connections(channels: dict[int, wasyncore.dispatcher]) -> None:
     # HTTPChannel.close() does not wake writers waiting on the output condition.
@@ -49,6 +53,7 @@ def serve_api(
         port=port,
         threads=threads,
         url_scheme=url_scheme,
+        channel_request_lookahead=REQUEST_LOOKAHEAD,
     )
     server.print_listen("Serving on http://{}:{}")
     requested = False
