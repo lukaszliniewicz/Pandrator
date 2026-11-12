@@ -60,7 +60,9 @@ For comparison, tools panes and draft handling, see [Reviewing and previewing wo
 latest downloads, checksums, and release notes. Read the
 [0.14.3 release notes](release-notes-0.14.3.md) and [detailed changes](release-changes-0.14.3.md) for the current release.
 The [next release notes](release-notes-next.md) track further development.
-Earlier changes are described in the [0.14.1 notes](release-notes-0.14.1.md)
+Earlier changes are described in the [0.14.2 notes](release-notes-0.14.2.md)
+and [detailed changes](release-changes-0.14.2.md),
+[0.14.1 notes](release-notes-0.14.1.md)
 and [detailed changes](release-changes-0.14.1.md),
 [0.13.0](release-notes-0.13.0.md)
 and [detailed changes](release-changes-0.13.0.md),
