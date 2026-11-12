@@ -42,11 +42,17 @@ def freeze_generation_performance_snapshot(
     _missing_selection: MissingSpeechSelection | None = None,
     _root_binding: RootSpeechBinding | None = None,
     _carried_snapshot: dict[str, Any] | None = None,
+    _freeze_segment_ids: Collection[str] | None = None,
 ) -> bool:
     """Bind a new run to current adoption and immutable semantic source text.
 
     Resume/retry consumes the existing run snapshot rather than reselecting it.
     The text is stored once, not repeated for every context window in a book.
+
+    ``cast_segment_ids`` names the segments whose cast voices must resolve; the
+    cast is still frozen for every segment. ``_freeze_segment_ids`` limits the
+    cast freeze itself to those segments, for a listing page. Performance and
+    semantic context are always frozen for the whole revision.
     """
     if _service_config_cache is None:
         _service_config_cache = {}
@@ -102,6 +108,7 @@ def freeze_generation_performance_snapshot(
             _segment_references=segment_references,
             _missing_selection=_missing_selection, _root_binding=_root_binding,
             _carried_snapshot=_carried_snapshot,
+            _freeze_segment_ids=_freeze_segment_ids,
         )
     if mode != "off":
         context_settings = {
