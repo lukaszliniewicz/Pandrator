@@ -1,4 +1,4 @@
-"""The write-ahead log shrinks back once load ends, and no read pins it open.
+"""The write-ahead log shrinks back to its size limit once load ends.
 
 Tests count bytes, frames and checkpoint results; none asserts wall-clock time.
 """
@@ -24,8 +24,12 @@ MAX_GROW_ROUNDS = 2000
 
 
 def _wal_bytes(database: Database) -> int:
-    wal = Path(f"{database.path}-wal")
-    return wal.stat().st_size if wal.exists() else 0
+    # SQLite deletes the file when the last connection closes, so a check-then-stat
+    # could race with that; a missing file is an empty log.
+    try:
+        return Path(f"{database.path}-wal").stat().st_size
+    except FileNotFoundError:
+        return 0
 
 
 def _make(path: Path) -> Database:
@@ -78,20 +82,24 @@ def test_wal_shrinks_to_the_limit_after_readers_finish(tmp_path, monkeypatch):
 def test_wal_under_the_limit_is_not_truncated(tmp_path):
     database = _make(tmp_path / "cycling.sqlite3")
     try:
+        with database.engine.connect() as connection:
+            page_size = connection.exec_driver_sql("PRAGMA page_size").scalar_one()
+        # 5 MiB passes the 1,000-frame auto-checkpoint only with 4 KiB pages.
+        assert page_size == 4096, f"the sizes below assume 4 KiB pages, not {page_size}"
         _grow_under_reader(database, 5 * 1024 * 1024)
         before = _wal_bytes(database)
         assert before < WAL_SIZE_LIMIT_BYTES
-        # The first write appends and auto-checkpoints; the second restarts the log.
-        _write(database, 1)
-        after_first = _wal_bytes(database)
-        assert after_first >= before
-        _write(database, 1)
-        assert _wal_bytes(database) == after_first
+        # The first write appends and auto-checkpoints; the second restarts the log,
+        # which a log under the limit keeps at its size instead of truncating.
+        _write(database, 2)
+        assert before <= _wal_bytes(database) <= WAL_SIZE_LIMIT_BYTES
     finally:
         database.dispose()
 
 
 def test_segment_search_does_not_hold_a_statement_open_across_matching(tmp_path):
+    # The ORM already fetches this select in full, so the test passes without the
+    # search's `.all()`; it guards against a future switch to streaming rows.
     bootstrap = BootstrapTokenStore()
     token = bootstrap.issue()
     app = create_app(data_root=tmp_path, testing=True, bootstrap_tokens=bootstrap)

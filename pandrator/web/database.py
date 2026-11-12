@@ -18,8 +18,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 SCHEMA_HEAD = "0087_public_project_links"
 _WriteResult = TypeVar("_WriteResult")
-# About twice one auto-checkpoint cycle (1,000 pages of 4 KiB). After a complete
-# checkpoint the next write restarts the WAL and truncates it back to this size.
+# About twice one auto-checkpoint cycle (1,000 pages at the default 4 KiB). After a
+# complete checkpoint, with no reader still using the log, the next write that
+# restarts the log truncates it back to this size. Set on engine connections only;
+# raw sqlite3 connections (migrations, maintenance) leave it to the next app write.
 WAL_SIZE_LIMIT_BYTES = 8 * 1024 * 1024
 
 
