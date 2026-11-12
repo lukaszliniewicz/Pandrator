@@ -590,7 +590,7 @@ ELEVENLABS_NATIVE_ADAPTER = "elevenlabs_native"
 def _read_setting(settings, key: str, default=None):
     if settings is None:
         return default
-    if isinstance(settings, dict):
+    if isinstance(settings, Mapping):
         return settings.get(key, default)
     return getattr(settings, key, default)
 
@@ -1146,7 +1146,7 @@ def _service_config_cache_key(tts_settings) -> str:
     The caller must supply a request-local cache so each new request constructs
     a fresh catalogue from its settings inputs and current default pricing.
     """
-    if isinstance(tts_settings, dict):
+    if isinstance(tts_settings, Mapping):
         relevant = {key: tts_settings.get(key) for key in _CATALOGUE_INPUT_KEYS}
     else:
         relevant = {

@@ -154,7 +154,8 @@ def freeze_speech_snapshot(
         for segment in segments:
             segment_text = segment.optimized_text or segment.text
             segment_settings = segment_performance_settings(
-                effective_tts, snapshot, segment.id, segment_text
+                effective_tts, snapshot, segment.id, segment_text,
+                _service_config_cache=service_config_cache,
             )
             segment_language = str(segment.language or "").strip()
             if (

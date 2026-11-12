@@ -178,6 +178,20 @@ def _exact_catalogue_model(
     )
 
 
+# Every setting _selected_endpoint, _selected_model and
+# resolve_openai_audio_endpoint read; the catalogue key covers the rest.
+_LANGUAGE_SUPPORT_SETTING_KEYS = (
+    "service",
+    "tts_service",
+    "openai_audio_endpoint",
+    "audio_cpp_base_url",
+    "silero_model",
+    "elevenlabs_model",
+    "xtts_model",
+    "model",
+)
+
+
 def resolve_tts_language_support(
     settings: Mapping[str, Any],
     endpoint: Mapping[str, Any] | None = None,
@@ -188,8 +202,34 @@ def resolve_tts_language_support(
     Endpoint configuration is used only to identify the effective provider,
     model, route and the exact model-catalogue entry. It is never copied into
     the returned record.
+
+    With no explicit endpoint and a request-local ``_service_config_cache``, the
+    result is remembered for that cache only, keyed by every setting the lookup
+    reads. A lookup that raises is never remembered.
     """
 
+    if endpoint is not None or _service_config_cache is None:
+        return _resolve_tts_language_support(settings, endpoint, _service_config_cache)
+
+    cache_key = (
+        "tts_language_support",
+        catalogue._service_config_cache_key(settings),
+        *(str(settings.get(name) or "") for name in _LANGUAGE_SUPPORT_SETTING_KEYS),
+    )
+    hit = _service_config_cache.get(cache_key)
+    if hit is not None:
+        return deepcopy(hit[0])
+    support = _resolve_tts_language_support(settings, None, _service_config_cache)
+    # The wrapper makes a None result a hit as well.
+    _service_config_cache[cache_key] = (deepcopy(support),)
+    return support
+
+
+def _resolve_tts_language_support(
+    settings: Mapping[str, Any],
+    endpoint: Mapping[str, Any] | None,
+    _service_config_cache: dict | None,
+) -> dict[str, Any] | None:
     selected_endpoint, selector = _selected_endpoint(
         settings, endpoint, _service_config_cache
     )

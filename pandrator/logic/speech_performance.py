@@ -257,6 +257,34 @@ def _azure_speech_selection(
     return canonical_model, canonical_voice or raw_voice
 
 
+_IMMUTABLE_LEAVES = frozenset({str, int, float, bool, type(None), bytes})
+
+
+def copy_record(record: Any, memo: dict[int, Any] | None = None) -> Any:
+    """Deep-copy a flat record without a call per immutable value.
+
+    The result equals ``deepcopy(record)``: immutable leaves are shared, which
+    is what ``deepcopy`` does for them, and every other key and value is
+    deep-copied, key first as ``deepcopy`` does, with one shared memo that is
+    registered for the record itself first, so aliasing and self-references
+    inside the record are kept. Anything but a plain ``dict`` takes the
+    ordinary ``deepcopy`` path.
+    """
+
+    if type(record) is not dict:
+        return deepcopy(record, memo)
+    memo = {} if memo is None else memo
+    if id(record) in memo:
+        return memo[id(record)]
+    copied: dict[Any, Any] = {}
+    memo[id(record)] = copied
+    for key, value in record.items():
+        if type(key) not in _IMMUTABLE_LEAVES:
+            key = deepcopy(key, memo)
+        copied[key] = value if type(value) in _IMMUTABLE_LEAVES else deepcopy(value, memo)
+    return copied
+
+
 def resolve_capabilities(
     settings: dict[str, Any],
     endpoint: dict[str, Any] | None = None,
@@ -283,7 +311,7 @@ def resolve_capabilities(
         )
         hit = _service_config_cache.get(cache_key)
         if hit is not None:
-            return deepcopy(hit)
+            return copy_record(hit)
     if endpoint is None:
         selected = str(settings.get("openai_audio_endpoint") or service_name)
         if cache_requested and _service_config_cache is not None:

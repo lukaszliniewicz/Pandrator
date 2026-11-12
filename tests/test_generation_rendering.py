@@ -158,6 +158,34 @@ def test_two_voices_preserve_one_logical_text_and_precedence():
     assert [part["speaker_labels"] for part in manifest] == [["One"], ["Two"]]
 
 
+def test_read_only_controls_plan_the_same_parts_and_leave_the_controls_untouched():
+    from copy import deepcopy
+
+    controls = deepcopy(CONTROLS)
+    controls["characters"][0]["delivery"] = {"instruction": "Character default", "pace": "slower"}
+    unchanged = deepcopy(controls)
+    markup = (
+        '<segment id="s"><dialogue><speaker ref="c-one"><ins>Text direction</ins>A</speaker>'
+        '<speaker ref="c-two">B</speaker></dialogue> C</segment>'
+    )
+    settings = {"casting_enabled": True, "performance_enabled": True, "voice": "base"}
+    copied = build_render_parts("AB C", settings, speech_xml=markup, segment_id="s",
+        controls=controls)
+    validated: dict = {}
+    for _attempt in range(2):
+        shared = build_render_parts("AB C", settings, speech_xml=markup, segment_id="s",
+            controls=controls, _read_only_controls=True, _validated_controls=validated)
+        assert shared == copied
+        assert controls == unchanged
+        # The planned parts own their values: changing them leaves the controls alone.
+        for part in shared:
+            for value in part["settings"].values():
+                if isinstance(value, (dict, list)):
+                    value.clear()
+        assert controls == unchanged
+    assert validated
+
+
 def test_category_only_speaker_uses_category_cast_without_character_dictionary():
     markup = '<segment id="s"><speaker g="female">Hello</speaker></segment>'
     controls = {

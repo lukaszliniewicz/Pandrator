@@ -175,6 +175,54 @@ def test_same_material_across_cast_slots_deduplicates_and_fallback_is_local(run_
         assert plan_audio_identities(session, g.revision, run.settings_snapshot_json) == snapshot["generation_audio_identities"]
 
 
+def test_narrator_fallback_of_one_segment_never_leaks_into_cast_only_sibling(run_project, monkeypatch):
+    from pandrator.web import generation_rendering
+
+    g, p = run_project, run_project.p
+    cast_setup(g)
+    plan = g.service.create_plan(p.source["id"], source_revision_id=None, settings={}, segments=[
+        {"text": "Alpha speaks. Beta replies. Narrator closes.", "language": "en"},
+        {"text": "Alpha speaks. Beta replies.", "language": "en"},
+    ])
+    g.revision = plan["active_revision_id"]
+    first, second = segment_ids(g)
+
+    def write(first_narrator):
+        with p.r.f.case.database.immediate_session() as session:
+            for identifier, narrator in ((first, first_narrator), (second, False)):
+                segment = session.get_one(m.GenerationSegment, identifier)
+                segment.text = "Alpha speaks. Beta replies." + (" Narrator closes." if narrator else "")
+                segment.speech_plan_json = {"speech_xml": f'<segment id="{identifier}">'
+                    '<dialogue><speaker ref="a">Alpha speaks.</speaker></dialogue> '
+                    '<dialogue><speaker ref="b">Beta replies.</speaker></dialogue>'
+                    + (' Narrator closes.' if narrator else '') + '</segment>'}
+
+    write(False)
+    prepared = freeze(g)
+    expected = prepared["frozen_snapshot"]["generation_audio_identities"][second]
+    g.service.cleanup_prepared_start(prepared)
+
+    write(True)
+    # Controls each segment is rendered with, as the freeze loop hands them over.
+    seen = {}
+    original = generation_rendering.build_render_parts
+    def spy(*args, **kwargs):
+        seen.setdefault(kwargs.get("segment_id"), "_base_voice_settings" in (kwargs.get("controls") or {}))
+        return original(*args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(generation_rendering, "build_render_parts", spy)
+        prepared = freeze(g)
+    snapshot = prepared["frozen_snapshot"]
+    entries = snapshot["generation_control_snapshot"]["segments"]
+    assert entries[first]["controls"]["_base_voice_settings"][PROJECT_SPEECH_INPUT_KEY] is not None
+    assert "controls" not in entries[second]
+    assert snapshot["generation_audio_identities"][second] == expected
+    # Segments share one controls copy shallowly; the cast-only sibling must not be
+    # handed the first segment's narrator fallback.
+    assert seen[second] is False
+    publish(g, prepared)
+
+
 def test_all_cast_never_captures_or_reads_unused_narrator(run_project, monkeypatch):
     g = run_project
     cast_setup(g)

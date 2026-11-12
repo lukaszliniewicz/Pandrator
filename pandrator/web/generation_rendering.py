@@ -98,10 +98,14 @@ def _is_speakable_text(text: str) -> bool:
 
 
 def _control_values(
-    settings: Mapping[str, Any], controls: Mapping[str, Any] | None
+    settings: Mapping[str, Any],
+    controls: Mapping[str, Any] | None,
+    *,
+    read_only: bool = False,
 ) -> dict[str, Any]:
     if controls is not None:
-        return deepcopy(dict(controls))
+        # A caller that only reads the values may skip the deep copy.
+        return dict(controls) if read_only else deepcopy(dict(controls))
     for key in ("generation_controls", "_generation_controls", "controls"):
         value = settings.get(key)
         if isinstance(value, Mapping):
@@ -193,6 +197,7 @@ def _binding_result(
         [dict[str, Any] | None, dict[str, Any], str | None], dict[str, Any]
     ]
     | None,
+    validated: dict[str, tuple[object, Any]] | None = None,
 ) -> tuple[dict[str, Any], str, bool, dict[str, Any] | None]:
     from .generation_controls import resolve_cast_voice
 
@@ -218,6 +223,7 @@ def _binding_result(
         dialogue=dialogue,
         span_voice=span_voice,
         source_speaker=effective_source,
+        _validated=validated,
     )
     binding = resolution.get("binding")
     if binding is not None and not isinstance(binding, dict):
@@ -497,8 +503,20 @@ def build_render_parts(
     | None = None,
     _settings_copy: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     _bind_base: bool = False,
+    _read_only_controls: bool = False,
+    _validated_controls: dict[str, tuple[object, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Plan ordered provider requests for one logical segment."""
+    """Plan ordered provider requests for one logical segment.
+
+    ``_read_only_controls`` gives the planner a shallow copy of ``controls``
+    instead of a deep copy. The planner only reads control values, so nothing
+    may change a nested value such as ``characters`` or ``cast`` while it is
+    shared. A top-level key a binding callback later sets on the caller's
+    ``controls`` is not seen by the planner, as with a deep copy.
+    ``_validated_controls`` is a memo for ``resolve_cast_voice`` that matches
+    the controls by object identity; it is used only with
+    ``_read_only_controls`` and ignored otherwise.
+    """
 
     if not isinstance(text, str):
         raise TypeError("text must be a string")
@@ -510,7 +528,9 @@ def build_render_parts(
         raise TypeError("apply_binding must be callable")
     if apply_binding_at_slot is not None and not callable(apply_binding_at_slot):
         raise TypeError("apply_binding_at_slot must be callable")
-    control_values = _control_values(settings, controls)
+    control_values = _control_values(
+        settings, controls, read_only=_read_only_controls
+    )
     character_labels = {
         item["id"]: item.get("display_name") or item["id"]
         for item in control_values.get("characters") or []
@@ -578,6 +598,7 @@ def build_render_parts(
                 xml_present=xml_present,
                 apply_binding=apply_binding,
                 apply_binding_at_slot=apply_binding_at_slot,
+                validated=_validated_controls if _read_only_controls else None,
             )
         else:
             if _bind_base and apply_binding_at_slot is not None:

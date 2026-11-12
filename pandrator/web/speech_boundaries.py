@@ -136,6 +136,8 @@ def freeze_boundaries(
     annotations = frozen.get("annotations") or {}
     result = {}
     voices = {}
+    # One catalogue for this freeze; cast spans would otherwise each rebuild it.
+    service_config_cache: dict = {}
     voice_gap = int((snapshot.get("audio") or {}).get("voice_change_silence_ms") or 0)
     rows = (
         list(segments)
@@ -191,8 +193,12 @@ def freeze_boundaries(
                 settings["voice"] = settings["speaker"] = row.voice
             if row.language:
                 settings["language"] = row.language
-            settings = segment_performance_settings(settings, snapshot, row.id, text)
-            parts = segment_render_parts(settings, snapshot, row.id, text)
+            settings = segment_performance_settings(
+                settings, snapshot, row.id, text, _service_config_cache=service_config_cache,
+            )
+            parts = segment_render_parts(
+                settings, snapshot, row.id, text, _service_config_cache=service_config_cache,
+            )
             voices[row.id] = (parts[0]["voice_key"], parts[-1]["voice_key"])
         result[row.id] = {
             "text_hash": content_hash(text) if xml else None,
