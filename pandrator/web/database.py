@@ -18,6 +18,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 SCHEMA_HEAD = "0087_public_project_links"
 _WriteResult = TypeVar("_WriteResult")
+# About twice one auto-checkpoint cycle (1,000 pages of 4 KiB). After a complete
+# checkpoint the next write restarts the WAL and truncates it back to this size.
+WAL_SIZE_LIMIT_BYTES = 8 * 1024 * 1024
 
 
 def is_sqlite_busy(error: BaseException) -> bool:
@@ -66,6 +69,7 @@ def create_database_engine(path: Path) -> Engine:
             try:
                 cursor.execute("PRAGMA foreign_keys = ON")
                 cursor.execute("PRAGMA journal_mode = WAL")
+                cursor.execute(f"PRAGMA journal_size_limit = {int(WAL_SIZE_LIMIT_BYTES)}")
                 cursor.execute("PRAGMA busy_timeout = 30000")
             finally:
                 cursor.close()
