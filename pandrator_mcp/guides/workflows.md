@@ -157,8 +157,11 @@ checked only for the active revision, and only when it is listed: in the returne
 page of revision history, or among the latest 100 entries of plan status. Other
 revisions show `audio_reuse_checked: false` with null counts. Read each item's
 flag; the top-level `audio_reuse_checked` describes the summary and stays false.
-If the active revision's detail request times out or the revision is gone, the
-active item also shows `audio_reuse_checked: false` and a warning names the code.
+Reading the active revision is a second request after the summary, so a call can
+take up to twice the application request timeout. If that request times out, the
+application is unavailable, the answer is too large, the revision is gone or its
+answer lacks the counts, the active item also shows `audio_reuse_checked: false`
+and a warning names the code.
 Plan status also leaves repair-batch undo eligibility unevaluated
 (`repair_batch.can_undo`, `undo_disabled_reason`, `expected_revision_id` and
 `expected_state_hash` are null, and `undo_checked` is false). No MCP tool reads

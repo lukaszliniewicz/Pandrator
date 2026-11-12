@@ -247,7 +247,17 @@ _REUSE_FIELDS = (
     "audio_identity_unknown_segment_count",
     "audio_reuse_checked",
 )
-_DEGRADABLE_DETAIL_CODES = frozenset({"not_found", "application_response_timeout"})
+# The summary already succeeded; these failures of the optional detail read only
+# leave the active item unchecked. Access and authentication failures still raise.
+_DEGRADABLE_DETAIL_CODES = frozenset(
+    {
+        "not_found",
+        "application_response_timeout",
+        "application_unavailable",
+        "response_too_large",
+    }
+)
+_INCOMPLETE_DETAIL_CODE = "revision_detail_incomplete"
 
 
 def _with_active_reuse_counts(
@@ -284,10 +294,20 @@ def _with_active_reuse_counts(
             )
         ]
     revision = detail.get("revision") if isinstance(detail, dict) else None
-    if not isinstance(revision, dict):
-        return payload, []
+    if not isinstance(revision, dict) or not all(key in revision for key in _REUSE_FIELDS):
+        # Merge all five fields or none, so a partial answer never marks the
+        # active item checked with counts it did not return.
+        return payload, [
+            WarningMessage(
+                code=_INCOMPLETE_DETAIL_CODE,
+                message=(
+                    "The active speech-plan revision's detail did not include its reuse "
+                    "counts; the summary is returned without them."
+                ),
+            )
+        ]
     merged = [
-        {**item, **{key: revision[key] for key in _REUSE_FIELDS if key in revision}}
+        {**item, **{key: revision[key] for key in _REUSE_FIELDS}}
         if isinstance(item, dict) and item.get("id") == active_revision_id
         else item
         for item in items

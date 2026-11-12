@@ -482,6 +482,7 @@ def _reuse_runtime(
     *,
     summary: dict[str, Any],
     detail_error: str | None = None,
+    detail_payload: Any = None,
 ) -> tuple[
     McpRuntime, list[tuple[str, tuple[Any, ...], dict[str, Any]]], list[dict[str, str]]
 ]:
@@ -505,6 +506,8 @@ def _reuse_runtime(
         headers.append(correlation_headers())
         if detail_error:
             raise PandratorMcpError(detail_error, "Fixture detail failure.")
+        if detail_payload is not None:
+            return copy.deepcopy(detail_payload)
         return {"revision": {"id": args[1], **REUSE}, "active_revision_id": args[1]}
 
     application.get_speech_plan_status.side_effect = summary_call("get_speech_plan_status")
@@ -596,7 +599,10 @@ def test_no_detail_request_without_active_item(tmp_path: Path, tool: str, summar
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("code", ["not_found", "application_response_timeout"])
+@pytest.mark.parametrize(
+    "code",
+    ["not_found", "application_response_timeout", "application_unavailable", "response_too_large"],
+)
 @pytest.mark.parametrize(
     "tool", ["pandrator_get_speech_plan_status", "pandrator_list_speech_plan_revisions"]
 )
@@ -607,6 +613,25 @@ def test_detail_race_or_timeout_degrades_with_warning(tmp_path: Path, tool: str,
     assert [item["audio_reuse_checked"] for item in value["result"]["items"]] == [False] * 3
     assert [warning["code"] for warning in value["warnings"]] == [code]
     assert "Fixture detail failure." in value["warnings"][0]["message"]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        {"active_revision_id": "x"},
+        {"revision": "not a revision"},
+        {"revision": {"id": "x", "audio_reuse_checked": True, "reusable_segment_count": 4}},
+    ],
+)
+@pytest.mark.parametrize(
+    "tool", ["pandrator_get_speech_plan_status", "pandrator_list_speech_plan_revisions"]
+)
+def test_incomplete_detail_merges_nothing_and_warns(tmp_path: Path, tool: str, detail) -> None:
+    result, calls = _call(tmp_path, tool, BASE, summary=ACTIVE_SUMMARY, detail_payload=detail)
+    value = envelope(result)
+    assert len(calls) == 2
+    assert value["result"]["items"] == ACTIVE_SUMMARY["items"]
+    assert [warning["code"] for warning in value["warnings"]] == ["revision_detail_incomplete"]
 
 
 @pytest.mark.parametrize(
