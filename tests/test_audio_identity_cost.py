@@ -860,3 +860,15 @@ def test_cast_voice_resolution_does_not_remember_a_failed_validation():
         with pytest.raises(ValueError):
             resolve_cast_voice(controls, _validated=memo)
     assert "cast" not in memo
+
+
+def test_cache_keys_read_catalogue_inputs_from_any_mapping():
+    # The language and capability memos key on the catalogue inputs, and their
+    # callers may pass any read-only Mapping, not only a dict.
+    from types import MappingProxyType
+
+    key = tts_service_catalogue._service_config_cache_key
+    settings = {"service": "audio_cpp", "provider_configs": {"local": {"enabled": True}}}
+    changed = {**settings, "provider_configs": {"local": {"enabled": False}}}
+    assert key(MappingProxyType(settings)) == key(settings)
+    assert key(MappingProxyType(settings)) != key(MappingProxyType(changed))

@@ -1146,7 +1146,7 @@ def _service_config_cache_key(tts_settings) -> str:
     The caller must supply a request-local cache so each new request constructs
     a fresh catalogue from its settings inputs and current default pricing.
     """
-    if isinstance(tts_settings, dict):
+    if isinstance(tts_settings, Mapping):
         relevant = {key: tts_settings.get(key) for key in _CATALOGUE_INPUT_KEYS}
     else:
         relevant = {
