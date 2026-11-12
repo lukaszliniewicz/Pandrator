@@ -1153,6 +1153,12 @@ test('speech-plan history shows repair outcomes in a full dialog without changin
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page.getByRole('button', { name: 'Speech plans', exact: true }).click();
+  // The plan review bar loads asynchronously inside this menu. Wait for it
+  // to settle before clicking a sibling whose position can change.
+  await expect(page.getByTestId('drawer-plan-review')).toHaveAttribute(
+    'aria-busy',
+    'false'
+  );
   await page
     .getByRole('button', { name: 'Details & versions…', exact: true })
     .click();

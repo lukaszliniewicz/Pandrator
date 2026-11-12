@@ -205,6 +205,13 @@ async function fixture(
   await page.goto(`/sessions/${sid}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page.getByRole('button', { name: 'Speech plans', exact: true }).click();
+  // The plan review bar fetches its status when the menu opens. If it updates
+  // during a pointer click, the target can be replaced before the click
+  // handler runs. Wait for that observable load to settle, not a fixed sleep.
+  await expect(page.getByTestId('drawer-plan-review')).toHaveAttribute(
+    'aria-busy',
+    'false'
+  );
   await page
     .getByRole('button', { name: 'Details & versions…', exact: true })
     .click();

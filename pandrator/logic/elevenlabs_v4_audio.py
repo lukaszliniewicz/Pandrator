@@ -215,7 +215,9 @@ def stream_turbo_dialogue_audio(
             raise _SafeWebsocketError(
                 "ElevenLabs realtime dialogue timed out before audio completed."
             )
-        return seconds
+        # Deadline subtraction can round slightly above the requested budget
+        # (e.g. 300.00000000000006 on Windows).
+        return min(seconds, timeout)
 
     try:
         # Imported only when the v4 Turbo route is actually selected.

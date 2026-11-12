@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,41 @@ def nested_keys(value, key):
         for child in value:
             found.extend(nested_keys(child, key))
     return found
+
+
+def test_browser_build_inputs_and_outputs_stay_lf_on_every_platform():
+    # CI builds on Ubuntu, so it cannot see a Windows checkout producing different bundles.
+    # Read the attributes Git resolves per file, so a later override or a nested
+    # .gitattributes fails here too. A file Git leaves as -text keeps its LF index bytes.
+    roots = ("web", "pandrator/web/static", "pandrator_manager/recovery_ui/static/model-groups.js")
+    listing = subprocess.run(
+        ["git", "ls-files", "--eol", "--", *roots],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    attributes = {}
+    for line in listing.splitlines():
+        info, path = line.split("\t", 1)
+        attributes[path] = info.split("attr/", 1)[1].split()
+
+    for root in roots:
+        assert any(path == root or path.startswith(f"{root}/") for path in attributes), root
+    not_lf = [
+        path
+        for path, attrs in attributes.items()
+        if "eol=lf" not in attrs and "-text" not in attrs
+    ]
+    assert not_lf == []
+    # A pre-.gitattributes Windows checkout can retain CRLF or mixed bytes
+    # even when the index and resolved attribute correctly specify LF.
+    bad_working_tree = [
+        line.split("\t", 1)[1]
+        for line in listing.splitlines()
+        if re.search(r"(?:^|\s)w/(?:crlf|mixed)(?=\s|$)", line.split("\t", 1)[0])
+    ]
+    assert bad_working_tree == []
 
 
 def test_api_core_is_the_only_direct_network_gateway():
