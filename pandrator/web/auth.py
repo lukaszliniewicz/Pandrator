@@ -53,6 +53,7 @@ from .models import ApiToken, AutomationClient, utcnow
 _LOGGER = logging.getLogger(__name__)
 API_TOKEN_ACTIVITY_INTERVAL = timedelta(seconds=60)
 API_TOKEN_TOUCH_TIMEOUT_MS = 250
+API_TOKEN_TOUCH_CLAIMS_LIMIT = 4096
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -254,6 +255,8 @@ class AuthService:
     def __init__(self, database: Database):
         self.database = database
         self.browser_sessions = BrowserSessionStore(database)
+        self._touch_claims: dict[tuple[str, str], datetime] = {}
+        self._touch_claims_lock = threading.Lock()
 
     def initialized(self) -> bool:
         with self.database.session() as session:
@@ -552,14 +555,56 @@ class AuthService:
         if resolved is None:
             return None
         principal, token_due, client_due = resolved
+        token_due, client_due = self._claim_touch(
+            principal, now, token_due=token_due, client_due=client_due
+        )
         if token_due or client_due:
             self._touch_api_token(principal, now, token_due=token_due, client_due=client_due)
         return principal
 
     @staticmethod
     def _activity_due(last_used_at: datetime | None, now: datetime) -> bool:
+        # A stored time ahead of now means the clock stepped back; touch again.
         last_used = _aware(last_used_at)
-        return last_used is None or now - last_used >= API_TOKEN_ACTIVITY_INTERVAL
+        return (
+            last_used is None
+            or last_used > now
+            or now - last_used >= API_TOKEN_ACTIVITY_INTERVAL
+        )
+
+    def _claim_touch(
+        self, principal: Principal, now: datetime, *, token_due: bool, client_due: bool
+    ) -> tuple[bool, bool]:
+        """Let one request per interval in this process attempt a due touch.
+
+        Concurrent requests that all see the touch due then take the writer once, and
+        a touch skipped because the writer was busy is not retried by every following
+        request. The conditional UPDATE still settles races between processes.
+        """
+        if not (token_due or client_due):
+            return False, False
+        with self._touch_claims_lock:
+            claims = self._touch_claims
+            if len(claims) >= API_TOKEN_TOUCH_CLAIMS_LIMIT:
+                for key in [key for key, at in claims.items() if self._activity_due(at, now)]:
+                    del claims[key]
+                if len(claims) >= API_TOKEN_TOUCH_CLAIMS_LIMIT:
+                    claims.clear()
+
+            def claim(kind: str, identifier: str | None, due: bool) -> bool:
+                if not due or not identifier:
+                    return False
+                key = (kind, identifier)
+                claimed_at = claims.get(key)
+                if claimed_at is not None and not self._activity_due(claimed_at, now):
+                    return False
+                claims[key] = now
+                return True
+
+            return (
+                claim("token", principal.token_id, token_due),
+                claim("client", principal.client_id, client_due),
+            )
 
     def _resolve_api_token_in_session(
         self,
@@ -679,7 +724,11 @@ class AuthService:
                         .where(
                             ApiToken.id == principal.token_id,
                             ApiToken.revoked_at.is_(None),
-                            or_(ApiToken.last_used_at.is_(None), ApiToken.last_used_at <= cutoff),
+                            or_(
+                                ApiToken.last_used_at.is_(None),
+                                ApiToken.last_used_at <= cutoff,
+                                ApiToken.last_used_at > now,
+                            ),
                         )
                         .values(last_used_at=now)
                         .execution_options(synchronize_session=False)
@@ -693,6 +742,7 @@ class AuthService:
                             or_(
                                 AutomationClient.last_used_at.is_(None),
                                 AutomationClient.last_used_at <= cutoff,
+                                AutomationClient.last_used_at > now,
                             ),
                         )
                         .values(last_used_at=now)

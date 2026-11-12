@@ -18,8 +18,8 @@ from sqlalchemy import event, func, select
 
 from pandrator.web.accounts.actor_models import AuditActorRecord
 from pandrator.web.accounts.auth_contracts import ALL_SCOPES
-from pandrator.web.audit import AuditService, _PendingAudit
-from pandrator.web.auth import API_TOKEN_ACTIVITY_INTERVAL, Principal
+from pandrator.web.audit import _EVENT_FIELDS, AuditService, _PendingAudit
+from pandrator.web.auth import API_TOKEN_ACTIVITY_INTERVAL, AuthService, Principal
 from pandrator.web.models import ApiToken, AuditEvent, AutomationClient
 from tests.test_actor_attribution_integration import ActorCase, api_principal, case
 
@@ -142,6 +142,8 @@ def test_due_touch_writes_the_token_and_its_client_once(case: ActorCase) -> None
         with _capture_sql(case) as statements:
             assert _resolve(case, raw) is not None
         assert _begin_immediates(statements) == 0
+        assert not _token_updates(statements)
+        assert _last_used(case, token_id) == (_BASE, _BASE)
     with patch(_AUTH_CLOCK, return_value=due):
         with _capture_sql(case) as statements:
             assert _resolve(case, raw) is not None
@@ -150,8 +152,13 @@ def test_due_touch_writes_the_token_and_its_client_once(case: ActorCase) -> None
         assert _last_used(case, token_id) == (due, due)
 
 
-def test_concurrent_due_resolutions_update_the_touch_only_once(case: ActorCase) -> None:
+@pytest.mark.parametrize("separate_processes", [False, True], ids=["one-process", "two-processes"])
+def test_concurrent_due_resolutions_update_the_touch_only_once(
+    case: ActorCase, separate_processes: bool
+) -> None:
     token, raw = case.auth.create_api_token("racing reads")
+    # A second AuthService has its own in-process claims, as another server process would.
+    services = [case.auth, AuthService(case.database) if separate_processes else case.auth]
     snapshots_closed = threading.Barrier(2)
     original = case.database.snapshot_session
 
@@ -183,22 +190,31 @@ def test_concurrent_due_resolutions_update_the_touch_only_once(case: ActorCase) 
             _capture_sql(case) as statements,
         ):
             threads = [
-                threading.Thread(target=lambda: results.append(_resolve(case, raw)))
-                for _ in range(2)
+                threading.Thread(
+                    target=lambda service=service: results.append(
+                        service.resolve_api_token(
+                            raw, network_zone="loopback", target_instance_id=None
+                        )
+                    )
+                )
+                for service in services
             ]
             for thread in threads:
                 thread.start()
             for thread in threads:
                 thread.join(timeout=15)
+                assert not thread.is_alive()
     finally:
         event.remove(case.database.engine, "after_cursor_execute", capture_rowcount)
     assert len(results) == 2 and all(principal is not None for principal in results)
-    assert _begin_immediates(statements) == 2
-    with case.database.snapshot_session() as session:
-        stored = session.get(ApiToken, token.id)
-        assert stored is not None and _aware(stored.last_used_at) == _BASE
-    # The loser's conditional UPDATE matched no row.
-    assert sorted(rowcounts) == [0, 1]
+    if separate_processes:
+        # Both take the writer; the loser's conditional UPDATE matches no row.
+        assert _begin_immediates(statements) == 2
+        assert sorted(rowcounts) == [0, 1]
+    else:
+        # The in-process claim lets one of them try the touch.
+        assert _begin_immediates(statements) == 1
+        assert rowcounts == [1]
     assert _last_used(case, token.id)[0] == _BASE
 
 
@@ -210,14 +226,32 @@ def test_busy_writer_during_a_due_touch_still_authenticates(
     with closing(sqlite3.connect(case.database.path)) as writer:
         writer.execute("BEGIN IMMEDIATE")
         try:
-            principal = _resolve(case, raw)
+            with patch(_AUTH_CLOCK, return_value=_BASE):
+                principal = _resolve(case, raw)
+                # The skipped touch is not retried by the next request in the interval.
+                with _capture_sql(case) as statements:
+                    assert _resolve(case, raw) is not None
         finally:
             writer.rollback()
     assert principal is not None and principal.token_id == token.id
+    assert _begin_immediates(statements) == 0
     assert _last_used(case, token.id)[0] is None
     assert any("activity update skipped" in record.getMessage() for record in caplog.records)
-    assert _resolve(case, raw) is not None
-    assert _last_used(case, token.id)[0] is not None
+    retry = _BASE + API_TOKEN_ACTIVITY_INTERVAL
+    with patch(_AUTH_CLOCK, return_value=retry):
+        assert _resolve(case, raw) is not None
+    assert _last_used(case, token.id)[0] == retry
+
+
+def test_a_stored_time_ahead_of_the_clock_is_touched_again(case: ActorCase) -> None:
+    token, raw = case.auth.create_api_token("clock stepped back")
+    ahead = _BASE + timedelta(hours=1)
+    with patch(_AUTH_CLOCK, return_value=ahead):
+        assert _resolve(case, raw) is not None
+    assert _last_used(case, token.id)[0] == ahead
+    with patch(_AUTH_CLOCK, return_value=_BASE):
+        assert _resolve(case, raw) is not None
+    assert _last_used(case, token.id)[0] == _BASE
 
 
 def test_invalid_tokens_resolve_to_none_without_a_write(case: ActorCase) -> None:
@@ -314,23 +348,33 @@ def _record(case: ActorCase, principal: Principal, request_id: str) -> None:
     )
 
 
-def _gate_first_batch(audit: AuditService, total: int) -> None:
-    """Hold the first write until all `total` recording threads have queued an entry."""
+def _batch_together(audit: AuditService, total: int) -> list[list[str]]:
+    """Make the next `total` recording threads one batch; return each insert's request ids.
 
+    Leadership is held until all of them have queued, so the first thread to lead
+    takes every entry at once (up to the batch limit).
+    """
+    batches: list[list[str]] = []
     original = audit._insert
-    first = threading.Event()
 
-    def gated(batch: list[_PendingAudit]) -> None:
-        if not first.is_set():
-            first.set()
-            deadline = time.monotonic() + 10
-            while (
-                len(batch) + len(audit._commit_queue) < total and time.monotonic() < deadline
-            ):
-                time.sleep(0.005)
+    def observed(batch: list[_PendingAudit]) -> None:
+        batches.append([str(entry.fields["request_id"]) for entry in batch])
         original(batch)
 
-    audit._insert = gated  # type: ignore[method-assign]
+    audit._insert = observed  # type: ignore[method-assign]
+    with audit._commit_condition:
+        audit._commit_leader = True
+
+    def release() -> None:
+        deadline = time.monotonic() + 10
+        while len(audit._commit_queue) < total and time.monotonic() < deadline:
+            time.sleep(0.005)
+        with audit._commit_condition:
+            audit._commit_leader = False
+            audit._commit_condition.notify_all()
+
+    threading.Thread(target=release, daemon=True).start()
+    return batches
 
 
 def _run_threads(count: int, target: Callable[[int], None]) -> None:
@@ -358,10 +402,11 @@ def test_concurrent_records_share_write_transactions_and_keep_their_actors(
 ) -> None:
     principal, _raw = api_principal(case)
     count = 8
-    _gate_first_batch(case.audit, count)
+    batches = _batch_together(case.audit, count)
     with _capture_sql(case) as statements:
         _run_threads(count, lambda index: _record(case, principal, f"group-{index}"))
-    assert 1 <= _begin_immediates(statements) < count
+    assert [len(batch) for batch in batches] == [count]
+    assert _begin_immediates(statements) == 1
     assert not _spooled(case)
     with case.database.snapshot_session() as session:
         events = list(
@@ -386,7 +431,7 @@ def test_held_writer_spools_every_event_of_the_batch(
 ) -> None:
     principal, _raw = api_principal(case)
     count = 5
-    _gate_first_batch(case.audit, count)
+    batches = _batch_together(case.audit, count)
     caplog.set_level(logging.WARNING, logger="pandrator.web.audit")
     with closing(sqlite3.connect(case.database.path)) as writer:
         writer.execute("BEGIN IMMEDIATE")
@@ -394,6 +439,7 @@ def test_held_writer_spools_every_event_of_the_batch(
             _run_threads(count, lambda index: _record(case, principal, f"held-{index}"))
         finally:
             writer.rollback()
+    assert [len(batch) for batch in batches] == [count]
     assert len(_spooled(case)) == count
     warnings = [r for r in caplog.records if "Audit writer busy" in r.getMessage()]
     assert len(warnings) == count
@@ -411,7 +457,7 @@ def test_held_writer_spools_every_event_of_the_batch(
 def test_a_failed_spool_raises_only_in_its_own_request(case: ActorCase) -> None:
     principal, _raw = api_principal(case)
     count = 4
-    _gate_first_batch(case.audit, count)
+    batches = _batch_together(case.audit, count)
     original = case.audit._spool
 
     def failing_for_one(event: AuditEvent, actor: Any = None) -> None:
@@ -434,6 +480,9 @@ def test_a_failed_spool_raises_only_in_its_own_request(case: ActorCase) -> None:
                 _run_threads(count, record)
         finally:
             writer.rollback()
+    # The failing entry shared its batch with the others.
+    assert len(batches) == 1
+    assert sorted(batches[0]) == sorted(f"spool-{index}" for index in range(count))
     assert set(errors) == {2}
     assert isinstance(errors[2], OSError)
     assert len(_spooled(case)) == count - 1
@@ -442,7 +491,7 @@ def test_a_failed_spool_raises_only_in_its_own_request(case: ActorCase) -> None:
 def test_one_failing_event_leaves_the_rest_of_its_batch_committed(case: ActorCase) -> None:
     principal, _raw = api_principal(case)
     count = 6
-    _gate_first_batch(case.audit, count)
+    batches = _batch_together(case.audit, count)
     original = case.audit._add_actor
 
     def failing_for_bad(session: Any, event_id: int, actor: Any) -> None:
@@ -461,6 +510,12 @@ def test_one_failing_event_leaves_the_rest_of_its_batch_committed(case: ActorCas
 
     with patch.object(case.audit, "_add_actor", side_effect=failing_for_bad):
         _run_threads(count, record)
+    # One shared batch failed, then each entry was retried alone.
+    expected = sorted(f"bad-{index}" for index in range(count))
+    assert len(batches) == count + 1
+    assert sorted(batches[0]) == expected
+    assert sorted(item for batch in batches[1:] for item in batch) == expected
+    assert all(len(batch) == 1 for batch in batches[1:])
     assert set(errors) == {3}
     assert isinstance(errors[3], RuntimeError)
     assert not _spooled(case)
@@ -484,21 +539,12 @@ def test_one_failing_event_leaves_the_rest_of_its_batch_committed(case: ActorCas
 
 def test_batch_size_is_bounded_and_leadership_is_released(case: ActorCase) -> None:
     principal, _raw = api_principal(case)
-    sizes: list[int] = []
     count = 7
-    _gate_first_batch(case.audit, count)
-    gated = case.audit._insert
-
-    def observe(batch: list[_PendingAudit]) -> None:
-        sizes.append(len(batch))
-        gated(batch)
-
-    with (
-        patch("pandrator.web.audit.AUDIT_BATCH_LIMIT", 2),
-        patch.object(case.audit, "_insert", side_effect=observe),
-    ):
+    batches = _batch_together(case.audit, count)
+    with patch("pandrator.web.audit.AUDIT_BATCH_LIMIT", 2):
         _run_threads(count, lambda index: _record(case, principal, f"limit-{index}"))
         _record(case, principal, "limit-after")
+    sizes = [len(batch) for batch in batches]
     assert sum(sizes) == count + 1
     assert max(sizes) == 2
     assert not _spooled(case)
@@ -512,3 +558,36 @@ def test_batch_size_is_bounded_and_leadership_is_released(case: ActorCase) -> No
             )
             == count + 1
         )
+
+
+def test_a_batch_prunes_when_any_of_its_ids_is_a_multiple_of_100(case: ActorCase) -> None:
+    principal, _raw = api_principal(case)
+    _record(case, principal, "prune-seed")
+    with case.database.immediate_session() as session:
+        seed = session.scalar(select(AuditEvent).where(AuditEvent.request_id == "prune-seed"))
+        assert seed is not None
+        highest = int(session.scalar(select(func.max(AuditEvent.id))) or 0)
+        # The next batch of four gets ids ...99, ...00, ...01, ...02: the multiple of
+        # 100 is neither its first nor its last id.
+        floor = ((highest + 2) // 100 + 1) * 100 - 2
+        session.add(
+            AuditEvent(
+                id=floor, **{field: getattr(seed, field) for field in _EVENT_FIELDS}
+            )
+        )
+    count = 4
+    batches = _batch_together(case.audit, count)
+    with patch.object(
+        case.audit, "_prune_in_session", wraps=case.audit._prune_in_session
+    ) as prune:
+        _run_threads(count, lambda index: _record(case, principal, f"prune-{index}"))
+    assert [len(batch) for batch in batches] == [count]
+    assert prune.call_count == 1
+    with case.database.snapshot_session() as session:
+        ids = sorted(
+            session.scalars(
+                select(AuditEvent.id).where(AuditEvent.request_id.like("prune-_"))
+            ).all()
+        )
+    assert ids == list(range(floor + 1, floor + count + 1))
+    assert (floor + 2) % 100 == 0
