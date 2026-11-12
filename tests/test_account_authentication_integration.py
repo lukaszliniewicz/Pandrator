@@ -370,7 +370,7 @@ def test_narrowing_client_approval_fences_old_tokens_and_unexchanged_codes(case:
     assert error.value.code == "invalid_grant"
 
 
-def test_expiry_is_checked_after_writer_admission(case: AuthCase) -> None:
+def test_enrollment_code_expiry_is_checked_after_writer_admission(case: AuthCase) -> None:
     # Bearer tokens resolve in a read snapshot and take no writer; their expiry is
     # covered in test_routine_request_writes.py.
     start = datetime(2035, 1, 1, tzinfo=UTC)

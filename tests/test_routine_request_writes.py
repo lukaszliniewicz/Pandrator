@@ -254,6 +254,40 @@ def test_a_stored_time_ahead_of_the_clock_is_touched_again(case: ActorCase) -> N
     assert _last_used(case, token.id)[0] == _BASE
 
 
+@pytest.mark.parametrize("separate_processes", [False, True], ids=["one-process", "two-processes"])
+def test_an_earlier_clock_arriving_later_neither_touches_nor_moves_the_time_back(
+    case: ActorCase, separate_processes: bool
+) -> None:
+    # Each request reads the clock before its snapshot, so a request that read
+    # it earlier can finish after one that read it later. It must not count the
+    # later claim or stored time as a clock step back.
+    token, raw = case.auth.create_api_token("out of order clocks")
+    later = _BASE + timedelta(seconds=1)
+    with patch(_AUTH_CLOCK, return_value=later):
+        assert _resolve(case, raw) is not None
+    assert _last_used(case, token.id)[0] == later
+    service = AuthService(case.database) if separate_processes else case.auth
+    with patch(_AUTH_CLOCK, return_value=_BASE), _capture_sql(case) as statements:
+        principal = service.resolve_api_token(
+            raw, network_zone="loopback", target_instance_id=None
+        )
+    assert principal is not None
+    assert _begin_immediates(statements) == 0
+    assert _last_used(case, token.id)[0] == later
+
+
+def test_a_touch_with_an_earlier_clock_leaves_a_later_time_alone(case: ActorCase) -> None:
+    # The snapshot can find a touch due that another process makes before this
+    # request's UPDATE runs; the UPDATE must then match nothing.
+    token, raw = case.auth.create_api_token("stale due touch")
+    later = _BASE + timedelta(seconds=1)
+    with patch(_AUTH_CLOCK, return_value=later):
+        principal = _resolve(case, raw)
+    assert principal is not None
+    case.auth._touch_api_token(principal, _BASE, token_due=True, client_due=False)
+    assert _last_used(case, token.id)[0] == later
+
+
 def test_invalid_tokens_resolve_to_none_without_a_write(case: ActorCase) -> None:
     revoked, revoked_raw = case.auth.create_api_token("revoked")
     case.auth.revoke_token(revoked.id)
@@ -379,10 +413,14 @@ def _batch_together(audit: AuditService, total: int) -> list[list[str]]:
 
 def _run_threads(count: int, target: Callable[[int], None]) -> None:
     barrier = threading.Barrier(count)
+    failures: list[BaseException] = []
 
     def run(index: int) -> None:
-        barrier.wait(timeout=10)
-        target(index)
+        try:
+            barrier.wait(timeout=10)
+            target(index)
+        except BaseException as error:  # noqa: BLE001 - re-raised below in the test thread
+            failures.append(error)
 
     threads = [threading.Thread(target=run, args=(index,)) for index in range(count)]
     for thread in threads:
@@ -390,6 +428,8 @@ def _run_threads(count: int, target: Callable[[int], None]) -> None:
     for thread in threads:
         thread.join(timeout=30)
         assert not thread.is_alive()
+    if failures:
+        raise failures[0]
 
 
 def _spooled(case: ActorCase) -> list[Any]:

@@ -213,7 +213,9 @@ class AuditService:
 
         Concurrent requests share one write transaction per batch. The thread that
         finds no leader writes batches from the queue front until its own entry is
-        done, then hands leadership to a waiting request.
+        done, then hands leadership to a waiting request. A leader whose entry sits
+        behind a backlog therefore writes the batches ahead of it first, and while
+        the writer is held it spools its whole batch before followers return.
         """
         condition = self._commit_condition
         with condition:

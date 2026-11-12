@@ -564,11 +564,13 @@ class AuthService:
 
     @staticmethod
     def _activity_due(last_used_at: datetime | None, now: datetime) -> bool:
-        # A stored time ahead of now means the clock stepped back; touch again.
+        # Requests read the clock in an order that can differ from the order they
+        # touch or claim, so a stored time a little ahead of now is normal. Only a
+        # time more than one interval ahead means the clock stepped back; touch again.
         last_used = _aware(last_used_at)
         return (
             last_used is None
-            or last_used > now
+            or last_used > now + API_TOKEN_ACTIVITY_INTERVAL
             or now - last_used >= API_TOKEN_ACTIVITY_INTERVAL
         )
 
@@ -714,6 +716,8 @@ class AuthService:
     ) -> None:
         """Record "last used" at most once per interval; contention never fails a request."""
         cutoff = now - API_TOKEN_ACTIVITY_INTERVAL
+        # Same rule as _activity_due: an earlier clock never moves the time back.
+        stepped_back = now + API_TOKEN_ACTIVITY_INTERVAL
         try:
             with self.database.immediate_session(
                 busy_timeout_ms=API_TOKEN_TOUCH_TIMEOUT_MS
@@ -727,7 +731,7 @@ class AuthService:
                             or_(
                                 ApiToken.last_used_at.is_(None),
                                 ApiToken.last_used_at <= cutoff,
-                                ApiToken.last_used_at > now,
+                                ApiToken.last_used_at > stepped_back,
                             ),
                         )
                         .values(last_used_at=now)
@@ -742,7 +746,7 @@ class AuthService:
                             or_(
                                 AutomationClient.last_used_at.is_(None),
                                 AutomationClient.last_used_at <= cutoff,
-                                AutomationClient.last_used_at > now,
+                                AutomationClient.last_used_at > stepped_back,
                             ),
                         )
                         .values(last_used_at=now)
