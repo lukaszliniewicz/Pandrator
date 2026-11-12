@@ -75,6 +75,9 @@ class _PendingAudit:
     actor: ExecutionActor | None
     done: bool = False
     committed: bool = False
+    # The writer was busy: the request spools its own event once released, so a
+    # held writer never makes one thread write every spool file of a batch.
+    spool: bool = False
     error: BaseException | None = None
 
     def event(self) -> AuditEvent:
@@ -198,6 +201,8 @@ class AuditService:
         }
         entry = _PendingAudit(fields, actor)
         led = self._commit(entry)
+        if entry.spool:
+            self._spool_entry(entry)
         if entry.error is not None:
             raise entry.error
         if led and entry.committed:
@@ -209,13 +214,14 @@ class AuditService:
             )
 
     def _commit(self, entry: _PendingAudit) -> bool:
-        """Return once the entry is committed or spooled; report whether this thread led.
+        """Return once the entry is committed or marked to spool; report whether this thread led.
 
         Concurrent requests share one write transaction per batch. The thread that
         finds no leader writes batches from the queue front until its own entry is
         done, then hands leadership to a waiting request. A leader whose entry sits
-        behind a backlog therefore writes the batches ahead of it first, and while
-        the writer is held it spools its whole batch before followers return.
+        behind a backlog therefore writes the batches ahead of it first. When the
+        writer is busy, the whole batch is released at once with ``spool`` set, and
+        each request writes its own spool file in its own thread before returning.
         """
         condition = self._commit_condition
         with condition:
@@ -247,7 +253,12 @@ class AuditService:
             self._write_entries(batch)
         except BaseException as error:  # noqa: BLE001 - every entry must be resolved
             for entry in batch:
-                if not entry.done and not entry.committed and entry.error is None:
+                if (
+                    not entry.done
+                    and not entry.committed
+                    and not entry.spool
+                    and entry.error is None
+                ):
                     entry.error = error
             if not isinstance(error, Exception):
                 raise
@@ -263,7 +274,7 @@ class AuditService:
         except Exception as error:
             if is_sqlite_busy(error):
                 for entry in batch:
-                    self._spool_entry(entry)
+                    entry.spool = True
             elif len(batch) > 1:
                 for entry in batch:
                     self._write_entries([entry])

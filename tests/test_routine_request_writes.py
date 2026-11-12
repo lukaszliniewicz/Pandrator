@@ -288,6 +288,30 @@ def test_a_touch_with_an_earlier_clock_leaves_a_later_time_alone(case: ActorCase
     assert _last_used(case, token.id)[0] == later
 
 
+@pytest.mark.parametrize("separate_processes", [False, True], ids=["one-process", "two-processes"])
+def test_a_request_stalled_past_the_interval_keeps_a_newer_time(
+    case: ActorCase, separate_processes: bool
+) -> None:
+    # Request A reads the clock for its snapshot, then stalls for over a minute
+    # while request B stores a newer time. A must compare against the clock as it
+    # is when it claims and touches, not take B's time for a clock step back.
+    token, raw = case.auth.create_api_token("stalled request")
+    stored = _BASE + timedelta(seconds=120)
+    with patch(_AUTH_CLOCK, return_value=stored):
+        assert _resolve(case, raw) is not None
+    assert _last_used(case, token.id)[0] == stored
+    readings = iter([_BASE])
+    service = AuthService(case.database) if separate_processes else case.auth
+    with patch(
+        _AUTH_CLOCK, side_effect=lambda: next(readings, stored + timedelta(seconds=1))
+    ):
+        principal = service.resolve_api_token(
+            raw, network_zone="loopback", target_instance_id=None
+        )
+    assert principal is not None
+    assert _last_used(case, token.id)[0] == stored
+
+
 def test_invalid_tokens_resolve_to_none_without_a_write(case: ActorCase) -> None:
     revoked, revoked_raw = case.auth.create_api_token("revoked")
     case.auth.revoke_token(revoked.id)
@@ -492,6 +516,36 @@ def test_held_writer_spools_every_event_of_the_batch(
             )
             == 0
         )
+
+
+def test_a_held_writer_lets_each_request_spool_its_own_event(case: ActorCase) -> None:
+    # The leader releases the busy batch at once; every request writes its own
+    # spool file in its own thread instead of the leader writing them in turn.
+    principal, _raw = api_principal(case)
+    count = 5
+    batches = _batch_together(case.audit, count)
+    original = case.audit._spool
+    spooling_threads: dict[str, int] = {}
+    recording_threads: dict[str, int] = {}
+
+    def spool(event: AuditEvent, actor: Any = None) -> None:
+        spooling_threads[event.request_id] = threading.get_ident()
+        original(event, actor)
+
+    def record(index: int) -> None:
+        recording_threads[f"own-{index}"] = threading.get_ident()
+        _record(case, principal, f"own-{index}")
+
+    with closing(sqlite3.connect(case.database.path)) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            with patch.object(case.audit, "_spool", side_effect=spool):
+                _run_threads(count, record)
+        finally:
+            writer.rollback()
+    assert [len(batch) for batch in batches] == [count]
+    assert spooling_threads == recording_threads
+    assert len(_spooled(case)) == count
 
 
 def test_a_failed_spool_raises_only_in_its_own_request(case: ActorCase) -> None:

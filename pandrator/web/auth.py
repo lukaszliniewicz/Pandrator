@@ -555,11 +555,17 @@ class AuthService:
         if resolved is None:
             return None
         principal, token_due, client_due = resolved
+        # Claim and touch against the clock as it is now, not as the snapshot read
+        # it: a request that stalled after its snapshot must not take a newer time
+        # stored meanwhile for a clock step back and write its older time over it.
+        touch_now = utcnow()
         token_due, client_due = self._claim_touch(
-            principal, now, token_due=token_due, client_due=client_due
+            principal, touch_now, token_due=token_due, client_due=client_due
         )
         if token_due or client_due:
-            self._touch_api_token(principal, now, token_due=token_due, client_due=client_due)
+            self._touch_api_token(
+                principal, touch_now, token_due=token_due, client_due=client_due
+            )
         return principal
 
     @staticmethod
