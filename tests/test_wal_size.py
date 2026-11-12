@@ -6,11 +6,11 @@ Tests count bytes, frames and checkpoint results; none asserts wall-clock time.
 from __future__ import annotations
 
 import sqlite3
-import tempfile
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from sqlalchemy import text
 
 from pandrator.web import database as database_module
@@ -20,6 +20,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import WAL_SIZE_LIMIT_BYTES, Database
 
 WIDE = "x" * 3000
+MAX_GROW_ROUNDS = 2000
 
 
 def _wal_bytes(database: Database) -> int:
@@ -43,8 +44,12 @@ def _write(database: Database, count: int) -> None:
 def _grow_under_reader(database: Database, target_bytes: int) -> None:
     with database.snapshot_session() as reader:
         reader.execute(text("SELECT count(*) FROM effects")).scalar_one()
-        while _wal_bytes(database) < target_bytes:
+        # Each round adds at least 40 KiB, so the bound is far past any target used here.
+        for _ in range(MAX_GROW_ROUNDS):
+            if _wal_bytes(database) >= target_bytes:
+                return
             _write(database, 10)
+    pytest.fail(f"the WAL stayed at {_wal_bytes(database)} bytes, short of {target_bytes}")
 
 
 def test_new_connection_reports_the_size_limit(tmp_path):
@@ -86,59 +91,58 @@ def test_wal_under_the_limit_is_not_truncated(tmp_path):
         database.dispose()
 
 
-def test_segment_search_does_not_hold_a_statement_open_across_matching():
-    with tempfile.TemporaryDirectory() as root:
-        bootstrap = BootstrapTokenStore()
-        token = bootstrap.issue()
-        app = create_app(data_root=root, testing=True, bootstrap_tokens=bootstrap)
-        client = app.test_client()
-        headers = {
-            "X-CSRF-Token": client.post(
-                "/api/v1/auth/bootstrap", json={"token": token}
-            ).get_json()["csrf_token"]
-        }
-        services = app.extensions["pandrator"]
-        database = services["database"]
-        try:
-            session_id = client.post(
-                "/api/v1/sessions",
-                json={"name": "WAL search", "workflow_kind": "audiobook"},
-                headers=headers,
-            ).get_json()["id"]
-            services["generation"].create_plan(
-                session_id,
-                source_revision_id=None,
-                segments=[{"text": f"Row {index}: marker"} for index in range(12)],
-            )
-            url = f"/api/v1/sessions/{session_id}/generation-segments"
-            baseline = client.get(url, query_string={"q": "marker"}).get_json()["items"]
-            assert len(baseline) == 12
+def test_segment_search_does_not_hold_a_statement_open_across_matching(tmp_path):
+    bootstrap = BootstrapTokenStore()
+    token = bootstrap.issue()
+    app = create_app(data_root=tmp_path, testing=True, bootstrap_tokens=bootstrap)
+    client = app.test_client()
+    headers = {
+        "X-CSRF-Token": client.post(
+            "/api/v1/auth/bootstrap", json={"token": token}
+        ).get_json()["csrf_token"]
+    }
+    services = app.extensions["pandrator"]
+    database = services["database"]
+    try:
+        session_id = client.post(
+            "/api/v1/sessions",
+            json={"name": "WAL search", "workflow_kind": "audiobook"},
+            headers=headers,
+        ).get_json()["id"]
+        services["generation"].create_plan(
+            session_id,
+            source_revision_id=None,
+            segments=[{"text": f"Row {index}: marker"} for index in range(12)],
+        )
+        url = f"/api/v1/sessions/{session_id}/generation-segments"
+        baseline = client.get(url, query_string={"q": "marker"}).get_json()["items"]
+        assert len(baseline) == 12
 
-            # Leave frames in the WAL, so a reader still open has a nonzero mark.
-            with closing(sqlite3.connect(database.path, timeout=30)) as other:
-                other.execute("CREATE TABLE IF NOT EXISTS probe (v TEXT)")
-                other.execute("INSERT INTO probe VALUES ('seed')")
-                other.commit()
+        # Leave frames in the WAL, so a reader still open has a nonzero mark.
+        with closing(sqlite3.connect(database.path, timeout=30)) as other:
+            other.execute("CREATE TABLE IF NOT EXISTS probe (v TEXT)")
+            other.execute("INSERT INTO probe VALUES ('seed')")
+            other.commit()
 
-            original = generation_search.literal_matches
-            observed: list[tuple[int, int, int]] = []
+        original = generation_search.literal_matches
+        observed: list[tuple[int, int, int]] = []
 
-            def wrapped(*args, **kwargs):
-                if not observed:
-                    with closing(sqlite3.connect(database.path, timeout=30)) as other:
-                        other.execute("CREATE TABLE IF NOT EXISTS probe (v TEXT)")
-                        other.execute("INSERT INTO probe VALUES ('x')")
-                        other.commit()
-                        observed.append(
-                            tuple(other.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone())
-                        )
-                return original(*args, **kwargs)
+        def wrapped(*args, **kwargs):
+            if not observed:
+                with closing(sqlite3.connect(database.path, timeout=30)) as other:
+                    other.execute("CREATE TABLE IF NOT EXISTS probe (v TEXT)")
+                    other.execute("INSERT INTO probe VALUES ('x')")
+                    other.commit()
+                    observed.append(
+                        tuple(other.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone())
+                    )
+            return original(*args, **kwargs)
 
-            with mock.patch.object(generation_search, "literal_matches", wrapped):
-                patched = client.get(url, query_string={"q": "marker"}).get_json()["items"]
-            assert observed, "literal_matches was never called"
-            _busy, log, checkpointed = observed[0]
-            assert log == checkpointed
-            assert patched == baseline
-        finally:
-            database.dispose()
+        with mock.patch.object(generation_search, "literal_matches", wrapped):
+            patched = client.get(url, query_string={"q": "marker"}).get_json()["items"]
+        assert observed, "literal_matches was never called"
+        _busy, log, checkpointed = observed[0]
+        assert log == checkpointed
+        assert patched == baseline
+    finally:
+        database.dispose()
