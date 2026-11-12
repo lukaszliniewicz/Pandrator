@@ -22,7 +22,6 @@ from unittest import mock
 import pytest
 from sqlalchemy import select
 from waitress import wasyncore
-from waitress.server import create_server
 
 from pandrator.web import abandoned_requests, api_server, generation_rendering
 from pandrator.web import generation_cast_runtime as cast_runtime
@@ -35,11 +34,12 @@ from pandrator.web.abandoned_requests import (
 )
 from pandrator.web.accounts.execution_actor import execution_actor_scope
 from pandrator.web.api import create_app
-from pandrator.web.api_server import REQUEST_LOOKAHEAD
+from pandrator.web.api_server import REQUEST_LOOKAHEAD, ReadDisconnectChannel
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.generation_audio_identity import AudioIdentityContext
 from pandrator.web.generation_performance_snapshot import performance_runtime_settings
 from tests.test_audio_identity_cost import (  # noqa: F401
+    _add_matching_takes,
     case,
     cast_project,
     design,
@@ -156,7 +156,9 @@ def test_list_segments_stops_within_one_segment_of_the_client_leaving(varied_pla
 
     # The listing makes one checkpoint per segment in the cast freeze and one more
     # per segment in the identity pass, so any N stops at probe call N + 1.
-    for connected in (0, 3, 15):
+    stops = (0, 3, 15)
+    assert max(stops) < 2 * len(plan.ids), "each N must fall inside the two passes"
+    for connected in stops:
         calls[0] = 0
         probe = TurnsTrueAfter(connected)
         with mock.patch.object(AudioIdentityContext, "for_segment", counting):
@@ -188,6 +190,29 @@ def test_whole_plan_cast_freeze_stops_within_one_segment(varied_plan):  # noqa: 
     assert probe.calls == stopped_after + 1
     # One render per segment frozen before the checkpoint that raised.
     assert parts.call_count == stopped_after
+
+
+@pytest.mark.parametrize(
+    "route", ["generation-segments", "generation-plan/status", "generation-plan/revisions"],
+)
+def test_each_heavy_read_of_a_cast_plan_with_takes_answers_499(varied_plan, route):  # noqa: F811
+    plan, actor = varied_plan
+    _add_matching_takes(plan, actor)
+    url = f"/api/v1/sessions/{plan.c.p.source['id']}/{route}"
+    client = plan.c.r.f.users.alice
+    assert client.get(url).status_code == 200
+    probe = mock.Mock(return_value=True)
+    response = client.get(url, environ_overrides={"waitress.client_disconnected": probe})
+    assert response.status_code == 499, response.get_json()
+    assert response.get_json()["error"]["code"] == "client_closed_request"
+    # The probe is read only at a checkpoint, so one call means the read reached one.
+    probe.assert_called_once()
+    with plan.c.r.f.case.database.session() as session:
+        statuses = session.scalars(
+            select(m.AuditEvent.status_code).where(m.AuditEvent.path == url)
+        ).all()
+    assert sorted(statuses) == [200, 499]
+    assert _unbound()
 
 
 def test_a_worker_thread_never_sees_the_request_threads_probe(varied_plan):  # noqa: F811
@@ -352,14 +377,13 @@ def test_a_non_callable_environ_value_arms_nothing(api):
 
 @contextmanager
 def _waitress(app):
-    server = create_server(
-        app, host="127.0.0.1", port=0, threads=1, channel_request_lookahead=REQUEST_LOOKAHEAD,
-    )
+    socket_map: dict[int, Any] = {}
+    server = api_server.create_api_server(app, socket_map, host="127.0.0.1", port=0, threads=1)
     stop = threading.Event()
 
     def serve() -> None:
         while not stop.is_set():
-            wasyncore.loop(timeout=0.02, map=server._map, count=1)
+            wasyncore.loop(timeout=0.02, map=socket_map, count=1)
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
@@ -372,9 +396,10 @@ def _waitress(app):
         server.close()
 
 
-def _send_get(server, path: str) -> socket.socket:
+def _send_get(server, path: str, method: str = "GET") -> socket.socket:
     client = socket.create_connection(("127.0.0.1", int(server.effective_port)))
-    client.sendall(f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode("ascii"))
+    length = "" if method == "GET" else "Content-Length: 0\r\n"
+    client.sendall(f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n{length}\r\n".encode("ascii"))
     return client
 
 
@@ -414,6 +439,57 @@ def test_waitress_reports_a_closed_client_to_the_running_request_and_skips_queue
             "the dispatcher to go idle",
         )
     assert served == ["/first"]
+
+
+def test_waitress_still_runs_a_queued_mutation_whose_client_left(monkeypatch):
+    monkeypatch.undo()  # Real waitress needs loopback sockets, which no_network forbids.
+    release = threading.Event()
+    started = threading.Event()
+    served: list[tuple[str, str, bool]] = []
+    probes: dict[str, Callable[[], bool]] = {}
+
+    def app(environ, start_response):
+        path = environ["PATH_INFO"]
+        probes[path] = environ["waitress.client_disconnected"]
+        served.append((environ["REQUEST_METHOD"], path, probes[path]()))
+        if path == "/first":
+            started.set()
+            assert release.wait(WAIT_SECONDS)
+        start_response("200 OK", [("Content-Type", "text/plain"), ("Content-Length", "2")])
+        return [b"ok"]
+
+    with _waitress(app) as server:
+        first = _send_get(server, "/first")
+        assert started.wait(WAIT_SECONDS)
+        # Queued behind the only thread; its client closes before it is served.
+        second = _send_get(server, "/second", method="POST")
+        _wait_until(lambda: len(server.task_dispatcher.queue) == 1, "the request to queue")
+        second.close()
+        # The loop reads every closed socket it watches in one pass, so once the
+        # read's disconnect shows, the mutation's close has had its chance too.
+        first.close()
+        _wait_until(lambda: probes["/first"]() is True, "the running request's disconnect")
+        release.set()
+        _wait_until(lambda: len(served) == 2, "the queued mutation to run")
+        _wait_until(
+            lambda: not server.task_dispatcher.queue and server.task_dispatcher.active_count == 0,
+            "the dispatcher to go idle",
+        )
+    assert served == [("GET", "/first", False), ("POST", "/second", False)]
+
+
+def test_api_server_listeners_use_the_read_only_disconnect_channel(monkeypatch):
+    monkeypatch.undo()  # Real waitress needs loopback sockets, which no_network forbids.
+    socket_map: dict[int, Any] = {}
+    server = api_server.create_api_server(
+        lambda environ, start_response: [], socket_map, host="127.0.0.1", port=0, threads=1,
+    )
+    try:
+        assert server.adj.channel_request_lookahead == REQUEST_LOOKAHEAD
+        assert server.channel_class is ReadDisconnectChannel
+    finally:
+        server.task_dispatcher.shutdown(cancel_pending=True, timeout=WAIT_SECONDS)
+        server.close()
 
 
 def test_a_client_that_stays_connected_reads_false_throughout(monkeypatch):
