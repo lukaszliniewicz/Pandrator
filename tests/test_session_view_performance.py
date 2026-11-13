@@ -24,13 +24,18 @@ from unittest.mock import patch
 from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session as OrmSession
 
+from pandrator.web import generation_history_reads as history_reads
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.generation_audio_identity import (
     IDENTITY_KEY,
     AudioIdentityContext,
 )
-from pandrator.web.generation_history_reads import GenerationHistoryReader
+from pandrator.web.generation_history_reads import (
+    COMPACT_RUN_SNAPSHOT_KEYS,
+    GenerationHistoryReader,
+    project_generation_run,
+)
 from pandrator.web.generation_review import revision_history
 from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
@@ -41,6 +46,7 @@ from pandrator.web.models import (
     GenerationSegment,
     Job,
     OutputAssembly,
+    SessionRecord,
     UsageEvent,
     utcnow,
 )
@@ -774,6 +780,241 @@ class SessionViewPerformanceTests(unittest.TestCase):
         expected_latest = next(item for item in full if item["id"] == run_ids[14])
         self.assertEqual(expected_latest, reader.latest_run(session_id))
         self.assertEqual(foreign_runs[0], reader.latest_run(other_id)["id"])
+
+    def _compact_history_fixture(self):
+        session_id, run_ids = self._run_history_fixture(
+            9, run_status="completed", job_status="succeeded"
+        )
+        pad = {"sentinel_padding": "SENTINEL" * 512}
+        with self.database.session() as session:
+            runs = [session.get(GenerationRun, run_id) for run_id in run_ids]
+            base = session.get(GenerationPlanRevision, runs[0].plan_revision_id)
+            root = runs[0]
+            root.settings_snapshot_json = {
+                "tts": {"voice": "root-voice", "speech_block_early_repair_enabled": True},
+                "rvc": {"model": "m"},
+                "audio": {"x": 1},
+                "generation_control_snapshot": pad,
+                **pad,
+            }
+            for index, run in enumerate(runs[1:5], start=1):
+                revision = GenerationPlanRevision(
+                    plan_id=base.plan_id,
+                    revision_number=base.revision_number + index,
+                    content_hash=f"compact-revision-{index}",
+                    settings_json={},
+                    operation_json={
+                        "reason": "passage_regroup" if index == 2 else "early_timing_repair",
+                        "source_generation_run_id": root.id,
+                        "repair_status": "applied",
+                    },
+                )
+                session.add(revision)
+                session.flush()
+                run.plan_revision_id = revision.id
+                run.source_generation_run_id = root.id
+                run.settings_snapshot_json = {
+                    "tts": {"voice": f"child-{index}"},
+                    "selected_segment_override": {"tts": {"voice": "o"}},
+                    "performance_snapshot": pad,
+                    ("regroup_parent_run_id" if index == 2 else "early_repair_parent_run_id"):
+                        root.id,
+                }
+            # A malformed marker, an empty snapshot and explicit nulls.
+            runs[5].settings_snapshot_json = {"early_repair_parent_run_id": {"bad": root.id}}
+            runs[6].settings_snapshot_json = {}
+            runs[7].settings_snapshot_json = {
+                "tts": None, "rvc": None, "audio": None, "selected_segment_override": None,
+                "early_repair_parent_run_id": None, "regroup_parent_run_id": None, **pad,
+            }
+            runs[8].status = "queued"
+            queued_job = session.get(Job, runs[8].job_id)
+            queued_job.status = "queued"
+            running = Job(session_id=session_id, kind="generation", status="running",
+                          lease_expires_at=utcnow() + timedelta(minutes=5))
+            ownership = job_creation_ownership(session, session_id=session_id)
+            running.workspace_id = ownership.workspace_id
+            running.project_id = ownership.project_id
+            session.add(running)
+            # Recast: before and after assemblies on one run, plus padded ones.
+            now = utcnow()
+            for offset, side in enumerate((None, "before", "after", "before")):
+                settings = {"history_run": root.id, **pad, "pinned_takes": [pad] * 3}
+                if side is not None:
+                    settings["audio_version_side"] = side
+                session.add(OutputAssembly(
+                    session_id=session_id, generation_run_id=root.id, status="completed",
+                    settings_json=settings, created_at=now + timedelta(seconds=offset),
+                ))
+            session.add(OutputAssembly(
+                session_id=session_id, generation_run_id=runs[6].id, status="completed",
+                settings_json={}, created_at=now,
+            ))
+            runs[4].audio_version_json = {
+                "version": 1, "kind": "recast",
+                "selectors": [{"key": "voice", "label": "Voice"}],
+                "target_segment_ids": ["s1", "s2"], "before_take_ids": {"s1": "t1"},
+                "after_take_ids": {"s1": "t1"}, "generated_take_ids": {"s1": "t2"},
+                "applied_take_ids": {}, "applied_take_revisions": {}, "undone": False,
+            }
+            for offset, side in enumerate(("before", "after", "before")):
+                session.add(OutputAssembly(
+                    session_id=session_id, generation_run_id=runs[4].id, status="completed",
+                    settings_json={"audio_version_side": side, **pad},
+                    created_at=now + timedelta(seconds=offset),
+                ))
+            # An explicit null side is keyed None in the versions map, unlike
+            # an absent side, which is keyed "after".
+            session.add(OutputAssembly(
+                session_id=session_id, generation_run_id=runs[3].id, status="completed",
+                settings_json={"audio_version_side": None, **pad}, created_at=now,
+            ))
+            runs[3].audio_version_json = dict(runs[4].audio_version_json)
+        return session_id
+
+    def _compact_voiceover_fixtures(self):
+        """Voiceover sessions in which every compact snapshot key decides an output."""
+        def voiceover(count):
+            session_id, run_ids = self._run_history_fixture(
+                count, run_status="running", job_status="running"
+            )
+            with self.database.session() as session:
+                session.get(SessionRecord, session_id).workflow_kind = "voiceover"
+            return session_id, run_ids
+
+        early = {"speech_block_early_repair_enabled": True}
+        pad = {"sentinel_padding": "SENTINEL" * 512}
+        mixed_id, run_ids = voiceover(5)
+        with self.database.session() as session:
+            runs = [session.get(GenerationRun, run_id) for run_id in run_ids]
+            root, child = runs[0], runs[4]
+            base = session.get(GenerationPlanRevision, root.plan_revision_id)
+            root.settings_snapshot_json = {
+                "tts": {"voice": "root-voice", **early}, "rvc": {"model": "m"}, **pad,
+            }
+            # Audio or the override can each turn the second pass off.
+            runs[1].settings_snapshot_json = {
+                "tts": {"voice": "v1", **early}, "audio": {"performance_enabled": True}, **pad,
+            }
+            runs[2].settings_snapshot_json = {
+                "tts": {"voice": "v2", **early},
+                "selected_segment_override": {"tts": {"casting_enabled": True}}, **pad,
+            }
+            runs[3].operation = "rvc"
+            runs[3].settings_snapshot_json = {
+                "tts": {"voice": "v3"}, "rvc": {"model": "rvc-model"}, **pad,
+            }
+            revision = GenerationPlanRevision(
+                plan_id=base.plan_id, revision_number=base.revision_number + 1,
+                content_hash="compact-voiceover-revision", settings_json={},
+                operation_json={
+                    "reason": "early_timing_repair", "source_generation_run_id": root.id,
+                    "repair_status": "applied",
+                },
+            )
+            session.add(revision)
+            session.flush()
+            child.plan_revision_id = revision.id
+            child.source_generation_run_id = root.id
+            child.settings_snapshot_json = {
+                "tts": {"voice": "child"}, "early_repair_parent_run_id": root.id, **pad,
+            }
+        sessions = [mixed_id]
+        # A post-run repair job is only found when the snapshot enables repair,
+        # and here only audio, or only the override, does.
+        for enabling in ({"audio": early}, {"selected_segment_override": {"tts": early}}):
+            session_id, (run_id,) = voiceover(1)
+            with self.database.session() as session:
+                run = session.get(GenerationRun, run_id)
+                run.settings_snapshot_json = {"tts": {"voice": "solo"}, **enabling, **pad}
+                ownership = job_creation_ownership(session, session_id=session_id)
+                repair_job = Job(
+                    session_id=session_id, kind="generation.repair-existing",
+                    status="succeeded", payload_json={"generation_run_id": run_id},
+                )
+                repair_job.workspace_id = ownership.workspace_id
+                repair_job.project_id = ownership.project_id
+                session.add(repair_job)
+            sessions.append(session_id)
+        return sessions
+
+    def _compact_pairs(self, session_id):
+        reader = GenerationHistoryReader(self.database)
+        for include_repairs in (True, False):
+            for limit in (None, 2, 25):
+                expected = [
+                    project_generation_run(item, view="compact")
+                    for item in reader.list_runs(
+                        session_id, include_repairs=include_repairs, limit=limit
+                    )
+                ]
+                actual = [
+                    project_generation_run(item, view="compact")
+                    for item in reader.list_runs(
+                        session_id, include_repairs=include_repairs, limit=limit,
+                        view="compact",
+                    )
+                ]
+                yield include_repairs, limit, expected, actual
+
+    def test_compact_run_list_equals_projected_full_list(self):
+        sessions = [self._compact_history_fixture(), *self._compact_voiceover_fixtures()]
+        for index, session_id in enumerate(sessions):
+            for include_repairs, limit, expected, actual in self._compact_pairs(session_id):
+                with self.subTest(session=index, include_repairs=include_repairs, limit=limit):
+                    self.assertTrue(expected)
+                    self.assertEqual(expected, actual)
+        reader = GenerationHistoryReader(self.database)
+        items = reader.list_runs(sessions[0], view="compact")
+        self.assertTrue(any(item["early_repair_parent_run_id"] for item in items))
+        self.assertTrue(any(item.get("audio_version") for item in items))
+        self.assertTrue(any(
+            None in (item.get("audio_version_assemblies") or {}) for item in items
+        ))
+        second_passes = [
+            item["second_pass"]
+            for session_id in sessions[1:]
+            for item in reader.list_runs(session_id, view="compact")
+        ]
+        self.assertIn("repair", second_passes)
+        self.assertIn(None, second_passes)
+
+    def test_each_compact_snapshot_key_decides_some_compact_output(self):
+        sessions = [self._compact_history_fixture(), *self._compact_voiceover_fixtures()]
+        for key in COMPACT_RUN_SNAPSHOT_KEYS:
+            omitted = tuple(item for item in COMPACT_RUN_SNAPSHOT_KEYS if item != key)
+            with self.subTest(omitted=key):
+                with patch.object(history_reads, "COMPACT_RUN_SNAPSHOT_KEYS", omitted):
+                    differs = any(
+                        expected != actual
+                        for session_id in sessions
+                        for _, _, expected, actual in self._compact_pairs(session_id)
+                    )
+                self.assertTrue(differs, f"no fixture output depends on {key!r}")
+
+    def test_compact_run_list_never_loads_whole_snapshots_or_settings(self):
+        session_id = self._compact_history_fixture()
+        reader = GenerationHistoryReader(self.database)
+        for limit in (None, 3):
+            with self.subTest(limit=limit):
+                seen = []
+
+                def record_load(_session, instance, seen=seen):
+                    if isinstance(instance, GenerationRun):
+                        seen.append(("run", "settings_snapshot_json" in instance.__dict__))
+                    elif isinstance(instance, OutputAssembly):
+                        seen.append(("assembly", "settings_json" in instance.__dict__))
+
+                event.listen(OrmSession, "loaded_as_persistent", record_load)
+                try:
+                    items = reader.list_runs(session_id, limit=limit, view="compact")
+                finally:
+                    event.remove(OrmSession, "loaded_as_persistent", record_load)
+                self.assertTrue(items)
+                self.assertTrue(any(kind == "run" for kind, _ in seen))
+                self.assertTrue(any(kind == "assembly" for kind, _ in seen))
+                self.assertFalse([entry for entry in seen if entry[1]])
+                self.assertNotIn("SENTINEL", repr(items))
 
     def test_history_selection_and_hydration_share_a_read_snapshot(self):
         session_id, run_ids = self._run_history_fixture(

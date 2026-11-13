@@ -573,7 +573,8 @@ def register_generation_routes(
                 "items": [
                     project_generation_run(item, view=view)
                     for item in generation.list_runs(
-                        session_id, include_repairs=include_repairs == "true", limit=limit
+                        session_id, include_repairs=include_repairs == "true", limit=limit,
+                        view=view,
                     )
                 ]
             }
