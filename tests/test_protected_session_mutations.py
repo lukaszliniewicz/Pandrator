@@ -717,7 +717,8 @@ def test_project_only_reader_cannot_trash_or_restore_and_invisible_sessions_matc
     assert _error_without_request_id(hidden_trash) == _error_without_request_id(missing_trash)
     assert hidden_restore.status_code == missing_restore.status_code == 404
     assert _error_without_request_id(hidden_restore) == _error_without_request_id(missing_restore)
-    assert "999" not in str(hidden_edit.get_json())
+    # The random request id can contain "999" by chance, so leave it out.
+    assert "999" not in str(_error_without_request_id(hidden_edit))
     assert "busy" not in str(hidden_trash.get_json()).lower()
     assert (
         _receipt(
