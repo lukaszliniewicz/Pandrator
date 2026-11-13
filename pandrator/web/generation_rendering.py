@@ -53,6 +53,9 @@ _VOICE_KEYS = (
     "model",
 )
 
+# Parsed speech XML by (XML, segment ID, text), with the characters it was parsed with.
+ParsedMarkupMemo = dict[tuple[str, str, str], tuple[Any, ParsedSpeechMarkup]]
+
 
 @dataclass
 class _PlannedSpan:
@@ -505,6 +508,7 @@ def build_render_parts(
     _bind_base: bool = False,
     _read_only_controls: bool = False,
     _validated_controls: dict[str, tuple[object, Any]] | None = None,
+    _parsed_markup: ParsedMarkupMemo | None = None,
 ) -> list[dict[str, Any]]:
     """Plan ordered provider requests for one logical segment.
 
@@ -516,6 +520,12 @@ def build_render_parts(
     ``_validated_controls`` is a memo for ``resolve_cast_voice`` that matches
     the controls by object identity; it is used only with
     ``_read_only_controls`` and ignored otherwise.
+    ``_parsed_markup`` is a request-local memo of parsed speech XML, so a cast
+    freeze and a later render of the same segment parse it once. An entry is
+    reused only for the same XML, segment ID and text and equal characters,
+    which are all the parser reads; a failed parse is never remembered. Like
+    ``_validated_controls`` it is used only with ``_read_only_controls``. The
+    planner never changes a parsed record, so one may be shared.
     """
 
     if not isinstance(text, str):
@@ -538,12 +548,23 @@ def build_render_parts(
     }
     xml_present = speech_xml is not None
     if xml_present:
-        parsed = parse_speech_markup(
-            speech_xml,
-            expected_segment_id=segment_id,
-            expected_text=text,
-            characters=control_values.get("characters"),
-        )
+        characters = control_values.get("characters")
+        memo = _parsed_markup if _read_only_controls else None
+        key = (speech_xml, segment_id, text)
+        remembered = memo.get(key) if memo is not None else None
+        if remembered is not None and (
+            remembered[0] is characters or remembered[0] == characters
+        ):
+            parsed = remembered[1]
+        else:
+            parsed = parse_speech_markup(
+                speech_xml,
+                expected_segment_id=segment_id,
+                expected_text=text,
+                characters=characters,
+            )
+            if memo is not None:
+                memo[key] = (characters, parsed)
     else:
         parsed = _synthetic_markup(
             text, source_speaker=source_speaker, settings=settings

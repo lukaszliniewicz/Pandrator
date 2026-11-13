@@ -170,8 +170,11 @@ def _uncached(*args, **kwargs):
     return original(settings, endpoint)
 
 
-def _without_proof_memo(session, session_id, binding, settings, resolved, *args, _proofs=None, **kwargs):
-    """The retained-pin validator as it behaved before proofs were remembered."""
+def _without_proof_memo(
+    session, session_id, binding, settings, resolved, *args, _proofs=None, _registry=None, **kwargs,
+):
+    """The retained-pin validator as it behaved before proofs were remembered
+    and before a pass shared one provider registry across its checks."""
     return _validate(session, session_id, binding, settings, resolved, *args, **kwargs)
 
 
@@ -188,9 +191,11 @@ def _language_support_without_memo(settings, endpoint=None, _service_config_cach
 
 
 def _build_render_parts_copying_controls(*args, **kwargs):
-    """Render parts as they were planned before controls were read in place."""
+    """Render parts as they were planned before controls were read in place
+    (and so before a freeze's parsed XML was shared with later renders)."""
     kwargs["_read_only_controls"] = False
     kwargs["_validated_controls"] = None
+    kwargs["_parsed_markup"] = None
     return _build_render_parts(*args, **kwargs)
 
 
@@ -980,6 +985,106 @@ def test_cast_freeze_repeats_no_lookup_or_copy_per_segment(varied_plan):
     reference_out: list[Work] = []
     _freeze_fresh(plan, actor, reference=True, work_out=reference_out)
     assert reference_out[0].controls_copies >= len(KINDS), reference_out[0]
+
+
+@dataclass
+class SharedWork:
+    """XML parses in the render planner and provider registries built by the cast runtime."""
+
+    parses: int = 0
+    registries: int = 0
+
+
+@contextmanager
+def _count_shared_work():
+    work = SharedWork()
+    real_parse = generation_rendering.parse_speech_markup
+    real_registry = cast_runtime.TtsProviderRegistry
+
+    def parse(*args, **kwargs):
+        work.parses += 1
+        return real_parse(*args, **kwargs)
+
+    def registry(*args, **kwargs):
+        work.registries += 1
+        return real_registry(*args, **kwargs)
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(generation_rendering, "parse_speech_markup", parse))
+        stack.enter_context(patch.object(cast_runtime, "TtsProviderRegistry", registry))
+        yield work
+
+
+def _unshared(stack: ExitStack) -> None:
+    """The identity pass as it was before it shared the freeze's parse and one registry."""
+
+    def build_render_parts(*args, **kwargs):
+        kwargs["_parsed_markup"] = None
+        return _build_render_parts(*args, **kwargs)
+
+    stack.enter_context(patch.object(generation_rendering, "build_render_parts", build_render_parts))
+    stack.enter_context(
+        patch.object(cast_runtime, "validate_retained_cast_resolution", _without_proof_memo)
+    )
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_a_context_freeze_shares_its_parse_and_registry_without_changing_identities(
+    varied_plan, scoped,
+):
+    plan, actor = varied_plan
+    ids = plan.ids[2:8] if scoped else plan.ids
+    scope = ids if scoped else None
+    with _count_shared_work() as reference_work, ExitStack() as stack:
+        _unshared(stack)
+        reference, _context = _context_identities(plan, actor, ids, scope=scope)
+    with _count_shared_work() as work:
+        identities, _context = _context_identities(plan, actor, ids, scope=scope)
+    assert identities == reference
+    assert all("performance_error" not in value for value in identities.values()), identities
+    assert len({value["settings_hash"] for value in identities.values()}) >= 3
+    with_xml = sum(1 for segment_id in ids if KINDS[plan.ids.index(segment_id)] != "narration")
+    # Measured on the code before the sharing, whole plan: 20 parses (one by
+    # the freeze and one by the identity render for each of the 10 XML
+    # segments) and 14 provider registries (2 for each of the 2 cast keys the
+    # freeze resolved, 1 for each of the 10 retained pin checks of the identity
+    # render). Now 10 and 1. For the 6-segment page: 10 and 9, now 5 and 1.
+    assert work.parses == with_xml and reference_work.parses == 2 * with_xml, (work, reference_work)
+    assert work.registries == 1, work
+    assert reference_work.registries > len(ids), reference_work
+
+
+def test_revision_detail_reuses_takes_stamped_by_the_unshared_pass(varied_plan):
+    """Reuse counts are unchanged: takes stamped with the identities of the pass
+    before the sharing are all reusable in a revision detail read now."""
+    plan, actor = varied_plan
+    with ExitStack() as stack:
+        _unshared(stack)
+        stamped = _whole_plan_identities(plan, actor)
+    sid = plan.c.p.source["id"]
+    with plan.c.r.f.case.database.immediate_session() as session:
+        ownership = resolve_artifact_ownership(session, session_id=sid)
+        for segment_id in plan.ids:
+            artifact = m.Artifact(
+                session_id=sid, workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id, kind="audio", role="generation_take",
+                relative_path=f"test/{segment_id}.wav", content_hash="a" * 64,
+                metadata_json={IDENTITY_KEY: stamped[segment_id]},
+            )
+            session.add(artifact)
+            session.flush()
+            session.get_one(m.GenerationSegment, segment_id).status = "completed"
+            session.add(m.AudioTake(
+                generation_segment_id=segment_id, artifact_id=artifact.id,
+                status="completed", is_active=True, duration_ms=100,
+            ))
+    from pandrator.web.generation_review import revision_detail
+
+    with execution_actor_scope(actor), _count_shared_work() as work:
+        detail = revision_detail(plan.c.r.f.case.database, sid, plan.revision_id)["revision"]
+    assert detail["reusable_segment_count"] == len(plan.ids)
+    assert detail["stale_segment_count"] == detail["audio_identity_unknown_segment_count"] == 0
+    assert work.parses == sum(1 for kind in KINDS if kind != "narration"), work
 
 
 def test_freezing_neither_mutates_the_controls_nor_changes_the_snapshot(varied_plan):

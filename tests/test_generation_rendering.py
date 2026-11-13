@@ -186,6 +186,59 @@ def test_read_only_controls_plan_the_same_parts_and_leave_the_controls_untouched
     assert validated
 
 
+def test_parsed_markup_memo_is_reused_only_for_the_same_parser_inputs(monkeypatch):
+    from copy import deepcopy
+
+    from pandrator.web import generation_rendering
+
+    parses: list[str] = []
+    real_parse = generation_rendering.parse_speech_markup
+
+    def parse(*args, **kwargs):
+        parses.append(kwargs["expected_segment_id"])
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr(generation_rendering, "parse_speech_markup", parse)
+    controls = deepcopy(CONTROLS)
+    controls["characters"][0]["delivery"] = {"instruction": "Character default"}
+    markup = (
+        '<segment id="s"><dialogue><speaker ref="c-one"><ins>Text direction</ins>A</speaker>'
+        '<speaker ref="c-two">B</speaker></dialogue> C</segment>'
+    )
+    settings = {"casting_enabled": True, "performance_enabled": True, "voice": "base"}
+    expected = build_render_parts("AB C", settings, speech_xml=markup, segment_id="s",
+        controls=controls)
+    assert parses == ["s"]
+    memo: dict = {}
+
+    def plan(plan_controls, *, text="AB C", xml=markup, read_only=True):
+        return build_render_parts(text, settings, speech_xml=xml, segment_id="s",
+            controls=plan_controls, _read_only_controls=read_only, _parsed_markup=memo)
+
+    assert plan(controls) == expected and parses == ["s", "s"]
+    [(_key, (_characters, parsed))] = memo.items()
+    pristine = deepcopy(parsed)
+    # An equal but separate characters list (a pinned snapshot's copy) reuses it.
+    assert plan(deepcopy(controls)) == expected and len(parses) == 2
+    assert parsed == pristine
+    # Different characters, text or XML parse again.
+    renamed = deepcopy(controls)
+    renamed["characters"][1]["display_name"] = "Second"
+    labels = [label for part in plan(renamed) for label in part["speaker_labels"]]
+    assert "Second" in labels and len(parses) == 3
+    plain = deepcopy(controls)
+    plain["characters"][0].pop("delivery")
+    assert plan(plain) != expected and len(parses) == 4
+    with pytest.raises(ValueError):
+        plan(controls, text="AB D")
+    with pytest.raises(ValueError):
+        plan(controls, text="AB D")
+    assert len(parses) == 6  # a failed parse is never remembered
+    # Without read-only controls the memo is ignored, as with _validated_controls.
+    assert plan(controls, read_only=False) == expected and len(parses) == 7
+    assert parsed == pristine
+
+
 def test_category_only_speaker_uses_category_cast_without_character_dictionary():
     markup = '<segment id="s"><speaker g="female">Hello</speaker></segment>'
     controls = {
