@@ -30,6 +30,13 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes its running checks; without this
+# the stale run keeps its share of the job limit and the new one queues.
+# Pushes to branches and manual runs are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   python-lanes:
     if: ${{ !inputs.skip_python }}
