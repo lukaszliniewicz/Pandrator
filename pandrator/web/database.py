@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
+from functools import partial
 from pathlib import Path
 from typing import TypeVar
 
@@ -16,9 +19,17 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
+from .maintenance_threads import MaintenanceThread
+
+logger = logging.getLogger(__name__)
+
 SCHEMA_HEAD = "0087_public_project_links"
 _WriteResult = TypeVar("_WriteResult")
-# About twice one auto-checkpoint cycle (1,000 pages at the default 4 KiB). After a
+BACKGROUND_CHECKPOINT_SECONDS = 1.0
+# With background checkpoints a commit still checkpoints inline once the WAL
+# reaches this size, so a stopped checkpoint thread cannot let it grow unbounded.
+BACKGROUND_AUTOCHECKPOINT_PAGES = 10_000
+# About twice SQLite's default auto-checkpoint cycle (1,000 pages of 4 KiB). After a
 # complete checkpoint, with no reader still using the log, the next write that
 # restarts the log truncates it back to this size. Set on engine connections only;
 # raw sqlite3 connections (migrations, maintenance) leave it to the next app write.
@@ -55,7 +66,7 @@ def sqlite_url(path: Path) -> str:
     return f"sqlite:///{path.as_posix()}"
 
 
-def create_database_engine(path: Path) -> Engine:
+def create_database_engine(path: Path, *, autocheckpoint_pages: int | None = None) -> Engine:
     path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(
         sqlite_url(path),
@@ -73,6 +84,8 @@ def create_database_engine(path: Path) -> Engine:
                 cursor.execute("PRAGMA journal_mode = WAL")
                 cursor.execute(f"PRAGMA journal_size_limit = {int(WAL_SIZE_LIMIT_BYTES)}")
                 cursor.execute("PRAGMA busy_timeout = 30000")
+                if autocheckpoint_pages is not None:
+                    cursor.execute(f"PRAGMA wal_autocheckpoint = {int(autocheckpoint_pages)}")
             finally:
                 cursor.close()
         except BaseException:
@@ -83,10 +96,61 @@ def create_database_engine(path: Path) -> Engine:
 
 
 class Database:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, checkpoint_interval: float | None = None):
+        """Open the database; optionally checkpoint the WAL on a background thread.
+
+        By default SQLite checkpoints inside whichever commit takes the WAL past
+        1000 pages. On a slow disk that commit takes seconds while the request
+        that made it, and any request waiting on that write, stands still. With
+        ``checkpoint_interval`` a background thread checkpoints at that interval
+        instead, and commits only fall back to it if the WAL grows far larger.
+        """
         self.path = path
-        self.engine = create_database_engine(path)
+        self.engine = create_database_engine(
+            path,
+            autocheckpoint_pages=(
+                None if checkpoint_interval is None else BACKGROUND_AUTOCHECKPOINT_PAGES
+            ),
+        )
         self._factory = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
+        self._checkpoint_stop = threading.Event()
+        self._checkpointer: MaintenanceThread | None = None
+        if checkpoint_interval is not None:
+            self._checkpointer = MaintenanceThread(
+                target=partial(self._checkpoint_wal, checkpoint_interval),
+                name="pandrator-wal-checkpoint",
+                daemon=True,
+            )
+            self._checkpointer.start()
+
+    def _checkpoint_wal(self, interval: float) -> None:
+        """Copy committed WAL pages into the database file away from requests.
+
+        A passive checkpoint never waits for readers or writers, and costs almost
+        nothing when the WAL has nothing new.
+        """
+        connection: sqlite3.Connection | None = None
+        failing = False
+        try:
+            while not self._checkpoint_stop.wait(interval):
+                if connection is None and not self.path.exists():
+                    continue
+                try:
+                    if connection is None:
+                        connection = sqlite3.connect(self.path, timeout=0, isolation_level=None)
+                    connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+                except sqlite3.Error:
+                    logger.log(
+                        logging.DEBUG if failing else logging.WARNING,
+                        "Background WAL checkpoint failed",
+                        exc_info=True,
+                    )
+                    failing = True
+                else:
+                    failing = False
+        finally:
+            if connection is not None:
+                connection.close()
 
     @contextmanager
     def session(self, *, busy_timeout_ms: int | None = None) -> Iterator[Session]:
@@ -155,6 +219,10 @@ class Database:
             connection.close()
 
     def dispose(self) -> None:
+        self._checkpoint_stop.set()
+        if self._checkpointer is not None:
+            # A checkpoint in progress is bounded by disk I/O; it never waits on locks.
+            self._checkpointer.finish(timeout=None)
         self.engine.dispose()
 
     def run_immediate(

@@ -22,7 +22,7 @@ dependencies = [
   "pystray>=0.19,<1",
   "pydantic>=2.10,<3",
   "requests>=2.32,<3",
-  "waitress>=3.0,<4",
+  "waitress>=3.0.1,<4",
 ]
 
 [project.optional-dependencies]

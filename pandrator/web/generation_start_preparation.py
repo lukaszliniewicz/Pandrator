@@ -75,3 +75,21 @@ def snapshot_guard(session: Session, session_id: str, revision_id: str) -> str:
         "voices": [tuple(row) for row in voices],
         "samples": [tuple(row) for row in samples],
     })
+
+
+SNAPSHOT_GUARD_CONFLICT = (
+    "Speech, cast, or voice references changed while generation was being prepared. "
+    "Refresh and try again."
+)
+
+
+def require_snapshot_guard(session: Session, session_id: str, revision_id: str, guard: str) -> None:
+    """Under the writer, reject a snapshot whose inputs changed after ``guard`` was taken.
+
+    Callers take the guard in the same plain session, before freezing the snapshot and
+    computing its audio identities outside the writer.
+    """
+    from .settings_policy import RevisionConflict
+
+    if snapshot_guard(session, session_id, revision_id) != guard:
+        raise RevisionConflict(SNAPSHOT_GUARD_CONFLICT)

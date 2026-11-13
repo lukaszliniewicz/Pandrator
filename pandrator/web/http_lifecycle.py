@@ -22,6 +22,11 @@ from werkzeug.exceptions import HTTPException
 
 from pandrator.logic.model_acquisition import ModelAcquisitionDenied
 
+from .abandoned_requests import (
+    RequestAbandoned,
+    bind_disconnect_probe,
+    reset_disconnect_probe,
+)
 from .access.artifact_policy import ArtifactNotFound
 from .access.contracts import AccessContext, AccessDenied, ProjectNotFound, WorkspaceNotFound
 from .access.session_policy import SessionNotFound
@@ -41,6 +46,8 @@ ViewFunction = TypeVar("ViewFunction", bound=Callable[..., Any])
 # environment instead, where each request context owns its own slot.
 _ACTOR_TOKENS_ENVIRON_KEY = "pandrator.execution_actor_tokens"
 _ACQUISITION_CONTEXT_ENVIRON_KEY = "pandrator.model_acquisition_context"
+_DISCONNECT_PROBE_TOKEN_ENVIRON_KEY = "pandrator.disconnect_probe_token"
+_WAITRESS_DISCONNECT_ENVIRON_KEY = "waitress.client_disconnected"
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
 _TRACEPARENT = re.compile(
     r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
@@ -578,6 +585,13 @@ class ApiGuards:
                 _snapshot_lifecycle_globals()
             )
             self._bind_execution_actor(None)
+            # Only reads are abandoned; a mutation runs to its commit, and
+            # api_server keeps waitress from skipping a queued one.
+            disconnect_probe = request.environ.get(_WAITRESS_DISCONNECT_ENVIRON_KEY)
+            if request.method in ("GET", "HEAD") and callable(disconnect_probe):
+                request.environ[_DISCONNECT_PROBE_TOKEN_ENVIRON_KEY] = bind_disconnect_probe(
+                    disconnect_probe
+                )
             acquisition_context = model_acquisition_for_actor(self.services.database)
             acquisition_context.__enter__()
             request.environ[_ACQUISITION_CONTEXT_ENVIRON_KEY] = acquisition_context
@@ -678,6 +692,7 @@ class ApiGuards:
             globals_before = request.environ.pop(
                 _REQUEST_GLOBALS_ENVIRON_KEY, None
             )
+            probe_token = request.environ.pop(_DISCONNECT_PROBE_TOKEN_ENVIRON_KEY, None)
             try:
                 acquisition_context = request.environ.pop(
                     _ACQUISITION_CONTEXT_ENVIRON_KEY, None
@@ -690,7 +705,11 @@ class ApiGuards:
                         for actor_token in reversed(actor_tokens):
                             current_execution_actor.reset(actor_token)
                 finally:
-                    _restore_lifecycle_globals(globals_before)
+                    try:
+                        _restore_lifecycle_globals(globals_before)
+                    finally:
+                        if probe_token is not None:
+                            reset_disconnect_probe(probe_token)
 
         @app.after_request
         def _security_headers(response):
@@ -784,6 +803,18 @@ class ApiGuards:
                 "scope_denied",
                 "The authenticated credential is no longer authorized for this operation.",
                 403,
+            )
+
+        @app.errorhandler(RequestAbandoned)
+        def _request_abandoned(_error):
+            app.logger.info(
+                "Request abandoned by client timestamp=%s request_id=%s method=%s route=%s",
+                *_request_log_context(),
+            )
+            return self.error_response(
+                "client_closed_request",
+                "The client closed the connection before the response was ready.",
+                499,
             )
 
         @app.errorhandler(AccessDenied)
