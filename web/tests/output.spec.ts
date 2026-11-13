@@ -184,9 +184,14 @@ test('completed subtitle exports can be removed from Output', async ({
   const captured = new Promise<void>((resolve) => {
     snapshotCaptured = resolve;
   });
+  // Gate only refreshes that start after the export request below. An earlier
+  // periodic refresh would let Remove run while that request is in flight, and
+  // its late "was submitted" message would replace "Export removed.".
+  let exportRequested = false;
   await page.route('**/api/v1/artifacts?**', async (route) => {
     const url = new URL(route.request().url());
     if (
+      !exportRequested ||
       url.searchParams.get('session_id') !== session.id ||
       url.searchParams.get('limit') !== '300'
     ) {
@@ -201,8 +206,9 @@ test('completed subtitle exports can be removed from Output', async ({
   });
   await page.route(
     `**/api/v1/sessions/${session.id}/stages/export/run`,
-    (route) =>
-      route.fulfill({
+    (route) => {
+      exportRequested = true;
+      return route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({
           id: 'refresh-test-job',
@@ -212,7 +218,8 @@ test('completed subtitle exports can be removed from Output', async ({
           progress: 0,
           created_at: new Date().toISOString()
         })
-      })
+      });
+    }
   );
   const createExport = page.getByRole('button', {
     name: 'Create subtitle export'
@@ -220,6 +227,7 @@ test('completed subtitle exports can be removed from Output', async ({
   try {
     await createExport.click();
     await captured;
+    await expect(page.getByText(/was submitted/)).toBeVisible();
     page.once('dialog', (dialog) => dialog.accept());
     await remove.click();
     await expect(page.getByText('Export removed.')).toBeVisible();
