@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { VoiceRecord } from './api-models';
   import type { VoiceBinding } from './generation-controls';
   import type VoiceLibraryModalType from './VoiceLibraryModal.svelte';
@@ -88,39 +89,53 @@
                     ? 'Check service availability before generation'
                     : 'Uses the project’s default voice'
   );
+  // Session and cast refreshes hand this field new objects with equal values:
+  // rebuilt bindings, and props read through a parent's session record. Key
+  // the readiness lookup on primitive deriveds only, and run the requests
+  // untracked. Restarting the lookup hides the status and setup link, which
+  // moves everything below this field while the user may be about to click.
+  const contentKey = $derived(appState.contentKey);
+  const lookupSession = $derived(sessionId);
+  const lookupRetained = $derived(retained);
+  const lookupVoiceId = $derived(effective?.voice_id || '');
+  const lookupVoice = $derived(effective?.voice || '');
+  const lookupService = $derived(effective?.service || service);
+  const lookupModel = $derived(effective?.model || model);
   $effect(() => {
-    void appState.contentKey;
-    const scope = { sessionId };
-    const reference = effective;
-    const targetService = reference?.service || service,
-      targetModel = reference?.model || model;
+    void contentKey;
+    const scope = { sessionId: lookupSession };
+    const voiceId = lookupVoiceId,
+      voice = lookupVoice,
+      targetService = lookupService,
+      targetModel = lookupModel;
     playing = false;
     catalogVoice = null;
     checkFailed = false;
-    if (retained) {
+    if (lookupRetained) {
       checking = false;
       return;
     }
-    if (!reference?.voice_id && !reference?.voice) {
+    if (!voiceId && !voice) {
       checking = false;
       return;
     }
     let stale = false;
     checking = true;
-    const prepareCatalogue =
+    const prepareCatalogue = untrack(() =>
       targetService === 'audio_cpp' && targetModel
         ? getTtsServiceDetail(targetService, {
-            sessionId,
+            sessionId: scope.sessionId,
             models: targetModel
           }).catch(() => null)
-        : Promise.resolve(null);
+        : Promise.resolve(null)
+    );
     const lookup = prepareCatalogue.then(() =>
-      reference.voice_id
-        ? voiceLibraryApi.managedVoice(reference.voice_id, scope)
+      voiceId
+        ? voiceLibraryApi.managedVoice(voiceId, scope)
         : voiceLibraryApi
             .query(
               {
-                query: reference.voice!,
+                query: voice,
                 kind: 'provider',
                 service_id: targetService,
                 model: targetModel,
@@ -133,7 +148,7 @@
                 result.items.find(
                   (item) =>
                     item.reference.kind === 'provider' &&
-                    item.reference.voice === reference.voice &&
+                    item.reference.voice === voice &&
                     (!targetService ||
                       item.reference.service_id === targetService) &&
                     (!targetModel || item.reference.model === targetModel)
@@ -141,8 +156,8 @@
             )
     );
     void lookup
-      .then((voice) => {
-        if (!stale) catalogVoice = voice;
+      .then((found) => {
+        if (!stale) catalogVoice = found;
       })
       .catch(() => {
         if (!stale) checkFailed = true;
