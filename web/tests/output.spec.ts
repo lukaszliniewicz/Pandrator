@@ -107,6 +107,28 @@ test('voiceover minimum block gap defaults to 100 ms and saves custom values and
   }
 });
 
+test('output settings appear only with the summary above them', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'voiceover');
+  // Let the settings panel finish loading well before the page's own reads.
+  await page.route('**/api/v1/jobs?*', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue();
+  });
+  await page.goto(`/sessions/${session.id}/output`);
+  const save = page.getByRole('button', { name: 'Save output profile' });
+  await expect(save).toBeVisible();
+  // Nothing may be inserted above a form the user can already reach.
+  expect(
+    await page.getByRole('region', { name: 'Export contents' }).isVisible()
+  ).toBe(true);
+  await expect(
+    page.getByRole('heading', { name: 'Voiceover output', exact: true })
+  ).toBeVisible();
+});
+
 for (const kind of ['export.create', 'export.variant']) {
   test(`output retains ${kind} status and progress after reload`, async ({
     page
