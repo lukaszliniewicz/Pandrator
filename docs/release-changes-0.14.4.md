@@ -26,10 +26,14 @@ Changes since [0.14.3](release-notes-0.14.3.md). This maintenance release integr
 - Quick Transcribe applies its saved defaults only to options you have not changed, and leaves options whose value is not yet known out of the upload so the server's saved defaults apply. Until they load, those options show "Saved default" rather than a setting that might not be used. A retry after a failed upload resends exactly what the first attempt sent, under the same key, so it cannot start a second job, and a failed upload still stops an earlier transcription from being restored over it ([#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)).
 - Voice settings panels show "Loading settings…" while they load, and an error with Retry if loading fails. The speech panel stays marked busy until its service list has loaded ([#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)).
 - Reading-view segment actions stay open while the pointer crosses the gap between the text and the action bar ([#141](https://github.com/lukaszliniewicz/Pandrator/pull/141)).
+- Controls no longer move under a click while a page finishes loading ([#143](https://github.com/lukaszliniewicz/Pandrator/pull/143)):
+  - Cast voice cards check their voice setup once per change of voice, service or model, instead of again on every session refresh, which hid their status and moved the cast Save button.
+  - The Output settings form appears only once the page around it has loaded, so the export summary is no longer inserted above a form you are using.
+  - Moving between pages waits up to 4 seconds for the next page's stylesheets, so it no longer paints unstyled and then reflows.
 
 ## Build and tests
 
-- The web API contract and static bundle were regenerated for 0.14.3 ([#130](https://github.com/lukaszliniewicz/Pandrator/pull/130), [#133](https://github.com/lukaszliniewicz/Pandrator/pull/133)), and several end-to-end tests now wait for late-loading panels before acting ([#133](https://github.com/lukaszliniewicz/Pandrator/pull/133), [#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)).
+- The web API contract and static bundle were regenerated for 0.14.3 ([#130](https://github.com/lukaszliniewicz/Pandrator/pull/130), [#133](https://github.com/lukaszliniewicz/Pandrator/pull/133)), and several end-to-end tests now wait for late-loading panels before acting ([#133](https://github.com/lukaszliniewicz/Pandrator/pull/133), [#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)). The Display options test helper now fails within seconds if the menu does not open ([#143](https://github.com/lukaszliniewicz/Pandrator/pull/143)).
 - Three tests that failed by chance are fixed: the job queue test now expects the first waiter by the queue's own ordering, since waiters enqueued within one Windows clock tick share a timestamp; a leak check no longer reads the random request id; and the Output removal test holds back only the refresh that follows its own export request.
 - The minimum supported waitress version is 3.0.1.
 
