@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Collection
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
 from . import models as m
 from .speech_input_contracts import MissingSpeechSelection, RootSpeechBinding
 from .speech_plan_context import semantic_context_units, semantic_context_window
+
+if TYPE_CHECKING:
+    from .generation_rendering import ParsedMarkupMemo
 
 
 def performance_runtime_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -43,6 +46,7 @@ def freeze_generation_performance_snapshot(
     _root_binding: RootSpeechBinding | None = None,
     _carried_snapshot: dict[str, Any] | None = None,
     _freeze_segment_ids: Collection[str] | None = None,
+    _parsed_markup: ParsedMarkupMemo | None = None,
 ) -> bool:
     """Bind a new run to current adoption and immutable semantic source text.
 
@@ -53,6 +57,7 @@ def freeze_generation_performance_snapshot(
     cast is still frozen for every segment. ``_freeze_segment_ids`` limits the
     cast freeze itself to those segments, for a listing page. Performance and
     semantic context are always frozen for the whole revision.
+    ``_parsed_markup`` is passed to the cast freeze (see ``build_render_parts``).
     """
     if _service_config_cache is None:
         _service_config_cache = {}
@@ -109,6 +114,7 @@ def freeze_generation_performance_snapshot(
             _missing_selection=_missing_selection, _root_binding=_root_binding,
             _carried_snapshot=_carried_snapshot,
             _freeze_segment_ids=_freeze_segment_ids,
+            _parsed_markup=_parsed_markup,
         )
     if mode != "off":
         context_settings = {

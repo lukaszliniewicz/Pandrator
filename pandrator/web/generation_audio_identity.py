@@ -48,6 +48,7 @@ _MATERIAL_PROVIDER_IDENTITY_FIELDS = frozenset({
 _MATERIAL_PROVIDER_LOOKUP_FIELDS = _MATERIAL_PROVIDER_IDENTITY_FIELDS | {"default_model"}
 
 if TYPE_CHECKING:
+    from .generation_rendering import ParsedMarkupMemo
     from .project_segment_speech import SegmentSpeechReferenceIndex
 
 
@@ -339,6 +340,8 @@ class AudioIdentityContext:
         self._material_settings_cache: dict[str, dict[str, Any]] = {}
         # Validated characters and cast of the pinned controls, for this pass.
         self._validated_controls: dict[str, tuple[object, Any]] = {}
+        # Speech XML this context's own cast freeze parsed, for its renders.
+        self._parsed_markup: ParsedMarkupMemo = {}
         self._voice_reference_cache: dict[str, Any] = {}
         self._service_id_cache: dict[str, str] = {}
         self._inspection_catalogue_copies: dict[int, Any] = {}
@@ -555,6 +558,7 @@ class AudioIdentityContext:
                         _settings_copy=self._copy_inspection_settings,
                         _voice_reference_index=self.voices if self._voice_references_loaded else None,
                         _freeze_segment_ids=self._cast_segment_ids,
+                        _parsed_markup=self._parsed_markup,
                     )
                 self.performance_states[revision_id] = (pinned, frozen_semantic_contexts(pinned))
             pinned, contexts = self.performance_states[revision_id]
@@ -578,7 +582,7 @@ class AudioIdentityContext:
                             binding, base, resolved, self._service_config_cache,
                             _pending_proof=self._pending_proof,
                             _pending_revision_id=segment.plan_revision_id,
-                            _proofs=self._retained_proofs,
+                            _proofs=self._retained_proofs, _registry=self._registry,
                         )
                 parts = segment_render_parts(
                     prepared, pinned, segment.id, text,
@@ -588,6 +592,7 @@ class AudioIdentityContext:
                     # The pinned snapshot is shared by every segment; only read it.
                     _read_only_controls=True,
                     _validated_controls=self._validated_controls,
+                    _parsed_markup=self._parsed_markup,
                 )
                 requests = []
                 has_source_identity = False
@@ -780,7 +785,7 @@ class AudioIdentityContext:
                             self.session, session_id, binding, settings, recorded_resolution,
                             self._service_config_cache, _pending_proof=self._pending_proof,
                             _pending_revision_id=segment.plan_revision_id,
-                            _proofs=self._retained_proofs,
+                            _proofs=self._retained_proofs, _registry=self._registry,
                         )
                     elif binding.get("voice_id"):
                         # Legacy snapshots still depend on the current source;

@@ -5,7 +5,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Collection, Mapping
 from copy import deepcopy
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
@@ -37,6 +37,9 @@ from .speech_input_contracts import (
 )
 from .tts_providers import TtsProviderRegistry
 from .voice_identity import voice_creation_workspace, voice_workspace
+
+if TYPE_CHECKING:
+    from .generation_rendering import ParsedMarkupMemo
 
 _VOICE_IDENTITY_KEYS = (
     "voice_id",
@@ -199,6 +202,7 @@ def validate_retained_cast_resolution(
     *, _pending_proof: PendingSpeechProof | None = None,
     _pending_revision_id: str | None = None,
     _proofs: set[tuple[Any, ...]] | None = None,
+    _registry: TtsProviderRegistry | None = None,
 ) -> dict[str, Any]:
     """Revalidate a frozen retained cast pin against current session ownership.
 
@@ -206,6 +210,8 @@ def validate_retained_cast_resolution(
     identity context or one cast freeze, so a hit skips only those database
     proofs; the selector and settings checks still run on every call. A failing
     check is never recorded, so it runs again and raises as before.
+    ``_registry`` is a caller's provider registry, used only to map settings to
+    a service ID, so a pass need not build one for every check.
     """
     from .access.contracts import ProjectAction
     from .access.current_session_policy import require_current_session_access
@@ -270,7 +276,7 @@ def validate_retained_cast_resolution(
         "voice_description": "",
     }
     checked = resolve_binding(
-        session, pure_binding, settings, _service_config_cache
+        session, pure_binding, settings, _service_config_cache, _registry
     )
     if checked.get("voice") != alias:
         raise ValueError("Retained cast voice is incompatible with this selection.")
@@ -306,6 +312,7 @@ def resolve_project_cast_binding(
     _service_config_cache=None,
     *,
     _saved_references: Mapping[str, StoredProjectSpeechReference] | None = None,
+    _registry: TtsProviderRegistry | None = None,
 ) -> dict[str, Any] | None:
     """Resolve one current-session saved cast choice without reading its source."""
     from .access.contracts import ProjectAction
@@ -319,7 +326,7 @@ def resolve_project_cast_binding(
 
     if slot_key is None:
         return None
-    registry = TtsProviderRegistry()
+    registry = _registry if _registry is not None else TtsProviderRegistry()
     service = registry.service_id_for_settings(settings)
     adapter, linked_services = speech_input_adapter(settings)
     capability = resolve_capabilities(settings, None, _service_config_cache)
@@ -408,6 +415,7 @@ def resolve_project_cast_binding(
         settings,
         resolution,
         _service_config_cache,
+        _registry=registry,
     )
 
 
@@ -714,12 +722,15 @@ def freeze_cast_snapshot(
     _root_binding: RootSpeechBinding | None = None,
     _carried_snapshot: Mapping[str, Any] | None = None,
     _freeze_segment_ids: Collection[str] | None = None,
+    _parsed_markup: ParsedMarkupMemo | None = None,
 ) -> None:
     """Freeze cast entries, resolving voices only for requested validation IDs.
 
     By default every non-removed segment of the revision is frozen.
     ``_freeze_segment_ids`` limits the freeze itself to those segments (a page
     listing); ``validate_segment_ids`` only limits which entries must resolve.
+    ``_parsed_markup`` keeps each segment's parsed XML for a later render in
+    the same request (see ``build_render_parts``).
     """
     from .generation_rendering import build_render_parts
 
@@ -727,6 +738,8 @@ def freeze_cast_snapshot(
         _service_config_cache = {}
     # Retained pins proven once for this freeze; never kept past this call.
     proofs: set[tuple[Any, ...]] = set()
+    # One registry for the service-ID lookups of every retained pin check.
+    registry = TtsProviderRegistry()
     revision = session.get(m.GenerationPlanRevision, revision_id)
     plan = session.get(m.GenerationPlan, revision.plan_id) if revision else None
     if plan is None:
@@ -882,6 +895,7 @@ def freeze_cast_snapshot(
                             carried,
                             _service_config_cache,
                             _proofs=proofs,
+                            _registry=registry,
                         )
                         use_carried = True
                 if not use_carried:
@@ -904,6 +918,7 @@ def freeze_cast_snapshot(
                                 _saved_references=(
                                     segment_references if slot_key.startswith("segment:") else None
                                 ),
+                                _registry=registry,
                             )
                         if resolved is None and _missing_selection is not None and _requested:
                             from .project_speech_references import (
@@ -1030,6 +1045,7 @@ def freeze_cast_snapshot(
                 _bind_base=_root_binding is not None,
                 _read_only_controls=True,
                 _validated_controls=validated_controls,
+                _parsed_markup=_parsed_markup,
             )
         except (ValueError, AccessDenied, WorkspaceNotFound):
             if requested:
@@ -1059,6 +1075,7 @@ def segment_render_parts(
     _service_config_cache=None,
     _read_only_controls: bool = False,
     _validated_controls: dict[str, tuple[object, Any]] | None = None,
+    _parsed_markup: ParsedMarkupMemo | None = None,
 ) -> list[dict[str, Any]]:
     from .generation_rendering import build_render_parts
 
@@ -1112,6 +1129,7 @@ def segment_render_parts(
             _settings_copy=_settings_copy,
             _read_only_controls=_read_only_controls,
             _validated_controls=_validated_controls,
+            _parsed_markup=_parsed_markup,
         )
     def apply_at_slot(binding, base, slot_key):
         if binding is not None and _validate_binding is not None:
@@ -1136,6 +1154,7 @@ def segment_render_parts(
         _bind_base=True,
         _read_only_controls=_read_only_controls,
         _validated_controls=_validated_controls,
+        _parsed_markup=_parsed_markup,
     )
 
 
