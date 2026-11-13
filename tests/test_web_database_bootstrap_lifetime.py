@@ -13,6 +13,8 @@ from alembic.script import ScriptDirectory
 
 from pandrator.web import database
 
+SIZE_LIMIT_PRAGMA = f"PRAGMA journal_size_limit = {database.WAL_SIZE_LIMIT_BYTES}"
+
 
 def _engine_with_creator(path: Path, creator: Callable[[], sqlite3.Connection]):
     native_create_engine = database.create_engine
@@ -90,6 +92,7 @@ def test_schema_probe_closes_before_return_or_migration(tmp_path: Path, state: s
         "cursor",
         "PRAGMA foreign_keys = ON",
         "PRAGMA journal_mode = WAL",
+        SIZE_LIMIT_PRAGMA,
         "PRAGMA busy_timeout = 30000",
         "cursor.close",
     ],
@@ -109,6 +112,7 @@ def test_sqlite_configuration_failure_closes_native_connection_and_cursor(
     configuration_statements = {
         "PRAGMA foreign_keys = ON",
         "PRAGMA journal_mode = WAL",
+        SIZE_LIMIT_PRAGMA,
         "PRAGMA busy_timeout = 30000",
     }
 
@@ -167,6 +171,7 @@ def test_sqlite_configuration_failure_closes_native_connection_and_cursor(
         if failure_point in {
             "PRAGMA foreign_keys = ON",
             "PRAGMA journal_mode = WAL",
+            SIZE_LIMIT_PRAGMA,
             "PRAGMA busy_timeout = 30000",
             "cursor.close",
         }:
@@ -189,6 +194,7 @@ def test_sqlite_configuration_closes_cursor_and_keeps_valid_connection_open(
     configuration_statements = {
         "PRAGMA foreign_keys = ON",
         "PRAGMA journal_mode = WAL",
+        SIZE_LIMIT_PRAGMA,
         "PRAGMA busy_timeout = 30000",
     }
 

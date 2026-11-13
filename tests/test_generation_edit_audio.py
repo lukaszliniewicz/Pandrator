@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 from pydub import AudioSegment
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 
 from pandrator.web.generation_edit_audio import capture_selection_guards
 from pandrator.web.generation_run_selection import resolve_generation_run_take_ids
@@ -892,3 +892,274 @@ def test_partial_run_ignores_cross_plan_and_unguarded_clones(case):
         selected = resolve_generation_run_take_ids(session, run)
 
     assert selected == {}
+
+
+def _reference_inherit_edit_copy_audio(session, revision_id):
+    """The reconcile as it was before candidates were selected in SQL."""
+    from pandrator.web.generation_edit_audio import _copy_take, edit_copy_ancestors
+
+    revision = session.get(GenerationPlanRevision, revision_id)
+    if revision is None:
+        return 0
+    ancestors = edit_copy_ancestors(session, revision)
+    if not ancestors:
+        return 0
+    targets = {row.ordinal: row for row in session.scalars(
+        select(GenerationSegment).where(GenerationSegment.plan_revision_id == revision_id)
+    )}
+    existing_by_id = {}
+    for take in session.scalars(select(AudioTake).join(
+        GenerationSegment, GenerationSegment.id == AudioTake.generation_segment_id
+    ).where(GenerationSegment.plan_revision_id == revision_id)):
+        existing_by_id.setdefault(take.generation_segment_id, []).append(take)
+    rows = session.execute(
+        select(GenerationSegment, AudioTake, Artifact)
+        .join(AudioTake, AudioTake.generation_segment_id == GenerationSegment.id)
+        .join(Artifact, Artifact.id == AudioTake.artifact_id)
+        .where(GenerationSegment.plan_revision_id.in_(ancestors),
+               AudioTake.status.in_(("completed", "stale")))
+        .order_by(AudioTake.created_at.desc(), AudioTake.id)
+    ).all()
+    changed = 0
+    for source, take, artifact in rows:
+        target = targets.get(source.ordinal)
+        if target is not None:
+            changed += _copy_take(session, source, target, take, artifact,
+                                  existing_by_id.setdefault(target.id, []))
+    if changed:
+        session.flush()
+    return changed
+
+
+class _Rollback(Exception):
+    pass
+
+
+def _build_edit_copy_with_two_ancestors(case, count=10, *, declined_targets=True):
+    """Edit copies R0 -> R1 -> R2 with hand-made takes covering every reconcile case."""
+    from datetime import datetime, timedelta
+
+    created = case.client.post(
+        "/api/v1/sessions", json={"name": "Reconcile", "workflow_kind": "audiobook"},
+        headers=case.headers,
+    )
+    case.session_id = created.get_json()["id"]
+    plan = case.client.post(
+        f"/api/v1/sessions/{case.session_id}/generation-plan",
+        json={"segments": [{"text": f"Sentence {index}"} for index in range(count)]},
+        headers=case.headers,
+    )
+    assert plan.status_code == 201, plan.get_json()
+    case.segment_ids = [item["id"] for item in page(case)["items"]]
+    first = case._start()
+    edit(case, 0, "Edited zero")
+    second = case._start()
+    edit(case, 1, "Edited one")
+    with case.database.session() as session:
+        ancestors = [session.get(GenerationRun, value["id"]).plan_revision_id
+                     for value in (first, second)]
+        final = page(case)["plan_revision_id"]
+        assert final not in ancestors
+        ownership = resolve_artifact_ownership(session)
+        segments = {}
+        for revision_id in (*ancestors, final):
+            for row in session.scalars(select(GenerationSegment).where(
+                GenerationSegment.plan_revision_id == revision_id
+            )):
+                segments[revision_id, row.ordinal] = row
+        segment_ids = [row.id for row in segments.values()]
+        # Start from revisions whose audio the reconcile has to discover.
+        session.query(AudioTake).filter(
+            AudioTake.generation_segment_id.in_(segment_ids)
+        ).update({"parent_take_id": None}, synchronize_session=False)
+        session.query(AudioTake).filter(
+            AudioTake.generation_segment_id.in_(segment_ids)
+        ).delete(synchronize_session=False)
+
+        def artifact(name, ordinal):
+            target = segments[final, ordinal]
+            row = Artifact(
+                workspace_id=ownership.workspace_id, project_id=ownership.project_id,
+                kind="audio", relative_path=f"reconcile-{name}.wav",
+                metadata_json={"synthesized_text": target.optimized_text or target.text},
+            )
+            session.add(row)
+            session.flush()
+            return row
+
+        def take(revision_id, ordinal, row, status="completed", active=False, stamp=0):
+            value = AudioTake(
+                generation_segment_id=segments[revision_id, ordinal].id,
+                artifact_id=row.id, status=status, is_active=active, revision=2,
+                created_at=datetime(2026, 1, 1) + timedelta(minutes=stamp),
+            )
+            session.add(value)
+            session.flush()
+            return value
+
+        old, mid = ancestors
+        # 0: nothing to copy, the target already holds the artifact.
+        held = artifact("held", 0)
+        take(old, 0, held, stamp=1)
+        take(final, 0, held, active=True, stamp=2)
+        # 1: a late completed take on an edited segment (input differs: stale clone).
+        take(old, 1, artifact("late-edited", 1), stamp=3)
+        # 2: a late completed take that matches, target without takes.
+        take(mid, 2, artifact("late-match", 2), stamp=4)
+        # 3: one artifact under two ancestors, and a different one behind it.
+        shared = artifact("shared", 3)
+        take(old, 3, shared, stamp=5)
+        take(mid, 3, shared, stamp=6)
+        take(old, 3, artifact("second", 3), status="stale", stamp=7)
+        # 4: removed target. 5: target with other source ids.
+        if declined_targets:
+            segments[final, 4].removed = True
+            segments[final, 5].source_segment_ids_json = ["other"]
+        take(mid, 4, artifact("removed", 4), stamp=8)
+        take(mid, 5, artifact("sources", 5), stamp=9)
+        # 6: stale ancestor take, target already has an active take.
+        take(final, 6, artifact("active", 6), active=True, stamp=10)
+        take(old, 6, artifact("stale-behind", 6), status="stale", stamp=11)
+        # 7: stale ancestor take, target without an active take.
+        take(final, 7, artifact("inactive", 7), stamp=12)
+        take(old, 7, artifact("stale-open", 7), status="stale", stamp=13)
+        # 8: target's active take is not completed; a matching late take replaces it.
+        take(final, 8, artifact("not-done", 8), status="stale", active=True, stamp=14)
+        take(mid, 8, artifact("replacement", 8), stamp=15)
+        # 9: ancestor takes that are neither completed nor stale never copy.
+        take(old, 9, artifact("failed", 9), status="failed", stamp=16)
+        take(mid, 9, artifact("running", 9), status="running", stamp=17)
+        # 10: an ancestor segment with no target at its ordinal never copies.
+        orphan = GenerationSegment(plan_revision_id=old, ordinal=count, text="Orphan")
+        session.add(orphan)
+        orphan_audio = Artifact(
+            workspace_id=ownership.workspace_id, project_id=ownership.project_id,
+            kind="audio", relative_path="reconcile-orphan.wav",
+            metadata_json={"synthesized_text": "Orphan"},
+        )
+        session.add(orphan_audio)
+        session.flush()
+        segments[old, count] = orphan
+        take(old, count, orphan_audio, stamp=18)
+    return final
+
+
+def _reconcile_outcome(case, reconcile, revision_id, *, keep=False):
+    outcome = {}
+    try:
+        with case.database.immediate_session() as session:
+            outcome["changed"] = reconcile(session, revision_id)
+            ordinals = {row.id: row.ordinal for row in session.scalars(
+                select(GenerationSegment).where(
+                    GenerationSegment.plan_revision_id == revision_id)
+            )}
+            outcome["takes"] = [
+                (ordinals[value.generation_segment_id], value.artifact_id,
+                 value.parent_take_id, value.kind, value.status, value.settings_hash,
+                 value.duration_ms, value.is_active, value.revision, value.generation_run_id)
+                for value in session.scalars(
+                    select(AudioTake).where(AudioTake.generation_segment_id.in_(ordinals))
+                    .order_by(text("audio_takes.rowid"))
+                )
+            ]
+            outcome["segments"] = {
+                ordinals[row.id]: (row.status, row.removed)
+                for row in session.scalars(select(GenerationSegment).where(
+                    GenerationSegment.plan_revision_id == revision_id))
+            }
+            if not keep:
+                raise _Rollback
+    except _Rollback:
+        pass
+    return outcome
+
+
+@pytest.mark.usefixtures("host_execution_actor")
+def test_reconcile_copies_the_same_takes_as_the_full_scan(case, monkeypatch):
+    from pandrator.web import generation_edit_audio
+    from pandrator.web.generation_edit_audio import inherit_edit_copy_audio
+
+    revision_id = _build_edit_copy_with_two_ancestors(case)
+    expected = _reconcile_outcome(case, _reference_inherit_edit_copy_audio, revision_id)
+    actual = _reconcile_outcome(case, inherit_edit_copy_audio, revision_id)
+
+    # The fixture covers copying and declining; a reference that copies nothing proves nothing.
+    copied = [item for item in expected["takes"] if item[2] is not None]
+    assert expected["changed"] == len(copied) == 7
+    # Ordinal 3: the shared artifact once, plus the stale one behind it.
+    assert sorted(item[0] for item in copied) == [1, 2, 3, 3, 6, 7, 8]
+    assert any(item[7] for item in copied) and any(item[4] == "stale" for item in copied)
+    assert actual == expected
+
+    # Batches of two make every batched load span several batches, as a long plan does.
+    monkeypatch.setattr(generation_edit_audio, "_BATCH", 2)
+    assert _reconcile_outcome(case, inherit_edit_copy_audio, revision_id) == expected
+
+
+@pytest.mark.usefixtures("host_execution_actor")
+def test_reconcile_candidate_query_avoids_the_global_status_index(case):
+    from pandrator.web.generation_edit_audio import inherit_edit_copy_audio
+
+    revision_id = _build_edit_copy_with_two_ancestors(case)
+    captured = []
+
+    def capture_sql(_connection, _cursor, statement, parameters, _context, _many):
+        # Only the candidate query compares `status || ''`; other SELECTs, such as the
+        # ancestor walk or session setup, never match.
+        if "AUDIO_TAKES.STATUS ||" in " ".join(statement.upper().split()):
+            captured.append((statement, parameters))
+
+    event.listen(case.database.engine, "before_cursor_execute", capture_sql)
+    try:
+        _reconcile_outcome(case, inherit_edit_copy_audio, revision_id)
+    finally:
+        event.remove(case.database.engine, "before_cursor_execute", capture_sql)
+
+    (statement, parameters), = captured
+    with case.database.engine.connect() as connection:
+        plan = connection.exec_driver_sql(f"EXPLAIN QUERY PLAN {statement}", parameters).all()
+    details = [str(row[3]).upper() for row in plan]
+    # The status index holds every take of every project; the query must start from the
+    # revision's segments instead. This holds on any SQLite version, with or without
+    # statistics: comparing `status || ''` leaves no status index usable for the filter.
+    # A full scan of the takes would cost the same, so it is rejected too.
+    assert not any("IX_AUDIO_TAKES_STATUS" in detail
+                   or "IDX_AUDIO_TAKES_ACTIVE_STATUS_SEGMENT_CREATED" in detail
+                   or detail.startswith(("SCAN AUDIO_TAKES", "SCAN TABLE AUDIO_TAKES"))
+                   for detail in details), details
+
+
+@pytest.mark.usefixtures("host_execution_actor")
+def test_reconcile_with_nothing_to_copy_hydrates_no_segment_or_take(case):
+    from pandrator.web.generation_edit_audio import edit_copy_ancestors, inherit_edit_copy_audio
+
+    revision_id = _build_edit_copy_with_two_ancestors(case, declined_targets=False)
+    assert _reconcile_outcome(case, inherit_edit_copy_audio, revision_id, keep=True)["changed"] == 9
+
+    with case.database.session() as session:
+        ancestors = edit_copy_ancestors(session, session.get(GenerationPlanRevision, revision_id))
+    assert len(ancestors) == 2
+    loaded = []
+    statements = []
+
+    def count_load(target, _context):
+        loaded.append(type(target).__name__)
+
+    def capture_sql(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(" ".join(statement.split()))
+
+    event.listen(GenerationSegment, "load", count_load)
+    event.listen(AudioTake, "load", count_load)
+    event.listen(case.database.engine, "before_cursor_execute", capture_sql)
+    try:
+        with case.database.immediate_session() as session:
+            assert inherit_edit_copy_audio(session, revision_id) == 0
+    finally:
+        event.remove(case.database.engine, "before_cursor_execute", capture_sql)
+        event.remove(AudioTake, "load", count_load)
+        event.remove(GenerationSegment, "load", count_load)
+
+    assert loaded == []
+    # The revision, each ancestor and one candidate query.
+    assert len(statements) <= 1 + len(ancestors) + 1, statements

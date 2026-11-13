@@ -136,6 +136,35 @@ def _endpoint_name() -> str:
     return str(request.endpoint or "").rsplit(".", 1)[-1]
 
 
+# Successful reads of these endpoints record nothing about who did what: the app
+# shell, its static assets, and the status feeds every open tab polls. Auditing
+# them committed one row per poll and per asset, so status polling alone filled
+# the audit log's event cap within hours and evicted every meaningful event.
+# Denied and failed requests to them are still audited.
+_AMBIENT_READ_ENDPOINTS = frozenset(
+    {
+        "auth_status",
+        "event_snapshot",
+        "events",
+        "frontend_asset",
+        "manager_status",
+        "pandrator_favicon",
+        "pandrator_logo_png",
+        "pandrator_logo_webp",
+        "spa",
+        "static",
+    }
+)
+
+
+def _is_ambient_read(status_code: int) -> bool:
+    return (
+        request.method in {"GET", "HEAD"}
+        and status_code < 400
+        and _endpoint_name() in _AMBIENT_READ_ENDPOINTS
+    )
+
+
 def _request_log_context() -> tuple[str, str, str, str]:
     """Correlate failures without logging query strings or request bodies."""
     return (
@@ -737,6 +766,8 @@ class ApiGuards:
                 response.headers["Cache-Control"] = "private, no-store"
             if request.path.startswith(("/share/", "/api/v1/public-links/")):
                 response.headers["X-Robots-Tag"] = "noindex, nofollow"
+            if _is_ambient_read(response.status_code):
+                return response
             principal = self.principal()
             if principal is not None:
                 try:

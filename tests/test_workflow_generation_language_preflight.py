@@ -542,7 +542,7 @@ class WorkflowGenerationLanguagePreflightTests(unittest.TestCase):
                 threading.Event(),
             )
 
-    def test_worker_final_guard_rechecks_active_revision_before_freeze(self):
+    def test_worker_final_guard_rechecks_active_revision_before_starting(self):
         session_id, source_id = self._session_with_narration(language="en")
         self._add_plan_revision(
             session_id,
@@ -576,16 +576,22 @@ class WorkflowGenerationLanguagePreflightTests(unittest.TestCase):
             "settings": {},
             "resolved_settings_snapshot": {},
         }
+        runs_before = self._counts()[1]
         with (
             patch.object(
                 database,
                 "immediate_session",
                 side_effect=switch_revision_before_final_check,
             ),
+            # The freeze and identity pass run outside the writer, on the
+            # revision that is still active then; only the start is fenced.
             patch(
                 "pandrator.web.speech_plan_workspace.freeze_speech_snapshot",
-                side_effect=AssertionError("stale revision must not be frozen"),
             ) as freeze,
+            patch(
+                "pandrator.web.generation_audio_identity.plan_audio_identities",
+                return_value={},
+            ),
         ):
             with self.assertRaisesRegex(ValueError, "no longer available"):
                 handlers._run_reviewable_generation(
@@ -593,7 +599,8 @@ class WorkflowGenerationLanguagePreflightTests(unittest.TestCase):
                     lambda *_args, **_kwargs: None,
                     threading.Event(),
                 )
-        freeze.assert_not_called()
+        freeze.assert_called_once()
+        self.assertEqual(runs_before, self._counts()[1])
 
 
 if __name__ == "__main__":

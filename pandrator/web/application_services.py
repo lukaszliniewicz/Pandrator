@@ -18,7 +18,7 @@ from .auth import AuthService, BootstrapTokenStore, LoginThrottle
 from .automation_enrollment import AutomationEnrollmentService
 from .capabilities import CapabilityService, crispasr_install_preferences
 from .credentials import SecretRedactor
-from .database import Database
+from .database import BACKGROUND_CHECKPOINT_SECONDS, Database
 from .dispatch import DispatchRunService
 from .global_settings import GlobalSettingsService
 from .idempotency import IdempotencyService
@@ -119,13 +119,19 @@ class ApplicationServices:
         bootstrap_tokens: BootstrapTokenStore | None = None,
         capability_ttl_seconds: int | None = None,
         public_origin: str | None = None,
+        background_checkpoints: bool = False,
     ) -> ApplicationServices:
         """Build services once, in dependency order, without Flask request state."""
 
         paths = DataPaths.from_value(data_root).ensure()
         migration = import_legacy_data(paths)
         with ExitStack() as cleanup:
-            database = Database(paths.database)
+            database = Database(
+                paths.database,
+                checkpoint_interval=(
+                    BACKGROUND_CHECKPOINT_SECONDS if background_checkpoints else None
+                ),
+            )
             cleanup.callback(database.dispose)
 
             stt_preferences = crispasr_install_preferences(paths)

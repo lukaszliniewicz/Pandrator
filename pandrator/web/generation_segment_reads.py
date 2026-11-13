@@ -280,7 +280,7 @@ class GenerationSegmentReader:
                         GenerationSegment.text,
                         GenerationSegment.optimized_text,
                     ).where(GenerationSegment.plan_revision_id == plan_revision_id)
-                )
+                ).all()
                 matched_ids = []
                 for row in searchable_rows:
                     matches = literal_matches(

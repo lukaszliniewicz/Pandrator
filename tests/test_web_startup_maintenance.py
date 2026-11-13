@@ -4,8 +4,10 @@ import time
 import unittest
 from unittest import mock
 
+from sqlalchemy import text
+
 from pandrator.web.api import create_app
-from pandrator.web.database import Database
+from pandrator.web.database import BACKGROUND_AUTOCHECKPOINT_PAGES, Database
 from pandrator.web.startup import StartupMaintenance
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -57,6 +59,11 @@ class StartupMaintenanceTests(unittest.TestCase):
                     self.assertFalse(runner._periodic_thread.is_alive())
                 database.dispose()
 
+    @staticmethod
+    def _autocheckpoint_pages(app):
+        with app.extensions["pandrator"]["database"].session() as session:
+            return session.execute(text("PRAGMA wal_autocheckpoint")).scalar_one()
+
     def test_application_starts_background_maintenance_only_when_enabled(self):
         with tempfile.TemporaryDirectory() as enabled_directory:
             prepare_web_test_data_root(enabled_directory)
@@ -74,6 +81,10 @@ class StartupMaintenanceTests(unittest.TestCase):
             try:
                 start.assert_called_once_with()
                 quick_start.assert_called_once_with()
+                self.assertEqual(
+                    BACKGROUND_AUTOCHECKPOINT_PAGES,
+                    self._autocheckpoint_pages(app),
+                )
             finally:
                 app.extensions["pandrator"]["database"].dispose()
 
@@ -92,6 +103,7 @@ class StartupMaintenanceTests(unittest.TestCase):
             try:
                 start.assert_not_called()
                 quick_start.assert_not_called()
+                self.assertEqual(1000, self._autocheckpoint_pages(app))
             finally:
                 app.extensions["pandrator"]["database"].dispose()
 
