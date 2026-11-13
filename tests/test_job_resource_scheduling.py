@@ -49,13 +49,19 @@ def test_scan_passes_more_than_one_page_of_waiters_without_spending_attempts(que
     chosen = jobs.claim("other-worker")
     assert chosen is not None and chosen.id == independent.id
     with database.snapshot_session() as unit:
+        stored_waiters = []
         for waiter in waiters:
             stored = unit.get(Job, waiter.id)
             assert stored is not None
             assert (stored.status, stored.attempts, stored.available_at) == ("queued", 0, None)
+            stored_waiters.append(stored)
+        # The queue is first in, first out by (created_at, id). Waiters enqueued
+        # within one clock tick share created_at (about 15 ms on Windows), so the
+        # first in line is the lowest id among them, not necessarily waiters[0].
+        first = min(stored_waiters, key=lambda job: (job.created_at, job.id)).id
     jobs.release_resources(owner.id, "holder", lease_generation=owner.lease_generation)
     resumed = jobs.claim("other-worker")
-    assert resumed is not None and resumed.id == waiters[0].id
+    assert resumed is not None and resumed.id == first
 
 
 def test_all_blocked_poll_does_not_take_writer_lock(queue):

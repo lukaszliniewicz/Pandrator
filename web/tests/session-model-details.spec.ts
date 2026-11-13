@@ -188,6 +188,35 @@ test('project settings use compact choices and ignore late metadata from another
   }
 });
 
+test('the speech panel stays busy until its service catalogue loads', async ({
+  page
+}) => {
+  const data = await fixture(page);
+  let releaseCatalogue = () => {};
+  const held = new Promise<void>((resolve) => {
+    releaseCatalogue = resolve;
+  });
+  await page.route('**/api/v1/services/tts*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/v1/services/tts') await held;
+    await route.fallback();
+  });
+  await page.goto(`/sessions/${data.sessionId}/voice`);
+  const settings = page.locator('.settings-panel').filter({
+    has: page.getByRole('heading', { name: 'Speech generation', exact: true })
+  });
+  const service = settings.getByRole('combobox', {
+    name: 'Service',
+    exact: true
+  });
+  // The settings have loaded but the service list has not.
+  await expect(service).toBeDisabled();
+  await expect(settings).toHaveAttribute('aria-busy', 'true');
+  releaseCatalogue();
+  await expect(service).toBeEnabled();
+  await expect(settings).not.toHaveAttribute('aria-busy', 'true');
+});
+
 test('native text controls remain text and are persisted per model', async ({
   page
 }) => {

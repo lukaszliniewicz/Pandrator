@@ -237,6 +237,10 @@ def select_second_pass(
     two never run together, and staged child runs (marked with either parent
     id) never trigger another pass, so at most two passes exist per
     first-pass run.
+
+    The web run list passes snapshots narrowed to the keys read here; a new
+    key read here must join ``COMPACT_RUN_SNAPSHOT_KEYS`` in
+    ``pandrator.web.generation_history_reads``.
     """
 
     snapshot = dict(settings_snapshot or {})

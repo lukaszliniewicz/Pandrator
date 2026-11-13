@@ -19,6 +19,8 @@
     capabilities: RuntimeCapabilities | null;
     requireWordTimestamps?: boolean;
   } = $props();
+  // An empty model or backend means the saved default is not known yet; the
+  // control shows a placeholder rather than claiming an explicit setting.
   const timing = $derived(
     requireWordTimestamps
       ? qwenTimingExplanation(capabilities, language)
@@ -50,13 +52,14 @@
         bind:value={model}
         class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
       >
+        {#if model === ''}<option value="" disabled>Saved default</option>{/if}
         <option value="qwen3_asr_0_6b"
           >Qwen3 ASR 0.6B · smaller · Q8 · 1.01 GB</option
         >
         <option value="qwen3_asr_1_7b"
           >Qwen3 ASR 1.7B · larger · Q8 · 2.51 GB</option
         >
-        {#if !['qwen3_asr_0_6b', 'qwen3_asr_1_7b'].includes(model)}<option
+        {#if !['', 'qwen3_asr_0_6b', 'qwen3_asr_1_7b'].includes(model)}<option
             value={model}>{model} · saved selection</option
           >{/if}
       </select>
@@ -86,11 +89,13 @@
         bind:value={backend}
         class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2"
       >
+        {#if backend === ''}<option value="" disabled>Saved default</option
+          >{/if}
         <option value="auto">Automatic</option>
         {#each availableBackends.filter((value) => value !== 'auto' && value !== 'best') as value}<option
             {value}>{value.toUpperCase()}</option
           >{/each}
-        {#if backend !== 'auto' && !availableBackends.includes(backend)}<option
+        {#if backend && backend !== 'auto' && !availableBackends.includes(backend)}<option
             value={backend}
             >{backend} · saved selection, availability not checked</option
           >{/if}

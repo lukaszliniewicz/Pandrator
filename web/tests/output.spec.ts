@@ -107,6 +107,28 @@ test('voiceover minimum block gap defaults to 100 ms and saves custom values and
   }
 });
 
+test('output settings appear only with the summary above them', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'voiceover');
+  // Let the settings panel finish loading well before the page's own reads.
+  await page.route('**/api/v1/jobs?*', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue();
+  });
+  await page.goto(`/sessions/${session.id}/output`);
+  const save = page.getByRole('button', { name: 'Save output profile' });
+  await expect(save).toBeVisible();
+  // Nothing may be inserted above a form the user can already reach.
+  expect(
+    await page.getByRole('region', { name: 'Export contents' }).isVisible()
+  ).toBe(true);
+  await expect(
+    page.getByRole('heading', { name: 'Voiceover output', exact: true })
+  ).toBeVisible();
+});
+
 for (const kind of ['export.create', 'export.variant']) {
   test(`output retains ${kind} status and progress after reload`, async ({
     page
@@ -184,9 +206,14 @@ test('completed subtitle exports can be removed from Output', async ({
   const captured = new Promise<void>((resolve) => {
     snapshotCaptured = resolve;
   });
+  // Gate only refreshes that start after the export request below. An earlier
+  // periodic refresh would let Remove run while that request is in flight, and
+  // its late "was submitted" message would replace "Export removed.".
+  let exportRequested = false;
   await page.route('**/api/v1/artifacts?**', async (route) => {
     const url = new URL(route.request().url());
     if (
+      !exportRequested ||
       url.searchParams.get('session_id') !== session.id ||
       url.searchParams.get('limit') !== '300'
     ) {
@@ -201,8 +228,9 @@ test('completed subtitle exports can be removed from Output', async ({
   });
   await page.route(
     `**/api/v1/sessions/${session.id}/stages/export/run`,
-    (route) =>
-      route.fulfill({
+    (route) => {
+      exportRequested = true;
+      return route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({
           id: 'refresh-test-job',
@@ -212,7 +240,8 @@ test('completed subtitle exports can be removed from Output', async ({
           progress: 0,
           created_at: new Date().toISOString()
         })
-      })
+      });
+    }
   );
   const createExport = page.getByRole('button', {
     name: 'Create subtitle export'
@@ -220,6 +249,8 @@ test('completed subtitle exports can be removed from Output', async ({
   try {
     await createExport.click();
     await captured;
+    // The first export left its own "was submitted" message; wait for this one.
+    await expect(page.getByText(/Export refresh- was submitted/)).toBeVisible();
     page.once('dialog', (dialog) => dialog.accept());
     await remove.click();
     await expect(page.getByText('Export removed.')).toBeVisible();

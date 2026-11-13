@@ -22,6 +22,27 @@ export function mergeModelTuningMaps(...layers: unknown[]): ModelTuningMap {
   return merged;
 }
 
+/**
+ * Workspace defaults after promoting a project's overrides. A project's
+ * tuning map lists only the models it changed, so it is merged into the
+ * workspace map per model, as the settings resolver reads it, rather than
+ * replacing the map and dropping every other model's defaults.
+ */
+export function promoteToDefaults(
+  defaults: Record<string, unknown>,
+  promoted: Record<string, unknown>
+): Record<string, unknown> {
+  const next = { ...defaults, ...promoted };
+  if (
+    Object.prototype.hasOwnProperty.call(promoted, 'audio_cpp_model_settings')
+  )
+    next.audio_cpp_model_settings = mergeModelTuningMaps(
+      defaults.audio_cpp_model_settings,
+      promoted.audio_cpp_model_settings
+    );
+  return next;
+}
+
 export function updateModelTuning(
   overrides: ModelTuningMap,
   model: string,

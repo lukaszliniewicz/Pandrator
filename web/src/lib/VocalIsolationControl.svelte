@@ -1,5 +1,8 @@
 <script lang="ts">
+  // An empty value means the saved default is not known yet. The control then
+  // shows a placeholder rather than claiming an explicit setting.
   let { value = $bindable('off') }: { value?: string } = $props();
+  const enabled = $derived(value !== '' && value !== 'off');
 </script>
 
 <details
@@ -7,7 +10,7 @@
   data-testid="transcription-preprocessing"
 >
   <summary class="cursor-pointer text-sm font-semibold"
-    >Audio preprocessing{value !== 'off'
+    >Audio preprocessing{enabled
       ? ' · vocal isolation enabled'
       : ' · optional'}</summary
   >
@@ -17,6 +20,7 @@
       bind:value
       class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
     >
+      {#if value === ''}<option value="" disabled>Saved default</option>{/if}
       <option value="off">Off · use the original audio</option>
       <option value="htdemucs"
         >HTDemucs · four stems · download approximately 62 MB</option
@@ -27,7 +31,7 @@
       <option value="mel_band_roformer"
         >Mel-RoFormer · download approximately 252 MB</option
       >
-      {#if !['off', 'bs_roformer', 'mel_band_roformer', 'htdemucs'].includes(value)}<option
+      {#if !['', 'off', 'bs_roformer', 'mel_band_roformer', 'htdemucs'].includes(value)}<option
           {value}>{value} · saved selection</option
         >{/if}
     </select>
@@ -42,7 +46,7 @@
     use. The original media stays unchanged for playback and export, and the
     processed copy keeps its timeline.
   </p>
-  {#if value !== 'off'}<p class="mt-2 text-xs" role="status">
+  {#if enabled}<p class="mt-2 text-xs" role="status">
       Vocal isolation can take longer than the recording, especially on older
       GPUs. It can also remove useful speech details. Start with Off for clean
       recordings. A preprocessing failure stops the task rather than silently

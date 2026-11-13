@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { speechServiceApi } from './admin-api';
   import {
     getTtsCompactCatalogue,
@@ -12,6 +13,7 @@
     value,
     onchange,
     onloaded,
+    onloading,
     workspaceId,
     sessionId,
     compact = false
@@ -21,6 +23,8 @@
     sessionId?: string;
     compact?: boolean;
     onloaded?: (services: TtsService[]) => void;
+    /** Reports whether the catalogue is loading, so a parent can stay busy. */
+    onloading?: (loading: boolean) => void;
     onchange: (value: string, resetSelection: boolean) => void;
   } = $props();
   let services = $state<TtsService[]>([]);
@@ -37,6 +41,7 @@
     let active = true;
     loading = true;
     error = '';
+    untrack(() => onloading?.(true));
     void (async () => {
       try {
         const response = await (compact
@@ -48,11 +53,15 @@
       } catch (caught) {
         if (active) error = errorMessage(caught);
       } finally {
-        if (active) loading = false;
+        if (active) {
+          loading = false;
+          onloading?.(false);
+        }
       }
     })();
     return () => {
       active = false;
+      onloading?.(false);
     };
   });
 </script>

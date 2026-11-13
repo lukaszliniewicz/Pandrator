@@ -79,6 +79,10 @@
     generationHistoryVersion(runs, selectedRunId, selectedRunVersionId)
   );
   let busy = $state(false);
+  // The settings panel loads its own data in parallel with this page. Keep it
+  // hidden until this page's first load settles, so the summary, activity and
+  // history sections never appear above a form the user is already using.
+  let pageSettled = $state(false);
   let message = $state('');
   let error = $state('');
   let preview = $state<ArtifactRecord | null>(null);
@@ -595,6 +599,7 @@
           } catch (caught) {
             if (!disposed) error = errorMessage(caught);
           }
+          if (!disposed) pageSettled = true;
         } while (refreshQueued && !disposed);
       } finally {
         refreshing = false;
@@ -714,7 +719,7 @@
     >
       {subtitleChoiceIssue}
     </p>{/if}
-  {#if session && outputProfile && liveExportProfile}
+  {#if session && outputProfile}
     <section aria-label="Export contents" class="surface rounded-2xl p-5">
       <div class="section-label">Export contents</div>
       <dl class="mt-3 grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
@@ -968,6 +973,7 @@
   {/if}
   <details
     open={!simpleMode}
+    hidden={!pageSettled}
     class="rounded-2xl border border-[var(--line)] p-4"
   >
     <summary class="cursor-pointer text-sm font-semibold"

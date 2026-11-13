@@ -26,6 +26,7 @@
   import AudioCppModelSettings from './AudioCppModelSettings.svelte';
   import {
     mergeModelTuningMaps,
+    promoteToDefaults,
     modelTuningMap
   } from './audio-cpp-model-settings';
   import ElevenLabsModelSettings from './ElevenLabsModelSettings.svelte';
@@ -286,6 +287,8 @@
   const set = (key: string, next: unknown) =>
     (override = { ...override, [key]: next });
   let ttsServices = $state<TtsService[]>([]);
+  // The voice and model controls appear only once the service catalogue loads.
+  let ttsCatalogueLoading = $state(false);
   let localVoices = $state<VoiceRecord[]>([]);
   const effectiveTts: Record<string, unknown> = $derived({
     ...payload?.effective,
@@ -861,10 +864,7 @@
       await sessionApi.saveDefaults(
         section,
         defaults.revision,
-        {
-          ...(defaults.value ?? {}),
-          ...promoted
-        },
+        promoteToDefaults(defaults.value ?? {}, promoted),
         defaults.workspace_id
       );
       payload = await sessionApi.saveSettings(
@@ -951,7 +951,9 @@
   this={collapsible ? 'details' : 'section'}
   class="surface settings-panel rounded-2xl p-5"
   open={collapsible && initiallyOpen ? true : undefined}
-  aria-busy={(!payload && !loadError) || modelDetailLoading
+  aria-busy={(!payload && !loadError) ||
+  ttsCatalogueLoading ||
+  modelDetailLoading
     ? 'true'
     : undefined}
 >
@@ -1240,6 +1242,9 @@
                 value={String(value(key, fallback) ?? '')}
                 onloaded={(services) => {
                   ttsServices = services;
+                }}
+                onloading={(loading) => {
+                  ttsCatalogueLoading = loading;
                 }}
                 onchange={(next, resetSelection) => {
                   const changed = next !== String(value(key, fallback));
