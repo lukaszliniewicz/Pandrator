@@ -1,12 +1,16 @@
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 
 export async function showGenerationTextLayer(
   page: Page,
   layer: 'display' | 'speech'
 ) {
-  await page
-    .getByRole('button', { name: 'Display options', exact: true })
-    .click();
+  const options = page.getByRole('button', {
+    name: 'Display options',
+    exact: true
+  });
+  await options.click();
+  // Fail here, not after the test timeout, if the click did not open it.
+  await expect(options).toHaveAttribute('aria-expanded', 'true');
   await page
     .getByRole('button', {
       name:

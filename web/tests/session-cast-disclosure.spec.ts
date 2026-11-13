@@ -111,6 +111,9 @@ test('multi-voice cast can be collapsed and keeps drafts across refresh', async 
       disclosure.evaluate((node) => (node as HTMLDetailsElement).open)
     )
     .toBe(true);
+  // A first voice check that is still running can add a setup link above the
+  // Save button when it finishes. Let the cast settle before clicking.
+  await expect(card.getByText('Checking voice setup…')).toHaveCount(0);
   await card
     .getByRole('button', { name: 'Save characters and cast', exact: true })
     .click();
@@ -135,6 +138,85 @@ test('multi-voice cast can be collapsed and keeps drafts across refresh', async 
   await expect(page.getByTestId('cast-disclosure')).toHaveAttribute('open');
   await page.goto(`/sessions/${id}`);
   await expect(disclosure).toHaveAttribute('open');
+});
+
+test('refreshing the cast does not restart settled voice checks', async ({
+  page
+}) => {
+  await signIn(page);
+  const id = await createAudiobookSession(page);
+  const auth = await (await page.request.get('/api/v1/auth/status')).json();
+  const settingsUrl = `/api/v1/sessions/${id}/settings/tts`;
+  const current = await (await page.request.get(settingsUrl)).json();
+  const model = 'qwen3_tts_1_7b_customvoice_q8_0';
+  const saved = await page.request.put(settingsUrl, {
+    headers: {
+      'X-CSRF-Token': auth.csrf_token,
+      'If-Match': `"${current.revision}"`
+    },
+    data: {
+      value: {
+        service: 'audio_cpp',
+        tts_service: 'audio_cpp',
+        model,
+        xtts_model: model,
+        voice: 'Ryan',
+        speaker: 'Ryan'
+      }
+    }
+  });
+  expect(saved.ok(), await saved.text()).toBeTruthy();
+  const card = await openSessionMultiVoice(page, id);
+  await expect(
+    card.getByRole('button', { name: 'Choose Narrator voice', exact: true })
+  ).toBeVisible();
+  await expect(card.getByText('Checking voice setup…')).toHaveCount(0);
+  // Record any return to the checking state: it collapses the voice cards and
+  // moves the Save button while the follow-up session refresh lands.
+  await page.evaluate(() => {
+    const probe = window as Window & { voiceRechecks?: number };
+    probe.voiceRechecks = 0;
+    new MutationObserver(() => {
+      if (
+        Array.from(document.querySelectorAll('[role="status"]')).some((node) =>
+          node.textContent?.includes('Checking voice setup')
+        )
+      )
+        probe.voiceRechecks = (probe.voiceRechecks ?? 0) + 1;
+    }).observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true
+    });
+  });
+  const responses = { outcome: 0, workflow: 0 };
+  page.on('response', (response) => {
+    const path = new URL(response.url()).pathname;
+    if (path === `/api/v1/sessions/${id}/outcome-plan`) responses.outcome++;
+    if (path === `/api/v1/sessions/${id}/workflow`) responses.workflow++;
+  });
+  const refresh = card.getByRole('button', {
+    name: 'Refresh cast',
+    exact: true
+  });
+  await refresh.click();
+  // The cast load reports to the workspace, which refetches the outcome
+  // twice (its own read and the session context reload) and the workflow.
+  await expect
+    .poll(() => responses.outcome >= 2 && responses.workflow >= 1)
+    .toBe(true);
+  await expect(refresh).toBeEnabled();
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      )
+  );
+  expect(
+    await page.evaluate(
+      () => (window as Window & { voiceRechecks?: number }).voiceRechecks
+    )
+  ).toBe(0);
 });
 
 test('cast load errors stay visible while collapsed and retry succeeds', async ({
