@@ -249,6 +249,80 @@ class VoiceoverRegroupTests(unittest.TestCase):
                 (staged.settings_snapshot_json or {}).get("regroup_parent_run_id"),
             )
 
+    def _generate_with_identity_probe(self, probe):
+        """Generate, calling ``probe`` while a staged group's audio identities are computed."""
+        from pandrator.web import voiceover_regroup
+
+        original = voiceover_regroup.plan_audio_identities
+
+        def plan_audio_identities(session, revision_id, *args, **kwargs):
+            probe(revision_id)
+            return original(session, revision_id, *args, **kwargs)
+
+        self.plan()
+        with patch.object(
+            voiceover_regroup, "plan_audio_identities", side_effect=plan_audio_identities
+        ):
+            return self.generate()
+
+    def test_staged_group_computes_audio_identities_outside_the_writer(self):
+        probes = []
+
+        def take_the_writer(_revision_id):
+            # A held writer would make this fail at once with "database is locked".
+            with self.database.immediate_session(busy_timeout_ms=0):
+                probes.append("writer free")
+
+        result, calls = self._generate_with_identity_probe(take_the_writer)
+
+        self.assertEqual(["writer free"], probes)
+        self.assertEqual(1, result.get("regrouped_groups"))
+        self.assertEqual(4, calls)
+
+    def test_inputs_changed_while_staged_identities_are_computed_are_not_applied(self):
+        from pandrator.web.models import SessionRecord
+
+        def change_the_session(_revision_id):
+            with self.database.immediate_session() as session:
+                session.get(SessionRecord, self.record.id).revision += 1
+
+        result, calls = self._generate_with_identity_probe(change_the_session)
+
+        self.assertEqual(0, result.get("regrouped_groups"))
+        # The three first-pass takes only: the staged group is never generated.
+        self.assertEqual(3, calls)
+        self.assertEqual(self.revision_id, self.active())
+        self.assertEqual(
+            [("not_applied", "selection_changed")],
+            [
+                (item["repair_status"], item["repair_reason"])
+                for item in self.regroup_attempts()
+                if item["reason"] == "passage_regroup"
+            ],
+        )
+
+    def test_active_revision_changed_while_staged_identities_are_computed_is_not_generated(self):
+        def activate_another_revision(revision_id):
+            with self.database.immediate_session() as session:
+                plan = session.scalar(
+                    select(GenerationPlan).where(GenerationPlan.session_id == self.record.id)
+                )
+                plan.active_revision_id = revision_id
+
+        result, calls = self._generate_with_identity_probe(activate_another_revision)
+
+        self.assertEqual(0, result.get("regrouped_groups"))
+        # The three first-pass takes only: the staged group is never generated.
+        self.assertEqual(3, calls)
+        self.assertEqual(
+            [("not_applied", "selection_changed")],
+            [
+                (item["repair_status"], item["repair_reason"])
+                for item in self.regroup_attempts()
+                if item["reason"] == "passage_regroup"
+            ],
+        )
+
     def test_distinct_turn_ids_keep_first_pass_segments_separate(self):
         self.plan(turn_ids=["turn-a", "turn-b", "turn-c"])
         with self.database.session() as session:

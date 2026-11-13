@@ -1718,7 +1718,18 @@ test('Generation layout and menus survive segment regeneration refreshes', async
     .getByRole('button', { name: 'Display options', exact: true })
     .click();
   await page.getByRole('button', { name: 'Reading view', exact: true }).click();
-  await page.locator('.reading-sentence').hover();
+  // Reading view shows a segment's actions while the segment is hovered or
+  // holds focus. A retried click scrolls before it moves the pointer, so a
+  // hover reveal is lost when the segment slides out from under the pointer,
+  // and actions that no longer take pointer events cannot be hovered back.
+  // Focus keeps them open through any scroll; waiting out the reveal
+  // transition lets the first click attempt find the trigger stable.
+  const readingActions = page.locator('.reading-actions');
+  const revealReadingActions = async () => {
+    await page.locator('.reading-sentence').focus();
+    await expect(readingActions).toHaveCSS('opacity', '1');
+  };
+  await revealReadingActions();
   await regenerate.click();
   await expect(alternateAction).toBeVisible();
   const menu = page.getByRole('menu', {
@@ -1740,7 +1751,7 @@ test('Generation layout and menus survive segment regeneration refreshes', async
   await page
     .getByRole('button', { name: 'Close alternate regeneration' })
     .click();
-  await page.locator('.reading-sentence').hover();
+  await revealReadingActions();
   await regenerate.click();
   await regenerateAction.click();
   await expect(page.locator('.reading-sentence')).toHaveText(

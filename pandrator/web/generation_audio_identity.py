@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from pandrator.logic.speech_performance import copy_record
 from pandrator.runtime import DataPaths
 
+from .abandoned_requests import raise_if_abandoned
 from .access.contracts import AccessDenied, WorkspaceNotFound
 from .access.voice_policy import require_current_voice_library_read
 from .accounts.models import Workspace
@@ -666,6 +667,7 @@ class AudioIdentityContext:
         return {**identity, "performance_request_hash": compiled.fingerprint}
 
     def for_segment(self, segment: GenerationSegment) -> dict[str, Any]:
+        raise_if_abandoned()
         if self._cast_segment_ids is not None and segment.id not in self._cast_segment_ids:
             raise RuntimeError("Segment is outside the cast scope of this audio identity context.")
         self._ensure_segment_workspace(segment)

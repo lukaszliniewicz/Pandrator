@@ -2783,6 +2783,73 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         with self.database.session() as db:
             self.assertEqual("failed", db.get(GenerationRun, observed["run_id"]).status)
 
+    def _reviewable_start_with_identity_probe(self, probe):
+        """Start a reviewable run, calling ``probe`` while its audio identities are computed."""
+        from pandrator.web import generation_audio_identity
+
+        _path, _source_bytes, source = self._reviewable_start_source()
+        original = generation_audio_identity.plan_audio_identities
+
+        cancel = threading.Event()
+
+        def plan_audio_identities(*args, **kwargs):
+            probe(cancel)
+            return original(*args, **kwargs)
+
+        started = []
+        with mock.patch.object(
+            generation_audio_identity, "plan_audio_identities", side_effect=plan_audio_identities
+        ), mock.patch.object(
+            self.handlers, "run_generation",
+            side_effect=lambda payload, _progress, _cancel: started.append(payload) or {"status": "completed"},
+        ):
+            self.handlers._run_reviewable_generation(
+                {"session_id": self.session.id, "source_artifact_id": source.id,
+                 "settings": {"service": "XTTS"}},
+                self.progress, cancel,
+            )
+        return started
+
+    def test_reviewable_start_computes_audio_identities_outside_the_writer(self):
+        probes = []
+
+        def take_the_writer(_cancel):
+            # A held writer would make this fail at once with "database is locked".
+            with self.database.immediate_session(busy_timeout_ms=0):
+                probes.append("writer free")
+
+        started = self._reviewable_start_with_identity_probe(take_the_writer)
+
+        self.assertEqual(["writer free"], probes)
+        self.assertEqual(1, len(started))
+        with self.database.session() as db:
+            run = db.get(GenerationRun, started[0]["generation_run_id"])
+            self.assertIn("generation_audio_identities", run.settings_snapshot_json)
+
+    def test_reviewable_start_rejects_inputs_changed_while_identities_are_computed(self):
+        from pandrator.web.generation_start_preparation import SNAPSHOT_GUARD_CONFLICT
+        from pandrator.web.settings_policy import RevisionConflict
+
+        def change_the_session(_cancel):
+            with self.database.immediate_session() as db:
+                db.get(SessionRecord, self.session.id).revision += 1
+
+        with self.assertRaises(RevisionConflict) as raised:
+            self._reviewable_start_with_identity_probe(change_the_session)
+
+        self.assertEqual(SNAPSHOT_GUARD_CONFLICT, str(raised.exception))
+        with self.database.session() as db:
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationRun)))
+
+    def test_reviewable_start_canceled_while_identities_are_computed_creates_no_run(self):
+        from pandrator.web.media_process import MediaProcessCancelled
+
+        with self.assertRaises(MediaProcessCancelled):
+            self._reviewable_start_with_identity_probe(lambda cancel: cancel.set())
+
+        with self.database.session() as db:
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationRun)))
+
     def _subtitle_publication_fixture(self):
         path = self.session_dir / "publication-source.srt"
         source_bytes = b"1\n00:00:01,000 --> 00:00:05,000\nHello world. A second phrase.\n"

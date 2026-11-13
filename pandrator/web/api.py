@@ -34,11 +34,15 @@ def create_app(
 ) -> Flask:
     """Compose the dependency graph, HTTP lifecycle, and domain routes."""
 
+    maintenance_enabled = (
+        not testing if background_maintenance is None else background_maintenance
+    )
     services = ApplicationServices.build(
         data_root=data_root,
         bootstrap_tokens=bootstrap_tokens,
         capability_ttl_seconds=capability_ttl_seconds,
         public_origin=public_origin,
+        background_checkpoints=maintenance_enabled,
     )
     try:
         # Repair interrupted job/domain transitions once at startup. Normal API
@@ -98,9 +102,6 @@ def create_app(
             app, RouteContext(services=services, guards=guards, static_dir=static_dir)
         )
 
-        maintenance_enabled = (
-            not testing if background_maintenance is None else background_maintenance
-        )
         if maintenance_enabled:
             services.startup_maintenance.start()
             services.quick_transcriptions.start_maintenance()

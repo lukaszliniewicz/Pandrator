@@ -14,6 +14,7 @@ from pandrator.logic.speech_performance import content_hash, resolve_capabilitie
 from pandrator.logic.tts_service_identity import normalize_service_id
 
 from . import models as m
+from .abandoned_requests import raise_if_abandoned
 from .access.contracts import AccessDenied, WorkspaceNotFound
 from .access.voice_policy import require_current_voice_library_read
 from .generation_control_schemas import VoiceBinding
@@ -763,6 +764,7 @@ def freeze_cast_snapshot(
     if _freeze_segment_ids is not None:
         segment_query = segment_query.where(m.GenerationSegment.id.in_(list(_freeze_segment_ids)))
     for segment in session.scalars(segment_query):
+        raise_if_abandoned()
         carried_entry = None
         if _carried_snapshot is not None:
             if (cast_snapshot_version(_carried_snapshot) != 2
