@@ -34,6 +34,7 @@
   import { clearProjectLink } from '$lib/project-link-context';
   import ManagerOperationBanner from '$lib/ManagerOperationBanner.svelte';
   import { modalFocus } from '$lib/modal-focus';
+  import { stylesheetsSettled } from '$lib/stylesheets';
 
   let { children }: { children: Snippet } = $props();
   let password = $state('');
@@ -178,6 +179,8 @@
       appState.workspaceSwitching = false;
     };
   });
+  // Do not swap in the next page until its route stylesheets have loaded.
+  onNavigate(() => stylesheetsSettled());
   afterNavigate(() => appState.adoptSessionWorkspace(page.params.id ?? ''));
 
   onMount(() => {
