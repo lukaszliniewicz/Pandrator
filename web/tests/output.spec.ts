@@ -227,7 +227,8 @@ test('completed subtitle exports can be removed from Output', async ({
   try {
     await createExport.click();
     await captured;
-    await expect(page.getByText(/was submitted/)).toBeVisible();
+    // The first export left its own "was submitted" message; wait for this one.
+    await expect(page.getByText(/Export refresh- was submitted/)).toBeVisible();
     page.once('dialog', (dialog) => dialog.accept());
     await remove.click();
     await expect(page.getByText('Export removed.')).toBeVisible();
