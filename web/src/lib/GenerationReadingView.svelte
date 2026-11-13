@@ -565,6 +565,17 @@
       opacity 0.12s ease,
       transform 0.12s ease;
   }
+  /* Spans the gap between the bar and the text below it, so a pointer moving up
+     to the actions stays over the segment. It takes pointer events only while
+     the bar is shown. */
+  .reading-actions::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    right: 0;
+    left: 0;
+    height: calc(0.32rem + 2px);
+  }
   .reading-segment:hover .reading-actions,
   .reading-segment:focus-within .reading-actions,
   .reading-segment:has(:global(.regenerate-trigger[aria-expanded='true']))
