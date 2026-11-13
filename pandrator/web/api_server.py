@@ -11,7 +11,52 @@ from wsgiref.types import WSGIApplication
 
 from waitress import wasyncore
 from waitress.channel import HTTPChannel
-from waitress.server import create_server
+from waitress.server import BaseWSGIServer, create_server
+
+# Waitress stops reading a socket while its request is queued or running unless
+# this is at least 1, so a client that gave up would never be noticed.
+REQUEST_LOOKAHEAD = 1
+_DISCONNECT_WATCHED_METHODS = frozenset({"GET", "HEAD"})
+
+
+class ReadDisconnectChannel(HTTPChannel):
+    """Watch for a departed client only while a read heads the connection's queue.
+
+    With lookahead, waitress reads a connection while its request is queued or
+    running, and skips a queued request whose client has left, whatever its
+    method. Not reading while a mutation heads the queue leaves that disconnect
+    unseen, so the mutation runs to its commit as it did without lookahead. A
+    mutation pipelined behind a read can still be dropped with it; clients must
+    not pipeline non-idempotent requests (RFC 9112, section 9.3.2).
+    """
+
+    def readable(self) -> bool:
+        # Relies on waitress internals, checked against waitress 3.0.2: the channel's
+        # queue is ``self.requests`` and each parsed request has ``command``. Re-check
+        # when the waitress range moves; a rename would quietly stop disconnect checks.
+        try:
+            head = self.requests[0]
+        except IndexError:
+            head = None
+        if head is not None and getattr(head, "command", None) not in _DISCONNECT_WATCHED_METHODS:
+            return False
+        return super().readable()
+
+
+def create_api_server(application: WSGIApplication, socket_map: dict[int, Any], **adjustments: Any):
+    """Create the waitress server the API and its timing harness share."""
+
+    server = create_server(
+        application,
+        map=socket_map,
+        channel_request_lookahead=REQUEST_LOOKAHEAD,
+        **adjustments,
+    )
+    # Each listener registered itself in the map; give them the read-only watch.
+    for dispatcher in socket_map.values():
+        if isinstance(dispatcher, BaseWSGIServer):
+            dispatcher.channel_class = ReadDisconnectChannel
+    return server
 
 
 def close_waitress_connections(channels: dict[int, wasyncore.dispatcher]) -> None:
@@ -42,9 +87,9 @@ def serve_api(
     logging.basicConfig()
     # Waitress stores heterogeneous dispatchers despite its socket-only map annotations.
     socket_map: dict[int, Any] = {}
-    server = create_server(
+    server = create_api_server(
         app,
-        map=socket_map,
+        socket_map,
         host=host,
         port=port,
         threads=threads,
