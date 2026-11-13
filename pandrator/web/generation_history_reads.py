@@ -62,7 +62,10 @@ def _select_narrow_runs(query: Select[Any], session: Session) -> list[Generation
     A key that is absent or JSON ``null`` comes back absent, and values come
     from SQLite's extract rather than ``json.loads``. Both are equivalent for
     the stored keys, which hold objects or strings, because every reader uses
-    ``.get``, truthiness or ``isinstance``.
+    ``.get``, truthiness or ``isinstance``. The extract differs only in cases
+    no writer produces: a snapshot that is not a JSON object narrows to
+    ``{}``, a top-level ``NaN`` reads as ``null`` and an integer beyond 64 bits
+    as a float.
     """
     narrow = query.add_columns(
         *(
@@ -88,10 +91,10 @@ def _select_narrow_runs(query: Select[Any], session: Session) -> list[Generation
 
 def _select_narrow_assemblies(query: Select[Any], session: Session) -> list[OutputAssembly]:
     """Run a ``select(OutputAssembly)`` loading only ``audio_version_side``."""
-    # The side keys the versions map, so an explicit JSON null (keyed None)
-    # must stay distinct from an absent side (keyed "after").
     narrow = query.add_columns(
         OutputAssembly.settings_json["audio_version_side"].label("audio_version_side"),
+        # The side keys the versions map, so an explicit JSON null (keyed None)
+        # must stay distinct from an absent side (keyed "after").
         func.json_type(OutputAssembly.settings_json, "$.audio_version_side").label(
             "audio_version_side_type"
         ),
@@ -1377,6 +1380,8 @@ class GenerationHistoryReader:
         only project them with ``project_generation_run(..., "compact")``.
         The narrowing never changes stored rows, in either branch.
         """
+        if view not in ("full", "compact"):
+            raise ValueError(f"Unknown run list view: {view!r}")
         narrow = view == "compact"
         if limit is not None:
             with self.database.snapshot_session() as session:

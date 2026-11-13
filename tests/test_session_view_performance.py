@@ -993,6 +993,10 @@ class SessionViewPerformanceTests(unittest.TestCase):
                     )
                 self.assertTrue(differs, f"no fixture output depends on {key!r}")
 
+    def test_unknown_run_list_view_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unknown run list view"):
+            self.generation.list_runs("no-such-session", view="compact ")
+
     # A whole settings column as a select-list item. Key extracts and JSON
     # probes pass the column as a function argument, after "(" instead.
     _WHOLE_SETTINGS_COLUMN = re.compile(
