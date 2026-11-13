@@ -40,7 +40,11 @@ COMPACT_ASSEMBLY_FIELDS = (
 )
 # The only run-snapshot keys the history payload path reads: the label, the
 # repair and regroup markers, the second-pass selection and the early-repair
-# probe. The compact list loads just these, extracted in SQL.
+# probe. The compact list loads just these, extracted in SQL. Their readers
+# are `_run_label`, `_run_payload`, `_timing_repair_payload`,
+# `_snapshot_enables_early_repair`, `generation_run_history._repair_marker`
+# and `passage_regroup.select_second_pass`; a key any of them starts to read
+# must be added here, or the compact view diverges from the full one.
 COMPACT_RUN_SNAPSHOT_KEYS = (
     "tts", "rvc", "selected_segment_override", "audio",
     EARLY_REPAIR_MARKER_KEY, REGROUP_MARKER_KEY,
@@ -51,8 +55,14 @@ def _select_narrow_runs(query: Select[Any], session: Session) -> list[Generation
     """Run a ``select(GenerationRun)`` loading only the compact snapshot keys.
 
     The whole snapshot column is never fetched or decoded. Narrowed values are
-    set as committed state, so they are not dirty and never flushed; they must
-    not leave the caller's read session.
+    set as committed state, so they are never dirty: a session that commits
+    on exit, as ``list_runs`` without a limit does, writes nothing back. They
+    must not leave the session that loaded them.
+
+    A key that is absent or JSON ``null`` comes back absent, and values come
+    from SQLite's extract rather than ``json.loads``. Both are equivalent for
+    the stored keys, which hold objects or strings, because every reader uses
+    ``.get``, truthiness or ``isinstance``.
     """
     narrow = query.add_columns(
         *(
@@ -436,7 +446,8 @@ class GenerationHistoryReader:
         """Load one session's run history and projection inputs in batches.
 
         ``narrow`` loads run snapshots and assembly settings as only the keys
-        the compact projection reads; the context must not outlive the session.
+        the compact projection reads, as unmodified committed state; the
+        context must not outlive the session.
         """
 
         if runs is None:
@@ -1364,6 +1375,7 @@ class GenerationHistoryReader:
 
         Compact payloads carry narrowed snapshots and assembly settings, so
         only project them with ``project_generation_run(..., "compact")``.
+        The narrowing never changes stored rows, in either branch.
         """
         narrow = view == "compact"
         if limit is not None:

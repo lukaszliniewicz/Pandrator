@@ -12,6 +12,7 @@ assertions:
 """
 
 import inspect
+import re
 import tempfile
 import unittest
 import uuid
@@ -992,29 +993,102 @@ class SessionViewPerformanceTests(unittest.TestCase):
                     )
                 self.assertTrue(differs, f"no fixture output depends on {key!r}")
 
+    # A whole settings column as a select-list item. Key extracts and JSON
+    # probes pass the column as a function argument, after "(" instead.
+    _WHOLE_SETTINGS_COLUMN = re.compile(
+        r"(?:\bSELECT|,)\s+"
+        r"(?:generation_runs\.settings_snapshot_json|output_assemblies\.settings_json)"
+        r"(?:\s+AS\s+\w+)?\s*(?:,|\bFROM\b)"
+    )
+
+    def _record_settings_loads(self, read):
+        """Run ``read`` and report its run and assembly loads and whole-column selects.
+
+        A load is ``(kind, whole)``, where ``whole`` means the settings column
+        was already in the instance state when the row loaded.
+        """
+        seen = []
+        statements = []
+
+        def record_load(_session, instance):
+            if isinstance(instance, GenerationRun):
+                seen.append(("run", "settings_snapshot_json" in instance.__dict__))
+            elif isinstance(instance, OutputAssembly):
+                seen.append(("assembly", "settings_json" in instance.__dict__))
+
+        def record_statement(conn, cursor, statement, parameters, context, executemany):
+            if self._WHOLE_SETTINGS_COLUMN.search(statement):
+                statements.append(statement)
+
+        event.listen(OrmSession, "loaded_as_persistent", record_load)
+        event.listen(self.database.engine, "before_cursor_execute", record_statement)
+        try:
+            result = read()
+        finally:
+            event.remove(self.database.engine, "before_cursor_execute", record_statement)
+            event.remove(OrmSession, "loaded_as_persistent", record_load)
+        return result, seen, statements
+
+    def _stored_settings(self, session_id):
+        with self.database.session() as session:
+            runs = {
+                run.id: run.settings_snapshot_json
+                for run in session.scalars(
+                    select(GenerationRun).where(GenerationRun.session_id == session_id)
+                )
+            }
+            assemblies = {
+                assembly.id: assembly.settings_json
+                for assembly in session.scalars(
+                    select(OutputAssembly).where(OutputAssembly.session_id == session_id)
+                )
+            }
+        return runs, assemblies
+
     def test_compact_run_list_never_loads_whole_snapshots_or_settings(self):
         session_id = self._compact_history_fixture()
+        stored = self._stored_settings(session_id)
         reader = GenerationHistoryReader(self.database)
+        # The pattern does match the full view's loads, so its silence below
+        # means the compact view selected no whole column.
+        _, _, full_statements = self._record_settings_loads(
+            lambda: reader.list_runs(session_id, limit=3)
+        )
+        self.assertTrue(full_statements)
         for limit in (None, 3):
             with self.subTest(limit=limit):
-                seen = []
-
-                def record_load(_session, instance, seen=seen):
-                    if isinstance(instance, GenerationRun):
-                        seen.append(("run", "settings_snapshot_json" in instance.__dict__))
-                    elif isinstance(instance, OutputAssembly):
-                        seen.append(("assembly", "settings_json" in instance.__dict__))
-
-                event.listen(OrmSession, "loaded_as_persistent", record_load)
-                try:
-                    items = reader.list_runs(session_id, limit=limit, view="compact")
-                finally:
-                    event.remove(OrmSession, "loaded_as_persistent", record_load)
+                items, seen, statements = self._record_settings_loads(
+                    lambda limit=limit: reader.list_runs(session_id, limit=limit, view="compact")
+                )
                 self.assertTrue(items)
                 self.assertTrue(any(kind == "run" for kind, _ in seen))
                 self.assertTrue(any(kind == "assembly" for kind, _ in seen))
                 self.assertFalse([entry for entry in seen if entry[1]])
+                self.assertEqual([], statements)
                 self.assertNotIn("SENTINEL", repr(items))
+        # The narrowed values are never written back, including by the
+        # no-limit branch, whose session commits on exit.
+        self.assertEqual(stored, self._stored_settings(session_id))
+
+    def test_compact_run_list_route_never_loads_whole_snapshots_or_settings(self):
+        session_id = self._compact_history_fixture()
+        stored = self._stored_settings(session_id)
+        url = f"/api/v1/sessions/{session_id}/generation-runs"
+        _, _, full_statements = self._record_settings_loads(
+            lambda: self.client.get(f"{url}?limit=25", headers=self.headers)
+        )
+        self.assertTrue(full_statements)
+        for query in ("view=compact&limit=25", "view=compact"):
+            with self.subTest(query=query):
+                response, seen, statements = self._record_settings_loads(
+                    lambda query=query: self.client.get(f"{url}?{query}", headers=self.headers)
+                )
+                self.assertEqual(200, response.status_code, response.get_json())
+                self.assertTrue(response.get_json()["items"])
+                self.assertTrue(any(kind == "run" for kind, _ in seen))
+                self.assertFalse([entry for entry in seen if entry[1]])
+                self.assertEqual([], statements)
+        self.assertEqual(stored, self._stored_settings(session_id))
 
     def test_history_selection_and_hydration_share_a_read_snapshot(self):
         session_id, run_ids = self._run_history_fixture(
