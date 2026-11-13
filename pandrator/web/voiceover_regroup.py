@@ -41,6 +41,7 @@ from pandrator.logic.dubbing.passage_regroup import (
 )
 
 from .generation_audio_identity import plan_audio_identities
+from .generation_start_preparation import snapshot_guard
 from .models import (
     Artifact,
     AudioTake,
@@ -734,9 +735,17 @@ def repair_regroup_blocks(
                     batch_snapshot=batch_snapshot,
                     max_chars=max_chars,
                 )
-                child_snapshot = deepcopy(snapshot)
-                child_snapshot["speech_plan_revision_id"] = staged_revision_id
-                child_snapshot["regroup_parent_run_id"] = run_id
+            # The staged revision is committed; if anything below fails it stays
+            # in history unapplied, like a regroup whose audio does not fit.
+            # Freezing it and its audio identities reads the whole plan, which
+            # can take minutes on a long cast plan, so it runs outside the
+            # writer. The guard is taken first, and the writer below rechecks
+            # it with the take choices and the source plan.
+            child_snapshot = deepcopy(snapshot)
+            child_snapshot["speech_plan_revision_id"] = staged_revision_id
+            child_snapshot["regroup_parent_run_id"] = run_id
+            with handler.database.session() as session:
+                guard = snapshot_guard(session, session_id, staged_revision_id)
                 freeze_speech_snapshot(
                     session,
                     staged_revision_id,
@@ -746,6 +755,25 @@ def repair_regroup_blocks(
                 child_snapshot["generation_audio_identities"] = plan_audio_identities(
                     session, staged_revision_id, child_snapshot
                 )
+            if stop.is_set():
+                repair_status, repair_reason = "stopped", "generation_stopped"
+                break
+            with handler.database.immediate_session() as session:
+                plan = session.scalar(
+                    select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+                )
+                if (
+                    # Staging checked the active revision; recheck it, since the
+                    # pass above ran outside the writer.
+                    plan is None
+                    or plan.active_revision_id != current_revision_id
+                    or _selection_state(session, current_revision_id)
+                    != (choices, source_take_signature)
+                    or plan_signature(session, current_revision_id) != source_signature
+                    or snapshot_guard(session, session_id, staged_revision_id) != guard
+                ):
+                    repair_status, repair_reason = "not_applied", "selection_changed"
+                    break
                 sequence = (
                     int(
                         session.scalar(

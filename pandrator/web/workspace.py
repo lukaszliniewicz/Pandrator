@@ -1914,12 +1914,12 @@ class GenerationService(GenerationHistoryReader):
         operation = prepared["operation"]
         plan_revision_id, source_run = self._start_source(session, session_id, prepared)
         snapshot = self._start_snapshot(prepared, source_run)
-        from .generation_start_preparation import snapshot_guard
+        from .generation_start_preparation import SNAPSHOT_GUARD_CONFLICT, snapshot_guard
 
         if ((source_run.id if source_run else None) != prepared["snapshot_source_run_id"]
                 or stable_hash(snapshot) != prepared["snapshot_input_hash"]
                 or snapshot_guard(session, session_id, plan_revision_id) != prepared["snapshot_guard"]):
-            raise RevisionConflict("Speech, cast, or voice references changed while generation was being prepared. Refresh and try again.")
+            raise RevisionConflict(SNAPSHOT_GUARD_CONFLICT)
         if prepared.get("selection_state") is not None:
             # Lightweight write-stage guard: recheck captured row/take/run
             # state and fresh resolved settings without recompiling per-row
