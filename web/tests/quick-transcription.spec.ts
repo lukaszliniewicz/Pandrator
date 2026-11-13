@@ -323,6 +323,40 @@ test('a retry resends the failed attempt unchanged when saved defaults arrive me
   expect(attempts[0].options).not.toContain('transcription_vocal_isolation');
 });
 
+test('changing the format after a result starts a new transcription request', async ({
+  page
+}) => {
+  const mock = await mockTranscription(page);
+  const keys: string[] = [];
+  await page.route('**/api/v1/transcriptions**', async (route) => {
+    const request = route.request();
+    if (request.method() === 'POST')
+      keys.push(request.headers()['idempotency-key'] ?? '');
+    return route.fallback();
+  });
+  await signIn(page);
+  await page.getByLabel('Audio or video file', { exact: true }).setInputFiles({
+    name: 'sample.wav',
+    mimeType: 'audio/wav',
+    buffer: Buffer.from('fixture audio')
+  });
+  const transcribe = page.getByRole('button', {
+    name: 'Transcribe',
+    exact: true
+  });
+  const transcript = page.getByLabel('Transcript', { exact: true });
+  await transcribe.click();
+  await expect(transcript).toHaveValue('Hello from a temporary transcription.');
+  await page.getByLabel('Output format').selectOption('json');
+  await expect(transcript).toHaveValue(/pandrator.transcript.v1/);
+  await transcribe.click();
+  await expect.poll(() => mock.starts()).toBe(2);
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).not.toBe(keys[0]);
+  expect(mock.uploadedBodies[0]).toContain('"format":"txt"');
+  expect(mock.uploadedBodies[1]).toContain('"format":"json"');
+});
+
 test('a failed upload still supersedes restoring an earlier transcription', async ({
   page
 }) => {

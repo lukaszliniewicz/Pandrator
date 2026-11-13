@@ -403,8 +403,10 @@
           disabled={busy || loadingResult}
           onchange={(event) => {
             format = event.currentTarget.value as TranscriptFormat;
+            // The format is part of the request, so a later Transcribe is a
+            // new attempt even when this change only switches the preview.
+            attempt = null;
             if (job?.result_available) void loadResult();
-            else attempt = null;
           }}
         >
           <option value="txt">Plain text (.txt)</option><option
