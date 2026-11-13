@@ -1,12 +1,13 @@
 # Pandrator 0.14.4 changes
 
-Changes since [0.14.3](release-notes-0.14.3.md). This maintenance release integrates and credits Patrick Nadeau's performance work in PRs [#126](https://github.com/lukaszliniewicz/Pandrator/pull/126), [#127](https://github.com/lukaszliniewicz/Pandrator/pull/127), [#128](https://github.com/lukaszliniewicz/Pandrator/pull/128), [#129](https://github.com/lukaszliniewicz/Pandrator/pull/129), [#132](https://github.com/lukaszliniewicz/Pandrator/pull/132), [#134](https://github.com/lukaszliniewicz/Pandrator/pull/134) and [#136](https://github.com/lukaszliniewicz/Pandrator/pull/136), measured on a 5,167-segment cast book. The original contribution commits retain their authorship.
+Changes since [0.14.3](release-notes-0.14.3.md). This maintenance release integrates and credits Patrick Nadeau's performance work in PRs [#126](https://github.com/lukaszliniewicz/Pandrator/pull/126), [#127](https://github.com/lukaszliniewicz/Pandrator/pull/127), [#128](https://github.com/lukaszliniewicz/Pandrator/pull/128), [#129](https://github.com/lukaszliniewicz/Pandrator/pull/129), [#132](https://github.com/lukaszliniewicz/Pandrator/pull/132), [#134](https://github.com/lukaszliniewicz/Pandrator/pull/134), [#136](https://github.com/lukaszliniewicz/Pandrator/pull/136) and [#144](https://github.com/lukaszliniewicz/Pandrator/pull/144), measured on a 5,167-segment cast book. The original contribution commits retain their authorship.
 
 ## Long cast plans
 
 - The audio identity pass reuses the request's or job's voice catalogue instead of rebuilding and deep-copying it for every cast span, and remembers proven cast pins and voice language support for the pass instead of working them out for every segment. Segment listings fell from 268-281 s to about 3 s, plan status and revision history from over 900 s to about 16 s, and generation admission from about 700 s to 60 s ([#126](https://github.com/lukaszliniewicz/Pandrator/pull/126)).
 - A segment listing runs the identity pass only when its response includes reuse fields, and then freezes the cast for that page's segments only. Admission, the opening check, recast and plan history keep the whole-revision check ([#128](https://github.com/lukaszliniewicz/Pandrator/pull/128)).
 - Starting generation on an edited copy of a long plan finds the takes to inherit with one SQL query instead of loading every segment and take of the revision and its ancestors, cutting about 1.7 s from admission's write transaction ([#136](https://github.com/lukaszliniewicz/Pandrator/pull/136)).
+- The compact run list, which the app polls every 10 seconds during generation and MCP's `list_generation_runs` reads, loads only the six settings-snapshot keys and the one assembly setting it uses, extracted in SQL, instead of decoding and copying every run's whole snapshot. Each poll fell from about 1.7 s to 0.6 s of server time. An unknown run-list view is now rejected ([#144](https://github.com/lukaszliniewicz/Pandrator/pull/144)).
 - Workflow generation start, regrouping and early-block repair freeze the speech snapshot and compute audio identities before taking the writer, then recheck under a short write transaction. A change in the meantime is reported as a conflict or as "Plan or audio selection changed" ([#131](https://github.com/lukaszliniewicz/Pandrator/pull/131)).
 
 ## Server responsiveness
@@ -35,6 +36,7 @@ Changes since [0.14.3](release-notes-0.14.3.md). This maintenance release integr
 
 - The web API contract and static bundle were regenerated for 0.14.3 ([#130](https://github.com/lukaszliniewicz/Pandrator/pull/130), [#133](https://github.com/lukaszliniewicz/Pandrator/pull/133)), and several end-to-end tests now wait for late-loading panels before acting ([#133](https://github.com/lukaszliniewicz/Pandrator/pull/133), [#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)). The Display options test helper now fails within seconds if the menu does not open ([#143](https://github.com/lukaszliniewicz/Pandrator/pull/143)).
 - Three tests that failed by chance are fixed: the job queue test now expects the first waiter by the queue's own ordering, since waiters enqueued within one Windows clock tick share a timestamp; a leak check no longer reads the random request id; and the Output removal test holds back only the refresh that follows its own export request.
+- A new push to a pull request now cancels that pull request's running CI checks instead of queueing behind them.
 - The minimum supported waitress version is 3.0.1.
 
 ## Components
