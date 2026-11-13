@@ -41,6 +41,14 @@
   let qwenModel = $state('qwen3_asr_0_6b');
   let qwenBackend = $state('auto');
   let vocalIsolation = $state('off');
+  // Saved defaults arrive after these controls are usable. A late response
+  // must not replace a choice the user has already made, and until it arrives
+  // an untouched control only shows a placeholder.
+  type SavedOption = 'qwenModel' | 'qwenBackend' | 'vocalIsolation';
+  const changedOptions = new Set<SavedOption>();
+  let defaultsLoaded = false;
+  const known = (option: SavedOption) =>
+    defaultsLoaded || changedOptions.has(option);
   const effectiveEngine = $derived(
     engine || configuredEngine || capabilities.stt?.default_engine || ''
   );
@@ -159,15 +167,22 @@
         value.toString(16).padStart(2, '0')
       ).join('');
     try {
+      // Omit options whose saved value is not known yet; the server applies
+      // the saved defaults instead of the placeholders.
       const result = await api.upload(
         file,
         {
           format,
           language,
           ...(engine ? { engine } : {}),
-          transcription_vocal_isolation: vocalIsolation,
-          ...(isQwen
-            ? { qwen_asr_model: qwenModel, compute_backend: qwenBackend }
+          ...(known('vocalIsolation')
+            ? { transcription_vocal_isolation: vocalIsolation }
+            : {}),
+          ...(isQwen && known('qwenModel')
+            ? { qwen_asr_model: qwenModel }
+            : {}),
+          ...(isQwen && known('qwenBackend')
+            ? { compute_backend: qwenBackend }
             : {})
         },
         retryKey,
@@ -231,18 +246,17 @@
     void sessionApi
       .defaults('stt')
       .then((payload) => {
-        configuredEngine = String(payload.effective?.stt_engine || '');
-        qwenModel = String(
-          payload.effective?.qwen_asr_model || 'qwen3_asr_0_6b'
-        );
-        qwenBackend = String(
-          payload.effective?.qwen_asr_backend ||
-            payload.effective?.stt_compute_backend ||
-            'auto'
-        );
-        vocalIsolation = String(
-          payload.effective?.transcription_vocal_isolation || 'off'
-        );
+        const saved = payload.effective ?? {};
+        configuredEngine = String(saved.stt_engine || '');
+        if (!changedOptions.has('qwenModel'))
+          qwenModel = String(saved.qwen_asr_model || 'qwen3_asr_0_6b');
+        if (!changedOptions.has('qwenBackend'))
+          qwenBackend = String(
+            saved.qwen_asr_backend || saved.stt_compute_backend || 'auto'
+          );
+        if (!changedOptions.has('vocalIsolation'))
+          vocalIsolation = String(saved.transcription_vocal_isolation || 'off');
+        defaultsLoaded = true;
       })
       .catch(() => {});
     void diagnosticsApi
@@ -259,15 +273,17 @@
       .catch(() => {});
     const id = page.url.searchParams.get('id');
     if (id) {
+      // A transcription started meanwhile replaces the one being restored.
+      const superseded = () => destroyed || uploading || job !== null;
       void api
         .get(id, format)
         .then((result) => {
-          if (destroyed) return;
+          if (superseded()) return;
           job = result;
           void refresh(id);
         })
         .catch((caught) => {
-          error = errorMessage(caught);
+          if (!superseded()) error = errorMessage(caught);
         });
     }
   });
@@ -459,9 +475,21 @@
     <fieldset disabled={busy} class="mt-4 space-y-3">
       {#if isQwen}
         <QwenTranscriptionControls
-          bind:model={qwenModel}
+          bind:model={
+            () => qwenModel,
+            (value) => {
+              qwenModel = value;
+              changedOptions.add('qwenModel');
+            }
+          }
           bind:language
-          bind:backend={qwenBackend}
+          bind:backend={
+            () => qwenBackend,
+            (value) => {
+              qwenBackend = value;
+              changedOptions.add('qwenBackend');
+            }
+          }
           {capabilities}
           requireWordTimestamps={format !== 'txt'}
         />
@@ -472,7 +500,15 @@
           when you start the job.
         </p>
       {/if}
-      <VocalIsolationControl bind:value={vocalIsolation} />
+      <VocalIsolationControl
+        bind:value={
+          () => vocalIsolation,
+          (value) => {
+            vocalIsolation = value;
+            changedOptions.add('vocalIsolation');
+          }
+        }
+      />
     </fieldset>
     {#if languageProblem}<p class="mt-3 text-sm text-red-600" role="alert">
         {languageProblem}

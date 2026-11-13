@@ -421,13 +421,42 @@ def test_bearer_reads_through_the_app_open_no_token_write(case: ActorCase) -> No
     assert _last_used(case, token.id)[0] is not None
     with _capture_sql(case) as statements:
         for _ in range(10):
-            response = client.get("/api/v1/auth/status", headers=headers)
+            response = client.get("/api/v1/jobs", headers=headers)
             assert response.status_code == 200
     assert not _token_updates(statements)
     # Sequential requests are one audit batch each; no token transaction remains.
     audit_inserts = [s for s in statements if s.startswith("insert into audit_events")]
     assert len(audit_inserts) == 10
     assert _begin_immediates(statements) == len(audit_inserts)
+
+
+def test_ambient_reads_take_no_writer(case: ActorCase) -> None:
+    _token, raw = case.auth.create_api_token("ambient reads")
+    client = case.app.test_client()
+    headers = {"Authorization": f"Bearer {raw}"}
+    # The first resolution records the token's use; later ones in the window do not.
+    assert client.get("/api/v1/auth/status", headers=headers).status_code == 200
+    with _capture_sql(case) as statements:
+        # A status poll, a static asset and the app shell.
+        for path in ("/api/v1/auth/status", "/_app/version.json", "/sessions"):
+            assert client.get(path, headers=headers).status_code == 200
+    assert not [s for s in statements if s.startswith("insert into audit_events")]
+    assert _begin_immediates(statements) == 0
+
+
+def test_a_failed_ambient_read_is_still_audited(case: ActorCase) -> None:
+    _token, raw = case.auth.create_api_token("missing asset")
+    client = case.app.test_client()
+    headers = {"Authorization": f"Bearer {raw}"}
+    response = client.get("/_app/immutable/missing-chunk.js", headers=headers)
+    assert response.status_code == 404
+    with case.database.snapshot_session() as session:
+        rows = session.execute(
+            select(AuditEvent.action, AuditEvent.outcome).where(
+                AuditEvent.path == "/_app/immutable/missing-chunk.js"
+            )
+        ).all()
+    assert [tuple(row) for row in rows] == [("frontend_asset", "failed")]
 
 
 # --- Audit group commit -----------------------------------------------------

@@ -195,6 +195,33 @@ test('reading view shares markers; Escape restores focus and native editing neve
   });
 });
 
+test('reading view actions stay open while the pointer moves up to them', async ({
+  page
+}) => {
+  await setup(page);
+  await page
+    .getByRole('button', { name: 'Display options', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Reading view', exact: true }).click();
+  const segment = page.locator('.reading-segment').first();
+  const actions = segment.locator('.reading-actions');
+  await segment.hover();
+  await expect(actions).toHaveCSS('opacity', '1');
+  const bar = await actions.boundingBox();
+  const line = (await segment.evaluate((element) => {
+    const rect = element.getClientRects()[0];
+    return { top: rect.top, bottom: rect.bottom };
+  })) as { top: number; bottom: number };
+  if (!bar) throw new Error('The reading actions have no layout box.');
+  const x = bar.x + bar.width / 2;
+  // Start on the segment directly below the bar, then cross the gap between
+  // them in small steps, as a slow pointer does.
+  await page.mouse.move(x, line.top + 2);
+  await page.mouse.move(x, bar.y + bar.height / 2, { steps: 24 });
+  await expect(actions).toHaveCSS('opacity', '1');
+  await expect(actions).toHaveCSS('pointer-events', 'auto');
+});
+
 test('stale text mappings have no clickable anchors', async ({ page }) => {
   const item = segment();
   item.text = 'Changed ' + item.text;

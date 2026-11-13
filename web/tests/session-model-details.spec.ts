@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openVoicePage } from './helpers/voice-page';
 
 async function fixture(page: Page) {
   await page.goto('/');
@@ -191,7 +192,7 @@ test('native text controls remain text and are persisted per model', async ({
   page
 }) => {
   const data = await fixture(page);
-  await page.goto(`/sessions/${data.sessionId}/voice`);
+  await openVoicePage(page, data.sessionId);
   const settings = page.locator('.settings-panel').filter({
     has: page.getByRole('heading', { name: 'Speech generation', exact: true })
   });
@@ -224,7 +225,7 @@ test('missing selected-model metadata exposes retry and does not silently valida
 }) => {
   const data = await fixture(page);
   data.failFirst();
-  await page.goto(`/sessions/${data.sessionId}/voice`);
+  await openVoicePage(page, data.sessionId);
   const settings = page.locator('.settings-panel').filter({
     has: page.getByRole('heading', { name: 'Speech generation', exact: true })
   });
