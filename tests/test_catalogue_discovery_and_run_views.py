@@ -183,6 +183,12 @@ def test_admission_replay_projects_full_receipt_without_duplicate_run(app_case, 
     full_list = client.get(url).get_json()["items"]
     compact_list = client.get(f"{url}?view=compact").get_json()["items"]
     assert compact_list == [{key: value for key, value in item.items() if key != "settings_snapshot"} for item in full_list]
+    limited_full = client.get(f"{url}?limit=25").get_json()["items"]
+    limited_compact = client.get(f"{url}?view=compact&limit=25").get_json()["items"]
+    assert limited_compact == [
+        {key: value for key, value in item.items() if key != "settings_snapshot"}
+        for item in limited_full
+    ]
     assert client.get(f"{url}?view=invalid").status_code == 422
 
 

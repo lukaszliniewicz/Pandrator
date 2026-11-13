@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypedDict, overload
 
-from sqlalchemy import case, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import Select, case, func, select
+from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm.attributes import set_committed_value
 
 from .access.current_session_policy import require_current_session_access
 from .database import Database
@@ -37,6 +38,78 @@ COMPACT_ASSEMBLY_FIELDS = (
     "artifact_id", "status", "progress", "progress_detail", "settings_hash",
     "error_message", "created_at", "updated_at",
 )
+# The only run-snapshot keys the history payload path reads: the label, the
+# repair and regroup markers, the second-pass selection and the early-repair
+# probe. The compact list loads just these, extracted in SQL. Their readers
+# are `_run_label`, `_run_payload`, `_timing_repair_payload`,
+# `_snapshot_enables_early_repair`, `generation_run_history._repair_marker`
+# and `passage_regroup.select_second_pass`; a key any of them starts to read
+# must be added here, or the compact view diverges from the full one.
+COMPACT_RUN_SNAPSHOT_KEYS = (
+    "tts", "rvc", "selected_segment_override", "audio",
+    EARLY_REPAIR_MARKER_KEY, REGROUP_MARKER_KEY,
+)
+
+
+def _select_narrow_runs(query: Select[Any], session: Session) -> list[GenerationRun]:
+    """Run a ``select(GenerationRun)`` loading only the compact snapshot keys.
+
+    The whole snapshot column is never fetched or decoded. Narrowed values are
+    set as committed state, so they are never dirty: a session that commits
+    on exit, as ``list_runs`` without a limit does, writes nothing back. They
+    must not leave the session that loaded them.
+
+    A key that is absent or JSON ``null`` comes back absent, and values come
+    from SQLite's extract rather than ``json.loads``. Both are equivalent for
+    the stored keys, which hold objects or strings, because every reader uses
+    ``.get``, truthiness or ``isinstance``. The extract differs only in cases
+    no writer produces: a snapshot that is not a JSON object narrows to
+    ``{}``, a top-level ``NaN`` reads as ``null`` and an integer beyond 64 bits
+    as a float.
+    """
+    narrow = query.add_columns(
+        *(
+            GenerationRun.settings_snapshot_json[key].label(f"snapshot_key_{index}")
+            for index, key in enumerate(COMPACT_RUN_SNAPSHOT_KEYS)
+        )
+    ).options(defer(GenerationRun.settings_snapshot_json, raiseload=True))
+    runs: list[GenerationRun] = []
+    for row in session.execute(narrow):
+        run = row[0]
+        set_committed_value(
+            run,
+            "settings_snapshot_json",
+            {
+                key: value
+                for key, value in zip(COMPACT_RUN_SNAPSHOT_KEYS, row[1:], strict=True)
+                if value is not None
+            },
+        )
+        runs.append(run)
+    return runs
+
+
+def _select_narrow_assemblies(query: Select[Any], session: Session) -> list[OutputAssembly]:
+    """Run a ``select(OutputAssembly)`` loading only ``audio_version_side``."""
+    narrow = query.add_columns(
+        OutputAssembly.settings_json["audio_version_side"].label("audio_version_side"),
+        # The side keys the versions map, so an explicit JSON null (keyed None)
+        # must stay distinct from an absent side (keyed "after").
+        func.json_type(OutputAssembly.settings_json, "$.audio_version_side").label(
+            "audio_version_side_type"
+        ),
+    ).options(defer(OutputAssembly.settings_json, raiseload=True))
+    assemblies: list[OutputAssembly] = []
+    for row in session.execute(narrow):
+        assembly = row[0]
+        side, side_type = row[1], row[2]
+        set_committed_value(
+            assembly,
+            "settings_json",
+            {} if side_type is None else {"audio_version_side": side},
+        )
+        assemblies.append(assembly)
+    return assemblies
 
 
 def _snapshot_enables_early_repair(snapshot: object) -> bool:
@@ -370,19 +443,29 @@ class GenerationHistoryReader:
         session: Session,
         session_id: str,
         runs: list[GenerationRun] | None = None,
+        *,
+        narrow: bool = False,
     ) -> RunHistoryContext:
-        """Load one session's run history and projection inputs in batches."""
+        """Load one session's run history and projection inputs in batches.
+
+        ``narrow`` loads run snapshots and assembly settings as only the keys
+        the compact projection reads, as unmodified committed state; the
+        context must not outlive the session.
+        """
 
         if runs is None:
-            runs = list(
-                session.scalars(
-                    select(GenerationRun)
-                    .where(GenerationRun.session_id == session_id)
-                    .order_by(
-                        GenerationRun.sequence_number.desc(),
-                        GenerationRun.created_at.desc(),
-                    )
-                ).all()
+            runs_query = (
+                select(GenerationRun)
+                .where(GenerationRun.session_id == session_id)
+                .order_by(
+                    GenerationRun.sequence_number.desc(),
+                    GenerationRun.created_at.desc(),
+                )
+            )
+            runs = (
+                _select_narrow_runs(runs_query, session)
+                if narrow
+                else list(session.scalars(runs_query).all())
             )
         run_by_id = {run.id: run for run in runs}
         revision_ids = {run.plan_revision_id for run in runs if run.plan_revision_id}
@@ -479,14 +562,19 @@ class GenerationHistoryReader:
                 .where(OutputAssembly.generation_run_id.in_(output_run_ids))
                 .subquery()
             )
-            assemblies = list(session.scalars(
+            assemblies_query = (
                 select(OutputAssembly)
                 .where(OutputAssembly.id.in_(
                     select(ranked_assemblies.c.id)
                     .where(ranked_assemblies.c.position == 1)
                 ))
                 .order_by(OutputAssembly.created_at.desc())
-            ).all())
+            )
+            assemblies = (
+                _select_narrow_assemblies(assemblies_query, session)
+                if narrow
+                else list(session.scalars(assemblies_query).all())
+            )
         assembly_by_run_id: dict[str, OutputAssembly] = {}
         assembly_versions_by_run_id: dict[str, dict[str, OutputAssembly]] = {}
         for assembly in assemblies:
@@ -651,6 +739,7 @@ class GenerationHistoryReader:
         include_repairs: bool = True,
         limit: int | None = None,
         latest: bool = False,
+        narrow: bool = False,
     ) -> tuple[RunHistoryContext | None, list[GenerationRun]]:
         index_runs, revisions = self._history_index(session, session_id)
         histories = build_generation_run_history(index_runs, revisions)
@@ -700,20 +789,25 @@ class GenerationHistoryReader:
             needed_ids.add(history.root.id)
             needed_ids.update(child.id for child in history.repair_children)
             needed_ids.update(self._logical_run_ids(index_runs, history))
-        hydrated = list(
-            session.scalars(
-                select(GenerationRun)
-                .where(
-                    GenerationRun.session_id == session_id,
-                    GenerationRun.id.in_(needed_ids),
-                )
-                .order_by(
-                    GenerationRun.sequence_number.desc(),
-                    GenerationRun.created_at.desc(),
-                )
-            ).all()
+        hydrate_query = (
+            select(GenerationRun)
+            .where(
+                GenerationRun.session_id == session_id,
+                GenerationRun.id.in_(needed_ids),
+            )
+            .order_by(
+                GenerationRun.sequence_number.desc(),
+                GenerationRun.created_at.desc(),
+            )
         )
-        context = self._run_history_context(session, session_id, runs=hydrated)
+        hydrated = (
+            _select_narrow_runs(hydrate_query, session)
+            if narrow
+            else list(session.scalars(hydrate_query).all())
+        )
+        context = self._run_history_context(
+            session, session_id, runs=hydrated, narrow=narrow
+        )
         context["visible_sequences"] = self._visible_run_sequences(index_runs, histories)
         return context, [context["runs_by_id"][run.id] for run in selected]
 
@@ -1273,20 +1367,35 @@ class GenerationHistoryReader:
         return payload
 
     def list_runs(
-        self, session_id: str, *, include_repairs: bool = True, limit: int | None = None
+        self,
+        session_id: str,
+        *,
+        include_repairs: bool = True,
+        limit: int | None = None,
+        view: str = "full",
     ) -> list[dict[str, Any]]:
+        """List runs; ``view="compact"`` loads only what the compact projection reads.
+
+        Compact payloads carry narrowed snapshots and assembly settings, so
+        only project them with ``project_generation_run(..., "compact")``.
+        The narrowing never changes stored rows, in either branch.
+        """
+        if view not in ("full", "compact"):
+            raise ValueError(f"Unknown run list view: {view!r}")
+        narrow = view == "compact"
         if limit is not None:
             with self.database.snapshot_session() as session:
                 require_current_session_access(session, session_id)
                 context, runs = self._selected_run_context(
-                    session, session_id, include_repairs=include_repairs, limit=limit
+                    session, session_id, include_repairs=include_repairs, limit=limit,
+                    narrow=narrow,
                 )
                 if context is None:
                     return []
                 return [self._run_payload(session, run, _context=context) for run in runs]
         with self.database.session() as session:
             require_current_session_access(session, session_id)
-            context = self._run_history_context(session, session_id)
+            context = self._run_history_context(session, session_id, narrow=narrow)
             runs = context["runs"]
             if not include_repairs:
                 runs = [

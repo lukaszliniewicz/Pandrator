@@ -46,6 +46,8 @@ class GenerationRunHistory:
 
 
 def _repair_marker(run: Any) -> str:
+    # The compact run list loads only COMPACT_RUN_SNAPSHOT_KEYS
+    # (generation_history_reads); a new key read here must be added there.
     snapshot = run.settings_snapshot_json
     if not isinstance(snapshot, dict):
         return ""
