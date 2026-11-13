@@ -31,6 +31,7 @@ Changes since [0.14.3](release-notes-0.14.3.md). This maintenance release integr
   - Cast voice cards check their voice setup once per change of voice, service or model, instead of again on every session refresh, which hid their status and moved the cast Save button.
   - The Output settings form appears only once the page around it has loaded, so the export summary is no longer inserted above a form you are using.
   - Moving between pages waits up to 4 seconds for the next page's stylesheets, so it no longer paints unstyled and then reflows.
+- Save as workspace defaults merges a project's model tuning into the workspace defaults model by model. It previously replaced the workspace's whole tuning map with the project's, which lists only the models that project changed, so every other model lost its workspace defaults.
 
 ## Build and tests
 
