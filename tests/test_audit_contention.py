@@ -5,9 +5,11 @@ import os
 import sqlite3
 import stat
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import closing
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy.exc import OperationalError
@@ -43,10 +45,10 @@ class AuditContentionTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
-    def _record(self):
+    def _record(self, request_id="request-1"):
         self.audit.record(
             principal=self.principal,
-            request_id="request-1",
+            request_id=request_id,
             traceparent="00-abc-123-01",
             action="test.action",
             method="POST",
@@ -152,6 +154,90 @@ class AuditContentionTests(unittest.TestCase):
         self._record()
         self.assertFalse(file.exists())
         self.assertEqual(3, len(self.audit.list()))
+
+    def _slow_inserts(self, *gates):
+        """Hold the Nth batch write until gates[N] is set, as a slow commit would."""
+        original = self.audit._insert
+        entered = [threading.Event() for _ in gates]
+        calls = []
+
+        def insert(batch):
+            index = len(calls)
+            calls.append([entry.fields["request_id"] for entry in batch])
+            if index < len(gates):
+                entered[index].set()
+                gates[index].wait(10)
+            original(batch)
+
+        return patch.object(self.audit, "_insert", side_effect=insert), entered, calls
+
+    def _recorder(self, request_id):
+        thread = threading.Thread(target=self._record, args=(request_id,), daemon=True)
+        thread.start()
+        return thread
+
+    def _audit_ids(self):
+        with self.database.session() as session:
+            return sorted(
+                (event.request_id, "spool_id" in (event.metadata_json or {}))
+                for event in session.query(AuditEvent).all()
+            )
+
+    def test_request_behind_a_slow_commit_spools_within_the_budget(self):
+        # One slow commit used to hold every authenticated request in after_request.
+        release = threading.Event()
+        slow, entered, _calls = self._slow_inserts(release)
+        try:
+            with slow:
+                leader = self._recorder("leader")
+                self.assertTrue(entered[0].wait(5))
+                started = time.monotonic()
+                with self.assertLogs("pandrator.web.audit", level="WARNING"):
+                    self._record("follower")
+                elapsed = time.monotonic() - started
+                self.assertTrue(leader.is_alive())
+                release.set()
+                leader.join(10)
+        finally:
+            release.set()
+        self.assertFalse(leader.is_alive())
+        self.assertLess(elapsed, 2.0)
+        self.audit.cleanup()
+        self.assertEqual([("follower", True), ("leader", False)], self._audit_ids())
+        self.assertEqual([], list((self.database_path.parent / "audit-pending").glob("*.json")))
+
+    def test_entry_taken_into_a_slow_batch_is_never_spooled(self):
+        first, second = threading.Event(), threading.Event()
+        slow, entered, calls = self._slow_inserts(first, second)
+        # The waiting budget lapses only when the test moves this clock.
+        frozen = time.monotonic()
+        clock = SimpleNamespace(offset=0.0)
+        audit_time = SimpleNamespace(monotonic=lambda: frozen + clock.offset)
+        try:
+            with slow, patch("pandrator.web.audit.time", audit_time):
+                head = self._recorder("head")
+                self.assertTrue(entered[0].wait(5))
+                waiters = [self._recorder("a"), self._recorder("b")]
+                deadline = time.monotonic() + 5
+                while len(self.audit._commit_queue) < 2 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(2, len(self.audit._commit_queue))
+                first.set()
+                self.assertTrue(entered[1].wait(5))
+                # Both entries are in the batch being written; let their budget lapse.
+                clock.offset = 60.0
+                time.sleep(1.0)
+                self.assertTrue(all(thread.is_alive() for thread in waiters))
+                self.assertEqual([], list(self.database_path.parent.glob("audit-pending/*.json")))
+                second.set()
+                for thread in (head, *waiters):
+                    thread.join(10)
+        finally:
+            first.set()
+            second.set()
+        self.assertEqual([["head"], ["a", "b"]], [sorted(batch) for batch in calls])
+        self.assertEqual([("a", False), ("b", False), ("head", False)], self._audit_ids())
+        self.assertEqual([], list(self.database_path.parent.glob("audit-pending/*.json")))
 
     def test_busy_opportunistic_drain_stays_bounded_and_keeps_file(self):
         with closing(sqlite3.connect(self.database_path)) as writer, writer:

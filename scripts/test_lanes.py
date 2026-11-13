@@ -930,6 +930,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_release_upgrade_preservation.py",
         "tests/test_security_event_log.py",
         "tests/test_soundtrack_cache_applicability.py",
+        "tests/test_sqlite_background_checkpoints.py",
         "tests/test_sqlite_write_retries.py",
         "tests/test_storage_admission.py",
         "tests/test_subtitle_dispatch_read_access.py",

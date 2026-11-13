@@ -222,12 +222,27 @@ class AuditService:
         behind a backlog therefore writes the batches ahead of it first. When the
         writer is busy, the whole batch is released at once with ``spool`` set, and
         each request writes its own spool file in its own thread before returning.
+
+        A waiting request gets the same budget as the leader's lock wait. A commit
+        can take seconds when it runs a WAL checkpoint on a slow disk, and every
+        authenticated request records an event, so an unbounded wait here stalls the
+        whole server behind one commit. Once the budget is spent, an entry still in
+        the queue is withdrawn and spooled. An entry a leader has already taken
+        stays: its batch may still commit, and spooling it as well would record the
+        event twice.
         """
         condition = self._commit_condition
+        deadline = time.monotonic() + AUDIT_WRITE_TIMEOUT_MS / 1000
         with condition:
             self._commit_queue.append(entry)
             while not entry.done and self._commit_leader:
-                condition.wait()
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    condition.wait(remaining)
+                elif self._withdraw(entry):
+                    return False
+                else:
+                    condition.wait()
             lead = not entry.done
             if lead:
                 self._commit_leader = True
@@ -247,6 +262,16 @@ class AuditService:
                     self._commit_leader = False
                     condition.notify_all()
         return lead
+
+    def _withdraw(self, entry: _PendingAudit) -> bool:
+        """Take a queued entry back to spool it; the caller holds the condition."""
+        try:
+            self._commit_queue.remove(entry)
+        except ValueError:
+            return False
+        entry.spool = True
+        entry.done = True
+        return True
 
     def _write_batch(self, batch: list[_PendingAudit]) -> None:
         try:
