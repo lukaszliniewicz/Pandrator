@@ -29,6 +29,11 @@ BACKGROUND_CHECKPOINT_SECONDS = 1.0
 # With background checkpoints a commit still checkpoints inline once the WAL
 # reaches this size, so a stopped checkpoint thread cannot let it grow unbounded.
 BACKGROUND_AUTOCHECKPOINT_PAGES = 10_000
+# About twice SQLite's default auto-checkpoint cycle (1,000 pages of 4 KiB). After a
+# complete checkpoint, with no reader still using the log, the next write that
+# restarts the log truncates it back to this size. Set on engine connections only;
+# raw sqlite3 connections (migrations, maintenance) leave it to the next app write.
+WAL_SIZE_LIMIT_BYTES = 8 * 1024 * 1024
 
 
 def is_sqlite_busy(error: BaseException) -> bool:
@@ -77,6 +82,7 @@ def create_database_engine(path: Path, *, autocheckpoint_pages: int | None = Non
             try:
                 cursor.execute("PRAGMA foreign_keys = ON")
                 cursor.execute("PRAGMA journal_mode = WAL")
+                cursor.execute(f"PRAGMA journal_size_limit = {int(WAL_SIZE_LIMIT_BYTES)}")
                 cursor.execute("PRAGMA busy_timeout = 30000")
                 if autocheckpoint_pages is not None:
                     cursor.execute(f"PRAGMA wal_autocheckpoint = {int(autocheckpoint_pages)}")
