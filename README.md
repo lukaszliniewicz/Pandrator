@@ -29,23 +29,23 @@ opens Pandrator in your browser. Older workspace data can still be imported.
 For the retired Qt desktop interface, use an
 [older release](https://github.com/lukaszliniewicz/Pandrator/releases).
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.3/PandratorManager-0.9.31-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.3/PandratorManager-0.9.31-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.4/PandratorManager-0.9.31-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.4/PandratorManager-0.9.31-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.3 / Manager 0.9.31
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.4 / Manager 0.9.31
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-## New in 0.14.3
+## New in 0.14.4
 
-- **Reliable generation jobs.** Identity checks keep heartbeats alive and avoid unnecessary database queries on large projects; late cancellations remain authoritative.
-- **Consistent browser builds.** Generated web assets use LF line endings across Windows and Linux, with extra checks for unexpected CRLF or mixed endings.
-- **Safer Windows test runs.** Short private pytest temp roots avoid deep-path failures, with verified ownership, locking and cleanup.
-- **Workflow polish.** Correct ElevenLabs WebSocket timeout bounds and wait for language workflow settings before reporting readiness.
+- **Faster long cast plans.** Segment listings, plan status and generation start no longer rebuild the voice catalogue for every cast span; a listing on a 5,167-segment book answers in seconds instead of minutes.
+- **A responsive server under load.** Abandoned reads stop early, routine requests and polls stay out of SQLite's writer, and WAL checkpoints run in the background.
+- **MCP plan tools within their timeout.** Plan status and revision history read summaries and check audio reuse for the active revision only.
+- **Interface fixes.** Quick Transcribe keeps options you change while defaults load, voice settings panels can retry a failed load, and reading-view actions stay open on the way up.
 
-See the [0.14.3 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.14.3) and [detailed changes](docs/release-changes-0.14.3.md).
+See the [0.14.4 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.14.4) and [detailed changes](docs/release-changes-0.14.4.md).
 
 ## Try your first workflow
 
