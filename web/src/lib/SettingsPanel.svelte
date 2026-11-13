@@ -26,6 +26,7 @@
   import AudioCppModelSettings from './AudioCppModelSettings.svelte';
   import {
     mergeModelTuningMaps,
+    promoteToDefaults,
     modelTuningMap
   } from './audio-cpp-model-settings';
   import ElevenLabsModelSettings from './ElevenLabsModelSettings.svelte';
@@ -863,10 +864,7 @@
       await sessionApi.saveDefaults(
         section,
         defaults.revision,
-        {
-          ...(defaults.value ?? {}),
-          ...promoted
-        },
+        promoteToDefaults(defaults.value ?? {}, promoted),
         defaults.workspace_id
       );
       payload = await sessionApi.saveSettings(
