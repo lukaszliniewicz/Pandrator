@@ -30,7 +30,7 @@ Changes since [0.14.3](release-notes-0.14.3.md). This maintenance release integr
 ## Build and tests
 
 - The web API contract and static bundle were regenerated for 0.14.3 ([#130](https://github.com/lukaszliniewicz/Pandrator/pull/130), [#133](https://github.com/lukaszliniewicz/Pandrator/pull/133)), and several end-to-end tests now wait for late-loading panels before acting ([#133](https://github.com/lukaszliniewicz/Pandrator/pull/133), [#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)).
-- Two tests that failed by chance are fixed: the job queue test now expects the first waiter by the queue's own ordering, since waiters enqueued within one Windows clock tick share a timestamp, and a leak check no longer reads the random request id.
+- Three tests that failed by chance are fixed: the job queue test now expects the first waiter by the queue's own ordering, since waiters enqueued within one Windows clock tick share a timestamp; a leak check no longer reads the random request id; and the Output removal test holds back only the refresh that follows its own export request.
 - The minimum supported waitress version is 3.0.1.
 
 ## Components
