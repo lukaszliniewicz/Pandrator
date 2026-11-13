@@ -23,8 +23,8 @@ Changes since [0.14.3](release-notes-0.14.3.md). This maintenance release integr
 
 ## Interface
 
-- Quick Transcribe applies its saved defaults only to options you have not changed, and leaves options whose value is not yet known out of the upload so the server's saved defaults apply ([#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)).
-- Voice settings panels show "Loading settings…" while they load, and an error with Retry if loading fails ([#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)).
+- Quick Transcribe applies its saved defaults only to options you have not changed, and leaves options whose value is not yet known out of the upload so the server's saved defaults apply. Until they load, those options show "Saved default" rather than a setting that might not be used. A retry after a failed upload resends exactly what the first attempt sent, under the same key, so it cannot start a second job, and a failed upload still stops an earlier transcription from being restored over it ([#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)).
+- Voice settings panels show "Loading settings…" while they load, and an error with Retry if loading fails. The speech panel stays marked busy until its service list has loaded ([#138](https://github.com/lukaszliniewicz/Pandrator/pull/138)).
 - Reading-view segment actions stay open while the pointer crosses the gap between the text and the action bar ([#141](https://github.com/lukaszliniewicz/Pandrator/pull/141)).
 
 ## Build and tests
