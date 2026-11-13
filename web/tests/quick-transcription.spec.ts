@@ -87,6 +87,45 @@ async function mockTranscription(page: Page) {
   };
 }
 
+// Holds the saved STT defaults until the test releases them, as a slow server
+// would. The saved vocal isolation model shows whether defaults were applied.
+async function holdSttDefaults(page: Page) {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/api/v1/defaults/stt*', async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await held;
+    await route.fulfill({
+      response,
+      json: {
+        ...payload,
+        effective: {
+          ...payload.effective,
+          qwen_asr_model: 'qwen3_asr_0_6b',
+          qwen_asr_backend: 'auto',
+          transcription_vocal_isolation: 'htdemucs'
+        }
+      }
+    });
+  });
+  return release;
+}
+
+async function chooseQwenSample(page: Page) {
+  await page.getByLabel('Audio or video file', { exact: true }).setInputFiles({
+    name: 'qwen-sample.wav',
+    mimeType: 'audio/wav',
+    buffer: Buffer.from('fixture audio')
+  });
+  await page
+    .getByRole('combobox', { name: 'Transcription service', exact: true })
+    .selectOption('qwen3');
+  return page.getByRole('region', { name: 'Qwen3 transcription options' });
+}
+
 test('Qwen quick transcription explains timing limits and submits local model and isolation choices', async ({
   page
 }, testInfo) => {
@@ -169,6 +208,66 @@ test('Qwen quick transcription explains timing limits and submits local model an
   expect(mock.uploadedBodies[0]).toContain('"compute_backend":"cpu"');
   expect(mock.uploadedBodies[0]).toContain(
     '"transcription_vocal_isolation":"mel_band_roformer"'
+  );
+});
+
+test('late saved defaults keep Qwen choices made while they load', async ({
+  page
+}) => {
+  const mock = await mockTranscription(page);
+  const releaseDefaults = await holdSttDefaults(page);
+  await signIn(page);
+  const qwen = await chooseQwenSample(page);
+  await qwen.getByLabel('Qwen model size').selectOption('qwen3_asr_1_7b');
+  await qwen.getByText('Local processing settings', { exact: true }).click();
+  await qwen.getByLabel('Compute backend').selectOption('cpu');
+  releaseDefaults();
+  // The untouched vocal isolation setting still takes the saved default.
+  await expect(
+    page.getByText('Audio preprocessing · vocal isolation enabled', {
+      exact: true
+    })
+  ).toBeVisible();
+  await expect(qwen.getByLabel('Qwen model size')).toHaveValue(
+    'qwen3_asr_1_7b'
+  );
+  await expect(qwen.getByLabel('Compute backend')).toHaveValue('cpu');
+  await page.getByRole('button', { name: 'Transcribe', exact: true }).click();
+  await expect(page.getByLabel('Transcript', { exact: true })).toHaveValue(
+    'Hello from a temporary transcription.'
+  );
+  expect(mock.starts()).toBe(1);
+  expect(mock.uploadedBodies[0]).toContain('"qwen_asr_model":"qwen3_asr_1_7b"');
+  expect(mock.uploadedBodies[0]).toContain('"compute_backend":"cpu"');
+  expect(mock.uploadedBodies[0]).toContain(
+    '"transcription_vocal_isolation":"htdemucs"'
+  );
+});
+
+test('an upload before saved defaults load leaves untouched options to the server', async ({
+  page
+}) => {
+  const mock = await mockTranscription(page);
+  const releaseDefaults = await holdSttDefaults(page);
+  await signIn(page);
+  const qwen = await chooseQwenSample(page);
+  await qwen.getByLabel('Qwen model size').selectOption('qwen3_asr_1_7b');
+  await page.getByRole('button', { name: 'Transcribe', exact: true }).click();
+  await expect(page.getByLabel('Transcript', { exact: true })).toHaveValue(
+    'Hello from a temporary transcription.'
+  );
+  expect(mock.starts()).toBe(1);
+  expect(mock.uploadedBodies[0]).toContain('"qwen_asr_model":"qwen3_asr_1_7b"');
+  expect(mock.uploadedBodies[0]).not.toContain('compute_backend');
+  expect(mock.uploadedBodies[0]).not.toContain('transcription_vocal_isolation');
+  releaseDefaults();
+  await expect(
+    page.getByText('Audio preprocessing · vocal isolation enabled', {
+      exact: true
+    })
+  ).toBeVisible();
+  await expect(qwen.getByLabel('Qwen model size')).toHaveValue(
+    'qwen3_asr_1_7b'
   );
 });
 

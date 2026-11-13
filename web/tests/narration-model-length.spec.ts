@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Locator } from '@playwright/test';
+import { openVoicePage } from './helpers/voice-page';
 
 const models = [
   ['qwen3_tts_1_7b_base_q8_0', 'qwen3_tts', '350'],
@@ -116,7 +117,7 @@ test('model changes update active narration length in the generation settings mo
   ).json();
   expect(text.effective.audiobook_chunking).toBe('manual');
   expect(text.effective.max_sentence_length).toBe(74);
-  await page.goto(`/sessions/${id}/voice`);
+  await openVoicePage(page, id);
   const panel = page
     .getByRole('heading', { name: 'Speech generation', exact: true })
     .locator('xpath=ancestor::section[1]');
