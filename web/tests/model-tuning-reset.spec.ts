@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { openVoicePage } from './helpers/voice-page';
 
 test('model defaults and inherited tuning survive project save and reload', async ({
   page
@@ -92,7 +93,7 @@ test('model defaults and inherited tuning survive project save and reload', asyn
         })
       ).ok()
     ).toBeTruthy();
-    await page.goto(`/sessions/${session.id}/voice`);
+    await openVoicePage(page, session.id);
     const panel = page
       .getByRole('heading', { name: 'Speech generation', exact: true })
       .locator('xpath=ancestor::section[1]');
@@ -217,7 +218,7 @@ test('Ming categorical pace stays separate from the inherited numeric rate', asy
       })
     ).ok()
   ).toBeTruthy();
-  await page.goto(`/sessions/${session.id}/voice`);
+  await openVoicePage(page, session.id);
   const panel = page
     .getByRole('heading', { name: 'Speech generation', exact: true })
     .locator('xpath=ancestor::section[1]');

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openVoicePage } from './helpers/voice-page';
 
 type SlimModel = {
   id: string;
@@ -176,7 +177,7 @@ async function fixture(page: Page, model: string) {
       }
     });
   });
-  await page.goto(`/sessions/${sessionId}/voice`);
+  await openVoicePage(page, sessionId);
   const settingsPanel = page.locator('.settings-panel').filter({
     has: page.getByRole('heading', {
       name: 'Speech generation',

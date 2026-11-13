@@ -59,6 +59,7 @@
     onpersisted?: (payload: SettingsPayload) => void | Promise<void>;
   } = $props();
   let payload = $state<SettingsPayload | null>(null);
+  let loadError = $state('');
   const canManageDefaults = $derived(
     appState.canManageWorkspace(payload?.workspace_id)
   );
@@ -773,7 +774,13 @@
       })
   );
   async function load() {
-    payload = await sessionApi.settings(sessionId, section);
+    loadError = '';
+    try {
+      payload = await sessionApi.settings(sessionId, section);
+    } catch (caught) {
+      loadError = errorMessage(caught);
+      return;
+    }
     override = { ...(payload.override ?? {}), ...initialOverride };
     if (
       section === 'text' &&
@@ -939,10 +946,14 @@
   >
 {/snippet}
 
+<!-- Busy while content that changes the panel's height is still loading. -->
 <svelte:element
   this={collapsible ? 'details' : 'section'}
   class="surface settings-panel rounded-2xl p-5"
   open={collapsible && initiallyOpen ? true : undefined}
+  aria-busy={(!payload && !loadError) || modelDetailLoading
+    ? 'true'
+    : undefined}
 >
   {#if collapsible}
     <summary class="flex cursor-pointer list-none items-start gap-4">
@@ -1367,6 +1378,15 @@
           />{advanced ? 'Hide' : 'Show'} advanced settings</button
         >{/if}
     {/if}
+  {:else if loadError}
+    <div class="mt-4 text-sm text-red-600" role="alert">
+      Could not load these settings: {loadError}
+      <button type="button" class="tool ml-2" onclick={() => void load()}>
+        Retry
+      </button>
+    </div>
+  {:else}
+    <p class="muted mt-4 text-sm" role="status">Loading settings…</p>
   {/if}
   {#if modelTuningError}<p class="mt-4 text-sm text-red-500" role="alert">
       {modelTuningError}

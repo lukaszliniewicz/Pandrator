@@ -2,6 +2,7 @@ import { mockGenerationRuns } from './fixtures/generation-admission';
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
+import { openVoicePage, waitForVoicePageSettled } from './helpers/voice-page';
 
 function recordingWav(seconds = 1) {
   const size = 16000 * 2 * seconds;
@@ -617,7 +618,7 @@ test('gentle voiceover slowdown is optional and persists in audio settings', asy
   page
 }, testInfo) => {
   const { session, endpoint } = await setup(page);
-  await page.goto(`/sessions/${session.id}/voice`);
+  await openVoicePage(page, session.id);
   const slowdown = page.getByRole('checkbox', {
     name: /Allow gentle voiceover slowdown/
   });
@@ -637,11 +638,43 @@ test('gentle voiceover slowdown is optional and persists in audio settings', asy
     })
     .toBe(false);
   await page.reload();
+  await waitForVoicePageSettled(page);
   await expect(slowdown).not.toBeChecked();
   await slowdown.scrollIntoViewIfNeeded();
   await page.screenshot({
     path: testInfo.outputPath('voiceover-slowdown-settings.png')
   });
+});
+
+test('a settings panel that fails to load says so and can retry', async ({
+  page
+}) => {
+  const { session } = await setup(page);
+  let failures = 1;
+  await page.route('**/api/v1/sessions/*/settings/audio*', async (route) => {
+    if (route.request().method() !== 'GET' || failures === 0)
+      return route.continue();
+    failures -= 1;
+    await route.fulfill({
+      status: 503,
+      json: { error: { code: 'unavailable', message: 'Try again shortly.' } }
+    });
+  });
+  await page.goto(`/sessions/${session.id}/voice`);
+  const panel = page.locator('section.settings-panel').filter({
+    has: page.getByRole('heading', {
+      name: 'Verification, silence, fades, and assembly'
+    })
+  });
+  await expect(panel.getByRole('alert')).toContainText(
+    'Could not load these settings'
+  );
+  await waitForVoicePageSettled(page);
+  await panel.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(
+    panel.getByRole('checkbox', { name: /Allow gentle voiceover slowdown/ })
+  ).toBeChecked();
+  await expect(panel.getByRole('alert')).toHaveCount(0);
 });
 
 test('Source card attaches independent media and keeps timed text after reopening', async ({
