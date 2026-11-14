@@ -7,9 +7,9 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import Table, func, insert, select, update
 from sqlalchemy.orm import Session
 
 from .access.contracts import ProjectAction
@@ -31,6 +31,7 @@ from .generation_scheduling import (
 from .generation_segment_reads import GenerationSegmentReader, updated_segment_payload
 from .generation_topology import GenerationTopologyService
 from .jobs import JobQueue
+from .model_base import new_id
 from .models import (
     Artifact,
     AudioTake,
@@ -1963,7 +1964,6 @@ class GenerationService(GenerationHistoryReader):
         if auto_resume_source_id and (source_run is None or source_run.id != auto_resume_source_id):
             snapshot["interrupted_generation_run_id"] = auto_resume_source_id
         snapshot["speech_plan_revision_id"] = plan_revision_id
-        from .generation_audio_identity import take_reuse_reason
         from .generation_edit_audio import (
             capture_selection_guards,
             inherit_edit_copy_audio,
@@ -2017,37 +2017,16 @@ class GenerationService(GenerationHistoryReader):
         session.flush()
         preserved_items = dict(prepared.get("reusable_take_ids") or {})
         preserved_items.update(dict(prepared.get("preserved_take_ids") or {}))
-        missing_only = bool(prepared.get("missing_only"))
-        for segment_id, take_id in preserved_items.items():
-            source_take = session.get(AudioTake, take_id)
-            segment = session.get(GenerationSegment, segment_id)
-            artifact = session.get(Artifact, source_take.artifact_id) if source_take and source_take.artifact_id else None
-            if missing_only:
-                if (source_take is None or segment is None or artifact is None
-                        or segment.plan_revision_id != plan_revision_id or segment.status != "completed"
-                        or source_take.generation_segment_id != segment_id
-                        or source_take.status != "completed" or not source_take.is_active
-                        or artifact.state == "deleted"):
-                    raise RevisionConflict("A preserved take changed while missing-only generation was being prepared.")
-            elif (source_take is None or segment is None or artifact is None
-                    or segment.plan_revision_id != plan_revision_id or segment.status != "completed"
-                    or source_take.generation_segment_id != segment_id
-                    or source_take.status != "completed" or not source_take.is_active
-                    or take_reuse_reason(segment, source_take, artifact, snapshot["generation_audio_identities"][segment_id]) != "reusable"):
-                raise RevisionConflict("A reusable take changed while stale-only generation was being prepared.")
-            source_take.is_active = False
-            session.add(AudioTake(
-                generation_segment_id=segment_id,
-                generation_run_id=run.id,
-                artifact_id=source_take.artifact_id,
-                parent_take_id=source_take.id,
-                kind=source_take.kind,
-                status="completed",
-                settings_hash=source_take.settings_hash,
-                duration_ms=source_take.duration_ms,
-                is_active=True,
-            ))
-        session.flush()
+        if preserved_items:
+            _clone_preserved_takes(
+                session,
+                run_id=run.id,
+                plan_revision_id=plan_revision_id,
+                preserved_items=preserved_items,
+                row_state=prepared.get("selection_state"),
+                missing_only=bool(prepared.get("missing_only")),
+                identities=snapshot.get("generation_audio_identities") or {},
+            )
         job_payload = {
             "generation_run_id": run.id,
             "speech_plan_revision_id": plan_revision_id,
@@ -2755,3 +2734,119 @@ class ResourceClaimService:
             owner,
             lease_generation=lease_generation,
         )
+
+
+_CLONE_CHUNK = 500
+
+
+def _clone_preserved_takes(
+    session: Session,
+    *,
+    run_id: str,
+    plan_revision_id: str,
+    preserved_items: dict[str, str],
+    row_state: dict[str, Any] | None,
+    missing_only: bool,
+    identities: dict[str, Any],
+) -> None:
+    """Make each preserved take's copy the run's active take, in bulk.
+
+    One read of the revision's active takes, made here after everything earlier in
+    the write transaction (interrupting a run, publishing the speech preparation,
+    inheriting edit-copy audio), gives the fresh values the checks use: each
+    take's segment, status, activity and artifact, its segment's status, and the
+    columns the copy takes over (kind, settings hash, duration). ``row_state``,
+    captured before the start and rechecked by the caller at the start of this
+    writer, supplies only which take was active per segment and each artifact's
+    state; stale-only also reads the artifacts' identity metadata here. The same
+    takes are deactivated and copied as by the per-take loop this replaced, with
+    one UPDATE per 500 takes and one INSERT executemany for all the copies.
+    """
+    if row_state is None:
+        raise RevisionConflict("A preserved take changed while generation was being prepared.")
+    conflict = (
+        "A preserved take changed while missing-only generation was being prepared."
+        if missing_only
+        else "A reusable take changed while stale-only generation was being prepared."
+    )
+    artifacts = row_state["artifacts"]
+    take_ids = list(preserved_items.values())
+    wanted = set(take_ids)
+    # One read of the revision's active takes; a preserved take is always one.
+    sources: dict[str, Any] = {
+        row.id: row
+        for row in session.execute(
+            select(
+                AudioTake.id,
+                AudioTake.generation_segment_id,
+                AudioTake.artifact_id,
+                AudioTake.kind,
+                AudioTake.status,
+                AudioTake.is_active,
+                AudioTake.settings_hash,
+                AudioTake.duration_ms,
+                GenerationSegment.status.label("segment_status"),
+            )
+            .join(GenerationSegment, GenerationSegment.id == AudioTake.generation_segment_id)
+            .where(
+                GenerationSegment.plan_revision_id == plan_revision_id,
+                AudioTake.is_active.is_(True),
+            )
+        )
+        if row.id in wanted
+    }
+    metadata: dict[str, Any] = {}
+    if not missing_only:
+        artifact_ids = sorted({row.artifact_id for row in sources.values() if row.artifact_id})
+        for offset in range(0, len(artifact_ids), _CLONE_CHUNK):
+            chunk = artifact_ids[offset : offset + _CLONE_CHUNK]
+            for artifact_id, value in session.execute(
+                select(Artifact.id, Artifact.metadata_json).where(Artifact.id.in_(chunk))
+            ):
+                metadata[artifact_id] = value
+    from .generation_audio_identity import stored_take_reuse_reason
+
+    now = utcnow()
+    clones: list[dict[str, Any]] = []
+    for segment_id, take_id in preserved_items.items():
+        source = sources.get(take_id)
+        active = next(
+            (take for take in row_state["actives"].get(segment_id, ()) if take["id"] == take_id),
+            None,
+        )
+        artifact = artifacts.get(source.artifact_id) if source is not None and source.artifact_id else None
+        if (source is None or active is None or artifact is None
+                or source.segment_status != "completed"
+                or source.generation_segment_id != segment_id
+                or source.status != "completed" or not source.is_active
+                or source.artifact_id != active["artifact_id"]
+                or artifact["state"] == "deleted"):
+            raise RevisionConflict(conflict)
+        if not missing_only and stored_take_reuse_reason(
+            source.segment_status, source.status, artifact["state"],
+            metadata.get(source.artifact_id), identities[segment_id],
+        ) != "reusable":
+            raise RevisionConflict(conflict)
+        clones.append({
+            "id": new_id(),
+            "generation_segment_id": segment_id,
+            "generation_run_id": run_id,
+            "artifact_id": source.artifact_id,
+            "parent_take_id": take_id,
+            "kind": source.kind,
+            "status": "completed",
+            "settings_hash": source.settings_hash,
+            "duration_ms": source.duration_ms,
+            "is_active": True,
+            "revision": 1,
+            "created_at": now,
+        })
+    for offset in range(0, len(take_ids), _CLONE_CHUNK):
+        session.execute(
+            update(AudioTake)
+            .where(AudioTake.id.in_(take_ids[offset : offset + _CLONE_CHUNK]))
+            .values(is_active=False)
+        )
+    # A Core executemany: the ORM's bulk path costs more per row than SQLite does.
+    # No ORM object stands for a copy yet, so nothing in the session goes stale.
+    session.execute(insert(cast(Table, AudioTake.__table__)), clones)
