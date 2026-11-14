@@ -4394,6 +4394,7 @@ def build_openapi_document() -> dict:
         {"name": "whole_word", "in": "query", "schema": {"type": "boolean", "default": False}},
         {"name": "text_field", "in": "query", "description": "Spoken text uses optimized_text when present, otherwise text.", "schema": {"type": "string", "enum": ["text", "spoken"], "default": "text"}},
         {"name": "boundary_flags", "in": "query", "description": "Filter nonremoved speech blocks by boundary-risk flags.", "schema": {"type": "boolean"}},
+        {"name": "operation", "in": "query", "description": "summary leaves out each top-level operation_json value whose compact JSON exceeds 4 KB (such as a restore's per-segment mapping and lineage) and names those keys in operation_json_omitted; full returns the whole operation_json.", "schema": {"type": "string", "enum": ["summary", "full"], "default": "summary"}},
     ])
     inspection["parameters"].append({
         "name": "segment_ids", "in": "query", "style": "form", "explode": False,

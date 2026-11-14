@@ -168,6 +168,9 @@ def _generation_segment_update_projection(segment: dict[str, Any]) -> dict[str, 
     return result
 
 
+_SHORT_OPERATION_KEYS = frozenset({"action", "batch", "target_revision_id"})
+
+
 def list_generation_segments(
     runtime: McpRuntime,
     arguments: ListGenerationSegmentsInput,
@@ -180,6 +183,8 @@ def list_generation_segments(
             options[key] = value
     if arguments.view != "full":
         options["view"] = arguments.view
+    if arguments.operation == "full":
+        options["operation"] = "full"
     if arguments.around_ordinal is not None or arguments.source_cue_id is not None:
         options["radius"] = arguments.radius
     payload = application.list_generation_segments(
@@ -191,6 +196,16 @@ def list_generation_segments(
         **options,
     )
     items = payload.get("items") or []
+    operation = dict(payload.get("operation_json") or {})
+    if arguments.view != "full" and arguments.operation != "full":
+        # The short views keep only these keys; the omitted list names every key
+        # this output leaves out, the server's and the projection's.
+        kept = {key: value for key, value in operation.items() if key in _SHORT_OPERATION_KEYS}
+        omitted = set(operation) - set(kept)
+        operation = kept
+    else:
+        omitted = set()
+    omitted.update(payload.get("operation_json_omitted") or [])
     return {
         "schema_version": "1",
         "session_id": arguments.session_id,
@@ -205,7 +220,8 @@ def list_generation_segments(
         "plan_revision_id": payload.get("plan_revision_id"),
         "plan_revision_number": payload.get("plan_revision_number"),
         "parent_revision_id": payload.get("parent_revision_id"),
-        "operation_json": (payload.get("operation_json") or {}) if arguments.view == "full" else {key: value for key, value in (payload.get("operation_json") or {}).items() if key in {"action", "batch", "target_revision_id"}},
+        "operation_json": operation,
+        "operation_json_omitted": sorted(omitted),
         "speech_block_settings": payload.get("speech_block_settings") or {},
     }
 
