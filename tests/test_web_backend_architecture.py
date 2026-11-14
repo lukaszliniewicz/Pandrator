@@ -684,7 +684,7 @@ class BackendArchitectureTests(unittest.TestCase):
             self.assertIs(records, sent_records)
             self.assertIs(settings, owner.call_args.kwargs["settings"])
             self.assertIs(caller_session, owner.call_args.kwargs["db_session"])
-            self.assertEqual({"settings": settings, "source_revision_id": "source-revision", "source_artifact_id": "source-artifact", "db_session": caller_session, "force_new": True}, owner.call_args.kwargs)
+            self.assertEqual({"settings": settings, "source_revision_id": "source-revision", "source_artifact_id": "source-artifact", "db_session": caller_session, "force_new": True, "prepared_rows": None}, owner.call_args.kwargs)
             for name, value in {**fields, **helpers}.items():
                 self.assertIs(value, getattr(context, name))
             replacements = {name: object() for name in fields}
@@ -695,7 +695,7 @@ class BackendArchitectureTests(unittest.TestCase):
             self.assertIsNot(context, latest)
             for name, value in {**replacements, **later_helpers}.items():
                 self.assertIs(value, getattr(latest, name))
-            self.assertEqual({"settings": settings, "source_revision_id": None, "source_artifact_id": None, "db_session": None, "force_new": False}, owner.call_args.kwargs)
+            self.assertEqual({"settings": settings, "source_revision_id": None, "source_artifact_id": None, "db_session": None, "force_new": False, "prepared_rows": None}, owner.call_args.kwargs)
 
     def test_generation_binding_facades_capture_current_ports_and_forward_identity(self):
         from pandrator.web import workflow_handlers

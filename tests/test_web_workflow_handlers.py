@@ -277,6 +277,43 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(result["artifact_id"], store.call_args.kwargs["source_artifact_id"])
         self.assertEqual("overridden-revision", result["generation_plan_revision_id"])
 
+    def test_prepare_text_builds_plan_rows_with_the_writer_free(self):
+        from pandrator.web import generation_plan_store, workflow_handlers
+
+        source_path = self.session_dir / "writer-free-source.txt"
+        source_path.write_text("Narration.", encoding="utf-8")
+        source = self.artifacts.register(source_path, kind="text", role="clean_text", session_id=self.session.id)
+        records = [{"text": f"Narration block {index}.", "paragraph": "yes"} for index in range(6)]
+        real_prepare = workflow_handlers._prepare_generation_plan_rows_impl
+        observed = {}
+
+        def prepare_with_probe(*args, **kwargs):
+            # Another connection that will not wait for the lock writes and commits.
+            with self.database.immediate_session(busy_timeout_ms=0) as other:
+                other.add(SessionSetting(
+                    session_id=self.session.id, section="probe-plan-rows", value_json={"ok": True},
+                ))
+            observed["prepared"] = real_prepare(*args, **kwargs)
+            return observed["prepared"]
+
+        rebuilt = mock.Mock(wraps=generation_plan_store.prepare_generation_plan_rows)
+        with mock.patch("pandrator.logic.text_preprocessor.preprocess_text", return_value=records), mock.patch.object(
+            workflow_handlers, "_prepare_generation_plan_rows_impl", side_effect=prepare_with_probe
+        ), mock.patch.object(generation_plan_store, "prepare_generation_plan_rows", rebuilt):
+            result = self.handlers.prepare_text(
+                {"session_id": self.session.id, "source_artifact_id": source.id}, self.progress, threading.Event()
+            )
+        # The rows built before the writer were the ones stored; none were rebuilt in it.
+        rebuilt.assert_not_called()
+        with self.database.session() as db:
+            self.assertIsNotNone(db.scalar(select(SessionSetting).where(SessionSetting.section == "probe-plan-rows")))
+            stored = list(db.scalars(
+                select(GenerationSegment.id)
+                .where(GenerationSegment.plan_revision_id == result["generation_plan_revision_id"])
+                .order_by(GenerationSegment.ordinal)
+            ))
+        self.assertEqual([row["id"] for row in observed["prepared"].rows], stored)
+
     def test_clean_source_uses_captured_extraction_and_agentic_progress_factories(self):
         from pandrator.logic.source_cleaning.models import PipelineResult
         from pandrator.logic.source_cleaning.pdf_text_adapter import build_source_document_from_text
@@ -1673,7 +1710,9 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                     )
         finally:
             event.remove(self.database.engine, "after_cursor_execute", capture_insert)
-        self.assertEqual(1, len(inserted_segments))
+        # The rows are built before their one bulk insert, so a fault while
+        # building them inserts none.
+        self.assertEqual([], inserted_segments)
         self.assertEqual(["First new narration.", "Second new narration."], calls)
         with self.database.session() as db:
             plan = db.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))

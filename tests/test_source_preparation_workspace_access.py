@@ -644,6 +644,7 @@ def test_generation_plan_failure_rolls_back_artifact_and_plan_rows(library, monk
         source_revision_id=None,
         source_artifact_id=None,
         db_session=None,
+        prepared_rows=None,
     ):
         assert db_session is not None
         store(
@@ -653,6 +654,7 @@ def test_generation_plan_failure_rolls_back_artifact_and_plan_rows(library, monk
             source_revision_id=source_revision_id,
             source_artifact_id=source_artifact_id,
             db_session=db_session,
+            prepared_rows=prepared_rows,
         )
         raise RuntimeError("synthetic generation plan write failure")
 

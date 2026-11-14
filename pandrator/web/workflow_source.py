@@ -833,6 +833,15 @@ def prepare_text(
     )
     if cancel_event.is_set():
         return {}
+    # Normalize the records and check and remap their markup before the writer
+    # opens; inside it the store only rechecks the cast characters and inserts.
+    prepared_rows = (
+        context._prepare_generation_plan_rows(session_id, prepared, settings=artifact_settings)
+        if context._prepare_generation_plan_rows is not None
+        else None
+    )
+    if cancel_event.is_set():
+        return {}
 
     with context.database.immediate_session() as unit:
         require_text_preparation_access(
@@ -867,6 +876,7 @@ def prepare_text(
             source_revision_id=source_revision_id,
             source_artifact_id=artifact_id,
             db_session=unit,
+            **({"prepared_rows": prepared_rows} if prepared_rows is not None else {}),
         )
         result = {
             "artifact_id": artifact_id,
