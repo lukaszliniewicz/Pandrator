@@ -313,8 +313,13 @@ def resolve_project_cast_binding(
     *,
     _saved_references: Mapping[str, StoredProjectSpeechReference] | None = None,
     _registry: TtsProviderRegistry | None = None,
+    _proofs: set[tuple[Any, ...]] | None = None,
 ) -> dict[str, Any] | None:
-    """Resolve one current-session saved cast choice without reading its source."""
+    """Resolve one current-session saved cast choice without reading its source.
+
+    ``_proofs`` is passed on to ``validate_retained_cast_resolution`` so a pass
+    that resolves many segments proves each access and pin once.
+    """
     from .access.contracts import ProjectAction
     from .access.current_session_policy import require_current_session_access
     from .project_speech_references import (
@@ -358,9 +363,16 @@ def resolve_project_cast_binding(
     if not (normalized_slot.startswith("cast:") or normalized_slot.startswith("segment:")):
         raise ValueError("A cast snapshot needs a canonical cast or segment slot.")
 
-    require_current_session_access(session, session_id, ProjectAction.READ)
+    access_key = ("access", session_id)
+    if _proofs is None or access_key not in _proofs:
+        require_current_session_access(session, session_id, ProjectAction.READ)
+        if _proofs is not None:
+            _proofs.add(access_key)
 
     def guard(current_session) -> None:
+        # Already proven on this session in this pass (just above).
+        if current_session is session and _proofs is not None and access_key in _proofs:
+            return
         require_current_session_access(current_session, session_id, ProjectAction.READ)
 
     if _saved_references is None:
@@ -415,6 +427,7 @@ def resolve_project_cast_binding(
         settings,
         resolution,
         _service_config_cache,
+        _proofs=_proofs,
         _registry=registry,
     )
 
