@@ -1228,8 +1228,8 @@ def create_api(
         Pandrator service no longer matches the current launch (active slot,
         exposure, preferences), stop all of them, so they come back together
         on the current one instead of mixing versions over one database.
-        Returns the stopped services that were not selected, in start order,
-        for the caller to start again.
+        Returns the services it stopped, in start order, for the caller to
+        start again.
         """
 
         if not {PANDRATOR_API_SERVICE, *PANDRATOR_WORKER_SERVICES}.intersection(
@@ -1260,7 +1260,7 @@ def create_api(
         return [
             service_id
             for service_id in reversed(PANDRATOR_SERVICE_STOP_ORDER)
-            if service_id in running and service_id not in selected
+            if service_id in running
         ]
 
     def refresh_application_specs() -> None:
@@ -1949,7 +1949,7 @@ def create_api(
                     "known_service_ids": sorted(known_service_ids),
                 },
             )
-        resumed: list[str] = []
+        stopped: list[str] = []
         if (
             action in {"start", "restart"}
             and {
@@ -1965,18 +1965,32 @@ def create_api(
             # guided application-start endpoint does.
             ensure_application_installed()
             if action == "restart":
-                resumed = stop_application_launched_from_old_configuration(
+                stopped = stop_application_launched_from_old_configuration(
                     selected
                 )
             refresh_application_specs()
         results = []
+        def relaunchable(service_id: str) -> bool:
+            # After a restart's refresh, a Pandrator service the current
+            # launch no longer registers (MCP unsupported, fewer workers)
+            # stays stopped instead of failing the remaining actions.
+            return (
+                service_id not in PANDRATOR_SERVICE_STOP_ORDER
+                or supervisor.spec(service_id) is not None
+            )
+
+        # Services the restart already stopped are only started, so the
+        # selection's order cannot stop one again after a dependent started it.
         planned = [
-            *((service_id, action) for service_id in selected),
-            # A service the current launch no longer registers stays stopped.
+            *(
+                (service_id, "start" if service_id in stopped else action)
+                for service_id in selected
+                if action != "restart" or relaunchable(service_id)
+            ),
             *(
                 (service_id, "start")
-                for service_id in resumed
-                if supervisor.spec(service_id) is not None
+                for service_id in stopped
+                if service_id not in selected and relaunchable(service_id)
             ),
         ]
         for service_id, service_action in planned:

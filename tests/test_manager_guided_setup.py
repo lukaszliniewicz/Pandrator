@@ -439,6 +439,51 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
                 app.supervisor.spec(service_id).arguments,
             )
 
+    def test_runtime_restart_leaves_a_service_the_new_slot_dropped_stopped(self):
+        app = self._running_application()
+        self._activate_application_slot(app.layout, "new", mcp=False)
+
+        # No service IDs: the selection comes from the old snapshot, MCP included.
+        response = app.post("restart", [])
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            [
+                ("stop", "pandrator.mcp"),
+                ("stop", "pandrator.worker"),
+                ("stop", "pandrator.api"),
+                ("start", "pandrator.api"),
+                ("start", "pandrator.worker"),
+            ],
+            app.calls,
+        )
+        self.assertIsNone(app.supervisor.spec("pandrator.mcp"))
+        self.assertEqual(
+            {"pandrator.api", "pandrator.worker"},
+            {item["id"] for item in response.get_json()["items"]},
+        )
+
+    def test_runtime_restart_starts_each_stopped_service_once_in_any_order(self):
+        app = self._running_application()
+        self._activate_application_slot(app.layout, "new", mcp=True)
+
+        # The worker starts the API as its dependency; the API listed after
+        # it must not be stopped again.
+        response = app.post("restart", ["pandrator.worker", "pandrator.api"])
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            [
+                ("stop", "pandrator.mcp"),
+                ("stop", "pandrator.worker"),
+                ("stop", "pandrator.api"),
+                ("start", "pandrator.api"),
+                ("start", "pandrator.worker"),
+                ("start", "pandrator.mcp"),
+            ],
+            app.calls,
+        )
+
     def test_runtime_restart_on_the_same_slot_restarts_only_the_selection(self):
         app = self._running_application()
         before = app.supervisor.spec("pandrator.api")
