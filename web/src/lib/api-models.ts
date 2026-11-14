@@ -1604,6 +1604,8 @@ export type GenerationSegmentPage = {
   plan_revision_number?: number | null;
   parent_revision_id?: string | null;
   operation_json?: Record<string, unknown> | null;
+  /** Top-level operation_json keys left out of a summary page (values over 4 KB). */
+  operation_json_omitted?: string[];
   speech_block_settings?: Record<string, unknown> | null;
 };
 

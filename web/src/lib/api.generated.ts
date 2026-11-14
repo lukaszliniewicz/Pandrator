@@ -19949,6 +19949,8 @@ export interface operations {
                 text_field?: "text" | "spoken";
                 /** @description Filter nonremoved speech blocks by boundary-risk flags. */
                 boundary_flags?: boolean;
+                /** @description summary leaves out each top-level operation_json value whose compact JSON exceeds 4 KB (such as a restore's per-segment mapping and lineage) and names those keys in operation_json_omitted; full returns the whole operation_json. */
+                operation?: "summary" | "full";
                 segment_ids?: string[];
                 plan_revision_id?: string;
                 view?: string;

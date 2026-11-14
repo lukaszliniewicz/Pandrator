@@ -206,6 +206,7 @@ def list_generation_segments(
         "plan_revision_number": payload.get("plan_revision_number"),
         "parent_revision_id": payload.get("parent_revision_id"),
         "operation_json": (payload.get("operation_json") or {}) if arguments.view == "full" else {key: value for key, value in (payload.get("operation_json") or {}).items() if key in {"action", "batch", "target_revision_id"}},
+        "operation_json_omitted": payload.get("operation_json_omitted") or [],
         "speech_block_settings": payload.get("speech_block_settings") or {},
     }
 

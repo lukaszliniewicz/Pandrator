@@ -282,6 +282,7 @@ class _FakeApplication:
             "plan_revision_number": 3,
             "parent_revision_id": "plan-revision-2",
             "operation_json": {"action": "split"},
+            "operation_json_omitted": ["mapping"],
             "speech_block_settings": {"speech_block_max_chars": 220},
         }
 
@@ -577,6 +578,7 @@ class PreviewAndGenerationTests(unittest.TestCase):
         self.assertEqual("plan-revision-3", listed["plan_revision_id"])
         self.assertEqual("plan-revision-2", listed["parent_revision_id"])
         self.assertEqual({"action": "split"}, listed["operation_json"])
+        self.assertEqual(["mapping"], listed["operation_json_omitted"])
         self.assertEqual(220, listed["speech_block_settings"]["speech_block_max_chars"])
 
         updated = update_generation_segment(

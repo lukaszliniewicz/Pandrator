@@ -182,12 +182,15 @@ class GenerationSegmentReader:
         whole_word: bool = False,
         text_field: str = "text",
         boundary_flags: bool | None = None,
+        operation: str = "summary",
     ) -> dict[str, Any]:
         from .generation_review import project_segments, source_reference_values
         from .generation_search import literal_matches
 
         if take_history not in {"selected", "full"}:
             raise ValueError("take_history must be 'selected' or 'full'.")
+        if operation not in {"summary", "full"}:
+            raise ValueError("operation must be 'summary' or 'full'.")
         project_segments({"items": []}, view=view, fields=fields)
         if segment_ids is not None:
             if not 1 <= len(segment_ids) <= 100 or len(set(segment_ids)) != len(segment_ids):
@@ -241,6 +244,7 @@ class GenerationSegmentReader:
                     "plan_revision_number": None,
                     "parent_revision_id": None,
                     "operation_json": {},
+                    "operation_json_omitted": [],
                     "speech_block_settings": {},
                 }
             plan_revision_id = requested_plan_revision_id or plan.active_revision_id
@@ -789,6 +793,10 @@ class GenerationSegmentReader:
                 )
                 or 0
             )
+            operation_json, operation_json_omitted = summarize_operation(
+                plan_revision.operation_json if plan_revision is not None else None,
+                full=operation == "full",
+            )
             return project_segments({
                 "items": items,
                 "next_cursor": rows[-1].ordinal + 1 if rows and has_more else None,
@@ -805,13 +813,35 @@ class GenerationSegmentReader:
                     if plan_revision is not None
                     else None
                 ),
-                "operation_json": (
-                    dict(plan_revision.operation_json or {})
-                    if plan_revision is not None
-                    else {}
-                ),
+                "operation_json": operation_json,
+                "operation_json_omitted": operation_json_omitted,
                 "speech_block_settings": speech_block_settings,
             }, view=view, fields=fields)
+
+
+OPERATION_SUMMARY_VALUE_BYTES = 4096
+
+
+def summarize_operation(operation: Any, *, full: bool) -> tuple[dict[str, Any], list[str]]:
+    """A revision's ``operation_json`` for a listing page, and the keys left out.
+
+    A summary keeps each top-level value whose compact JSON is at most 4 KB
+    (``action``, ``reason``, ``batch``, the revision ids) and leaves out larger
+    ones, such as a restore's per-segment ``mapping`` and ``lineage``, which can
+    run to hundreds of kilobytes on a long book. ``full`` returns it whole.
+    """
+    value = dict(operation or {})
+    if full:
+        return value, []
+    kept: dict[str, Any] = {}
+    omitted: list[str] = []
+    for key, item in value.items():
+        encoded = json.dumps(item, ensure_ascii=False, separators=(",", ":"), default=str)
+        if len(encoded.encode("utf-8")) > OPERATION_SUMMARY_VALUE_BYTES:
+            omitted.append(key)
+        else:
+            kept[key] = item
+    return kept, sorted(omitted)
 
 
 def updated_segment_payload(segment: GenerationSegment) -> dict[str, Any]:
