@@ -14,6 +14,7 @@ from sqlalchemy import select
 from pandrator.logic.speech_markup import parse_speech_markup
 
 from . import models as m
+from .abandoned_requests import raise_if_abandoned
 from .access.contracts import AccessDenied, WorkspaceNotFound
 from .generation_audio_identity import IDENTITY_KEY, AudioIdentityContext, plan_audio_identities
 from .generation_cast_runtime import (
@@ -321,6 +322,7 @@ def _effective(session, context, binding, base, *, frozen=None, slot_key=None, s
             if frozen is None and session_id is not None:
                 resolved = resolve_project_cast_binding(
                     session, session_id, binding, base, slot_key, context._service_config_cache,
+                    _proofs=context._retained_proofs, _registry=context._registry,
                 )
             if resolved is None:
                 resolved = resolve_binding(
@@ -332,10 +334,12 @@ def _effective(session, context, binding, base, *, frozen=None, slot_key=None, s
                 raise ValueError("The recorded cast reference has no project owner.")
             resolved = validate_retained_cast_resolution(
                 session, session_id, binding, base, resolved, context._service_config_cache,
+                _proofs=context._retained_proofs, _registry=context._registry,
             )
         key = cast_resolution_key(binding, slot_key, schema_version=version)
         settings = apply_resolved_binding(
             binding, base, {key: resolved}, slot_key=slot_key, schema_version=version,
+            _service_config_cache=context._service_config_cache,
         )
     else:
         settings = base
@@ -516,6 +520,9 @@ def prepare_recast(
         historical_contexts = {}
         historical_snapshot_hashes = {}
         for segment in segments:
+            # A preview only reads, so stop once its client has left (the Cast
+            # panel and MCP both give up on a slow one and ask again).
+            raise_if_abandoned()
             context._ensure_segment_workspace(segment)
             entry = entries.get(segment.id) or {
                 "speech_xml": (segment.speech_plan_json or {}).get("speech_xml"),
@@ -636,6 +643,9 @@ def prepare_recast(
             baseline,
             reference_verified,
         ) in rows:
+            # This pass deep-copies controls per target (every missing segment
+            # with include_missing), so it stops for a departed client too.
+            raise_if_abandoned()
             chosen = affected & selected
             generate = bool(
                 chosen

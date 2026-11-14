@@ -896,13 +896,28 @@ def take_reuse_reason(
     artifact: Artifact | None,
     expected: dict[str, Any],
 ) -> str:
-    if take is None or artifact is None or artifact.state == "deleted":
+    if take is None or artifact is None:
         return "audio_unavailable"
-    if segment.status != "completed" or take.status != "completed":
+    return stored_take_reuse_reason(
+        segment.status, take.status, artifact.state, artifact.metadata_json, expected,
+    )
+
+
+def stored_take_reuse_reason(
+    segment_status: str | None,
+    take_status: str | None,
+    artifact_state: str | None,
+    artifact_metadata: Any,
+    expected: dict[str, Any],
+) -> str:
+    """``take_reuse_reason`` over plain column values, for callers that load columns only."""
+    if artifact_state == "deleted":
+        return "audio_unavailable"
+    if segment_status != "completed" or take_status != "completed":
         return "not_completed"
     if expected.get("performance_error"):
         return "audio_identity_unknown"
-    actual = (artifact.metadata_json or {}).get(IDENTITY_KEY)
+    actual = (artifact_metadata or {}).get(IDENTITY_KEY)
     if not isinstance(actual, dict) or actual.get("schema_version") != IDENTITY_VERSION:
         return "audio_identity_unknown"
     if actual.get("settings_hash") != expected["settings_hash"]:

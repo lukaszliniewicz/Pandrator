@@ -26,6 +26,7 @@ from .abandoned_requests import (
     RequestAbandoned,
     bind_disconnect_probe,
     reset_disconnect_probe,
+    watches_disconnect,
 )
 from .access.artifact_policy import ArtifactNotFound
 from .access.contracts import AccessContext, AccessDenied, ProjectNotFound, WorkspaceNotFound
@@ -614,10 +615,11 @@ class ApiGuards:
                 _snapshot_lifecycle_globals()
             )
             self._bind_execution_actor(None)
-            # Only reads are abandoned; a mutation runs to its commit, and
-            # api_server keeps waitress from skipping a queued one.
+            # Only reads (and read-only POST previews) are abandoned; a mutation
+            # runs to its commit, and api_server keeps waitress from skipping a
+            # queued one.
             disconnect_probe = request.environ.get(_WAITRESS_DISCONNECT_ENVIRON_KEY)
-            if request.method in ("GET", "HEAD") and callable(disconnect_probe):
+            if watches_disconnect(request.method, request.path) and callable(disconnect_probe):
                 request.environ[_DISCONNECT_PROBE_TOKEN_ENVIRON_KEY] = bind_disconnect_probe(
                     disconnect_probe
                 )
