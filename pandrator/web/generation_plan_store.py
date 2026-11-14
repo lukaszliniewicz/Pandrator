@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import Connection, event, func, insert, select
 from sqlalchemy.orm import Session
 
 from .credentials import redact_inline_secrets
@@ -47,19 +47,34 @@ def _characters_key(characters: Any) -> str:
     return json.dumps(characters, ensure_ascii=False, sort_keys=True, default=str)
 
 
-@dataclass(frozen=True, slots=True)
+def _records_key(clean: list[dict[str, Any]], settings: dict[str, Any]) -> str:
+    """A fingerprint of the cleaned records and the settings rows are built from."""
+    return hashlib.sha256(
+        json.dumps(
+            {"records": clean, "settings": settings},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+@dataclass(slots=True)
 class PreparedGenerationPlanRows:
     """A plan's segment rows, built before a write transaction opens.
 
     ``rows`` hold every column but the revision id, under pre-assigned segment
-    ids, with the final ``speech_plan_json``. They are valid only for ``records``
-    and the settings they were built from, and for the cast characters whose
-    canonical JSON is ``characters_key``.
+    ids, with the final ``speech_plan_json``. They are valid only for records and
+    settings whose fingerprint is ``records_key`` and for the cast characters
+    whose canonical JSON is ``characters_key``. Once a store that inserted them
+    commits, ``consumed`` is set: their segment ids exist, so they are not
+    inserted again.
     """
 
-    records: list[dict[str, Any]]
+    records_key: str
     characters_key: str
     rows: list[dict[str, Any]]
+    consumed: bool = False
 
 
 def prepare_generation_plan_rows(
@@ -80,7 +95,8 @@ def prepare_generation_plan_rows(
     from .speech_boundaries import effective_speech_boundary, record_pause_metadata
 
     rows: list[dict[str, Any]] = []
-    for ordinal, record in enumerate(_clean_records(records)):
+    clean = _clean_records(records)
+    for ordinal, record in enumerate(clean):
         record = dict(record)
         source_markup = record.get("speech_xml") or (record.get("speech_plan") or {}).get(
             "speech_xml"
@@ -176,8 +192,36 @@ def prepare_generation_plan_rows(
             "revision": 1,
         })
     return PreparedGenerationPlanRows(
-        records=records, characters_key=_characters_key(characters), rows=rows,
+        records_key=_records_key(clean, settings),
+        characters_key=_characters_key(characters),
+        rows=rows,
     )
+
+
+def _consume_on_commit(session: Session, prepared: PreparedGenerationPlanRows) -> None:
+    """Mark ``prepared`` consumed when this transaction commits, not when it rolls back.
+
+    The caller may own the transaction (``db_session``), so its end is not known
+    here. It is watched on the session's connection, because
+    ``Database.immediate_session`` commits the connection rather than the
+    session. Only the first end counts, a commit or a rollback; the listeners
+    belong to this connection object and go with it.
+    """
+    connection = session.connection()
+    ended = False
+
+    def committed(_connection: Connection) -> None:
+        nonlocal ended
+        if not ended:
+            ended = True
+            prepared.consumed = True
+
+    def rolled_back(_connection: Connection) -> None:
+        nonlocal ended
+        ended = True
+
+    event.listen(connection, "commit", committed)
+    event.listen(connection, "rollback", rolled_back)
 
 
 def store_generation_plan(
@@ -194,14 +238,17 @@ def store_generation_plan(
 ) -> tuple[str, list[str]]:
     """Store ``records`` as the session's active plan revision.
 
-    ``prepared_rows``, from ``prepare_generation_plan_rows`` over the same records
-    and settings, keeps the per-record work out of the write transaction; they are
-    rebuilt here if the cast characters changed since. The segments are inserted
-    in one bulk statement.
+    ``prepared_rows``, from ``prepare_generation_plan_rows``, keeps the per-record
+    work out of the write transaction. They are rebuilt here when the records or
+    settings no longer match their fingerprint (another list, or the same list
+    changed since), when the cast characters changed, or when an earlier store
+    already committed them. The segments are inserted in one bulk statement.
     """
-    if prepared_rows is not None and prepared_rows.records is not records:
-        raise ValueError("Prepared plan rows belong to other records.")
     clean = _clean_records(records)
+    if prepared_rows is not None and (
+        prepared_rows.consumed or prepared_rows.records_key != _records_key(clean, settings)
+    ):
+        prepared_rows = None
     digest = hashlib.sha256(
         json.dumps(
             {
@@ -275,6 +322,7 @@ def store_generation_plan(
         if rows:
             # ``render_nulls`` keeps rows whose None columns differ in one batch.
             session.execute(insert(GenerationSegment).execution_options(render_nulls=True), rows)
+            _consume_on_commit(session, prepared_rows)
         plan.active_revision_id = revision.id
         plan.updated_at = utcnow()
         return revision.id, [str(row["id"]) for row in rows]

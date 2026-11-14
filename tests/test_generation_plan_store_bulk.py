@@ -258,12 +258,90 @@ def test_prepared_rows_are_rebuilt_when_the_characters_changed(case):  # noqa: F
     assert ids != [row["id"] for row in prepared.rows]
 
 
-def test_prepared_rows_for_other_records_are_refused(case):  # noqa: F811
+def _store(case, session_id, records, prepared, *, settings=SETTINGS, force_new=False):  # noqa: F811
+    context = case["services"]["workflow_handlers"]._generation_plan_store_context()
+    with patch.object(
+        speech_markup, "parse_speech_markup", wraps=speech_markup.parse_speech_markup,
+    ) as parse, case["services"]["database"].immediate_session() as unit:
+        revision_id, ids = store_generation_plan(
+            context, session_id, records, settings=settings, db_session=unit,
+            prepared_rows=prepared, force_new=force_new,
+        )
+    return revision_id, ids, parse.call_count
+
+
+def test_prepared_rows_for_equal_records_in_another_list_are_used(case):  # noqa: F811
     handlers = case["services"]["workflow_handlers"]
     session_id = _session_with_fred(case)
     prepared = handlers._prepare_generation_plan_rows(session_id, _records(), settings=SETTINGS)
-    with pytest.raises(ValueError, match="other records"):
-        handlers._store_generation_plan(session_id, _records(), settings=SETTINGS, prepared_rows=prepared)
+    _revision_id, ids, parses = _store(case, session_id, _records(), prepared)
+    assert parses == 0
+    assert ids == [row["id"] for row in prepared.rows]
+
+
+def test_prepared_rows_are_rebuilt_when_their_records_changed_since(case):  # noqa: F811
+    handlers = case["services"]["workflow_handlers"]
+    session_id = _session_with_fred(case)
+    records = _records()
+    prepared = handlers._prepare_generation_plan_rows(session_id, records, settings=SETTINGS)
+    # The same list, changed in place after the rows were built.
+    records[0] = {**records[0], "voice": "changed-voice"}
+    revision_id, ids, parses = _store(case, session_id, records, prepared)
+    assert parses == 3  # rebuilt under the writer
+    assert ids != [row["id"] for row in prepared.rows]
+    assert _rows(case, revision_id)[0]["voice"] == "changed-voice"
+    reference_session = _session_with_fred(case)
+    context = handlers._generation_plan_store_context()
+    with case["services"]["database"].immediate_session() as unit:
+        reference_id, _ = reference_store(
+            context, reference_session, records, settings=SETTINGS, db_session=unit,
+        )
+    assert _rows(case, revision_id) == _rows(case, reference_id)
+
+
+def test_prepared_rows_are_rebuilt_for_other_settings(case):  # noqa: F811
+    handlers = case["services"]["workflow_handlers"]
+    session_id = _session_with_fred(case)
+    records = _records()
+    prepared = handlers._prepare_generation_plan_rows(session_id, records, settings=SETTINGS)
+    other = {**SETTINGS, "paragraph_silence_ms": 1500}
+    _revision_id, ids, parses = _store(case, session_id, records, prepared, settings=other)
+    assert parses == 3
+    assert ids != [row["id"] for row in prepared.rows]
+
+
+def test_committed_prepared_rows_are_not_inserted_again(case):  # noqa: F811
+    handlers = case["services"]["workflow_handlers"]
+    session_id = _session_with_fred(case)
+    records = _records()
+    prepared = handlers._prepare_generation_plan_rows(session_id, records, settings=SETTINGS)
+    first, first_ids, first_parses = _store(case, session_id, records, prepared)
+    assert (first_parses, first_ids) == (0, [row["id"] for row in prepared.rows])
+    assert prepared.consumed
+    # A second, forced store would reuse segment ids that now exist.
+    second, second_ids, second_parses = _store(case, session_id, records, prepared, force_new=True)
+    assert second != first
+    assert second_parses == 3
+    assert not set(second_ids) & set(first_ids)
+    assert _rows(case, second) == _rows(case, first)
+
+
+def test_prepared_rows_stay_usable_after_a_rolled_back_store(case):  # noqa: F811
+    handlers = case["services"]["workflow_handlers"]
+    context = handlers._generation_plan_store_context()
+    session_id = _session_with_fred(case)
+    records = _records()
+    prepared = handlers._prepare_generation_plan_rows(session_id, records, settings=SETTINGS)
+    with pytest.raises(RuntimeError), case["services"]["database"].immediate_session() as unit:
+        store_generation_plan(
+            context, session_id, records, settings=SETTINGS, db_session=unit, prepared_rows=prepared,
+        )
+        raise RuntimeError("a later step of the same transaction fails")
+    assert not prepared.consumed
+    _revision_id, ids, parses = _store(case, session_id, records, prepared)
+    assert parses == 0
+    assert ids == [row["id"] for row in prepared.rows]
+    assert prepared.consumed
 
 
 def test_identical_content_keeps_the_active_revision(case):  # noqa: F811
