@@ -28,7 +28,7 @@ def reference_clone(
     session, *, run_id, plan_revision_id, preserved_items, row_state, missing_only, identities,
 ) -> None:
     """The per-take loop ``start_in_session`` ran before the bulk copy."""
-    del row_state, plan_revision_id
+    del row_state
     for segment_id, take_id in preserved_items.items():
         source_take = session.get(AudioTake, take_id)
         segment = session.get(GenerationSegment, segment_id)
@@ -38,12 +38,14 @@ def reference_clone(
         )
         if missing_only:
             if (source_take is None or segment is None or artifact is None
+                    or segment.plan_revision_id != plan_revision_id
                     or segment.status != "completed"
                     or source_take.generation_segment_id != segment_id
                     or source_take.status != "completed" or not source_take.is_active
                     or artifact.state == "deleted"):
                 raise RevisionConflict("A preserved take changed.")
         elif (source_take is None or segment is None or artifact is None
+                or segment.plan_revision_id != plan_revision_id
                 or segment.status != "completed"
                 or source_take.generation_segment_id != segment_id
                 or source_take.status != "completed" or not source_take.is_active
@@ -153,7 +155,7 @@ class PreservedTakeCloneTests(unittest.TestCase):
     def _start(self, session_id: str, **mode: bool) -> dict[str, Any]:
         return self.generation.start(session_id, run_override=self._override(), **mode)
 
-    def _compare_with_reference(self, **mode: bool) -> None:
+    def _compare_with_reference(self, **mode: bool) -> Statements:
         reference_id, reference_ids = self._case(preserved=5, missing=2)
         session_id, ids = self._case(preserved=5, missing=2)
         # Distinct source values, the same in both cases, so the copies must take
@@ -162,7 +164,8 @@ class PreservedTakeCloneTests(unittest.TestCase):
         self._vary_sources(ids)
         with patch.object(workspace, "_clone_preserved_takes", reference_clone):
             self._start(reference_id, **mode)
-        self._start(session_id, **mode)
+        with self._statements() as statements:
+            self._start(session_id, **mode)
         expected = self._takes(reference_id, reference_ids)
         actual = self._takes(session_id, ids)
         # Artifacts differ per case; compare everything else, then the artifact map.
@@ -181,12 +184,21 @@ class PreservedTakeCloneTests(unittest.TestCase):
                     (source.artifact_id, source.id, False, True),
                     (copy.artifact_id, copy.parent_take_id, source.is_active, copy.is_active),
                 )
+        return statements
 
     def test_missing_only_copies_equal_the_per_take_loop(self):
         self._compare_with_reference(missing_only=True)
 
     def test_stale_only_copies_equal_the_per_take_loop(self):
         self._compare_with_reference(stale_only=True)
+
+    def test_copies_spanning_several_chunks_equal_the_per_take_loop(self):
+        # Five preserved takes in chunks of two: three deactivation UPDATEs, and
+        # stale-only reads the artifacts' identity metadata in three chunks too.
+        with patch.object(workspace, "_CLONE_CHUNK", 2):
+            statements = self._compare_with_reference(missing_only=True)
+            self.assertEqual(3, statements.writes("UPDATE"))
+            self._compare_with_reference(stale_only=True)
 
     def test_copies_below_the_chunk_size_cost_one_update_and_one_insert(self):
         counts = []
@@ -206,9 +218,9 @@ class PreservedTakeCloneTests(unittest.TestCase):
                 statements.writes("UPDATE"),
                 statements.writes("INSERT"),
             ))
-        # No per-take point read. The statement count is constant per 500 takes
-        # (``_CLONE_CHUNK``): below it, one UPDATE deactivating the sources and one
-        # INSERT of the copies, for 3 preserved takes as for 9.
+        # No per-take point read. Below ``_CLONE_CHUNK`` (500) takes, one UPDATE
+        # deactivates the sources; the copies always go in one INSERT
+        # executemany. The same holds for 3 preserved takes as for 9.
         self.assertEqual([(0, 1, 1), (0, 1, 1)], counts)
 
     def test_no_copies_when_nothing_is_preserved(self):
@@ -230,4 +242,58 @@ class PreservedTakeCloneTests(unittest.TestCase):
                 session, run_id="run", plan_revision_id="revision",
                 preserved_items={"segment": "take"},
                 row_state=None, missing_only=True, identities={},
+            )
+
+    def _rechecked_state(self, preserved: int = 2):
+        """A started-like transaction's inputs: the row state and preserved takes."""
+        from pandrator.web.generation_selection import collect_row_state
+
+        session_id, ids = self._case(preserved=preserved, missing=1)
+        with self.database.session() as session:
+            revision_id = session.get(GenerationSegment, ids[0]).plan_revision_id
+            state = collect_row_state(session, revision_id)
+        preserved_items = {
+            segment_id: state["actives"][segment_id][0]["id"] for segment_id in ids[:preserved]
+        }
+        return revision_id, state, preserved_items
+
+    def _clone(self, revision_id, state, preserved_items, *, missing_only=True, identities=None):
+        with self.database.session() as session:
+            workspace._clone_preserved_takes(
+                session, run_id=None, plan_revision_id=revision_id,
+                preserved_items=preserved_items, row_state=state,
+                missing_only=missing_only, identities=identities or {},
+            )
+            session.rollback()
+
+    def test_the_rechecked_state_itself_clones_without_conflict(self):
+        revision_id, state, preserved_items = self._rechecked_state()
+        self._clone(revision_id, state, preserved_items)
+
+    def test_an_active_take_with_another_artifact_conflicts(self):
+        revision_id, state, preserved_items = self._rechecked_state()
+        segment_id = next(iter(preserved_items))
+        state["actives"][segment_id][0]["artifact_id"] = "another-artifact"
+        with self.assertRaises(RevisionConflict):
+            self._clone(revision_id, state, preserved_items)
+
+    def test_a_deleted_artifact_conflicts(self):
+        revision_id, state, preserved_items = self._rechecked_state()
+        segment_id = next(iter(preserved_items))
+        artifact_id = state["actives"][segment_id][0]["artifact_id"]
+        state["artifacts"][artifact_id] = {**state["artifacts"][artifact_id], "state": "deleted"}
+        with self.assertRaises(RevisionConflict):
+            self._clone(revision_id, state, preserved_items)
+
+    def test_a_take_of_another_revision_conflicts(self):
+        revision_id, state, preserved_items = self._rechecked_state()
+        with self.assertRaises(RevisionConflict):
+            self._clone("another-revision", state, preserved_items)
+
+    def test_a_stale_only_take_whose_identity_no_longer_matches_conflicts(self):
+        revision_id, state, preserved_items = self._rechecked_state()
+        identities = {segment_id: {"settings_hash": "not-this"} for segment_id in preserved_items}
+        with self.assertRaises(RevisionConflict):
+            self._clone(
+                revision_id, state, preserved_items, missing_only=False, identities=identities,
             )

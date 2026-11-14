@@ -2760,7 +2760,7 @@ def _clone_preserved_takes(
     writer, supplies only which take was active per segment and each artifact's
     state; stale-only also reads the artifacts' identity metadata here. The same
     takes are deactivated and copied as by the per-take loop this replaced, with
-    one UPDATE and one INSERT per 500 takes.
+    one UPDATE per 500 takes and one INSERT executemany for all the copies.
     """
     if row_state is None:
         raise RevisionConflict("A preserved take changed while generation was being prepared.")
