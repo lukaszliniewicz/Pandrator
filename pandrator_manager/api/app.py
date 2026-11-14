@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from collections.abc import Collection
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
@@ -43,7 +44,7 @@ from ..auth import (
 )
 from ..diagnostics import build_diagnostic_bundle
 from ..errors import ManagerError, NotFoundError
-from ..models import API_VERSION
+from ..models import API_VERSION, ManagedProcessSpec
 from ..network import (
     EndpointExposure,
     NetworkConfiguration,
@@ -1206,6 +1207,62 @@ def create_api(
 
         return decorate
 
+    def application_runtime_specs() -> tuple[ManagedProcessSpec, ...]:
+        return pandrator_runtime_specs(
+            application.context.layout,
+            exposure=application_exposure_state["value"],
+            preferences={
+                **application.pandrator_runtime_environment(),
+                **(application_environment or {}),
+            },
+        )
+
+    def stop_application_launched_from_old_configuration(
+        selected: Collection[str],
+    ) -> list[str]:
+        """Stop Pandrator before a restart if its launch configuration changed.
+
+        Specs are recomposed only while the API and workers are stopped, so
+        restarting them one by one after an update would relaunch the previous
+        slot. When a restart includes the API or a worker and any running
+        Pandrator service no longer matches the current launch (active slot,
+        exposure, preferences), stop all of them, so they come back together
+        on the current one instead of mixing versions over one database.
+        Returns the stopped services that were not selected, in start order,
+        for the caller to start again.
+        """
+
+        if not {PANDRATOR_API_SERVICE, *PANDRATOR_WORKER_SERVICES}.intersection(
+            selected
+        ):
+            return []
+        running = {
+            service.id
+            for service in supervisor.snapshot()
+            if service.process is not None
+            and service.id in PANDRATOR_SERVICE_STOP_ORDER
+        }
+        current = {spec.service_id: spec for spec in application_runtime_specs()}
+        if all(supervisor.spec(service_id) == current.get(service_id) for service_id in running):
+            return []
+        for service_id in PANDRATOR_SERVICE_STOP_ORDER:
+            if service_id not in running:
+                continue
+            try:
+                supervisor.stop(service_id)
+            except RuntimeError as error:
+                raise ManagerError(
+                    "runtime_action_failed",
+                    str(error) or "The managed service action failed.",
+                    {"service_id": service_id, "action": "stop"},
+                    409,
+                ) from error
+        return [
+            service_id
+            for service_id in reversed(PANDRATOR_SERVICE_STOP_ORDER)
+            if service_id in running and service_id not in selected
+        ]
+
     def refresh_application_specs() -> None:
         application_service_ids = {
             PANDRATOR_API_SERVICE,
@@ -1224,14 +1281,7 @@ def create_api(
             return
         if PANDRATOR_MCP_SERVICE in active:
             supervisor.stop(PANDRATOR_MCP_SERVICE)
-        specifications = pandrator_runtime_specs(
-            application.context.layout,
-            exposure=application_exposure_state["value"],
-            preferences={
-                **application.pandrator_runtime_environment(),
-                **(application_environment or {}),
-            },
-        )
+        specifications = application_runtime_specs()
         missing = [
             specification.executable
             for specification in specifications
@@ -1899,6 +1949,7 @@ def create_api(
                     "known_service_ids": sorted(known_service_ids),
                 },
             )
+        resumed: list[str] = []
         if (
             action in {"start", "restart"}
             and {
@@ -1913,13 +1964,26 @@ def create_api(
             # use the active slot's locked Pixi environment just like the
             # guided application-start endpoint does.
             ensure_application_installed()
+            if action == "restart":
+                resumed = stop_application_launched_from_old_configuration(
+                    selected
+                )
             refresh_application_specs()
         results = []
-        for service_id in selected:
-            method = getattr(supervisor, action)
+        planned = [
+            *((service_id, action) for service_id in selected),
+            # A service the current launch no longer registers stays stopped.
+            *(
+                (service_id, "start")
+                for service_id in resumed
+                if supervisor.spec(service_id) is not None
+            ),
+        ]
+        for service_id, service_action in planned:
+            method = getattr(supervisor, service_action)
             application.context.event_sink.emit(
                 "runtime.action_requested",
-                {"action": action, "service_id": service_id},
+                {"action": service_action, "service_id": service_id},
                 service_id=service_id,
             )
             try:
@@ -1928,7 +1992,7 @@ def create_api(
                 application.context.event_sink.emit(
                     "runtime.action_failed",
                     {
-                        "action": action,
+                        "action": service_action,
                         "service_id": service_id,
                         "error": "Managed service was not found.",
                     },
@@ -1942,7 +2006,7 @@ def create_api(
                 application.context.event_sink.emit(
                     "runtime.action_failed",
                     {
-                        "action": action,
+                        "action": service_action,
                         "service_id": service_id,
                         "error": str(error),
                     },
@@ -1951,13 +2015,13 @@ def create_api(
                 raise ManagerError(
                     "runtime_action_failed",
                     str(error) or "The managed service action failed.",
-                    {"service_id": service_id, "action": action},
+                    {"service_id": service_id, "action": service_action},
                     409,
                 ) from error
             results.append(service.model_dump(mode="json"))
             application.context.event_sink.emit(
                 "runtime.action_completed",
-                {"action": action, "service_id": service_id},
+                {"action": service_action, "service_id": service_id},
                 component_id=service.component_id,
                 service_id=service_id,
             )
