@@ -205,12 +205,15 @@ class ApplicationGenerationMethods(ApplicationRequests):
         source_cue_id: str | None = None,
         radius: int = 2,
         audio_version_side: str = "after",
+        operation: str = "summary",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "cursor": max(0, int(cursor)),
             "limit": max(1, min(int(limit), 100)),
         }
         params["audio_version_side"] = audio_version_side
+        if operation != "summary":
+            params["operation"] = operation
         optional = {
             "generation_run_id": generation_run_id,
             "plan_revision_id": plan_revision_id,

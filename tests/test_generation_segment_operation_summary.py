@@ -90,3 +90,90 @@ def test_summary_rule_is_by_size_not_by_key():
     assert summarize_operation({"v": at_limit + "a"}, full=False) == ({}, ["v"])
     assert summarize_operation(None, full=False) == ({}, [])
     assert summarize_operation(small, full=True) == (small, [])
+
+
+class _ListingApplication:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.options: list[dict] = []
+
+    def list_generation_segments(self, session_id, **options):
+        self.options.append(options)
+        return self.payload
+
+
+def _mcp_listing(payload: dict, **arguments):
+    from types import SimpleNamespace
+
+    from pandrator_mcp.schemas.generation import ListGenerationSegmentsInput
+    from pandrator_mcp.tools.generation import list_generation_segments
+
+    application = _ListingApplication(payload)
+    runtime = SimpleNamespace(require_application=lambda: application)
+    listed = list_generation_segments(
+        runtime, ListGenerationSegmentsInput(session_id="session-1", **arguments)
+    )
+    return listed, application.options[-1]
+
+
+SUMMARY_PAGE = {
+    "items": [],
+    "operation_json": {
+        "action": "restore", "reason": "Restore", "batch": {"id": "b"},
+        "target_revision_id": "target",
+    },
+    "operation_json_omitted": ["lineage", "mapping"],
+}
+
+
+def test_mcp_asks_for_the_whole_operation_only_on_request():
+    _listed, options = _mcp_listing(SUMMARY_PAGE)
+    assert "operation" not in options
+    _listed, options = _mcp_listing(SUMMARY_PAGE, operation="full")
+    assert options["operation"] == "full"
+
+
+def test_mcp_full_view_passes_the_server_summary_and_its_omissions():
+    listed, _options = _mcp_listing(SUMMARY_PAGE)
+    assert listed["operation_json"] == SUMMARY_PAGE["operation_json"]
+    assert listed["operation_json_omitted"] == ["lineage", "mapping"]
+
+
+def test_mcp_short_views_name_every_key_they_leave_out():
+    listed, _options = _mcp_listing(SUMMARY_PAGE, view="compact")
+    assert listed["operation_json"] == {
+        "action": "restore", "batch": {"id": "b"}, "target_revision_id": "target",
+    }
+    assert listed["operation_json_omitted"] == ["lineage", "mapping", "reason"]
+
+
+def test_mcp_full_operation_is_kept_whole_in_a_short_view():
+    whole = {**SUMMARY_PAGE["operation_json"], "mapping": {"a": "b"}}
+    listed, _options = _mcp_listing(
+        {"items": [], "operation_json": whole, "operation_json_omitted": []},
+        view="compact", operation="full",
+    )
+    assert listed["operation_json"] == whole
+    assert listed["operation_json_omitted"] == []
+
+
+def test_mcp_client_sends_operation_only_when_full():
+    from pandrator_mcp.clients.application_generation import (
+        ApplicationGenerationMethods,
+    )
+
+    sent: list[dict] = []
+
+    class _Client(ApplicationGenerationMethods):
+        def _request_json(self, path, *, parameters=None, **_kwargs):
+            sent.append(dict(parameters or {}))
+            return {}
+
+        def _request_binary_json(self, *_args, **_kwargs):
+            raise AssertionError("not used")
+
+    client = _Client()
+    client.list_generation_segments("session-1")
+    client.list_generation_segments("session-1", operation="full")
+    assert "operation" not in sent[0]
+    assert sent[1]["operation"] == "full"
