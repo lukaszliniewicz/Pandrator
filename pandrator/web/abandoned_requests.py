@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from contextvars import ContextVar, Token
 
@@ -23,6 +24,29 @@ class _BoundProbe:
     def __init__(self, probe: DisconnectProbe) -> None:
         self.probe = probe
         self.failure_logged = False
+
+
+_WATCHED_METHODS = frozenset({"GET", "HEAD"})
+# POST routes that only read: a preview with a body. Each one must run in a plain
+# read session and write nothing, so stopping it when its client leaves loses
+# nothing, exactly as for a GET.
+_READ_ONLY_POSTS = (
+    re.compile(r"/api/v1/sessions/[^/]+/generation-recast/preview"),
+)
+
+
+def watches_disconnect(method: object, path: object) -> bool:
+    """Whether a request may stop once its client leaves.
+
+    Reads (``GET``, ``HEAD``) and the read-only ``POST`` previews above may;
+    every other request runs to its commit.
+    """
+
+    if method in _WATCHED_METHODS:
+        return True
+    return method == "POST" and isinstance(path, str) and any(
+        pattern.fullmatch(path) for pattern in _READ_ONLY_POSTS
+    )
 
 
 _PROBE: ContextVar[_BoundProbe | None] = ContextVar("pandrator_disconnect_probe", default=None)

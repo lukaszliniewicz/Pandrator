@@ -662,6 +662,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_cast_retention_integration.py",
         "tests/test_audio_identity_cost.py",
         "tests/test_abandoned_reads.py",
+        "tests/test_generation_recast_cost.py",
         "tests/test_segment_speech_reference_primitives.py",
         "tests/test_segment_reference_topology.py",
     ),

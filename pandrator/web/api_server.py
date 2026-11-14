@@ -13,14 +13,18 @@ from waitress import wasyncore
 from waitress.channel import HTTPChannel
 from waitress.server import BaseWSGIServer, create_server
 
+from .abandoned_requests import watches_disconnect
+
 # Waitress stops reading a socket while its request is queued or running unless
 # this is at least 1, so a client that gave up would never be noticed.
 REQUEST_LOOKAHEAD = 1
-_DISCONNECT_WATCHED_METHODS = frozenset({"GET", "HEAD"})
 
 
 class ReadDisconnectChannel(HTTPChannel):
     """Watch for a departed client only while a read heads the connection's queue.
+
+    A read is a ``GET`` or ``HEAD``, or one of the read-only ``POST`` previews that
+    ``abandoned_requests.watches_disconnect`` names.
 
     With lookahead, waitress reads a connection while its request is queued or
     running, and skips a queued request whose client has left, whatever its
@@ -38,7 +42,9 @@ class ReadDisconnectChannel(HTTPChannel):
             head = self.requests[0]
         except IndexError:
             head = None
-        if head is not None and getattr(head, "command", None) not in _DISCONNECT_WATCHED_METHODS:
+        if head is not None and not watches_disconnect(
+            getattr(head, "command", None), getattr(head, "path", None)
+        ):
             return False
         return super().readable()
 
