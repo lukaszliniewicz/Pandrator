@@ -1,9 +1,11 @@
+import itertools
 import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from pandrator.web.api import create_app as create_web_app
@@ -17,6 +19,7 @@ from pandrator_manager.models import (
     ComputeVariant,
     DesiredComponentState,
     OperationKind,
+    ProcessIdentity,
 )
 from pandrator_manager.runtime_specs import pandrator_runtime_specs
 from pandrator_manager.supervisor import ProcessSupervisor
@@ -179,6 +182,28 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
         )
         return source
 
+    @staticmethod
+    def _activate_application_slot(layout, revision, *, mcp=False):
+        source = layout.root / "app" / "versions" / revision
+        (source / "pandrator" / "web").mkdir(parents=True)
+        (source / "pyproject.toml").write_text(
+            "[project]\nname='pandrator'\n",
+            encoding="utf-8",
+        )
+        (source / "pixi.toml").write_text(
+            "[workspace]\nname='pandrator'\n",
+            encoding="utf-8",
+        )
+        (source / "pandrator" / "web" / "cli.py").write_text("", encoding="utf-8")
+        if mcp:
+            (source / "pandrator_mcp").mkdir()
+            (source / "pandrator_mcp" / "__main__.py").write_text("", encoding="utf-8")
+        component_pointer(layout, "pandrator").write_text(
+            json.dumps({"path": str(source)}),
+            encoding="utf-8",
+        )
+        return source
+
     def test_failed_application_launch_is_typed_and_visible_in_activity(self):
         with tempfile.TemporaryDirectory() as directory:
             application = create_application(directory)
@@ -221,24 +246,7 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             layout = WorkspaceLayout.from_value(directory)
             layout.ensure_base_directories()
-            source = layout.root / "app" / "versions" / "revision"
-            (source / "pandrator" / "web").mkdir(parents=True)
-            (source / "pyproject.toml").write_text(
-                "[project]\nname='pandrator'\n",
-                encoding="utf-8",
-            )
-            (source / "pixi.toml").write_text(
-                "[workspace]\nname='pandrator'\n",
-                encoding="utf-8",
-            )
-            (source / "pandrator" / "web" / "cli.py").write_text(
-                "",
-                encoding="utf-8",
-            )
-            component_pointer(layout, "pandrator").write_text(
-                json.dumps({"path": str(source)}),
-                encoding="utf-8",
-            )
+            self._activate_application_slot(layout, "revision")
             pixi = layout.bin / ("pixi.exe" if os.name == "nt" else "pixi")
             pixi.write_bytes(b"pixi")
 
@@ -269,24 +277,7 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
                 fallback.executable,
             )
 
-            source = layout.root / "app" / "versions" / "revision"
-            (source / "pandrator" / "web").mkdir(parents=True)
-            (source / "pyproject.toml").write_text(
-                "[project]\nname='pandrator'\n",
-                encoding="utf-8",
-            )
-            (source / "pixi.toml").write_text(
-                "[workspace]\nname='pandrator'\n",
-                encoding="utf-8",
-            )
-            (source / "pandrator" / "web" / "cli.py").write_text(
-                "",
-                encoding="utf-8",
-            )
-            component_pointer(layout, "pandrator").write_text(
-                json.dumps({"path": str(source)}),
-                encoding="utf-8",
-            )
+            self._activate_application_slot(layout, "revision")
             pixi = layout.bin / ("pixi.exe" if os.name == "nt" else "pixi")
             pixi.write_bytes(b"pixi")
 
@@ -325,6 +316,226 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
             self.assertEqual(str(pixi), refreshed.executable)
             self.assertEqual("run", refreshed.arguments[0])
             self.assertIn("--locked", refreshed.arguments)
+
+    def _running_application(self):
+        """A Manager API whose supervisor tracks running services in a set.
+
+        Pandrator is started on an "old" slot through the generic runtime
+        API, as after a daemon start, and only stops and starts that change
+        the running set are recorded afterwards.
+        """
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        application = create_application(directory)
+        application.instance_id = "guided-test"
+        layout = application.context.layout
+        self._activate_application_slot(layout, "old", mcp=True)
+        pixi = layout.bin / ("pixi.exe" if os.name == "nt" else "pixi")
+        pixi.write_bytes(b"pixi")
+        supervisor = ProcessSupervisor(
+            application.context,
+            application.store,
+            manager_instance_id="guided-test",
+        )
+        supervisor.register_many(pandrator_runtime_specs(layout))
+        running: set[str] = set()
+        failing: set[str] = set()
+        calls: list[tuple[str, str]] = []
+        identity = ProcessIdentity(
+            pid=1,
+            create_time=1.0,
+            executable=str(pixi),
+            manager_instance_id="guided-test",
+        )
+        registered = supervisor.snapshot
+
+        def snapshot():
+            return [
+                service.model_copy(update={"process": identity})
+                if service.id in running
+                else service
+                for service in registered()
+            ]
+
+        def service(service_id):
+            return next(item for item in snapshot() if item.id == service_id)
+
+        def stop(service_id):
+            if service_id in running:
+                running.discard(service_id)
+                calls.append(("stop", service_id))
+            return service(service_id)
+
+        def start(service_id):
+            for dependency in supervisor.spec(service_id).dependencies:
+                start(dependency)
+            if service_id in failing:
+                raise RuntimeError(f"{service_id} did not become ready.")
+            if service_id not in running:
+                running.add(service_id)
+                calls.append(("start", service_id))
+            return service(service_id)
+
+        def restart(service_id):
+            stop(service_id)
+            return start(service_id)
+
+        for name, fake in (
+            ("snapshot", snapshot),
+            ("stop", stop),
+            ("start", start),
+            ("restart", restart),
+        ):
+            self.enterContext(mock.patch.object(supervisor, name, side_effect=fake))
+        secret = "m" * 43
+        client = create_api(application, supervisor, client_secret=secret).test_client()
+        keys = itertools.count()
+
+        def post(action, service_ids):
+            return client.post(
+                f"/v1/runtime/{action}",
+                headers={
+                    "Authorization": f"Bearer {secret}",
+                    "Idempotency-Key": f"runtime-{action}-{next(keys)}",
+                },
+                json={"service_ids": service_ids},
+            )
+
+        everything = ["pandrator.api", "pandrator.worker", "pandrator.mcp"]
+        self.assertEqual(200, post("start", everything).status_code)
+        self.assertEqual(set(everything), running)
+        calls.clear()
+        return SimpleNamespace(
+            layout=layout,
+            supervisor=supervisor,
+            running=running,
+            failing=failing,
+            calls=calls,
+            post=post,
+        )
+
+    def test_runtime_restart_moves_pandrator_to_a_newly_activated_slot(self):
+        app = self._running_application()
+        new = self._activate_application_slot(app.layout, "new", mcp=True)
+
+        response = app.post("restart", ["pandrator.api"])
+
+        self.assertEqual(200, response.status_code)
+        # Every service stops before any starts, so no old and new process
+        # share the database, and the unselected ones come back as well.
+        self.assertEqual(
+            [
+                ("stop", "pandrator.mcp"),
+                ("stop", "pandrator.worker"),
+                ("stop", "pandrator.api"),
+                ("start", "pandrator.api"),
+                ("start", "pandrator.worker"),
+                ("start", "pandrator.mcp"),
+            ],
+            app.calls,
+        )
+        self.assertEqual(
+            ["pandrator.api", "pandrator.worker", "pandrator.mcp"],
+            [item["id"] for item in response.get_json()["items"]],
+        )
+        for service_id in ("pandrator.api", "pandrator.worker", "pandrator.mcp"):
+            self.assertIn(
+                str(new / "pixi.toml"),
+                app.supervisor.spec(service_id).arguments,
+            )
+
+    def test_runtime_restart_leaves_a_service_the_new_slot_dropped_stopped(self):
+        app = self._running_application()
+        self._activate_application_slot(app.layout, "new", mcp=False)
+
+        # No service IDs: the selection comes from the old snapshot, MCP included.
+        response = app.post("restart", [])
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            [
+                ("stop", "pandrator.mcp"),
+                ("stop", "pandrator.worker"),
+                ("stop", "pandrator.api"),
+                ("start", "pandrator.api"),
+                ("start", "pandrator.worker"),
+            ],
+            app.calls,
+        )
+        self.assertIsNone(app.supervisor.spec("pandrator.mcp"))
+        self.assertEqual(
+            {"pandrator.api", "pandrator.worker"},
+            {item["id"] for item in response.get_json()["items"]},
+        )
+
+    def test_runtime_restart_starts_each_stopped_service_once_in_any_order(self):
+        app = self._running_application()
+        self._activate_application_slot(app.layout, "new", mcp=True)
+
+        # The worker starts the API as its dependency; the API listed after
+        # it must not be stopped again.
+        response = app.post("restart", ["pandrator.worker", "pandrator.api"])
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            [
+                ("stop", "pandrator.mcp"),
+                ("stop", "pandrator.worker"),
+                ("stop", "pandrator.api"),
+                ("start", "pandrator.api"),
+                ("start", "pandrator.worker"),
+                ("start", "pandrator.mcp"),
+            ],
+            app.calls,
+        )
+
+    def test_runtime_restart_only_starts_an_api_that_was_already_stopped(self):
+        app = self._running_application()
+        app.running.discard("pandrator.api")
+        self._activate_application_slot(app.layout, "new", mcp=True)
+
+        response = app.post("restart", ["pandrator.worker", "pandrator.api"])
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            [
+                ("stop", "pandrator.mcp"),
+                ("stop", "pandrator.worker"),
+                ("start", "pandrator.api"),
+                ("start", "pandrator.worker"),
+                ("start", "pandrator.mcp"),
+            ],
+            app.calls,
+        )
+
+    def test_runtime_restart_failure_names_the_services_it_left_stopped(self):
+        app = self._running_application()
+        self._activate_application_slot(app.layout, "new", mcp=True)
+        app.failing.add("pandrator.worker")
+
+        response = app.post("restart", ["pandrator.api"])
+
+        self.assertEqual(409, response.status_code)
+        error = response.get_json()["error"]
+        self.assertEqual("runtime_action_failed", error["code"])
+        self.assertEqual("pandrator.worker", error["details"]["service_id"])
+        self.assertEqual(
+            ["pandrator.worker", "pandrator.mcp"],
+            error["details"]["left_stopped"],
+        )
+        self.assertEqual({"pandrator.api"}, app.running)
+
+    def test_runtime_restart_on_the_same_slot_restarts_only_the_selection(self):
+        app = self._running_application()
+        before = app.supervisor.spec("pandrator.api")
+
+        response = app.post("restart", ["pandrator.api"])
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            [("stop", "pandrator.api"), ("start", "pandrator.api")],
+            app.calls,
+        )
+        self.assertEqual(before, app.supervisor.spec("pandrator.api"))
 
     def test_frozen_manager_uses_pixi_for_python_backend_bootstrappers(self):
         from pandrator_manager.models import ResolvedComponentState
