@@ -47,28 +47,54 @@ def canonical_stage_key(stage_key: str) -> str:
     return "optimize_tts" if stage_key == "optimize_document" else stage_key
 
 
-def _edges(
-    session: Session, session_id: str | None = None,
-) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Parent and child maps of the artifact lineage graph.
-
-    With ``session_id``, only edges whose child belongs to that session or to no
-    session: every parent of a session artifact, and the parents of any
-    session-less artifact an upward walk passes through. Copies and forks
-    re-point their edges at their own copies, so a walk does not need another
-    session's edges.
-    """
+def _edges(session: Session) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     parents: dict[str, set[str]] = {}
     children: dict[str, set[str]] = {}
-    query = select(ArtifactEdge.parent_artifact_id, ArtifactEdge.child_artifact_id)
-    if session_id is not None:
-        query = query.join(Artifact, Artifact.id == ArtifactEdge.child_artifact_id).where(
-            or_(Artifact.session_id == session_id, Artifact.session_id.is_(None))
-        )
-    for parent_id, child_id in session.execute(query):
+    for parent_id, child_id in session.execute(
+        select(ArtifactEdge.parent_artifact_id, ArtifactEdge.child_artifact_id)
+    ):
         parents.setdefault(child_id, set()).add(parent_id)
         children.setdefault(parent_id, set()).add(child_id)
     return parents, children
+
+
+_FRONTIER_CHUNK = 500
+
+
+def _reachable(
+    session: Session, start: str, *, upward: bool,
+) -> tuple[dict[str, set[str]], set[str]]:
+    """The lineage edges reachable from ``start``, read one frontier at a time.
+
+    Upward follows child-to-parent edges, downward parent-to-child, in any
+    session: a lineage may pass through another session's or a session-less
+    artifact and come back. Returns the walked map (each reached artifact to its
+    next ones in that direction) and every artifact reached from ``start``, which
+    holds ``start`` only through a cycle. Each step reads the edges of the
+    current frontier through an index, so the cost follows the lineage, not the
+    database.
+    """
+    near, far = (
+        (ArtifactEdge.child_artifact_id, ArtifactEdge.parent_artifact_id)
+        if upward
+        else (ArtifactEdge.parent_artifact_id, ArtifactEdge.child_artifact_id)
+    )
+    graph: dict[str, set[str]] = {}
+    reached: set[str] = set()
+    walked = {start}
+    frontier = [start]
+    while frontier:
+        following: list[str] = []
+        for offset in range(0, len(frontier), _FRONTIER_CHUNK):
+            chunk = frontier[offset : offset + _FRONTIER_CHUNK]
+            for near_id, far_id in session.execute(select(near, far).where(near.in_(chunk))):
+                graph.setdefault(near_id, set()).add(far_id)
+                reached.add(far_id)
+                if far_id not in walked:
+                    walked.add(far_id)
+                    following.append(far_id)
+        frontier = following
+    return graph, reached
 
 
 def _closure(seed: str, graph: dict[str, set[str]]) -> set[str]:
@@ -367,7 +393,10 @@ def choose_artifact(
     if artifact.role not in STAGE_OUTPUT_ROLES.get(stage_key, ()):
         raise ValueError(f"Artifact role '{artifact.role}' is not produced by stage '{stage_key}'.")
 
-    parents, _children = _edges(session, session_id)
+    # Only the chosen artifact's own lineage: its ancestors, to restore their
+    # stages, and its descendants, to keep the later selections derived from it.
+    parents, _ancestors = _reachable(session, artifact.id, upward=True)
+    _children, descendants = _reachable(session, artifact.id, upward=False)
     roles_by_id = {
         item_id: role
         for item_id, role in session.execute(
@@ -403,8 +432,9 @@ def choose_artifact(
     for row in selected_rows:
         if not row.artifact_id or row.stage_key in restored or STAGE_RANK.get(row.stage_key, 0) <= chosen_rank:
             continue
-        downstream_ancestors = _closure(row.artifact_id, parents)
-        if artifact.id not in downstream_ancestors:
+        # The chosen artifact is among this row's ancestors exactly when the
+        # row's artifact is among the chosen artifact's descendants.
+        if row.artifact_id not in descendants:
             cleared.append(row.stage_key)
             _mark_cleared(session, session_id, row.stage_key)
     session.flush()

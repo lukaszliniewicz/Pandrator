@@ -100,72 +100,136 @@ class WebArtifactSelectionTests(unittest.TestCase):
         self.assertEqual(202, queued.status_code, queued.get_json())
         self.assertEqual(transcript_one.id, queued.get_json()["payload_json"]["source_artifact_id"])
 
-    def test_selection_walk_reads_only_its_sessions_edges_and_artifact_roles(self):
-        from unittest import mock
+    def _other_session(self, name):
+        return self.client.post(
+            "/api/v1/sessions", json={"name": name, "workflow_kind": "voiceover"},
+            headers=self.headers,
+        ).get_json()["id"]
 
-        from sqlalchemy import event
+    def _artifact_in(self, session_id, name, role, text, parents=()):
+        own, self.session_id = self.session_id, session_id
+        try:
+            return self.artifact(name, role, text, parents)
+        finally:
+            self.session_id = own
+
+    @staticmethod
+    def _full_graph_walk(session, start, *, upward):
+        """The walk over every edge in the database that the selection save used to make."""
+        from pandrator.web import artifact_selection
+
+        parents, children = artifact_selection._edges(session)
+        graph = parents if upward else children
+        return graph, artifact_selection._closure(start, graph)
+
+    def _choose(self, stage_key, artifact_id, *, full_graph=False, commit=False):
+        from contextlib import nullcontext
+        from unittest import mock
 
         from pandrator.web import artifact_selection
 
-        other = self.client.post(
-            "/api/v1/sessions", json={"name": "Other lineage", "workflow_kind": "voiceover"},
-            headers=self.headers,
-        ).get_json()["id"]
-        own_session = self.session_id
-        self.session_id = other
-        other_source = self.artifact("other.mp4", "upload", "media")
+        database = self.app.extensions["pandrator"]["database"]
+        walk = (
+            mock.patch.object(artifact_selection, "_reachable", self._full_graph_walk)
+            if full_graph
+            else nullcontext()
+        )
+        with walk, database.session() as session:
+            result = artifact_selection.choose_artifact(
+                session, self.session_id, stage_key, artifact_id,
+            )
+            if not commit:
+                session.rollback()
+        return result
+
+    def test_selection_walk_reads_only_the_chosen_lineage_and_artifact_roles(self):
+        from sqlalchemy import event
+
+
+        other = self._other_session("Other lineage")
+        other_source = self._artifact_in(other, "other.mp4", "upload", "media")
         other_ids = {other_source.id}
         parent = other_source
         for index, role in enumerate(("transcription", "correction", "translation")):
-            parent = self.artifact(f"other-{index}.srt", role, f"other {index}", [parent.id])
+            parent = self._artifact_in(other, f"other-{index}.srt", role, f"other {index}", [parent.id])
             other_ids.add(parent.id)
-        self.session_id = own_session
         source = self.artifact("source.mp4", "upload", "media")
         transcript = self.artifact("transcript.srt", "transcription", "one", [source.id])
         correction = self.artifact("correction.srt", "correction", "one!", [transcript.id])
         translation = self.artifact("translation.srt", "translation", "uno", [correction.id])
         self.artifact("translation-2.srt", "translation", "dos", [correction.id])
 
+        reference = self._choose("translate", translation.id, full_graph=True)
         database = self.app.extensions["pandrator"]["database"]
-        unscoped = artifact_selection._edges
+        edge_reads = []
+        loaded = []
 
-        def choose(scoped):
-            loaded = []
-            edges = (
-                (lambda session, session_id=None: unscoped(session))
-                if not scoped else unscoped
-            )
+        def record(_connection, _cursor, statement, parameters, _context, _many):
+            if "FROM artifact_edges" in statement:
+                edge_reads.append((statement, parameters))
 
-            def count_load(target, _context):
-                loaded.append(target.id)
+        def count_load(target, _context):
+            loaded.append(target.id)
 
-            event.listen(Artifact, "load", count_load)
-            try:
-                with (
-                    mock.patch.object(artifact_selection, "_edges", side_effect=edges) as walked,
-                    database.session() as session,
-                ):
-                    result = artifact_selection.choose_artifact(
-                        session, self.session_id, "translate", translation.id,
-                    )
-                    parents, _children = edges(session, self.session_id)
-                    session.rollback()
-            finally:
-                event.remove(Artifact, "load", count_load)
-            walked.assert_called_once()
-            return result, parents, loaded
-
-        reference, all_parents, _ = choose(scoped=False)
-        result, parents, loaded = choose(scoped=True)
+        event.listen(database.engine, "before_cursor_execute", record)
+        event.listen(Artifact, "load", count_load)
+        try:
+            result = self._choose("translate", translation.id)
+        finally:
+            event.remove(database.engine, "before_cursor_execute", record)
+            event.remove(Artifact, "load", count_load)
         self.assertEqual(reference, result)
         self.assertEqual(
             {"translate": translation.id, "correct": correction.id, "transcribe": transcript.id},
             result["restored"],
         )
-        self.assertTrue(other_ids & set(all_parents))
-        self.assertFalse(other_ids & (set(parents) | set().union(*parents.values())))
+        # Every edge read names a frontier of the chosen lineage; none reads the
+        # whole table or reaches the unrelated session's artifacts.
+        self.assertTrue(edge_reads)
+        for statement, parameters in edge_reads:
+            self.assertIn(" IN ", statement)
+            values = set(parameters.values() if isinstance(parameters, dict) else parameters)
+            self.assertFalse(other_ids & values, statement)
         # Only the chosen artifact is hydrated; the walk reads ids and roles.
         self.assertEqual([translation.id], loaded)
+
+    def _foreign_hops_case(self, hops):
+        """A(S) -> foreign hops -> C(S): a lineage that leaves the session and comes back."""
+        source = self.artifact(f"hops-{hops}-source.mp4", "upload", "media")
+        transcript = self.artifact(f"hops-{hops}-transcript.srt", "transcription", "one", [source.id])
+        parent = transcript
+        for hop in range(hops):
+            other = self._other_session(f"Foreign hop {hops}-{hop}")
+            parent = self._artifact_in(
+                other, f"hops-{hops}-foreign-{hop}.srt", "correction", "foreign", [parent.id],
+            )
+        correction = self.artifact(f"hops-{hops}-correction.srt", "correction", "one!", [parent.id])
+        translation = self.artifact(f"hops-{hops}-translation.srt", "translation", "uno", [correction.id])
+        return transcript, correction, translation
+
+    def test_selection_walk_restores_through_foreign_session_hops(self):
+        for hops in (1, 2):
+            with self.subTest(hops=hops):
+                transcript, correction, translation = self._foreign_hops_case(hops)
+                reference = self._choose("translate", translation.id, full_graph=True)
+                result = self._choose("translate", translation.id)
+                self.assertEqual(reference, result)
+                # The foreign artifacts restore nothing, but the walk goes on
+                # past them to the session's own transcript.
+                self.assertEqual(
+                    {"translate": translation.id, "correct": correction.id, "transcribe": transcript.id},
+                    result["restored"],
+                )
+
+    def test_a_later_selection_derived_through_a_foreign_hop_is_kept(self):
+        transcript, _correction, translation = self._foreign_hops_case(2)
+        self._choose("translate", translation.id, commit=True)
+        reference = self._choose("transcribe", transcript.id, full_graph=True)
+        result = self._choose("transcribe", transcript.id)
+        self.assertEqual(reference, result)
+        # The selected translation descends from the transcript through two
+        # foreign artifacts, so choosing the transcript keeps it.
+        self.assertNotIn("translate", result["cleared"])
 
     def test_selection_walk_passes_through_a_session_less_ancestor(self):
         from pandrator.web import artifact_selection
