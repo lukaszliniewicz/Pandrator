@@ -524,6 +524,20 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
         )
         self.assertEqual({"pandrator.api"}, app.running)
 
+    def test_runtime_restart_failure_leaves_out_a_service_the_new_slot_dropped(self):
+        app = self._running_application()
+        self._activate_application_slot(app.layout, "new", mcp=False)
+        app.failing.add("pandrator.worker")
+
+        response = app.post("restart", ["pandrator.api"])
+
+        self.assertEqual(409, response.status_code)
+        details = response.get_json()["error"]["details"]
+        # MCP was stopped too, but the new launch no longer registers it, so
+        # a retry with these IDs must not name it.
+        self.assertEqual(["pandrator.worker"], details["left_stopped"])
+        self.assertIsNone(app.supervisor.spec("pandrator.mcp"))
+
     def test_runtime_restart_on_the_same_slot_restarts_only_the_selection(self):
         app = self._running_application()
         before = app.supervisor.spec("pandrator.api")

@@ -2038,14 +2038,18 @@ def create_api(
                 }
                 if stopped:
                     # Name what the restart stopped and could not bring back,
-                    # so a retry knows to start them.
+                    # so a retry knows to start them; a service the current
+                    # launch no longer registers cannot be started and is left
+                    # out.
                     running = {
                         item.id
                         for item in supervisor.snapshot()
                         if item.process is not None
                     }
                     details["left_stopped"] = [
-                        item for item in stopped if item not in running
+                        item
+                        for item in stopped
+                        if item not in running and relaunchable(item)
                     ]
                 raise ManagerError(
                     "runtime_action_failed",
