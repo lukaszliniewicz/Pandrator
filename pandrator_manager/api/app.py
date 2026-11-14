@@ -1979,11 +1979,17 @@ def create_api(
                 or supervisor.spec(service_id) is not None
             )
 
-        # Services the restart already stopped are only started, so the
-        # selection's order cannot stop one again after a dependent started it.
+        # After the restart's coordinated stop every Pandrator service is
+        # down, so each is only started: the selection's order cannot stop
+        # one again after a dependent started it.
         planned = [
             *(
-                (service_id, "start" if service_id in stopped else action)
+                (
+                    service_id,
+                    "start"
+                    if stopped and service_id in PANDRATOR_SERVICE_STOP_ORDER
+                    else action,
+                )
                 for service_id in selected
                 if action != "restart" or relaunchable(service_id)
             ),
@@ -2026,10 +2032,25 @@ def create_api(
                     },
                     service_id=service_id,
                 )
+                details: dict[str, object] = {
+                    "service_id": service_id,
+                    "action": service_action,
+                }
+                if stopped:
+                    # Name what the restart stopped and could not bring back,
+                    # so a retry knows to start them.
+                    running = {
+                        item.id
+                        for item in supervisor.snapshot()
+                        if item.process is not None
+                    }
+                    details["left_stopped"] = [
+                        item for item in stopped if item not in running
+                    ]
                 raise ManagerError(
                     "runtime_action_failed",
                     str(error) or "The managed service action failed.",
-                    {"service_id": service_id, "action": service_action},
+                    details,
                     409,
                 ) from error
             results.append(service.model_dump(mode="json"))

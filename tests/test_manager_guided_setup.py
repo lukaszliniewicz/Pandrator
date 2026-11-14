@@ -338,6 +338,7 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
         )
         supervisor.register_many(pandrator_runtime_specs(layout))
         running: set[str] = set()
+        failing: set[str] = set()
         calls: list[tuple[str, str]] = []
         identity = ProcessIdentity(
             pid=1,
@@ -367,6 +368,8 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
         def start(service_id):
             for dependency in supervisor.spec(service_id).dependencies:
                 start(dependency)
+            if service_id in failing:
+                raise RuntimeError(f"{service_id} did not become ready.")
             if service_id not in running:
                 running.add(service_id)
                 calls.append(("start", service_id))
@@ -405,6 +408,7 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
             layout=layout,
             supervisor=supervisor,
             running=running,
+            failing=failing,
             calls=calls,
             post=post,
         )
@@ -483,6 +487,42 @@ class ManagedApplicationLaunchTests(unittest.TestCase):
             ],
             app.calls,
         )
+
+    def test_runtime_restart_only_starts_an_api_that_was_already_stopped(self):
+        app = self._running_application()
+        app.running.discard("pandrator.api")
+        self._activate_application_slot(app.layout, "new", mcp=True)
+
+        response = app.post("restart", ["pandrator.worker", "pandrator.api"])
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            [
+                ("stop", "pandrator.mcp"),
+                ("stop", "pandrator.worker"),
+                ("start", "pandrator.api"),
+                ("start", "pandrator.worker"),
+                ("start", "pandrator.mcp"),
+            ],
+            app.calls,
+        )
+
+    def test_runtime_restart_failure_names_the_services_it_left_stopped(self):
+        app = self._running_application()
+        self._activate_application_slot(app.layout, "new", mcp=True)
+        app.failing.add("pandrator.worker")
+
+        response = app.post("restart", ["pandrator.api"])
+
+        self.assertEqual(409, response.status_code)
+        error = response.get_json()["error"]
+        self.assertEqual("runtime_action_failed", error["code"])
+        self.assertEqual("pandrator.worker", error["details"]["service_id"])
+        self.assertEqual(
+            ["pandrator.worker", "pandrator.mcp"],
+            error["details"]["left_stopped"],
+        )
+        self.assertEqual({"pandrator.api"}, app.running)
 
     def test_runtime_restart_on_the_same_slot_restarts_only_the_selection(self):
         app = self._running_application()
