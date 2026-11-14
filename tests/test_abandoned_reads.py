@@ -495,6 +495,50 @@ def test_waitress_still_runs_a_queued_mutation_whose_client_left(monkeypatch):
     assert served == [("GET", "/first", False), ("POST", "/second", False)]
 
 
+def test_waitress_reports_a_closed_client_to_a_read_only_post_preview(monkeypatch):
+    monkeypatch.undo()  # Real waitress needs loopback sockets, which no_network forbids.
+    release = threading.Event()
+    started = threading.Event()
+    probes: list[Callable[[], bool]] = []
+    preview = "/api/v1/sessions/s1/generation-recast/preview"
+
+    def app(environ, start_response):
+        probes.append(environ["waitress.client_disconnected"])
+        started.set()
+        assert release.wait(WAIT_SECONDS)
+        start_response("200 OK", [("Content-Type", "text/plain"), ("Content-Length", "2")])
+        return [b"ok"]
+
+    with _waitress(app) as server:
+        client = _send_get(server, preview, method="POST")
+        assert started.wait(WAIT_SECONDS)
+        assert probes[0]() is False
+        client.close()
+        _wait_until(lambda: probes[0]() is True, "the preview's disconnect")
+        release.set()
+        _wait_until(
+            lambda: not server.task_dispatcher.queue and server.task_dispatcher.active_count == 0,
+            "the dispatcher to go idle",
+        )
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "watched"),
+    [
+        ("GET", "/api/v1/anything", True),
+        ("HEAD", "/api/v1/anything", True),
+        ("POST", "/api/v1/sessions/s1/generation-recast/preview", True),
+        ("POST", "/api/v1/sessions/s1/generation-recast", False),
+        ("POST", "/api/v1/sessions/s1/generation-recast/preview/extra", False),
+        ("PUT", "/api/v1/sessions/s1/generation-recast/preview", False),
+        ("POST", None, False),
+        (None, None, False),
+    ],
+)
+def test_only_reads_and_read_only_previews_watch_for_a_departed_client(method, path, watched):
+    assert abandoned_requests.watches_disconnect(method, path) is watched
+
+
 def test_api_server_listeners_use_the_read_only_disconnect_channel(monkeypatch):
     monkeypatch.undo()  # Real waitress needs loopback sockets, which no_network forbids.
     socket_map: dict[int, Any] = {}
