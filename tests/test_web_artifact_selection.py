@@ -167,6 +167,28 @@ class WebArtifactSelectionTests(unittest.TestCase):
         # Only the chosen artifact is hydrated; the walk reads ids and roles.
         self.assertEqual([translation.id], loaded)
 
+    def test_selection_walk_passes_through_a_session_less_ancestor(self):
+        from pandrator.web import artifact_selection
+
+        source = self.artifact("through-source.mp4", "upload", "media")
+        transcript = self.artifact("through-transcript.srt", "transcription", "one", [source.id])
+        shared = self.artifact("through-shared.srt", "subtitle_import", "one", [transcript.id])
+        correction = self.artifact("through-correction.srt", "correction", "one!", [shared.id])
+        translation = self.artifact("through-translation.srt", "translation", "uno", [correction.id])
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            session.get(Artifact, shared.id).session_id = None
+        with database.session() as session:
+            result = artifact_selection.choose_artifact(
+                session, self.session_id, "translate", translation.id,
+            )
+            session.rollback()
+        # The walk continues past the session-less artifact, as the unscoped walk did.
+        self.assertEqual(
+            {"translate": translation.id, "correct": correction.id, "transcribe": transcript.id},
+            result["restored"],
+        )
+
     def test_selection_of_an_unknown_or_wrong_role_artifact_is_refused(self):
         source = self.artifact("refused-source.mp4", "upload", "media")
         transcript = self.artifact("refused-transcript.srt", "transcription", "one", [source.id])

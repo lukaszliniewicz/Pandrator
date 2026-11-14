@@ -52,17 +52,18 @@ def _edges(
 ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Parent and child maps of the artifact lineage graph.
 
-    With ``session_id``, only edges whose child belongs to that session: every
-    parent of a session artifact, which is all an upward walk from one needs.
-    Copies and forks re-point their edges at their own copies, so no lineage
-    leaves a session and comes back into it.
+    With ``session_id``, only edges whose child belongs to that session or to no
+    session: every parent of a session artifact, and the parents of any
+    session-less artifact an upward walk passes through. Copies and forks
+    re-point their edges at their own copies, so a walk does not need another
+    session's edges.
     """
     parents: dict[str, set[str]] = {}
     children: dict[str, set[str]] = {}
     query = select(ArtifactEdge.parent_artifact_id, ArtifactEdge.child_artifact_id)
     if session_id is not None:
         query = query.join(Artifact, Artifact.id == ArtifactEdge.child_artifact_id).where(
-            Artifact.session_id == session_id
+            or_(Artifact.session_id == session_id, Artifact.session_id.is_(None))
         )
     for parent_id, child_id in session.execute(query):
         parents.setdefault(child_id, set()).add(parent_id)
