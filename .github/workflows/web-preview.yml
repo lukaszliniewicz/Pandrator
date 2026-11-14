@@ -33,9 +33,12 @@ permissions:
 # A new push to a pull request supersedes its running checks; without this
 # the stale run keeps its share of the job limit and the new one queues.
 # Pushes to branches and manual runs are never cancelled.
+# A newer push to a pull request or branch cancels its superseded run, so a
+# burst of merges cannot queue full runs for every intermediate commit.
+# Manual runs never cancel or get cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && format('push-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
   python-lanes:
