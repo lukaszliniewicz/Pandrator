@@ -37,7 +37,10 @@ from .credentials import (
 )
 from .database import Database
 from .export_contract import export_requires_generation_assembly
-from .generation_plan_store import GenerationPlanStoreContext
+from .generation_plan_store import GenerationPlanStoreContext, PreparedGenerationPlanRows
+from .generation_plan_store import (
+    prepare_generation_plan_rows as _prepare_generation_plan_rows_impl,
+)
 from .generation_plan_store import store_generation_plan as _store_generation_plan_impl
 from .google_voice_design import design_google_voice as _design_google_voice_impl
 from .job_inputs import artifact_job_ownership
@@ -892,6 +895,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             _scaled_progress_callback=_scaled_progress_callback,
             _fraction_message_callback=_fraction_message_callback,
             _source_cleaning_progress_callback=_source_cleaning_progress_callback,
+            _prepare_generation_plan_rows=self._prepare_generation_plan_rows,
         )
 
     def download_source_url(self, payload, progress, cancel_event):
@@ -2665,6 +2669,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         source_artifact_id: str | None = None,
         db_session=None,
         force_new: bool = False,
+        prepared_rows: PreparedGenerationPlanRows | None = None,
     ) -> tuple[str, list[str]]:
         return _store_generation_plan_impl(
             self._generation_plan_store_context(),
@@ -2675,6 +2680,24 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             source_artifact_id=source_artifact_id,
             db_session=db_session,
             force_new=force_new,
+            prepared_rows=prepared_rows,
+        )
+
+    def _prepare_generation_plan_rows(
+        self,
+        session_id: str,
+        records: list[dict[str, Any]],
+        *,
+        settings: dict[str, Any],
+    ) -> PreparedGenerationPlanRows:
+        """Build a plan's segment rows in a read session, before any writer opens."""
+        from .generation_controls import get_generation_controls
+
+        with self.database.session() as session:
+            characters = get_generation_controls(session, session_id)["characters"]
+        return _prepare_generation_plan_rows_impl(
+            self._generation_plan_store_context(), records, settings=settings,
+            characters=characters,
         )
 
     @staticmethod
