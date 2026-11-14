@@ -47,12 +47,24 @@ def canonical_stage_key(stage_key: str) -> str:
     return "optimize_tts" if stage_key == "optimize_document" else stage_key
 
 
-def _edges(session: Session) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+def _edges(
+    session: Session, session_id: str | None = None,
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Parent and child maps of the artifact lineage graph.
+
+    With ``session_id``, only edges whose child belongs to that session: every
+    parent of a session artifact, which is all an upward walk from one needs.
+    Copies and forks re-point their edges at their own copies, so no lineage
+    leaves a session and comes back into it.
+    """
     parents: dict[str, set[str]] = {}
     children: dict[str, set[str]] = {}
-    for parent_id, child_id in session.execute(
-        select(ArtifactEdge.parent_artifact_id, ArtifactEdge.child_artifact_id)
-    ):
+    query = select(ArtifactEdge.parent_artifact_id, ArtifactEdge.child_artifact_id)
+    if session_id is not None:
+        query = query.join(Artifact, Artifact.id == ArtifactEdge.child_artifact_id).where(
+            Artifact.session_id == session_id
+        )
+    for parent_id, child_id in session.execute(query):
         parents.setdefault(child_id, set()).add(parent_id)
         children.setdefault(parent_id, set()).add(child_id)
     return parents, children
@@ -354,10 +366,12 @@ def choose_artifact(
     if artifact.role not in STAGE_OUTPUT_ROLES.get(stage_key, ()):
         raise ValueError(f"Artifact role '{artifact.role}' is not produced by stage '{stage_key}'.")
 
-    parents, _children = _edges(session)
-    artifacts_by_id = {
-        item.id: item
-        for item in session.scalars(select(Artifact).where(Artifact.session_id == session_id)).all()
+    parents, _children = _edges(session, session_id)
+    roles_by_id = {
+        item_id: role
+        for item_id, role in session.execute(
+            select(Artifact.id, Artifact.role).where(Artifact.session_id == session_id)
+        )
     }
     # Breadth-first traversal chooses the nearest compatible ancestor when a
     # derived artifact has more than one provenance edge.
@@ -371,8 +385,8 @@ def choose_artifact(
                 continue
             visited.add(parent_id)
             pending.append(parent_id)
-            parent = artifacts_by_id.get(parent_id)
-            parent_stage = ROLE_TO_STAGE.get(parent.role) if parent else None
+            parent_role = roles_by_id.get(parent_id)
+            parent_stage = ROLE_TO_STAGE.get(parent_role) if parent_role is not None else None
             if parent_stage and parent_stage not in restored:
                 restored[parent_stage] = parent_id
     for restored_stage, restored_id in restored.items():

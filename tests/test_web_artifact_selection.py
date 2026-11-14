@@ -100,6 +100,95 @@ class WebArtifactSelectionTests(unittest.TestCase):
         self.assertEqual(202, queued.status_code, queued.get_json())
         self.assertEqual(transcript_one.id, queued.get_json()["payload_json"]["source_artifact_id"])
 
+    def test_selection_walk_reads_only_its_sessions_edges_and_artifact_roles(self):
+        from unittest import mock
+
+        from sqlalchemy import event
+
+        from pandrator.web import artifact_selection
+
+        other = self.client.post(
+            "/api/v1/sessions", json={"name": "Other lineage", "workflow_kind": "voiceover"},
+            headers=self.headers,
+        ).get_json()["id"]
+        own_session = self.session_id
+        self.session_id = other
+        other_source = self.artifact("other.mp4", "upload", "media")
+        other_ids = {other_source.id}
+        parent = other_source
+        for index, role in enumerate(("transcription", "correction", "translation")):
+            parent = self.artifact(f"other-{index}.srt", role, f"other {index}", [parent.id])
+            other_ids.add(parent.id)
+        self.session_id = own_session
+        source = self.artifact("source.mp4", "upload", "media")
+        transcript = self.artifact("transcript.srt", "transcription", "one", [source.id])
+        correction = self.artifact("correction.srt", "correction", "one!", [transcript.id])
+        translation = self.artifact("translation.srt", "translation", "uno", [correction.id])
+        self.artifact("translation-2.srt", "translation", "dos", [correction.id])
+
+        database = self.app.extensions["pandrator"]["database"]
+        unscoped = artifact_selection._edges
+
+        def choose(scoped):
+            loaded = []
+            edges = (
+                (lambda session, session_id=None: unscoped(session))
+                if not scoped else unscoped
+            )
+
+            def count_load(target, _context):
+                loaded.append(target.id)
+
+            event.listen(Artifact, "load", count_load)
+            try:
+                with (
+                    mock.patch.object(artifact_selection, "_edges", side_effect=edges) as walked,
+                    database.session() as session,
+                ):
+                    result = artifact_selection.choose_artifact(
+                        session, self.session_id, "translate", translation.id,
+                    )
+                    parents, _children = edges(session, self.session_id)
+                    session.rollback()
+            finally:
+                event.remove(Artifact, "load", count_load)
+            walked.assert_called_once()
+            return result, parents, loaded
+
+        reference, all_parents, _ = choose(scoped=False)
+        result, parents, loaded = choose(scoped=True)
+        self.assertEqual(reference, result)
+        self.assertEqual(
+            {"translate": translation.id, "correct": correction.id, "transcribe": transcript.id},
+            result["restored"],
+        )
+        self.assertTrue(other_ids & set(all_parents))
+        self.assertFalse(other_ids & (set(parents) | set().union(*parents.values())))
+        # Only the chosen artifact is hydrated; the walk reads ids and roles.
+        self.assertEqual([translation.id], loaded)
+
+    def test_selection_of_an_unknown_or_wrong_role_artifact_is_refused(self):
+        source = self.artifact("refused-source.mp4", "upload", "media")
+        transcript = self.artifact("refused-transcript.srt", "transcription", "one", [source.id])
+        path = f"/api/v1/sessions/{self.session_id}/stages/translate/selection"
+        revision = self.client.get(
+            f"/api/v1/sessions/{self.session_id}/stages/translate/artifacts"
+        ).get_json()["revision"]
+        headers = {**self.headers, "If-Match": f'"{revision}"'}
+
+        unknown = self.client.put(path, json={"artifact_id": "no-such-artifact"}, headers=headers)
+        self.assertEqual(404, unknown.status_code, unknown.get_json())
+        self.assertEqual("not_found", unknown.get_json()["error"]["code"])
+
+        wrong_role = self.client.put(path, json={"artifact_id": transcript.id}, headers=headers)
+        self.assertEqual(422, wrong_role.status_code, wrong_role.get_json())
+        self.assertEqual("validation_error", wrong_role.get_json()["error"]["code"])
+        with self.app.extensions["pandrator"]["database"].session() as session:
+            self.assertIsNone(session.scalar(select(SessionStageSelection).where(
+                SessionStageSelection.session_id == self.session_id,
+                SessionStageSelection.stage_key == "translate",
+            )))
+
     def test_clear_selection_keeps_history_but_unlocks_a_fresh_path(self):
         source = self.artifact("clear-source.mp4", "upload", "media")
         transcript = self.artifact("clear-transcript.srt", "transcription", "one", [source.id])
