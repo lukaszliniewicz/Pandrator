@@ -151,15 +151,34 @@ def probed(probe) -> Iterator[mock.MagicMock]:
         reset_disconnect_probe(token)
 
 
+def _checkpoints_before_the_segments(plan: Plan, actor) -> int:
+    """The probe calls a connected preview makes before its first segment's check."""
+    connected = TurnsTrueAfter(10**6)
+    seen: list[int] = []
+    real_scopes = generation_recast._scopes
+
+    def scopes(*args: Any, **kwargs: Any):
+        seen.append(connected.calls)
+        return real_scopes(*args, **kwargs)
+
+    token = bind_disconnect_probe(connected)
+    try:
+        with mock.patch.object(generation_recast, "_scopes", scopes):
+            _preview(plan, actor)
+    finally:
+        reset_disconnect_probe(token)
+    # Each segment's check runs just before its ``_scopes`` call.
+    return seen[0] - 1
+
+
 def test_preview_stops_at_the_next_segment_once_its_client_leaves(varied_plan):  # noqa: F811
     plan, actor = varied_plan
     segments = _cast_segments(plan)
-    # A connected client: the cast freeze's checkpoints, then one per segment.
     connected = TurnsTrueAfter(10**6)
     with probed(connected) as scoped:
         _preview(plan, actor)
     assert scoped.call_count == segments
-    before_loop = connected.calls - segments
+    before_loop = _checkpoints_before_the_segments(plan, actor)
     assert before_loop >= 0
     # The client leaves after the first segment's checkpoint.
     probe = TurnsTrueAfter(before_loop + 1)
@@ -167,6 +186,24 @@ def test_preview_stops_at_the_next_segment_once_its_client_leaves(varied_plan): 
         _preview(plan, actor)
     assert probe.calls == before_loop + 2
     assert scoped.call_count == 1
+
+
+def test_preview_stops_in_the_target_pass_once_its_client_leaves(varied_plan):  # noqa: F811
+    plan, actor = varied_plan
+    segments = _cast_segments(plan)
+    before_loop = _checkpoints_before_the_segments(plan, actor)
+    # The first pass checks once per segment, and so does the pass that builds
+    # each target's controls: a connected preview makes both.
+    connected = TurnsTrueAfter(10**6)
+    with probed(connected):
+        _preview(plan, actor)
+    assert connected.calls >= before_loop + 2 * segments
+    # The client leaves after the target pass's first check.
+    probe = TurnsTrueAfter(before_loop + segments + 1)
+    with probed(probe) as scoped, pytest.raises(RequestAbandoned):
+        _preview(plan, actor)
+    assert probe.calls == before_loop + segments + 2
+    assert scoped.call_count == segments
 
 
 def test_an_abandoned_preview_post_answers_499(varied_plan):  # noqa: F811

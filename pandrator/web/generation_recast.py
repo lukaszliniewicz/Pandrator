@@ -643,6 +643,9 @@ def prepare_recast(
             baseline,
             reference_verified,
         ) in rows:
+            # This pass deep-copies controls per target (every missing segment
+            # with include_missing), so it stops for a departed client too.
+            raise_if_abandoned()
             chosen = affected & selected
             generate = bool(
                 chosen
