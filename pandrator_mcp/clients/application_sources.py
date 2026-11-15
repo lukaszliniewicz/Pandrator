@@ -80,7 +80,11 @@ class ApplicationSourceMethods(ApplicationRequests):
         return self._request_json("/api/v1/artifacts", parameters=parameters)
 
     def artifact_context(self, artifact_id: str) -> dict[str, Any]:
-        return self._request_json(f"/api/v1/artifacts/{quote(artifact_id, safe='')}/context")
+        # Context for a large media artifact can take longer than a plain read.
+        return self._request_json(
+            f"/api/v1/artifacts/{quote(artifact_id, safe='')}/context",
+            request_timeout_seconds=max(self.timeout_seconds, 60.0),
+        )
 
     def initialize_upload(
         self,

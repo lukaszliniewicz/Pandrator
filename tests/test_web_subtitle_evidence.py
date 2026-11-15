@@ -420,7 +420,10 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
         with self.services.database.session() as session:
             session.get(Artifact, cut.id).state = "deleted"
 
-        with self.assertRaisesRegex(ValueError, "Subtitle provenance is unavailable"):
+        with self.assertRaisesRegex(
+            ValueError,
+            f"artifact {correction.id} declares parent {cut.id}, which is deleted",
+        ):
             self.services.subtitle_evidence.request(
                 self.session.id,
                 {
@@ -463,7 +466,10 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
             },
         )
 
-        with self.assertRaisesRegex(ValueError, "Subtitle provenance is unavailable"):
+        with self.assertRaisesRegex(
+            ValueError,
+            f"declares parent {foreign_cut.id}, which is neither owned by nor attached",
+        ):
             self.services.subtitle_evidence.request(
                 self.session.id,
                 {

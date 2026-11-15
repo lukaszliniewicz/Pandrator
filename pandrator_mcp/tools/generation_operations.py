@@ -226,11 +226,11 @@ def get_generation_operation(
 
     while True:
         payload = application.get_generation_operation(
-            arguments.operation_id,
+            arguments.resolved_operation_id,
             include_coverage=arguments.include_coverage,
         )
         poll_count += 1
-        summary = _operation_summary(payload, arguments.operation_id)
+        summary = _operation_summary(payload, arguments.resolved_operation_id)
         if summary["state"] in _TERMINAL_STATES:
             break
         now = time.monotonic()
