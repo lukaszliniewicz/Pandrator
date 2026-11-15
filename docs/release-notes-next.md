@@ -10,6 +10,19 @@ check reuses the cast freeze's parse of the same speech XML, and retained voice
 checks share one provider registry. On a 5,167-segment cast book, the detail
 read went from 6.55 s to 5.85 s, measured by Patrick Nadeau (#146).
 
+## Subtitle review
+
+Fixing the wording of one passage no longer re-times the whole subtitle.
+Passage review, in the app and through `pandrator_patch_subtitle_passages`,
+keeps every display cue not linked to your edit through a shared passage, and a wording
+fix keeps its cue's timing when the text still fits, even inside a cue that
+holds several short passages. Previously each save rebuilt every cue from its passage
+alone, which could split a line such as "Yes. Traditional Christianity? Yes."
+into three cues, some as short as 80 ms. A passage whose timing, speaker or turn
+changes is still recomposed, and a cue that comes out shorter than the minimum
+duration now borrows free time around it, without widening an overlap between
+speakers. A dry run reports how many cues change timing.
+
 ## Storage
 
 Language branches and other project branches no longer copy the files they
@@ -41,15 +54,11 @@ start while the German branch is still generating. Jobs within one project
 still run one at a time and in the order they were queued. Set
 `PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
 
-## Subtitle review
+## Media edits
 
-Fixing the wording of one passage no longer re-times the whole subtitle.
-Passage review, in the app and through `pandrator_patch_subtitle_passages`,
-keeps every display cue not linked to your edit through a shared passage, and a wording
-fix keeps its cue's timing when the text still fits, even inside a cue that
-holds several short passages. Previously each save rebuilt every cue from its passage
-alone, which could split a line such as "Yes. Traditional Christianity? Yes."
-into three cues, some as short as 80 ms. A passage whose timing, speaker or turn
-changes is still recomposed, and a cue that comes out shorter than the minimum
-duration now borrows free time around it, without widening an overlap between
-speakers. A dry run reports how many cues change timing.
+Rendering a media edit no longer fails when two speakers overlap and the later
+speaker's first word is aligned a few milliseconds before the earlier speaker's
+interjection. Composed subtitles now keep the source order instead of sorting
+by start time, and a cue that would start before the previous one starts with
+it instead. When the text check still fails, the error names the first source
+cue and composed cue that differ.
