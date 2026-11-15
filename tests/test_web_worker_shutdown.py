@@ -39,7 +39,7 @@ class WorkerShutdownTests(unittest.TestCase):
                 child.kill()
             child.wait(timeout=5)
 
-    def _start_worker(self, *, poll_interval=0.05, script=None):
+    def _start_worker(self, *, poll_interval=0.05, script=None, env=None):
         log = (self.paths.root / "worker.log").open("w")
         self.addCleanup(log.close)
         launcher = [sys.executable, str(script)] if script else [sys.executable, "-m", "pandrator"]
@@ -55,6 +55,7 @@ class WorkerShutdownTests(unittest.TestCase):
                 str(poll_interval),
             ],
             cwd=REPO,
+            env={**os.environ, **(env or {})},
             stdout=log,
             stderr=log,
         )
@@ -88,6 +89,34 @@ class WorkerShutdownTests(unittest.TestCase):
         deferred = self.queue.get(following.id)
         self.assertEqual((deferred.status, deferred.attempts), ("queued", 0))
         self.assertFalse(self.paths.worker_presence.exists())
+
+    def test_delivery_lane_claims_an_export_while_the_main_loop_is_busy(self):
+        busy = self.queue.enqueue("noop", {"duration": 3, "echo": "long job"})
+        child = self._start_worker()
+        self._wait_job(child, busy.id, "running")
+        # A missing session makes the real export handler fail fast; the point
+        # is which loop claimed it, and that it did so during the long job.
+        export = self.queue.enqueue("export.create", {"session_id": "missing"}, max_attempts=1)
+        deadline = time.monotonic() + 10
+        while self.queue.get(export.id).status in {"queued", "running"}:
+            self.assertLess(time.monotonic(), deadline, "The delivery lane did not claim the export")
+            time.sleep(0.02)
+        # Only the lane can have run it: the main loop is still on the long job.
+        self.assertEqual(self.queue.get(busy.id).status, "running")
+        self.assertEqual(self.queue.get(export.id).attempts, 1)
+        child.send_signal(signal.SIGTERM)
+        self.assertEqual(child.wait(timeout=10), 0)
+        self.assertEqual(self.queue.get(busy.id).status, "succeeded")
+
+    def test_delivery_lane_can_be_turned_off(self):
+        busy = self.queue.enqueue("noop", {"duration": 1.5, "echo": "long job"})
+        child = self._start_worker(env={"PANDRATOR_DELIVERY_LANE": "0"})
+        self._wait_job(child, busy.id, "running")
+        export = self.queue.enqueue("export.create", {"session_id": "missing"}, max_attempts=1)
+        time.sleep(0.5)
+        self.assertEqual((self.queue.get(export.id).status, self.queue.get(export.id).attempts), ("queued", 0))
+        child.send_signal(signal.SIGTERM)
+        self.assertEqual(child.wait(timeout=10), 0)
 
     def test_sigterm_at_handler_return_leaves_next_job_unclaimed(self):
         current = self.queue.enqueue("noop", {"echo": "signal before return"})

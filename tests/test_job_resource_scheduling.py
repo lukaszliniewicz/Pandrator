@@ -201,3 +201,129 @@ def test_independent_workers_overlap_cloud_and_local_work_behind_waiter(queue):
     finally:
         finish.set()
         other_database.dispose()
+
+
+def test_kind_filtered_claim_takes_only_its_kinds_in_queue_order(queue):
+    jobs, _database = queue
+    generation = jobs.enqueue("generation.run")
+    first_export = jobs.enqueue("export.create")
+    second_export = jobs.enqueue("export.variant")
+    lane_kinds = {"export.create", "export.variant"}
+    chosen = jobs.claim("lane", kinds=lane_kinds)
+    assert chosen is not None and chosen.id == first_export.id
+    assert jobs.claim("main").id == generation.id
+    assert jobs.claim("lane", kinds=lane_kinds).id == second_export.id
+    assert jobs.claim("lane", kinds=lane_kinds) is None
+
+
+def test_delivery_lane_exports_beside_a_long_generation(queue):
+    jobs, database = queue
+    sessions = SessionService(database)
+    generating = sessions.create("Generating").id
+    other = sessions.create("Other language").id
+    generation = jobs.enqueue(
+        "generation.run", session_id=generating, resource_keys=[f"session:{generating}"]
+    )
+    export = jobs.enqueue("export.create", session_id=other, resource_keys=[f"session:{other}"])
+    same_project = jobs.enqueue(
+        "export.create", session_id=generating, resource_keys=[f"session:{generating}"]
+    )
+    started, finish = Event(), Event()
+    other_database = Database(database.path)
+
+    def generate(_payload, _progress, _cancel):
+        started.set()
+        assert finish.wait(10)
+        return {}
+
+    main = Worker(jobs, "main", {"generation.run": generate})
+    lane = Worker(
+        JobQueue(other_database), "main.delivery", {"export.create": lambda *_: {}},
+        kinds={"export.create"},
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            running = executor.submit(main.run_once)
+            try:
+                assert started.wait(10)
+                assert lane.run_once()
+                assert jobs.get(export.id).status == "succeeded"
+                assert jobs.get(generation.id).status == "running"
+                # One project's jobs still run one at a time.
+                assert not lane.run_once()
+                assert (jobs.get(same_project.id).status, jobs.get(same_project.id).attempts) == (
+                    "queued", 0,
+                )
+            finally:
+                finish.set()
+            assert running.result(timeout=10)
+        assert lane.run_once()
+        assert jobs.get(same_project.id).status == "succeeded"
+    finally:
+        finish.set()
+        other_database.dispose()
+
+
+def test_delivery_lane_never_overtakes_older_work_in_its_session(queue):
+    jobs, database = queue
+    sessions = SessionService(database)
+    busy = sessions.create("Busy elsewhere").id
+    project = sessions.create("Assemble then export").id
+    lane_kinds = {"export.create"}
+    jobs.enqueue("generation.run", session_id=busy)
+    assemble = jobs.enqueue("generation.assemble", session_id=project)
+    export = jobs.enqueue("export.create", session_id=project)
+    assert jobs.claim("main").session_id == busy
+    # The export must wait for the assembly queued before it.
+    assert jobs.claim("main.delivery", kinds=lane_kinds) is None
+    claimed = jobs.claim("second")
+    assert claimed is not None and claimed.id == assemble.id
+    jobs.complete(claimed.id, "second", {}, lease_generation=claimed.lease_generation)
+    chosen = jobs.claim("main.delivery", kinds=lane_kinds)
+    assert chosen is not None and chosen.id == export.id
+
+
+def test_delivery_lane_waits_for_older_work_with_a_lapsed_lease(queue):
+    jobs, database = queue
+    project = SessionService(database).create("Assembly lease lapsed").id
+    assemble = jobs.enqueue(
+        "generation.assemble", session_id=project, max_attempts=2,
+        resource_keys=[f"session:{project}"],
+    )
+    export = jobs.enqueue("export.create", session_id=project)
+    claimed = jobs.claim("crashed")
+    assert claimed is not None and claimed.id == assemble.id
+    assert jobs.acquire_resources(
+        assemble.id, "crashed", [f"session:{project}"], lease_generation=claimed.lease_generation,
+    )
+    expired = utcnow() - timedelta(seconds=1)
+    with database.immediate_session() as unit:
+        unit.get(Job, assemble.id).lease_expires_at = expired
+        unit.get(ResourceClaim, f"session:{project}").expires_at = expired
+    # The assembly will be reclaimed; the export must not run before it.
+    assert jobs.claim("main.delivery", kinds={"export.create"}) is None
+    assert jobs.get(assemble.id).status == "running"
+    reclaimed = jobs.claim("main")
+    assert reclaimed is not None and reclaimed.id == assemble.id
+    jobs.complete(assemble.id, "main", {}, lease_generation=reclaimed.lease_generation)
+    chosen = jobs.claim("main.delivery", kinds={"export.create"})
+    assert chosen is not None and chosen.id == export.id
+
+
+def test_worker_delivery_lane_handles_every_delivery_kind(tmp_path):
+    from pandrator.web.cli import _delivery_lane
+    from pandrator.web.comparison_exports import COMPARISON_EXPORT_JOB_KIND
+    from pandrator.web.job_handler_domains import DELIVERY_LANE_JOB_KINDS
+    from pandrator.web.tts_providers import TtsProviderRegistry
+
+    paths = prepare_web_test_data_root(tmp_path)
+    database = Database(paths.database)
+    providers = TtsProviderRegistry()
+    try:
+        lane = _delivery_lane(database, paths, JobQueue(database), providers, "worker")
+        assert lane is not None and lane.worker_id == "worker.delivery"
+        assert lane.kinds == DELIVERY_LANE_JOB_KINDS == frozenset(lane.handlers)
+        assert COMPARISON_EXPORT_JOB_KIND in DELIVERY_LANE_JOB_KINDS
+    finally:
+        providers.close()
+        database.dispose()

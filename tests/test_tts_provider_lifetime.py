@@ -534,8 +534,8 @@ def test_worker_cli_closes_after_native_handler_unwinds_before_database_disposal
             sound_mixes=SimpleNamespace(run_mix=lambda *_args: None),
         )
 
-    def worker(*args):
-        instance = Worker(*args)
+    def worker(*args, **kwargs):
+        instance = Worker(*args, **kwargs)
         workers.append(instance)
         return instance
 
