@@ -9,6 +9,7 @@ from copy import deepcopy
 
 from sqlalchemy import select
 
+from pandrator.logic.dubbing.text_units import fragment_separator
 from pandrator.logic.speech_markup import parse_speech_markup, plain_speech_markup
 from pandrator.logic.speech_markup_edits import join_speech_markup, slice_speech_markup
 
@@ -204,16 +205,16 @@ def project_split_markup(
 def project_merge_markup(session, left, right, values: dict, session_id: str) -> None:
     characters = get_generation_controls(session, session_id)["characters"]
     annotations = _reviewed_annotations(session, left.plan_revision_id)
+    left_speech = left.optimized_text or left.text
+    right_speech = right.optimized_text or right.text
     values["speech_plan_json"]["speech_xml"] = join_speech_markup(
         [
-            (
-                row.id,
-                row.optimized_text or row.text,
-                effective_markup(session, row, characters, annotations),
-            )
-            for row in (left, right)
+            (row.id, speech, effective_markup(session, row, characters, annotations))
+            for row, speech in ((left, left_speech), (right, right_speech))
         ],
         segment_id=left.id,
+        # The same seam as the merged speech text, so Japanese stays unspaced.
+        separator=fragment_separator(left_speech, right_speech),
         characters=characters,
     )
 

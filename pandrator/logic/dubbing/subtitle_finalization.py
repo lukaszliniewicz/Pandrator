@@ -208,6 +208,22 @@ def _layout_units(text: str, config: SubtitleFinalizationConfig) -> list[str]:
     return units
 
 
+_NAME_DOTS = frozenset("・･")
+
+
+def _poor_cjk_seam(left: str, right: str) -> bool:
+    """A line break that splits a dotted name or a number from its counter.
+
+    Breaks such as 「ダグ・ / ウィルソン」 or 「2014 / 年」 are used only when
+    no other two-line split fits.
+    """
+    if not left or not right:
+        return False
+    if left[-1] in _NAME_DOTS or right[0] in _NAME_DOTS:
+        return True
+    return left[-1].isdigit() and not right[0].isdigit() and contains_cjk(right[0])
+
+
 def _wrap_cjk_text(text: str, config: SubtitleFinalizationConfig) -> str:
     units = _layout_units(text, config)
 
@@ -224,7 +240,8 @@ def _wrap_cjk_text(text: str, config: SubtitleFinalizationConfig) -> str:
                 if config.language.split("-")[0] in {"ja", "zh"}:
                     last = _last_syntactic_char(left)
                     punctuation_bonus = 8 if last in _SENTENCE_END_CHARS else 6 if last in _CLAUSE_PUNCTUATION else 0
-                candidates.append((abs(a - b) + (1 if a > b else 0) - punctuation_bonus, index, left, right))
+                seam_penalty = 20 if _poor_cjk_seam(left, right) else 0
+                candidates.append((abs(a - b) + (1 if a > b else 0) - punctuation_bonus + seam_penalty, index, left, right))
         if candidates:
             _score, _index, left, right = min(candidates)
             return left + "\n" + right

@@ -40,3 +40,16 @@ exports, mix previews and bundle exports, so exporting the French branch can
 start while the German branch is still generating. Jobs within one project
 still run one at a time and in the order they were queued. Set
 `PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
+
+## Output
+
+- Exported videos now name the dubbed audio track. The track carries the
+  target language, a title and a handler name (for example `hun`,
+  "Hungarian"), so players no longer list it as "Unknown". Exports with an
+  unknown target language stay untagged.
+- Merging two Japanese or Chinese speech blocks, by hand or through passage
+  regroup, no longer inserts a space between them in the text, the speech text
+  or the speech markup.
+- Japanese subtitle lines no longer break inside a dotted name such as
+  「ラリー・キング」 or between a number and its counter such as 「2014年」,
+  unless no other two-line split fits.

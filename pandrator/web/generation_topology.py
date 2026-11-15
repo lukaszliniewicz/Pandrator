@@ -9,6 +9,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.text_units import fragment_separator
+
 from .access.generation_resource_policy import require_generation_content_write
 from .database import Database
 from .jobs import JobQueue
@@ -1071,7 +1073,10 @@ class GenerationTopologyService:
                     raise ValueError(f"Merge delivery override mismatch: {field_name}.")
             left_speech = left.optimized_text or left.text
             right_speech = right.optimized_text or right.text
-            merged_speech = f"{left_speech} {right_speech}".strip()
+            # Japanese and Chinese blocks join without a space.
+            speech_separator = fragment_separator(left_speech, right_speech)
+            text_separator = fragment_separator(left.text, right.text)
+            merged_speech = f"{left_speech}{speech_separator}{right_speech}".strip()
             settings = dict(current.settings_json or {})
             max_chars = settings.get("speech_block_max_chars")
             if max_chars is not None:
@@ -1112,8 +1117,8 @@ class GenerationTopologyService:
             merged_provenance = self._merge_provenance(
                 dict(left.speech_block_provenance_json or {}),
                 dict(right.speech_block_provenance_json or {}),
-                display_offset=len(left.text) + 1,
-                speech_offset=len(left_speech) + 1,
+                display_offset=len(left.text) + len(text_separator),
+                speech_offset=len(left_speech) + len(speech_separator),
                 event=event,
             )
             merged_provenance["manual_topology"] = {
@@ -1128,7 +1133,7 @@ class GenerationTopologyService:
             merged_values = self._segment_copy_values(left)
             merged_values.update(
                 {
-                    "text": f"{left.text} {right.text}".strip(),
+                    "text": f"{left.text}{text_separator}{right.text}".strip(),
                     "optimized_text": (
                         merged_speech
                         if left.optimized_text or right.optimized_text
