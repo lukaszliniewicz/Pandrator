@@ -53,3 +53,12 @@ still run one at a time and in the order they were queued. Set
 - Japanese subtitle lines no longer break inside a dotted name such as
   「ラリー・キング」 or between a number and its counter such as 「2014年」,
   unless no other two-line split fits.
+
+## Media edits
+
+Rendering a media edit no longer fails when two speakers overlap and the later
+speaker's first word is aligned a few milliseconds before the earlier speaker's
+interjection. Composed subtitles now keep the source order instead of sorting
+by start time, and a cue that would start before the previous one starts with
+it instead. When the text check still fails, the error names the first source
+cue and composed cue that differ.
