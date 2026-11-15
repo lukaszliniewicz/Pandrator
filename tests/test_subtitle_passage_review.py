@@ -1290,3 +1290,50 @@ class PassageReviewRouteTests(unittest.TestCase):
                 )
             )
             self.assertEqual([1, 2], [row.revision_number for row in revisions])
+
+
+def test_shared_passage_resaves_when_one_cue_also_owns_another(review_case):
+    # C1 owns A and B; C2 owns only B. An unchanged resave must not expect a
+    # display fragment of B from C1, which validates as a two-passage cue.
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:02,000\nAlpha. Bravo one\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nbravo two.\n",
+        [
+            {"id": "a", "text": "Alpha.", "start_ms": 0, "end_ms": 1000, "speaker": "A"},
+            {
+                "id": "b",
+                "text": "Bravo one bravo two.",
+                "start_ms": 1000,
+                "end_ms": 3000,
+                "speaker": "A",
+                "cue_indices": [0, 1],
+            },
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    published = _save(review_case, source_id, source_hash, 1, _edits(rows))
+    _saved, segments, artifact = _saved_rows(review_case, published)
+    assert [item.metadata_json["source_passage_ids"] for item in segments] == [["a", "b"], ["b"]]
+
+    column = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+    keys = ReviewedSubtitleSegment.__annotations__
+    values = [
+        {key: value for key, value in item.items() if key in keys and not key.startswith("_")}
+        for item in column["segments"]
+    ]
+    resaved = review_case.service.save_review(
+        review_case.session.id,
+        "correction",
+        published["revision"],
+        values,
+        source_artifact_id=artifact.id,
+        expected_source_hash=artifact.content_hash,
+    )
+    rows, _segments, _artifact = _saved_rows(review_case, resaved)
+    assert [(row["source_passage_ids"], row["text"]) for row in rows] == [
+        (["a"], "Alpha."),
+        (["b"], "Bravo one bravo two."),
+    ]

@@ -790,6 +790,12 @@ def _review_passage_rows(
         }
         output.append(mapped)
         used.update(source_ids)
+    def passages_owned_by(segment: Segment) -> int:
+        metadata = segment.metadata_json or {}
+        if metadata.get("canonical_passage_review"):
+            return len(metadata.get("source_passage_ids") or [])
+        return sum(segment.id in row.get("source_cue_ids", []) for row in source_rows)
+
     for row_id, stored in carried.items():
         source = by_passage[row_id]
         reviews: list[dict[str, Any]] = [
@@ -815,7 +821,11 @@ def _review_passage_rows(
                 segment for segment_id in direct_ids
                 for segment in source_owners.get(segment_id, [])
             ]
-        expected = direct or [
+        # A cue that also owns another passage validates as a combined cue
+        # and adds no fragment, so only single-passage cues are expected.
+        expected = [
+            segment for segment in direct if passages_owned_by(segment) <= 1
+        ] if direct else [
             source_segments[index]
             for index in source_segment_indexes[source_indexes_by_id[row_id]]
         ]
