@@ -40,8 +40,10 @@ selected services. This ships with the next Manager release.
   reason is tried at most three times. The segment is marked failed, the rest
   of the run carries on, and the run finishes `partial` with a
   `failed_segments` list giving each segment's ordinal, reason and the
-  provider's message. Reword those blocks and resume with `missing_only`. A
-  regenerated segment that already had audio keeps it. If three segments in a
+  provider's message (paused and cancelled runs report the list too). Reword
+  those blocks and resume with `missing_only`. A regenerated segment that
+  already had audio keeps it, and the run still ends `partial`. An empty audio
+  field counts as empty audio, not as a decode error. If three segments in a
   row come back empty with no reason, or the retry budget runs out, the run
   still stops, since the provider is then the more likely problem. The
   one-step automatic audiobook and dubbing pipelines still stop at the first

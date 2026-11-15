@@ -618,6 +618,7 @@ def _run_generation(
         else:
             consecutive_no_audio = 0
         with context.database.immediate_session() as session:
+            prove(session)
             segment = session.get(GenerationSegment, segment_id)
             if segment is None:
                 return False
@@ -858,6 +859,7 @@ def _run_generation(
                     "generation_run_id": run_id,
                     "status": "canceled",
                     "generated": generated,
+                    **({"failed_segments": failed_segments} if failed_segments else {}),
                 }
             if run.pause_requested and (
                 not parallel_batch_boundaries
@@ -869,6 +871,7 @@ def _run_generation(
                     "generation_run_id": run_id,
                     "status": "paused",
                     "generated": generated,
+                    **({"failed_segments": failed_segments} if failed_segments else {}),
                 }
             if operation == "resume" and segment_id in completed_take_ids:
                 skipped += 1
@@ -1311,7 +1314,12 @@ def _run_generation(
                     run.status = "canceled" if canceled_cast else "failed"
                     run.updated_at = utcnow()
             if canceled_cast:
-                return {"generation_run_id": run_id, "status": "canceled", "generated": generated}
+                return {
+                    "generation_run_id": run_id,
+                    "status": "canceled",
+                    "generated": generated,
+                    **({"failed_segments": failed_segments} if failed_segments else {}),
+                }
             raise
 
     if parallel_wave_error is not None:
@@ -1325,17 +1333,19 @@ def _run_generation(
         plan_revision_id=plan_revision_id,
         operation=operation,
         repair_requested=repair_requested or regroup_requested,
+        declined=len(failed_segments),
     )
     progress(
         1.0,
         "Generation paused" if final_status == "paused"
         else "Generation canceled" if final_status in {"cancel_requested", "canceled"}
         else "Generation run complete" if final_status == "completed"
-        else f"Generation saved; {incomplete} segment(s) remain"
-        + (
-            f", {len(failed_segments)} declined or without audio"
-            if failed_segments
-            else ""
+        else "Generation saved; "
+        + ", ".join(
+            part for part in (
+                f"{incomplete} segment(s) remain" if incomplete else "",
+                f"{len(failed_segments)} declined or without audio" if failed_segments else "",
+            ) if part
         ),
     )
     auto_resume_source_id = str(

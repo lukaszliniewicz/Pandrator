@@ -154,8 +154,10 @@ def decode_google_wav_response(
         if mime not in {"audio/wav", "audio/x-wav"}:
             raise ValueError("Unsupported audio MIME type")
         encoded = selected.get("data")
-        if not isinstance(encoded, str) or not encoded:
+        if not isinstance(encoded, str):
             raise ValueError("Missing base64 WAV audio")
+        if not encoded:
+            raise _MissingAudio("Empty WAV audio")
         data = base64.b64decode(encoded, validate=True)
         _validate_wav(data)
     except _MissingAudio as error:

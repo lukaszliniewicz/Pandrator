@@ -21,8 +21,13 @@ def finalize_generation_run(
     plan_revision_id: str,
     operation: str,
     repair_requested: bool,
+    declined: int = 0,
 ) -> tuple[str, int]:
-    """Count remaining segments and settle the run in one write transaction."""
+    """Count remaining segments and settle the run in one write transaction.
+
+    ``declined`` segments make the run partial even when each kept an earlier
+    take and so no longer counts as remaining.
+    """
     with database.immediate_session() as session:
         run = session.get(GenerationRun, run_id)
         if run is None:
@@ -79,7 +84,7 @@ def finalize_generation_run(
                 )
                 or 0
             )
-        final_status = "partial" if incomplete else "completed"
+        final_status = "partial" if incomplete or declined else "completed"
         if run.cancel_requested or run.status in {"cancel_requested", "canceled"}:
             final_status = run.status
             if version_summary is not None and final_status not in {"cancel_requested", "canceled"}:

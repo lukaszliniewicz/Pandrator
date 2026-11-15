@@ -16,6 +16,7 @@ from pandrator.logic.tts_retry import (
     tts_failure_reason,
 )
 from pandrator.web.models import GenerationRun, GenerationSegment
+from pandrator.web.tts_provider_contracts import TtsBatchResult, TtsProviderError
 from pandrator.web.tts_providers import TtsCapabilities
 from tests import test_generation_missing_only as missing_only
 from tests.test_google_tts_audio import ENDPOINT, response
@@ -49,6 +50,28 @@ def test_google_response_without_audio_or_reason_is_no_audio():
         )
     assert raised.value.refusal_reason == ""
     assert tts_failure_reason(raised.value) == "no_audio"
+
+
+def test_google_empty_audio_data_is_no_audio_in_both_decoders():
+    empty_wav = {"candidates": [{"content": {"parts": [
+        {"inlineData": {"mimeType": "audio/wav", "data": ""}}
+    ]}}]}
+    with pytest.raises(TtsNoAudioError) as raised:
+        decode_google_wav_response(response(empty_wav), ENDPOINT, "Vertex AI", interactions=False)
+    assert tts_failure_reason(raised.value) == "no_audio"
+
+    empty_pcm = {"candidates": [{"content": {"parts": [
+        {"inlineData": {"mimeType": "audio/L16;rate=24000", "data": ""}}
+    ]}}]}
+    with pytest.raises(TtsNoAudioError) as raised:
+        tts_handler._google_tts_pcm_response(response(empty_pcm), ENDPOINT, "Gemini")
+    assert tts_failure_reason(raised.value) == "no_audio"
+
+    malformed = {"candidates": [{"content": {"parts": [
+        {"inlineData": {"mimeType": "audio/wav", "data": 7}}
+    ]}}]}
+    with pytest.raises(RuntimeError):
+        decode_google_wav_response(response(malformed), ENDPOINT, "Vertex AI", interactions=False)
 
 
 def _synthesize(error, *, retry_callback, max_attempts=10):
@@ -132,15 +155,23 @@ class RefusedSegmentRunTests(unittest.TestCase):
         finished, progress_details = self._execute(started, synthesize)
         return started["id"], segment_ids, finished, progress_details
 
-    def _execute(self, started, synthesize):
+    def _execute(self, started, synthesize, synthesize_batch=None):
         payload = self._job_payload(started["job_id"])
         progress_details = []
+        capabilities = (
+            TtsCapabilities(
+                batch_synthesis=True, streaming_batch=True, default_batch_size=2, max_batch_size=2
+            )
+            if synthesize_batch is not None
+            else TtsCapabilities(batch_synthesis=False, streaming_batch=False)
+        )
         with (
             patch.object(self.handlers.tts_providers, "synthesize", side_effect=synthesize),
             patch.object(
-                self.handlers.tts_providers,
-                "synthesis_capabilities",
-                return_value=TtsCapabilities(batch_synthesis=False, streaming_batch=False),
+                self.handlers.tts_providers, "synthesize_batch", side_effect=synthesize_batch
+            ),
+            patch.object(
+                self.handlers.tts_providers, "synthesis_capabilities", return_value=capabilities
             ),
         ):
             finished = self.handlers.run_generation(
@@ -225,8 +256,44 @@ class RefusedSegmentRunTests(unittest.TestCase):
                 for item in finished["failed_segments"]
             ],
         )
+        self.assertEqual("partial", finished["status"])
         with self.database.session() as session:
             self.assertEqual("completed", session.get(GenerationSegment, segment_ids[1]).status)
+            self.assertEqual("partial", session.get(GenerationRun, regenerated["id"]).status)
+
+    def test_retryable_grouped_batch_error_is_retried_alone_but_never_skipped(self):
+        from pydub import AudioSegment
+
+        batched = []
+
+        def batch(items, **_kwargs):
+            for item in items:
+                batched.append(item.id)
+                yield TtsBatchResult(
+                    id=item.id,
+                    error=TtsProviderError("gemini", "synthesize", "busy", retryable=True),
+                )
+
+        def recover(_text, _settings, **_kwargs):
+            return AudioSegment.silent(duration=20)
+
+        session_id, _revision, _ids = self._create_case(texts=["One", "Two"])
+        started = self.generation.start(session_id, run_override=self._override(tts_batch_size=2))
+        finished, _details = self._execute(started, recover, batch)
+        self.assertEqual(("completed", 2), (finished["status"], finished["generated"]))
+        self.assertEqual(2, len(batched))
+
+        def still_busy(_text, _settings, **_kwargs):
+            raise tts_handler.TtsGenerationError(
+                "budget expired", retryable=True, reason="no_audio"
+            )
+
+        session_id, _revision, _ids = self._create_case(texts=["Three", "Four"])
+        started = self.generation.start(session_id, run_override=self._override(tts_batch_size=2))
+        with self.assertRaises(tts_handler.TtsGenerationError):
+            self._execute(started, still_busy, batch)
+        with self.database.session() as session:
+            self.assertEqual("failed", session.get(GenerationRun, started["id"]).status)
 
     def test_a_refusal_breaks_a_run_of_empty_responses(self):
         sequence = iter(["no_audio", "content_refused", "no_audio", "no_audio"])

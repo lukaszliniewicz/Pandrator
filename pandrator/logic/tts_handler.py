@@ -3924,8 +3924,10 @@ def _google_tts_pcm_response(
                 if sample_rate <= 0:
                     raise ValueError("invalid PCM sample rate")
                 data = inline_data.get("data")
-                if not isinstance(data, str) or not data:
-                    raise ValueError("empty PCM data")
+                if not isinstance(data, str):
+                    raise ValueError("missing PCM data")
+                if not data:
+                    continue  # empty audio; no_audio unless another part has some
                 pcm = base64.b64decode(data, validate=True)
                 if not pcm or len(pcm) % 2:
                     raise ValueError("invalid 16-bit PCM data")
