@@ -124,6 +124,76 @@ class GenerationPlanReviewTests(unittest.TestCase):
         self.assertEqual(replay.get_json()["plan_revision_id"], result["plan_revision_id"])
         self.assertEqual(replay.headers.get("Idempotency-Replayed"), "true")
 
+    def _counts(self):
+        with self.database.session() as session:
+            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session_id))
+            revisions = session.scalar(select(func.count()).select_from(GenerationPlanRevision).where(GenerationPlanRevision.plan_id == plan.id))
+            segments = session.scalar(select(func.count()).select_from(GenerationSegment))
+        return revisions, segments
+
+    def test_batch_writes_one_revision_and_a_lean_receipt(self):
+        revisions_before, segments_before = self._counts()
+        operations = [
+            {"action": "split", "segment": {"ordinal": 0}, "boundary": {"after_sentence": 1}, "label": "opening"},
+            {"action": "split", "segment": {"result_ref": "opening.right"}, "boundary": {"before_text": "these interfaith"}, "label": "topic"},
+            {"action": "merge", "left": {"result_ref": "topic.right"}, "right": {"ordinal": 3}, "label": "joined"},
+        ]
+        response = self.batch(operations)
+        self.assertEqual(201, response.status_code, response.get_json())
+        result = response.get_json()
+
+        revisions_after, segments_after = self._counts()
+        self.assertEqual(revisions_before + 1, revisions_after)
+        # Rows are written once for the final plan, not once per edit.
+        self.assertEqual(segments_before + result["segment_count"], segments_after)
+        self.assertEqual([result["plan_revision_id"]], result["revision_ids"])
+        self.assertEqual(self.revision_id, result["parent_revision_id"])
+        self.assertNotIn("operation_json", result)
+        self.assertNotIn("segment_ids", result)
+
+        rows = self.generation.list_segments(self.session_id)["items"]
+        self.assertEqual(
+            ["Hello world.", "These meetings,", "these interfaith circles. Another complete sentence.", "A final sentence."],
+            [row["text"] for row in rows],
+        )
+        self.assertEqual(result["result_refs"]["joined"], [rows[2]["id"]])
+        self.assertEqual(result["result_refs"]["opening.left"], [rows[0]["id"]])
+        self.assertEqual(
+            {rows[0]["id"], rows[1]["id"], rows[2]["id"]}, set(result["affected_segment_ids"])
+        )
+        self.assertEqual(result["lineage"][self.segment_ids[1]], [rows[2]["id"]])
+        self.assertEqual(rows[-1]["takes"][0]["status"], "completed")
+
+        history = self.client.get(f"/api/v1/sessions/{self.session_id}/generation-plan/revisions").get_json()
+        active = next(item for item in history["items"] if item["is_active"])
+        self.assertEqual("batch", active["action"])
+        self.assertEqual("Batch of 3 speech-block edits", active["summary"])
+
+    def test_batch_maps_sound_anchors_through_every_edit(self):
+        captured = {}
+
+        def capture(_session, _session_id, revision_id, mapping):
+            captured.update(revision_id=revision_id, mapping=dict(mapping))
+
+        first, second, third = self.segment_ids
+        with patch("pandrator.web.sound_project_revisions.rebase_sound_plan", side_effect=capture):
+            response = self.batch([
+                {"action": "split", "segment_id": first, "boundary": {"after_sentence": 1}, "label": "opening"},
+                {"action": "merge", "left": {"result_ref": "opening.right"}, "right": {"segment_id": second}, "label": "joined"},
+            ])
+        self.assertEqual(201, response.status_code, response.get_json())
+        result = response.get_json()
+        opening, joined, final = (row["id"] for row in self.generation.list_segments(self.session_id)["items"])
+        self.assertEqual(result["plan_revision_id"], captured["revision_id"])
+        mapping = captured["mapping"]
+        self.assertEqual(opening, mapping[(first, "before_segment")])
+        # The first block's end and the second block's start are now inside a block.
+        self.assertNotIn((first, "after_segment"), mapping)
+        self.assertNotIn((second, "before_segment"), mapping)
+        self.assertEqual(joined, mapping[(second, "after_segment")])
+        self.assertEqual(final, mapping[(third, "before_segment")])
+        self.assertEqual(final, mapping[(third, "after_segment")])
+
     def test_ambiguous_later_anchor_rolls_back_all_prior_edits(self):
         response = self.batch([
             {"action": "split", "segment_id": self.segment_ids[0], "boundary": {"after_sentence": 1}, "label": "opening"},

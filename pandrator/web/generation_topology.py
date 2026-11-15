@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .access.generation_resource_policy import require_generation_content_write
 from .database import Database
 from .jobs import JobQueue
+from .model_base import new_id
 from .models import (
     AudioTake,
     DocumentRevision,
@@ -824,6 +825,453 @@ class GenerationTopologyService:
             previous_refs = refs
 
 
+    def _split_values(
+        self,
+        session: Session,
+        session_id: str,
+        current: GenerationPlanRevision,
+        segment: GenerationSegment,
+        operation: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Build the two halves of one split, without writing anything."""
+
+        layer = str(operation.get("text_layer") or "display").strip().lower()
+        if layer not in {"display", "speech"}:
+            raise ValueError("text_layer must be display or speech.")
+        cursor_value = operation.get("cursor")
+        if cursor_value is None:
+            raise ValueError("Split cursor must be an integer.")
+        try:
+            cursor = int(cursor_value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Split cursor must be an integer.") from error
+        selected_text = (
+            segment.text
+            if layer == "display"
+            else (segment.optimized_text or segment.text)
+        )
+        if cursor <= 0 or cursor >= len(selected_text):
+            raise ValueError("Split cursor must be inside the selected text layer.")
+        selected_left, selected_right = (
+            selected_text[:cursor].strip(),
+            selected_text[cursor:].strip(),
+        )
+        if not selected_left or not selected_right:
+            raise ValueError("A split cannot produce an empty trimmed half.")
+        provenance = dict(segment.speech_block_provenance_json or {})
+        companion_text = (
+            segment.optimized_text
+            if layer == "display" and segment.optimized_text
+            else segment.text
+            if layer == "speech"
+            else segment.optimized_text or segment.text
+        )
+        if operation.get("passage_boundary_id"):
+            from .passage_markers import validate_passage_split
+
+            verified_display, verified_speech = validate_passage_split(
+                segment, operation["passage_boundary_id"], layer, cursor,
+            )
+            companion_cursor = verified_speech if layer == "display" else verified_display
+            mapping_rule = "verified_passage_boundary"
+        else:
+            companion_cursor, mapping_rule = self._companion_offset(
+                selected_text,
+                companion_text,
+                cursor,
+                selected_layer=layer,
+                provenance=provenance,
+            )
+        if layer == "display":
+            display_cursor, speech_cursor = cursor, companion_cursor
+        else:
+            display_cursor, speech_cursor = companion_cursor, cursor
+        effective_speech = segment.optimized_text or segment.text
+        speech_plan_ids = self._speech_plan_ids(segment.speech_plan_json)
+        source_references: list[Any] = self._provenance_source_refs(provenance)
+        if not source_references:
+            source_references = list(segment.source_segment_ids_json or [])
+        event = {
+            "action": "manual_split",
+            "reason_code": "manual_topology_split",
+            "summary": "Generation segment split at a requested text offset.",
+            "measurements": {
+                "text_layer": layer,
+                "selected_offset": cursor,
+                "companion_offset": companion_cursor,
+                "display_offset": display_cursor,
+                "speech_offset": speech_cursor,
+                "mapping_rule": mapping_rule,
+            },
+            "source_references": source_references,
+        }
+        if operation.get("reason") == "early_timing_repair":
+            event.update(
+                action="automatic_split",
+                reason_code="early_timing_repair",
+                summary="Short voiceover block split at a source cue boundary to reduce early speech.",
+            )
+        left_provenance, right_provenance = self._split_provenance(
+            provenance,
+            display_cursor=display_cursor,
+            speech_cursor=speech_cursor,
+            display_length=len(segment.text),
+            speech_length=len(effective_speech),
+            display_value=segment.text,
+            speech_value=effective_speech,
+            operation_event=event,
+            parent_segment_id=segment.id,
+            parent_speech_plan_ids=speech_plan_ids,
+        )
+        for provenance_value in (left_provenance, right_provenance):
+            provenance_value["manual_topology"]["parent_revision_id"] = current.id
+        display_left = segment.text[:display_cursor].strip()
+        display_right = segment.text[display_cursor:].strip()
+        speech_left = effective_speech[:speech_cursor].strip()
+        speech_right = effective_speech[speech_cursor:].strip()
+        if (
+            not display_left
+            or not display_right
+            or not speech_left
+            or not speech_right
+        ):
+            raise ValueError("A split cannot produce an empty trimmed half.")
+        left_values = self._segment_copy_values(segment)
+        right_values = self._segment_copy_values(segment)
+        for values, text, speech, provenance_value in (
+            (left_values, display_left, speech_left, left_provenance),
+            (right_values, display_right, speech_right, right_provenance),
+        ):
+            values["text"] = text
+            values["optimized_text"] = speech if segment.optimized_text else None
+            values["speech_block_provenance_json"] = provenance_value
+            values["source_segment_ids_json"] = self._provenance_source_refs(provenance_value) or list(segment.source_segment_ids_json or [])
+            values["speech_plan_json"] = {
+                "version": 1,
+                "status": "manual_topology",
+                "parent_segment_id": segment.id,
+                "parent_speech_plan_ids": speech_plan_ids,
+            }
+            values["status"] = "stale"
+            values["optimization_status"] = "stale"
+            values["optimization_source_hash"] = None
+            values["optimization_reviewed"] = False
+            values["optimization_model"] = None
+        for pause_key in ("silence_override_ms", "pause_kind"):
+            if pause_key in (segment.speech_plan_json or {}):
+                right_values["speech_plan_json"][pause_key] = segment.speech_plan_json[pause_key]
+        right_values["silence_after_ms"] = segment.silence_after_ms
+        right_values["paragraph_break_after"] = segment.paragraph_break_after
+        left_values["silence_after_ms"] = 0
+        left_values["paragraph_break_after"] = False
+        from .audiobook_resegmentation import project_split_markup
+        project_split_markup(session, segment, [left_values, right_values], speech_cursor, session_id)
+        return [left_values, right_values], {
+            "source_segment_id": segment.id,
+            "new_segments": ["left", "right"],
+            "text_layer": layer,
+            "selected_offset": cursor,
+            "display_offset": display_cursor,
+            "speech_offset": speech_cursor,
+            "mapping_rule": mapping_rule,
+        }
+
+    def _merge_values(
+        self,
+        session: Session,
+        session_id: str,
+        current: GenerationPlanRevision,
+        left: GenerationSegment,
+        right: GenerationSegment,
+        active_segments: list[GenerationSegment],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Build one merged block from two adjacent ones, without writing."""
+
+        if left.ordinal >= right.ordinal:
+            raise ValueError(
+                "Merge segments must be supplied in left-to-right order."
+            )
+        active_positions = {
+            segment.id: index for index, segment in enumerate(active_segments)
+        }
+        if active_positions.get(left.id, -1) + 1 != active_positions.get(
+            right.id, -2
+        ):
+            raise ValueError(
+                "Merge segments must be adjacent active-plan segments."
+            )
+        if left.speaker and right.speaker and left.speaker != right.speaker:
+            raise ValueError("Segments with different speakers cannot be merged.")
+        # Keep the same section boundaries used by unspoken TTS context.
+        # Merging labelled text across sections would make a later split
+        # inherit an incorrect section identifier.
+        left_section = str(
+            (left.speech_block_provenance_json or {}).get("section_id") or ""
+        ).strip()
+        right_section = str(
+            (right.speech_block_provenance_json or {}).get("section_id") or ""
+        ).strip()
+        if left_section != right_section:
+            raise ValueError("Segments from different sections cannot be merged.")
+        for field_name in ("voice_id", "voice", "language"):
+            if getattr(left, field_name) != getattr(right, field_name):
+                raise ValueError(f"Merge delivery override mismatch: {field_name}.")
+        left_speech = left.optimized_text or left.text
+        right_speech = right.optimized_text or right.text
+        merged_speech = f"{left_speech} {right_speech}".strip()
+        settings = dict(current.settings_json or {})
+        max_chars = settings.get("speech_block_max_chars")
+        if max_chars is not None:
+            try:
+                max_chars = int(max_chars)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "speech_block_max_chars must be an integer."
+                ) from error
+            if len(merged_speech) > max_chars:
+                raise ValueError(
+                    "Merged speech text exceeds speech_block_max_chars."
+                )
+        left_source_references = self._provenance_source_refs(
+            dict(left.speech_block_provenance_json or {})
+        ) or list(left.source_segment_ids_json or [])
+        right_source_references = self._provenance_source_refs(
+            dict(right.speech_block_provenance_json or {})
+        ) or list(right.source_segment_ids_json or [])
+        event = {
+            "action": "manual_merge",
+            "reason_code": "manual_topology_merge",
+            "summary": "Adjacent generation segments merged at a requested boundary.",
+            "measurements": {
+                "left_length": len(left.text),
+                "right_length": len(right.text),
+                "speech_length": len(merged_speech),
+                "max_chars": max_chars,
+                "left_segment_id": left.id,
+                "right_segment_id": right.id,
+                "left_revision_id": current.id,
+                "right_revision_id": current.id,
+            },
+            "source_references": list(
+                dict.fromkeys([*left_source_references, *right_source_references])
+            ),
+        }
+        merged_provenance = self._merge_provenance(
+            dict(left.speech_block_provenance_json or {}),
+            dict(right.speech_block_provenance_json or {}),
+            display_offset=len(left.text) + 1,
+            speech_offset=len(left_speech) + 1,
+            event=event,
+        )
+        merged_provenance["manual_topology"] = {
+            "operation": "merge",
+            "parent_segment_ids": [left.id, right.id],
+            "parent_revision_ids": [current.id, current.id],
+            "parent_speech_plan_ids": [
+                *self._speech_plan_ids(left.speech_plan_json),
+                *self._speech_plan_ids(right.speech_plan_json),
+            ],
+        }
+        merged_values = self._segment_copy_values(left)
+        merged_values.update(
+            {
+                "text": f"{left.text} {right.text}".strip(),
+                "optimized_text": (
+                    merged_speech
+                    if left.optimized_text or right.optimized_text
+                    else None
+                ),
+                "source_segment_ids_json": list(
+                    dict.fromkeys(
+                        [
+                            *left.source_segment_ids_json,
+                            *right.source_segment_ids_json,
+                        ]
+                    )
+                ),
+                "speech_block_provenance_json": merged_provenance,
+                "speech_plan_json": {
+                    **{
+                        key: value for key, value in (right.speech_plan_json or {}).items()
+                        if key in {"silence_override_ms", "pause_kind"}
+                    },
+                    "version": 1,
+                    "status": "manual_topology",
+                    "parent_segment_ids": [left.id, right.id],
+                    "parent_revision_ids": [current.id, current.id],
+                    "removed_boundary_before": deepcopy(
+                        (right.speech_block_provenance_json or {}).get(
+                            "boundary_before"
+                        )
+                    ),
+                },
+                "speaker": left.speaker or right.speaker,
+                "marked": left.marked or right.marked,
+                "status": "stale",
+                "optimization_status": "stale",
+                "optimization_source_hash": None,
+                "optimization_reviewed": False,
+                "optimization_model": None,
+                "silence_after_ms": right.silence_after_ms,
+                "paragraph_break_after": right.paragraph_break_after,
+            }
+        )
+        from .audiobook_resegmentation import project_merge_markup
+        project_merge_markup(session, left, right, merged_values, session_id)
+        return merged_values, {
+            "source_segment_ids": [left.id, right.id],
+            "new_segments": ["merged"],
+        }
+
+    def _write_revision(
+        self,
+        session: Session,
+        session_id: str,
+        plan: GenerationPlan,
+        current: GenerationPlanRevision,
+        revision_source: GenerationPlanRevision,
+        operation_json: dict[str, Any],
+        values_sequence: list[dict[str, Any]],
+        *,
+        recompute_alignment: bool,
+    ) -> tuple[
+        GenerationPlanRevision,
+        list[GenerationSegment],
+        list[dict[str, Any]],
+        list[dict[str, Any]] | None,
+    ]:
+        """Insert one revision and its segments.
+
+        Also returns the speech-markup characters when markup was remapped,
+        which take reuse needs to compare markup the same way."""
+
+        persisted_values = []
+        # A batch passes the ids its new rows already carry; they are not
+        # content, so they stay out of the hashed values.
+        preset_ids: list[str | None] = []
+        for ordinal, values in enumerate(values_sequence):
+            persisted = deepcopy(values)
+            preset_ids.append(persisted.pop("id", None))
+            persisted["ordinal"] = ordinal
+            persisted_values.append(persisted)
+        if recompute_alignment:
+            self._recompute_alignment_group_values(persisted_values)
+        revision_number = (
+            int(
+                session.scalar(
+                    select(func.max(GenerationPlanRevision.revision_number)).where(
+                        GenerationPlanRevision.plan_id == plan.id
+                    )
+                )
+                or 0
+            )
+            + 1
+        )
+        revision = GenerationPlanRevision(
+            plan_id=plan.id,
+            parent_revision_id=current.id,
+            source_revision_id=revision_source.source_revision_id,
+            revision_number=revision_number,
+            settings_json=deepcopy(revision_source.settings_json or {}),
+            operation_json=deepcopy(operation_json),
+            content_hash=stable_hash(
+                {
+                    "parent_revision_id": current.id,
+                    "operation": operation_json,
+                    "segments": persisted_values,
+                }
+            ),
+        )
+        session.add(revision)
+        session.flush()
+        new_segments: list[GenerationSegment] = []
+        for values, preset_id in zip(persisted_values, preset_ids, strict=True):
+            new_segment = GenerationSegment(plan_revision_id=revision.id, **values)
+            if preset_id is not None:
+                new_segment.id = preset_id
+            if new_segment.status == "running":
+                # The worker owns the source row, not this new editorial copy.
+                new_segment.status = "ready"
+            session.add(new_segment)
+            new_segments.append(new_segment)
+        # One flush, not a growing-unit-of-work flush for every speech block.
+        session.flush()
+        if recompute_alignment:
+            self._recompute_alignment_groups(new_segments)
+        session.flush()
+
+        speech_markup_characters: list[dict[str, Any]] = []
+        speech_markup_controls_loaded = False
+        if any(
+            isinstance((segment.speech_plan_json or {}).get("speech_xml"), str)
+            and (segment.speech_plan_json or {}).get("speech_xml")
+            for segment in new_segments
+        ):
+            from .generation_cast_runtime import remap_markup
+            from .generation_controls import get_generation_controls
+
+            speech_markup_characters = (
+                get_generation_controls(session, session_id).get("characters") or []
+            )
+            speech_markup_controls_loaded = True
+            for persisted, segment in zip(persisted_values, new_segments, strict=True):
+                speech_plan = deepcopy(segment.speech_plan_json or {})
+                xml = speech_plan.get("speech_xml")
+                if not isinstance(xml, str) or not xml:
+                    continue
+                speech_plan["speech_xml"] = remap_markup(
+                    xml,
+                    segment.id,
+                    segment.optimized_text or segment.text,
+                    speech_markup_characters,
+                )
+                segment.speech_plan_json = speech_plan
+                persisted["speech_plan_json"] = deepcopy(speech_plan)
+        return (
+            revision,
+            new_segments,
+            persisted_values,
+            speech_markup_characters if speech_markup_controls_loaded else None,
+        )
+
+    def _finish_revision(
+        self,
+        session: Session,
+        session_id: str,
+        plan: GenerationPlan,
+        current: GenerationPlanRevision,
+        revision: GenerationPlanRevision,
+        operation_json: dict[str, Any],
+        persisted_values: list[dict[str, Any]],
+        *,
+        take_copy_pairs: list[tuple[str, str]],
+        lineage: dict[str, list[str]],
+        boundary_mapping: dict[tuple[str, str], str | None] | None,
+        activate: bool,
+    ) -> None:
+        """Carry takes and references forward, then activate the revision."""
+
+        self._clone_available_takes_batch(session, take_copy_pairs)
+        operation_json["lineage"] = lineage
+        revision.operation_json = deepcopy(operation_json)
+        revision.content_hash = stable_hash({"parent_revision_id": current.id, "operation": operation_json, "segments": persisted_values})
+        session.flush()
+        _propagate_segment_speech_references(session, session_id, lineage)
+        if activate:
+            plan.active_revision_id = revision.id
+            plan.updated_at = utcnow()
+            mark_output_assemblies_stale(
+                session,
+                session_id,
+                cancel_active=True,
+                jobs=self.jobs,
+            )
+        session.flush()
+        if activate and boundary_mapping is not None:
+            from .sound_project_revisions import rebase_sound_plan
+
+            rebase_sound_plan(session, session_id, revision.id, boundary_mapping)
+
     def revise_topology(
         self,
         session_id: str,
@@ -889,149 +1337,11 @@ class GenerationTopologyService:
             segment = source_by_id.get(segment_id)
             if segment is None or segment.removed:
                 raise KeyError(segment_id)
-            layer = str(operation.get("text_layer") or "display").strip().lower()
-            if layer not in {"display", "speech"}:
-                raise ValueError("text_layer must be display or speech.")
-            cursor_value = operation.get("cursor")
-            if cursor_value is None:
-                raise ValueError("Split cursor must be an integer.")
-            try:
-                cursor = int(cursor_value)
-            except (TypeError, ValueError) as error:
-                raise ValueError("Split cursor must be an integer.") from error
-            selected_text = (
-                segment.text
-                if layer == "display"
-                else (segment.optimized_text or segment.text)
+            halves, mapping = self._split_values(
+                session, session_id, current, segment, operation
             )
-            if cursor <= 0 or cursor >= len(selected_text):
-                raise ValueError("Split cursor must be inside the selected text layer.")
-            selected_left, selected_right = (
-                selected_text[:cursor].strip(),
-                selected_text[cursor:].strip(),
-            )
-            if not selected_left or not selected_right:
-                raise ValueError("A split cannot produce an empty trimmed half.")
-            provenance = dict(segment.speech_block_provenance_json or {})
-            companion_text = (
-                segment.optimized_text
-                if layer == "display" and segment.optimized_text
-                else segment.text
-                if layer == "speech"
-                else segment.optimized_text or segment.text
-            )
-            if operation.get("passage_boundary_id"):
-                from .passage_markers import validate_passage_split
-
-                verified_display, verified_speech = validate_passage_split(
-                    segment, operation["passage_boundary_id"], layer, cursor,
-                )
-                companion_cursor = verified_speech if layer == "display" else verified_display
-                mapping_rule = "verified_passage_boundary"
-            else:
-                companion_cursor, mapping_rule = self._companion_offset(
-                    selected_text,
-                    companion_text,
-                    cursor,
-                    selected_layer=layer,
-                    provenance=provenance,
-                )
-            if layer == "display":
-                display_cursor, speech_cursor = cursor, companion_cursor
-            else:
-                display_cursor, speech_cursor = companion_cursor, cursor
-            effective_speech = segment.optimized_text or segment.text
-            speech_plan_ids = self._speech_plan_ids(segment.speech_plan_json)
-            source_references: list[Any] = self._provenance_source_refs(provenance)
-            if not source_references:
-                source_references = list(segment.source_segment_ids_json or [])
-            event = {
-                "action": "manual_split",
-                "reason_code": "manual_topology_split",
-                "summary": "Generation segment split at a requested text offset.",
-                "measurements": {
-                    "text_layer": layer,
-                    "selected_offset": cursor,
-                    "companion_offset": companion_cursor,
-                    "display_offset": display_cursor,
-                    "speech_offset": speech_cursor,
-                    "mapping_rule": mapping_rule,
-                },
-                "source_references": source_references,
-            }
-            if operation.get("reason") == "early_timing_repair":
-                event.update(
-                    action="automatic_split",
-                    reason_code="early_timing_repair",
-                    summary="Short voiceover block split at a source cue boundary to reduce early speech.",
-                )
-            left_provenance, right_provenance = self._split_provenance(
-                provenance,
-                display_cursor=display_cursor,
-                speech_cursor=speech_cursor,
-                display_length=len(segment.text),
-                speech_length=len(effective_speech),
-                display_value=segment.text,
-                speech_value=effective_speech,
-                operation_event=event,
-                parent_segment_id=segment.id,
-                parent_speech_plan_ids=speech_plan_ids,
-            )
-            for provenance_value in (left_provenance, right_provenance):
-                provenance_value["manual_topology"]["parent_revision_id"] = current.id
-            display_left = segment.text[:display_cursor].strip()
-            display_right = segment.text[display_cursor:].strip()
-            speech_left = effective_speech[:speech_cursor].strip()
-            speech_right = effective_speech[speech_cursor:].strip()
-            if (
-                not display_left
-                or not display_right
-                or not speech_left
-                or not speech_right
-            ):
-                raise ValueError("A split cannot produce an empty trimmed half.")
-            left_values = self._segment_copy_values(segment)
-            right_values = self._segment_copy_values(segment)
-            for values, text, speech, provenance_value in (
-                (left_values, display_left, speech_left, left_provenance),
-                (right_values, display_right, speech_right, right_provenance),
-            ):
-                values["text"] = text
-                values["optimized_text"] = speech if segment.optimized_text else None
-                values["speech_block_provenance_json"] = provenance_value
-                values["source_segment_ids_json"] = self._provenance_source_refs(provenance_value) or list(segment.source_segment_ids_json or [])
-                values["speech_plan_json"] = {
-                    "version": 1,
-                    "status": "manual_topology",
-                    "parent_segment_id": segment.id,
-                    "parent_speech_plan_ids": speech_plan_ids,
-                }
-                values["status"] = "stale"
-                values["optimization_status"] = "stale"
-                values["optimization_source_hash"] = None
-                values["optimization_reviewed"] = False
-                values["optimization_model"] = None
-            for pause_key in ("silence_override_ms", "pause_kind"):
-                if pause_key in (segment.speech_plan_json or {}):
-                    right_values["speech_plan_json"][pause_key] = segment.speech_plan_json[pause_key]
-            right_values["silence_after_ms"] = segment.silence_after_ms
-            right_values["paragraph_break_after"] = segment.paragraph_break_after
-            left_values["silence_after_ms"] = 0
-            left_values["paragraph_break_after"] = False
-            from .audiobook_resegmentation import project_split_markup
-            project_split_markup(session, segment, [left_values, right_values], speech_cursor, session_id)
-            replacement_by_old[segment.id] = [left_values, right_values]
-            mappings.append(
-                {
-                    "source_segment_id": segment.id,
-                    "new_segments": ["left", "right"],
-                    "text_layer": layer,
-                    "selected_offset": cursor,
-                    "display_offset": display_cursor,
-                    "speech_offset": speech_cursor,
-                    "mapping_rule": mapping_rule,
-                }
-            )
+            replacement_by_old[segment.id] = halves
+            mappings.append(mapping)
         elif action == "merge":
             left_id = str(operation.get("left_segment_id") or "").strip()
             right_id = str(operation.get("right_segment_id") or "").strip()
@@ -1040,145 +1350,12 @@ class GenerationTopologyService:
             if left is None or right is None or left.removed or right.removed:
                 raise KeyError(left_id if left is None else right_id)
             merge_pair = (left, right)
-            if left.ordinal >= right.ordinal:
-                raise ValueError(
-                    "Merge segments must be supplied in left-to-right order."
-                )
-            active_positions = {
-                segment.id: index for index, segment in enumerate(active_segments)
-            }
-            if active_positions.get(left_id, -1) + 1 != active_positions.get(
-                right_id, -2
-            ):
-                raise ValueError(
-                    "Merge segments must be adjacent active-plan segments."
-                )
-            if left.speaker and right.speaker and left.speaker != right.speaker:
-                raise ValueError("Segments with different speakers cannot be merged.")
-            # Keep the same section boundaries used by unspoken TTS context.
-            # Merging labelled text across sections would make a later split
-            # inherit an incorrect section identifier.
-            left_section = str(
-                (left.speech_block_provenance_json or {}).get("section_id") or ""
-            ).strip()
-            right_section = str(
-                (right.speech_block_provenance_json or {}).get("section_id") or ""
-            ).strip()
-            if left_section != right_section:
-                raise ValueError("Segments from different sections cannot be merged.")
-            for field_name in ("voice_id", "voice", "language"):
-                if getattr(left, field_name) != getattr(right, field_name):
-                    raise ValueError(f"Merge delivery override mismatch: {field_name}.")
-            left_speech = left.optimized_text or left.text
-            right_speech = right.optimized_text or right.text
-            merged_speech = f"{left_speech} {right_speech}".strip()
-            settings = dict(current.settings_json or {})
-            max_chars = settings.get("speech_block_max_chars")
-            if max_chars is not None:
-                try:
-                    max_chars = int(max_chars)
-                except (TypeError, ValueError) as error:
-                    raise ValueError(
-                        "speech_block_max_chars must be an integer."
-                    ) from error
-                if len(merged_speech) > max_chars:
-                    raise ValueError(
-                        "Merged speech text exceeds speech_block_max_chars."
-                    )
-            left_source_references = self._provenance_source_refs(
-                dict(left.speech_block_provenance_json or {})
-            ) or list(left.source_segment_ids_json or [])
-            right_source_references = self._provenance_source_refs(
-                dict(right.speech_block_provenance_json or {})
-            ) or list(right.source_segment_ids_json or [])
-            event = {
-                "action": "manual_merge",
-                "reason_code": "manual_topology_merge",
-                "summary": "Adjacent generation segments merged at a requested boundary.",
-                "measurements": {
-                    "left_length": len(left.text),
-                    "right_length": len(right.text),
-                    "speech_length": len(merged_speech),
-                    "max_chars": max_chars,
-                    "left_segment_id": left.id,
-                    "right_segment_id": right.id,
-                    "left_revision_id": current.id,
-                    "right_revision_id": current.id,
-                },
-                "source_references": list(
-                    dict.fromkeys([*left_source_references, *right_source_references])
-                ),
-            }
-            merged_provenance = self._merge_provenance(
-                dict(left.speech_block_provenance_json or {}),
-                dict(right.speech_block_provenance_json or {}),
-                display_offset=len(left.text) + 1,
-                speech_offset=len(left_speech) + 1,
-                event=event,
+            merged_values, mapping = self._merge_values(
+                session, session_id, current, left, right, active_segments
             )
-            merged_provenance["manual_topology"] = {
-                "operation": "merge",
-                "parent_segment_ids": [left.id, right.id],
-                "parent_revision_ids": [current.id, current.id],
-                "parent_speech_plan_ids": [
-                    *self._speech_plan_ids(left.speech_plan_json),
-                    *self._speech_plan_ids(right.speech_plan_json),
-                ],
-            }
-            merged_values = self._segment_copy_values(left)
-            merged_values.update(
-                {
-                    "text": f"{left.text} {right.text}".strip(),
-                    "optimized_text": (
-                        merged_speech
-                        if left.optimized_text or right.optimized_text
-                        else None
-                    ),
-                    "source_segment_ids_json": list(
-                        dict.fromkeys(
-                            [
-                                *left.source_segment_ids_json,
-                                *right.source_segment_ids_json,
-                            ]
-                        )
-                    ),
-                    "speech_block_provenance_json": merged_provenance,
-                    "speech_plan_json": {
-                        **{
-                            key: value for key, value in (right.speech_plan_json or {}).items()
-                            if key in {"silence_override_ms", "pause_kind"}
-                        },
-                        "version": 1,
-                        "status": "manual_topology",
-                        "parent_segment_ids": [left.id, right.id],
-                        "parent_revision_ids": [current.id, current.id],
-                        "removed_boundary_before": deepcopy(
-                            (right.speech_block_provenance_json or {}).get(
-                                "boundary_before"
-                            )
-                        ),
-                    },
-                    "speaker": left.speaker or right.speaker,
-                    "marked": left.marked or right.marked,
-                    "status": "stale",
-                    "optimization_status": "stale",
-                    "optimization_source_hash": None,
-                    "optimization_reviewed": False,
-                    "optimization_model": None,
-                    "silence_after_ms": right.silence_after_ms,
-                    "paragraph_break_after": right.paragraph_break_after,
-                }
-            )
-            from .audiobook_resegmentation import project_merge_markup
-            project_merge_markup(session, left, right, merged_values, session_id)
             replacement_by_old[left.id] = [merged_values]
             replacement_by_old[right.id] = []
-            mappings.append(
-                {
-                    "source_segment_ids": [left.id, right.id],
-                    "new_segments": ["merged"],
-                }
-            )
+            mappings.append(mapping)
         elif action == "resegment":
             from .audiobook_resegmentation import prepare_resegmentation
             from .speech_plan_workspace import plan_signature
@@ -1241,82 +1418,18 @@ class GenerationTopologyService:
                         [self._segment_copy_values(segment)],
                     )
                 )
-        persisted_values = []
-        for ordinal, values in enumerate(values_sequence):
-            persisted = deepcopy(values)
-            persisted["ordinal"] = ordinal
-            persisted_values.append(persisted)
-        if action != "restore":
-            self._recompute_alignment_group_values(persisted_values)
-        revision_number = (
-            int(
-                session.scalar(
-                    select(func.max(GenerationPlanRevision.revision_number)).where(
-                        GenerationPlanRevision.plan_id == plan.id
-                    )
-                )
-                or 0
-            )
-            + 1
+        revision, new_segments, persisted_values, markup_characters = self._write_revision(
+            session,
+            session_id,
+            plan,
+            current,
+            revision_source,
+            operation_json,
+            values_sequence,
+            recompute_alignment=action != "restore",
         )
-        revision = GenerationPlanRevision(
-            plan_id=plan.id,
-            parent_revision_id=current.id,
-            source_revision_id=revision_source.source_revision_id,
-            revision_number=revision_number,
-            settings_json=deepcopy(revision_source.settings_json or {}),
-            operation_json=deepcopy(operation_json),
-            content_hash=stable_hash(
-                {
-                    "parent_revision_id": current.id,
-                    "operation": operation_json,
-                    "segments": persisted_values,
-                }
-            ),
-        )
-        session.add(revision)
-        session.flush()
-        new_segments: list[GenerationSegment] = []
-        for values in persisted_values:
-            new_segment = GenerationSegment(plan_revision_id=revision.id, **values)
-            if new_segment.status == "running":
-                # The worker owns the source row, not this new editorial copy.
-                new_segment.status = "ready"
-            session.add(new_segment)
-            new_segments.append(new_segment)
-        # One flush, not a growing-unit-of-work flush for every speech block.
-        session.flush()
-        if action != "restore":
-            self._recompute_alignment_groups(new_segments)
-        session.flush()
-
-        speech_markup_characters: list[dict[str, Any]] = []
-        speech_markup_controls_loaded = False
-        if any(
-            isinstance((segment.speech_plan_json or {}).get("speech_xml"), str)
-            and (segment.speech_plan_json or {}).get("speech_xml")
-            for segment in new_segments
-        ):
-            from .generation_cast_runtime import remap_markup
-            from .generation_controls import get_generation_controls
-
-            speech_markup_characters = (
-                get_generation_controls(session, session_id).get("characters") or []
-            )
-            speech_markup_controls_loaded = True
-            for persisted, segment in zip(persisted_values, new_segments, strict=True):
-                speech_plan = deepcopy(segment.speech_plan_json or {})
-                xml = speech_plan.get("speech_xml")
-                if not isinstance(xml, str) or not xml:
-                    continue
-                speech_plan["speech_xml"] = remap_markup(
-                    xml,
-                    segment.id,
-                    segment.optimized_text or segment.text,
-                    speech_markup_characters,
-                )
-                segment.speech_plan_json = speech_plan
-                persisted["speech_plan_json"] = deepcopy(speech_plan)
+        speech_markup_controls_loaded = markup_characters is not None
+        speech_markup_characters = markup_characters or []
 
         # Reuse takes only for byte-for-byte unchanged segments and exact
         # restore copies.  Split/merge replacements intentionally have no
@@ -1366,7 +1479,6 @@ class GenerationTopologyService:
                 if unchanged:
                     take_copy_pairs.append((source.id, new_segments[new_index].id))
                 new_index += 1
-        self._clone_available_takes_batch(session, take_copy_pairs)
         lineage: dict[str, list[str]] = {}
         affected_ids: list[str] = []
         new_index = 0
@@ -1386,23 +1498,9 @@ class GenerationTopologyService:
                     span["segment_id"] == source_id
                     for span in (item.speech_block_provenance_json or {}).get("resegmentation", {}).get("source_spans", [])
                 )]
-        operation_json["lineage"] = lineage
-        revision.operation_json = deepcopy(operation_json)
-        revision.content_hash = stable_hash({"parent_revision_id": current.id, "operation": operation_json, "segments": persisted_values})
-        session.flush()
-        _propagate_segment_speech_references(session, session_id, lineage)
+        boundary_mapping: dict[tuple[str, str], str | None] | None = None
         if activate:
-            plan.active_revision_id = revision.id
-            plan.updated_at = utcnow()
-            mark_output_assemblies_stale(
-                session,
-                session_id,
-                cancel_active=True,
-                jobs=self.jobs,
-            )
-        session.flush()
-        if activate:
-            boundary_mapping: dict[tuple[str, str], str | None] = {}
+            boundary_mapping = {}
             unchanged_resegment_sources = {
                 source_id for source_id, _target_id in take_copy_pairs
             }
@@ -1446,9 +1544,19 @@ class GenerationTopologyService:
                 if len(children) == 1:
                     boundary_mapping[(source_id, "before_segment")] = children[0]
                     boundary_mapping[(source_id, "after_segment")] = children[0]
-            from .sound_project_revisions import rebase_sound_plan
-
-            rebase_sound_plan(session, session_id, revision.id, boundary_mapping)
+        self._finish_revision(
+            session,
+            session_id,
+            plan,
+            current,
+            revision,
+            operation_json,
+            persisted_values,
+            take_copy_pairs=take_copy_pairs,
+            lineage=lineage,
+            boundary_mapping=boundary_mapping,
+            activate=activate,
+        )
         return {
             "id": plan.id,
             "lineage": lineage,
@@ -1462,4 +1570,174 @@ class GenerationTopologyService:
             "active_plan_revision_id": plan.active_revision_id,
             "preview": mappings[0] if action == "resegment" else None,
             "review_required": {"performance": True, "changed_audio": len(affected_ids)},
+        }
+
+
+class TopologyBatch:
+    """Split and merge edits applied to an unsaved copy of one plan revision.
+
+    Rows are transient ``GenerationSegment`` objects that never join the
+    database session. Untouched rows keep their original ids, so reviewed
+    annotations and take reuse still find them; each row an edit creates gets
+    a fresh id, which becomes its saved id if it survives the batch. Parent
+    ids in provenance may therefore name rows that only existed inside the
+    batch. ``commit`` writes one revision for the whole batch.
+    """
+
+    def __init__(
+        self,
+        service: GenerationTopologyService,
+        session: Session,
+        session_id: str,
+        plan: GenerationPlan,
+        current: GenerationPlanRevision,
+    ) -> None:
+        self.service = service
+        self.session = session
+        self.session_id = session_id
+        self.plan = plan
+        self.current = current
+        originals = list(
+            session.scalars(
+                select(GenerationSegment)
+                .where(GenerationSegment.plan_revision_id == current.id)
+                .order_by(GenerationSegment.ordinal)
+            ).all()
+        )
+        self.original_ids = [row.id for row in originals]
+        self.rows = [
+            self._transient(service._segment_copy_values(row), row.id)
+            for row in originals
+        ]
+        self.created: set[str] = set()
+        # Which original blocks each row descends from, and which original
+        # block starts or ends exactly where the row does (sound-cue anchors).
+        self.origins = {row.id: {row.id} for row in originals}
+        self.starts = {row.id: {row.id} for row in originals}
+        self.ends = {row.id: {row.id} for row in originals}
+        self.mappings: list[dict[str, Any]] = []
+
+    def _transient(self, values: dict[str, Any], row_id: str) -> GenerationSegment:
+        values = {key: value for key, value in values.items() if key != "id"}
+        return GenerationSegment(id=row_id, plan_revision_id=self.current.id, **values)
+
+    def active(self) -> list[GenerationSegment]:
+        return [row for row in self.rows if not row.removed]
+
+    def _replace(
+        self, old: list[GenerationSegment], new_values: list[dict[str, Any]]
+    ) -> list[GenerationSegment]:
+        new_rows = [self._transient(values, new_id()) for values in new_values]
+        index = self.rows.index(old[0])
+        removed = {id(row) for row in old}
+        self.rows = [
+            *[row for row in self.rows[:index] if id(row) not in removed],
+            *new_rows,
+            *[row for row in self.rows[index:] if id(row) not in removed],
+        ]
+        for ordinal, row in enumerate(self.rows):
+            row.ordinal = ordinal
+        self.created.update(row.id for row in new_rows)
+        return new_rows
+
+    def split(
+        self, segment: GenerationSegment, operation: dict[str, Any]
+    ) -> dict[str, list[str]]:
+        halves, mapping = self.service._split_values(
+            self.session, self.session_id, self.current, segment, operation
+        )
+        left, right = self._replace([segment], halves)
+        origins = self.origins[segment.id]
+        self.origins[left.id] = set(origins)
+        self.origins[right.id] = set(origins)
+        self.starts[left.id], self.ends[left.id] = set(self.starts[segment.id]), set()
+        self.starts[right.id], self.ends[right.id] = set(), set(self.ends[segment.id])
+        self.mappings.append(mapping)
+        return {segment.id: [left.id, right.id]}
+
+    def merge(
+        self, left: GenerationSegment, right: GenerationSegment
+    ) -> dict[str, list[str]]:
+        merged_values, mapping = self.service._merge_values(
+            self.session, self.session_id, self.current, left, right, self.active()
+        )
+        (merged,) = self._replace([left, right], [merged_values])
+        self.origins[merged.id] = self.origins[left.id] | self.origins[right.id]
+        self.starts[merged.id] = set(self.starts[left.id])
+        self.ends[merged.id] = set(self.ends[right.id])
+        self.mappings.append(mapping)
+        return {left.id: [merged.id], right.id: [merged.id]}
+
+    def commit(self, operations: list[dict[str, Any]]) -> dict[str, Any]:
+        """Write the batch as one revision and activate it."""
+
+        service = self.service
+        values_sequence = []
+        for row in self.rows:
+            values = service._segment_copy_values(row)
+            if row.id in self.created:
+                values["id"] = row.id
+            values_sequence.append(values)
+        operation_json: dict[str, Any] = {
+            "action": "batch",
+            "expected_revision_id": self.current.id,
+            "operations": operations,
+            "mapping": self.mappings,
+        }
+        revision, new_segments, persisted_values, _characters = service._write_revision(
+            self.session,
+            self.session_id,
+            self.plan,
+            self.current,
+            self.current,
+            operation_json,
+            values_sequence,
+            recompute_alignment=True,
+        )
+        saved = {
+            row.id: segment.id
+            for row, segment in zip(self.rows, new_segments, strict=True)
+        }
+        # Untouched rows are byte-for-byte copies, so their takes carry over.
+        take_copy_pairs = [
+            (row.id, saved[row.id]) for row in self.rows if row.id not in self.created
+        ]
+        lineage = {
+            original: [
+                saved[row.id] for row in self.rows if original in self.origins[row.id]
+            ]
+            for original in self.original_ids
+        }
+        boundary_mapping: dict[tuple[str, str], str | None] = {}
+        for row in self.rows:
+            for original in self.starts[row.id]:
+                boundary_mapping[(original, "before_segment")] = saved[row.id]
+            for original in self.ends[row.id]:
+                boundary_mapping[(original, "after_segment")] = saved[row.id]
+        service._finish_revision(
+            self.session,
+            self.session_id,
+            self.plan,
+            self.current,
+            revision,
+            operation_json,
+            persisted_values,
+            take_copy_pairs=take_copy_pairs,
+            lineage=lineage,
+            boundary_mapping=boundary_mapping,
+            activate=True,
+        )
+        affected = [saved[row.id] for row in self.rows if row.id in self.created]
+        return {
+            "id": self.plan.id,
+            "plan_revision_id": revision.id,
+            "revision_number": revision.revision_number,
+            "parent_revision_id": revision.parent_revision_id,
+            "active_plan_revision_id": self.plan.active_revision_id,
+            "lineage": lineage,
+            "saved_ids": saved,
+            "affected_segment_ids": affected,
+            "segment_count": len(new_segments),
+            "is_draft": False,
+            "review_required": {"performance": True, "changed_audio": len(affected)},
         }

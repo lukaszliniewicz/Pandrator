@@ -202,6 +202,9 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
             action = str(operation.get("action") or "automatic")
             batch = operation.get("batch") or {}
             summary = {"automatic": "Automatic speech plan", "split": "Split speech block", "merge": "Merge adjacent speech blocks", "restore": "Restore earlier speech plan"}.get(action, action.replace("_", " ").capitalize())
+            if action == "batch":
+                count = len(operation.get("operations") or [])
+                summary = f"Batch of {count} speech-block edit{'' if count == 1 else 's'}"
             if operation.get("reason") == "early_timing_repair":
                 summary = "Repair speech running ahead of its cues"
             if operation.get("reason") == "undo_timing_repairs":
@@ -345,14 +348,22 @@ def resolve_split_boundary(segment: GenerationSegment, boundary: dict[str, Any],
     return cursor
 
 
-def revise_topology_batch_in_session(service, session, session_id: str, expected_revision_id: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
-    """Run an ordered batch in ONE caller transaction; any failure rolls it all back.
+def _follow(step_lineage: dict[str, list[str]], current_ids: list[str]) -> list[str]:
+    """Rows the given rows became after one batch step; untouched rows stay."""
+    return list(dict.fromkeys(child for parent in current_ids for child in step_lineage.get(parent, [parent])))
 
-    Each operation remains an immutable, restorable revision. Original IDs are
-    followed through lineage; labels such as 'opening.left' resolve prior batch
-    results without another round trip. Ambiguous descendants are never guessed.
+
+def revise_topology_batch_in_session(service, session, session_id: str, expected_revision_id: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Apply an ordered batch as ONE revision in one caller transaction.
+
+    The edits run on an unsaved copy of the plan, so the whole batch becomes a
+    single immutable, restorable revision; any failure rolls it all back.
+    Original IDs are followed through lineage; labels such as 'opening.left'
+    resolve earlier results in the same batch. Ambiguous descendants are never
+    guessed.
     """
     require_generation_content_write(session, "session", session_id)
+    from .generation_topology import GenerationTopologyService, TopologyBatch
     from .settings_policy import RevisionConflict
 
     if not operations or len(operations) > 50:
@@ -360,23 +371,28 @@ def revise_topology_batch_in_session(service, session, session_id: str, expected
     plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
     if plan is None or plan.active_revision_id != expected_revision_id:
         raise RevisionConflict("The speech plan changed before the batch could be applied.")
-    initial = list(session.scalars(select(GenerationSegment).where(GenerationSegment.plan_revision_id == expected_revision_id).order_by(GenerationSegment.ordinal)))
-    lineage = {row.id: [row.id] for row in initial}
+    current = session.get(GenerationPlanRevision, expected_revision_id)
+    if current is None or current.plan_id != plan.id:
+        raise KeyError(expected_revision_id)
+    topology = (
+        service
+        if isinstance(service, GenerationTopologyService)
+        else GenerationTopologyService(service.database, service.jobs)
+    )
+    batch = TopologyBatch(topology, session, session_id, plan, current)
+    lineage = {row_id: [row_id] for row_id in batch.original_ids}
     aliases: dict[str, list[str]] = {}
     used_labels: set[str] = set()
-    affected: set[str] = set()
-    revision_ids: list[str] = []
-    current_id = expected_revision_id
-    result: dict[str, Any] = {}
+    concrete_operations: list[dict[str, Any]] = []
     for index, operation in enumerate(operations, start=1):
-        rows = list(session.scalars(select(GenerationSegment).where(GenerationSegment.plan_revision_id == current_id, GenerationSegment.removed.is_(False)).order_by(GenerationSegment.ordinal)))
+        rows = batch.active()
         action = operation.get("action")
         label = str(operation.get("label") or "").strip()
         if label:
             if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,39}", label) or label in used_labels:
                 raise ValueError("Batch labels must be unique identifiers of at most 40 characters.")
             used_labels.add(label)
-        concrete: dict[str, Any] = {"action": action, "batch": {"base_revision_id": expected_revision_id, "index": index, "count": len(operations), "label": label or None}}
+        concrete: dict[str, Any] = {"action": action, "index": index, "label": label or None}
         if action == "split":
             selector = operation.get("segment") or {"segment_id": operation.get("segment_id")}
             segment = resolve_segment_selector(rows, selector, lineage, aliases)
@@ -387,33 +403,31 @@ def revise_topology_batch_in_session(service, session, session_id: str, expected
             boundary = operation.get("boundary") or {"cursor": operation.get("cursor")}
             cursor = resolve_split_boundary(segment, boundary, text_layer=text_layer)
             concrete.update(segment_id=segment.id, cursor=cursor, text_layer=text_layer)
+            step_lineage = batch.split(segment, concrete)
         elif action == "merge":
             left = resolve_segment_selector(rows, operation.get("left") or {"segment_id": operation.get("left_segment_id")}, lineage, aliases)
             anchor_id = left.id
             right = resolve_segment_selector(rows, operation.get("right") or {"segment_id": operation.get("right_segment_id")}, lineage, aliases)
             concrete.update(left_segment_id=left.id, right_segment_id=right.id)
+            step_lineage = batch.merge(left, right)
         else:
             raise ValueError("A topology batch supports split and merge operations only.")
-        result = service.revise_topology_in_session(session, session_id, current_id, concrete)
-        step_lineage = result["lineage"]
-        lineage = {original: list(dict.fromkeys(child for parent in current for child in step_lineage.get(parent, []))) for original, current in lineage.items()}
-        aliases = {name: list(dict.fromkeys(child for parent in current for child in step_lineage.get(parent, []))) for name, current in aliases.items()}
-        affected = {child for parent in affected for child in step_lineage.get(parent, [])} | set(result["affected_segment_ids"])
+        concrete_operations.append(concrete)
+        lineage = {original: _follow(step_lineage, current_ids) for original, current_ids in lineage.items()}
+        aliases = {name: _follow(step_lineage, current_ids) for name, current_ids in aliases.items()}
         if label:
+            children = step_lineage[anchor_id]
             if action == "split":
-                children = step_lineage[anchor_id]
                 aliases[f"{label}.left"] = children[:1]
                 aliases[f"{label}.right"] = children[1:]
             else:
-                aliases[label] = step_lineage[anchor_id]
-        current_id = result["plan_revision_id"]
-        revision_ids.append(current_id)
+                aliases[label] = children
+    result = batch.commit(concrete_operations)
+    saved = result.pop("saved_ids")
     return {
         **result,
         "base_revision_id": expected_revision_id,
         "operation_count": len(operations),
-        "revision_ids": revision_ids,
-        "lineage": lineage,
-        "result_refs": aliases,
-        "affected_segment_ids": [value for value in result["segment_ids"] if value in affected],
+        "revision_ids": [result["plan_revision_id"]],
+        "result_refs": {name: [saved[value] for value in values] for name, values in aliases.items()},
     }

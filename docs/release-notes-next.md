@@ -40,3 +40,16 @@ exports, mix previews and bundle exports, so exporting the French branch can
 start while the German branch is still generating. Jobs within one project
 still run one at a time and in the order they were queued. Set
 `PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
+
+## Speech plan
+
+A batch of split and merge edits (`pandrator_revise_speech_block_plan_batch`)
+now becomes one speech-plan revision instead of one per edit. The edits run on
+an unsaved copy of the plan and the result is written once, so a 31-edit batch
+on a 900-block audiobook takes about 1 s instead of 12 s, and the receipt is
+less than half the size. The batch is still all or nothing, the revision
+history lists it as "Batch of N speech-block edits", and restoring goes back to
+the state before or after the whole batch, not to a step inside it. Labels,
+original-id lineage, take reuse for untouched blocks and sound-cue anchors work
+as before. The receipt no longer repeats the revision's `operation_json` or
+lists every segment id; it gives `segment_count` instead.
