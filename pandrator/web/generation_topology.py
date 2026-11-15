@@ -1153,6 +1153,10 @@ class GenerationTopologyService:
             persisted = deepcopy(values)
             preset_ids.append(persisted.pop("id", None))
             persisted["ordinal"] = ordinal
+            if persisted.get("status") == "running":
+                # The worker owns the source row, not this new editorial copy;
+                # set it here so the hashed values match the saved row.
+                persisted["status"] = "ready"
             persisted_values.append(persisted)
         if recompute_alignment:
             self._recompute_alignment_group_values(persisted_values)
@@ -1189,9 +1193,6 @@ class GenerationTopologyService:
             new_segment = GenerationSegment(plan_revision_id=revision.id, **values)
             if preset_id is not None:
                 new_segment.id = preset_id
-            if new_segment.status == "running":
-                # The worker owns the source row, not this new editorial copy.
-                new_segment.status = "ready"
             session.add(new_segment)
             new_segments.append(new_segment)
         # One flush, not a growing-unit-of-work flush for every speech block.

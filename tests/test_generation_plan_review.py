@@ -24,7 +24,7 @@ from pandrator.web.models import (
     OutcomePlan,
 )
 from pandrator.web.speech_plan_workspace import plan_signature
-from pandrator.web.workspace import RevisionConflict
+from pandrator.web.workspace import GenerationService, RevisionConflict, stable_hash
 
 
 class GenerationPlanReviewTests(unittest.TestCase):
@@ -181,6 +181,21 @@ class GenerationPlanReviewTests(unittest.TestCase):
             self.assertEqual("ready", session.get(GenerationSegment, copy_id).status)
             copied_takes = session.scalar(
                 select(func.count()).select_from(AudioTake).where(AudioTake.generation_segment_id == copy_id)
+            )
+            revision = session.get(GenerationPlanRevision, response.get_json()["plan_revision_id"])
+            saved = list(session.scalars(
+                select(GenerationSegment)
+                .where(GenerationSegment.plan_revision_id == revision.id)
+                .order_by(GenerationSegment.ordinal)
+            ))
+            # The hash covers the rows as saved, including the reset status.
+            self.assertEqual(
+                stable_hash({
+                    "parent_revision_id": revision.parent_revision_id,
+                    "operation": revision.operation_json,
+                    "segments": [GenerationService._segment_copy_values(row) for row in saved],
+                }),
+                revision.content_hash,
             )
         self.assertEqual(0, copied_takes)
 
