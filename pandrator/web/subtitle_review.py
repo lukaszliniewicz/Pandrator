@@ -144,6 +144,7 @@ class ReviewedSubtitleSegment(TypedDict):
     uncertain_source_cue_ids: list[int]
     _source_word_ids: NotRequired[list[str]]
     _canonical_passage_ids: NotRequired[list[str]]
+    _timing_kept: NotRequired[bool]
 
 
 def _speaker_and_text(segment: Segment) -> tuple[str, str]:
@@ -261,18 +262,19 @@ def _canonical_display_cue(
             else "clear"
         ),
         "review_note": " ".join(notes)[:4_000],
+        # Capped like submitted cues, so every saved id is also validated.
         "evidence_ids": list(
             dict.fromkeys(
                 value for row in rows for value in row.get("evidence_ids") or []
             )
-        ),
+        )[:20],
         "uncertain_source_cue_ids": list(
             dict.fromkeys(
                 value
                 for row in rows
                 for value in row.get("uncertain_source_cue_ids") or []
             )
-        ),
+        )[:20],
     }
 
 
@@ -362,14 +364,51 @@ def _fits_kept_cue(
 def _cue_timing_summary(
     previous: Sequence[Segment], reviewed: Sequence[Mapping[str, Any]]
 ) -> dict[str, int]:
-    """Count how many reviewed cues keep an existing cue's exact timing."""
-    timings = {(item.start_ms, item.end_ms) for item in previous}
+    """Count the reviewed cues that were not kept with their source timing."""
     return {
         "previous_cue_count": len(previous),
-        "retimed_cue_count": sum(
-            (item["start_ms"], item["end_ms"]) not in timings for item in reviewed
-        ),
+        "retimed_cue_count": sum(not item.get("_timing_kept") for item in reviewed),
     }
+
+
+def _reject_new_crosstalk(
+    cues: Sequence[Mapping[str, Any]],
+    recomposed: set[int],
+    prepared_by_id: Mapping[str, Mapping[str, Any]],
+    source_by_id: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Refuse a retimed cue that now overlaps another speaker's display cue.
+
+    Passage validation compares passage windows, but a kept cue can extend
+    past its passage. Overlap that already existed between the source
+    passages is crosstalk and stays allowed.
+    """
+    for index in recomposed:
+        cue = cues[index]
+        row_id = cue["_canonical_passage_ids"][0]
+        if "timing" not in _passage_changes(prepared_by_id[row_id], source_by_id[row_id]):
+            continue
+        speaker = str(cue.get("speaker") or "").strip().casefold()
+        source = source_by_id[row_id]
+        for other_index, other in enumerate(cues):
+            other_speaker = str(other.get("speaker") or "").strip().casefold()
+            if (
+                other_index == index
+                or not speaker
+                or not other_speaker
+                or other_speaker == speaker
+                or not _overlaps(cue["start_ms"], cue["end_ms"], other)
+            ):
+                continue
+            if any(
+                _overlaps(source["start_ms"], source["end_ms"], source_by_id[other_id])
+                for other_id in other["_canonical_passage_ids"]
+            ):
+                continue
+            raise ValueError(
+                f"Passage {row_id} timing creates cross-speaker overlap with "
+                f"passage {', '.join(other['_canonical_passage_ids'])}."
+            )
 
 
 def _compose_canonical_display(
@@ -440,12 +479,15 @@ def _compose_canonical_display(
         )
         if keepable and not changes:
             cues.extend(
-                _canonical_display_cue(
-                    [prepared_by_id[row_id] for row_id in ids],
-                    start_ms=int(segment.start_ms or 0),
-                    end_ms=int(segment.end_ms or 0),
-                    text=text,
-                )
+                {
+                    **_canonical_display_cue(
+                        [prepared_by_id[row_id] for row_id in ids],
+                        start_ms=int(segment.start_ms or 0),
+                        end_ms=int(segment.end_ms or 0),
+                        text=text,
+                    ),
+                    "_timing_kept": True,
+                }
                 for segment, ids, text in carried
             )
             continue
@@ -466,12 +508,15 @@ def _compose_canonical_display(
                 config,
             ):
                 cues.append(
-                    _canonical_display_cue(
-                        rows,
-                        start_ms=int(segment.start_ms or 0),
-                        end_ms=int(segment.end_ms or 0),
-                        text=text,
-                    )
+                    {
+                        **_canonical_display_cue(
+                            rows,
+                            start_ms=int(segment.start_ms or 0),
+                            end_ms=int(segment.end_ms or 0),
+                            text=text,
+                        ),
+                        "_timing_kept": True,
+                    }
                 )
                 continue
         for row in retained:
@@ -504,6 +549,7 @@ def _compose_canonical_display(
                     _canonical_display_cue([row], start_ms=start, end_ms=end, text=cue.text)
                 )
     _extend_recomposed_cues(cues, recomposed, config)
+    _reject_new_crosstalk(cues, recomposed, prepared_by_id, source_by_id)
     # Groups are emitted in ledger order; a stable sort keeps that order for
     # cues that start together and puts a group that straddles another in time.
     return sorted(cues, key=lambda cue: cue["start_ms"])
@@ -1468,6 +1514,7 @@ class SubtitleReviewService:
                     str(value).strip()
                     for value in item.get("_canonical_passage_ids") or []
                 ]
+                normalized_segment["_timing_kept"] = item.get("_timing_kept") is True
             normalized.append(normalized_segment)
         if not normalized:
             raise ValueError("A reviewed subtitle document cannot be empty.")

@@ -45,7 +45,7 @@ still run one at a time and in the order they were queued. Set
 
 Fixing the wording of one passage no longer re-times the whole subtitle.
 Passage review, in the app and through `pandrator_patch_subtitle_passages`,
-keeps every display cue that shares no passage with your edit, and a wording
+keeps every display cue not linked to your edit through a shared passage, and a wording
 fix keeps its cue's timing when the text still fits, even inside a cue that
 holds several short passages. Previously each save rebuilt every cue from its passage
 alone, which could split a line such as "Yes. Traditional Christianity? Yes."

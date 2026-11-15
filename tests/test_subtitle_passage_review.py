@@ -403,6 +403,48 @@ def test_borrowed_time_never_widens_crosstalk(review_case):
     ]
 
 
+def test_retimed_passage_cannot_overlap_a_kept_cue_of_another_speaker(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:01,000 --> 00:00:03,000\nFirst.\n\n"
+        "2\n00:00:04,000 --> 00:00:05,000\nSecond.\n",
+        [
+            {"id": "kept-a", "text": "First.", "start_ms": 1000, "end_ms": 2000, "speaker": "A", "cue_indices": [0]},
+            {"id": "moved-b", "text": "Second.", "start_ms": 4000, "end_ms": 5000, "speaker": "B", "cue_indices": [1]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, **{"moved-b": {"start_ms": 2500, "end_ms": 3500}})
+
+    with pytest.raises(ValueError, match="cross-speaker overlap"):
+        _save(review_case, source_id, source_hash, 1, values)
+
+
+def test_retimed_count_follows_the_cue_not_another_cues_old_timing(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:01,000\nFirst.\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nSecond.\n",
+        [
+            {"id": "count-a", "text": "First.", "start_ms": 0, "end_ms": 1000, "speaker": "A", "cue_indices": [0]},
+            {"id": "count-b", "text": "Second.", "start_ms": 2000, "end_ms": 3000, "speaker": "A", "cue_indices": [1]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(
+        rows,
+        **{"count-a": {"start_ms": 2000, "end_ms": 3000}, "count-b": {"deleted": True}},
+    )
+
+    preview = _save(review_case, source_id, source_hash, 1, values, dry_run=True)
+
+    assert (preview["cue_count"], preview["retimed_cue_count"]) == (1, 1)
+
+
 def test_fragmented_passage_edits_preserve_anchors_evidence_and_materialized_speaker(
     review_case,
 ):
