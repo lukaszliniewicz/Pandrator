@@ -1698,9 +1698,13 @@ class TopologyBatch:
             row.id: segment.id
             for row, segment in zip(self.rows, new_segments, strict=True)
         }
-        # Untouched rows are byte-for-byte copies, so their takes carry over.
+        # Untouched rows are copies, so their takes carry over, except a block a
+        # run is still synthesising: its copy is saved as ready, and the single
+        # edit path likewise leaves it without the old take.
         take_copy_pairs = [
-            (row.id, saved[row.id]) for row in self.rows if row.id not in self.created
+            (row.id, saved[row.id])
+            for row in self.rows
+            if row.id not in self.created and row.status != "running"
         ]
         lineage = {
             original: [

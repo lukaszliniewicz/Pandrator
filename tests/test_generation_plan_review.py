@@ -169,6 +169,21 @@ class GenerationPlanReviewTests(unittest.TestCase):
         self.assertEqual("batch", active["action"])
         self.assertEqual("Batch of 3 speech-block edits", active["summary"])
 
+    def test_batch_does_not_carry_a_take_onto_a_block_still_being_synthesised(self):
+        with self.database.session() as session:
+            session.get(GenerationSegment, self.segment_ids[-1]).status = "running"
+        response = self.batch([
+            {"action": "split", "segment_id": self.segment_ids[0], "boundary": {"after_sentence": 1}},
+        ])
+        self.assertEqual(201, response.status_code, response.get_json())
+        copy_id = response.get_json()["lineage"][self.segment_ids[-1]][0]
+        with self.database.session() as session:
+            self.assertEqual("ready", session.get(GenerationSegment, copy_id).status)
+            copied_takes = session.scalar(
+                select(func.count()).select_from(AudioTake).where(AudioTake.generation_segment_id == copy_id)
+            )
+        self.assertEqual(0, copied_takes)
+
     def test_batch_maps_sound_anchors_through_every_edit(self):
         captured = {}
 
