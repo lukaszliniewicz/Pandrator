@@ -42,6 +42,17 @@ class SubtitleFinalizationTests(unittest.TestCase):
             wrap_subtitle_text("私たちの教会は2014年に始まりました", config),
         )
 
+    def test_japanese_wrap_keeps_a_dotted_name_whole_without_the_tokenizer(self):
+        config = SubtitleFinalizationConfig.from_settings({}, language="ja", text="x")
+
+        with patch("pandrator.logic.dubbing.cjk_words.word_boundaries", return_value=None):
+            self.assertEqual(
+                "先日の番組は\nラリー・キングの話でした",
+                wrap_subtitle_text("先日の番組はラリー・キングの話でした", config),
+            )
+            wrapped = wrap_subtitle_text("それでラリー・キングの番組に出演した", config)
+            self.assertTrue(any("ラリー・キング" in line for line in wrapped.splitlines()), wrapped)
+
     def test_public_timing_view_preserves_long_cjk_phrase_and_overlapping_speakers(self):
         phrase = "これは長い日本語の文章です"
         transcript = NormalizedTranscript((

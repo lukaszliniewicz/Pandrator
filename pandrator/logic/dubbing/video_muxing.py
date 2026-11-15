@@ -522,10 +522,10 @@ def build_add_subtitles_command(
 
 def audio_language_metadata(language: str, stream: int = 0) -> list[str]:
     """FFmpeg options naming an audio stream's language, or none if unknown."""
+    code = ffmpeg_subtitle_language_code(language, default="")
     title = subtitle_language_title(language, default="")
-    if not title:
+    if not code or not title:
         return []
-    code = ffmpeg_subtitle_language_code(language, default="und")
     return [
         f"-metadata:s:a:{stream}",
         f"language={code}",

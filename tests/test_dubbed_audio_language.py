@@ -32,7 +32,7 @@ class AudioLanguageMetadataTests(unittest.TestCase):
         )
 
     def test_unknown_language_adds_no_tags(self):
-        for language in ("", "auto", "und"):
+        for language in ("", "auto", "und", "zz"):
             self.assertEqual([], audio_language_metadata(language))
         command = build_replace_video_audio_command("v.mp4", "a.wav", "o.mp4")
         self.assertFalse(any(item.startswith("-metadata") for item in command))

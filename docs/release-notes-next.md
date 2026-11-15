@@ -47,9 +47,11 @@ still run one at a time and in the order they were queued. Set
   target language, a title and a handler name (for example `hun`,
   "Hungarian"), so players no longer list it as "Unknown". Exports with an
   unknown target language stay untagged.
-- Merging two Japanese or Chinese speech blocks, by hand or through passage
-  regroup, no longer inserts a space between them in the text, the speech text
-  or the speech markup.
+- Merging two Japanese or Chinese speech blocks, by hand, through passage
+  regroup or through audiobook range re-segmentation, no longer inserts a space
+  between them in the text, the speech text or the speech markup. Automatic
+  re-segmentation also finds 。, ！ and ？ without a following space, so a
+  Japanese range no longer fails with "A word exceeds max_chars".
 - Japanese subtitle lines no longer break inside a dotted name such as
   「ラリー・キング」 or between a number and its counter such as 「2014年」,
   unless no other two-line split fits.

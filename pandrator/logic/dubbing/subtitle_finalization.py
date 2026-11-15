@@ -12,7 +12,7 @@ import re
 from bisect import bisect_right
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
-from itertools import pairwise
+from itertools import pairwise, takewhile
 from math import ceil
 from pathlib import Path
 from statistics import median
@@ -211,16 +211,27 @@ def _layout_units(text: str, config: SubtitleFinalizationConfig) -> list[str]:
 _NAME_DOTS = frozenset("・･")
 
 
+def _katakana(char: str) -> bool:
+    # Full-width katakana (with ー and ・) and half-width katakana (with ･).
+    return "\u30a1" <= char <= "\u30ff" or "\uff65" <= char <= "\uff9f"
+
+
 def _poor_cjk_seam(left: str, right: str) -> bool:
     """A line break that splits a dotted name or a number from its counter.
 
-    Breaks such as 「ダグ・ / ウィルソン」 or 「2014 / 年」 are used only when
-    no other two-line split fits.
+    Breaks such as 「ダグ・ / ウィルソン」, 「ラ / リー・キング」 or 「2014 / 年」
+    are used only when no other two-line split fits.
     """
     if not left or not right:
         return False
     if left[-1] in _NAME_DOTS or right[0] in _NAME_DOTS:
         return True
+    if _katakana(left[-1]) and _katakana(right[0]):
+        # Without a tokenizer the units are single characters, so look at the
+        # whole katakana run around the seam, not only at its edges.
+        run = "".join(takewhile(_katakana, reversed(left))) + "".join(takewhile(_katakana, right))
+        if any(char in _NAME_DOTS for char in run):
+            return True
     return left[-1].isdigit() and not right[0].isdigit() and contains_cjk(right[0])
 
 

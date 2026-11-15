@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from pandrator.logic.speech_markup import parse_speech_markup
 from pandrator.web import models as m
+from pandrator.web.audiobook_resegmentation import _automatic_boundaries
 from pandrator.web.generation_cast_runtime import remap_markup
 from pandrator.web.projects.identity import session_project
 from pandrator.web.speech_boundaries import assembly_pause, freeze_boundaries
@@ -309,3 +310,37 @@ def test_plain_pauses_survive_generation_time_text_optimization(case):
         freeze_boundaries(session, row.plan_revision_id, snapshot)
         row.optimized_text = "The request had been rejected."
         assert assembly_pause(row, snapshot) == 250
+
+
+def test_japanese_resegmentation_joins_blocks_without_a_space(case):
+    first, second = case["segment_ids"][:2]
+    with case["services"]["database"].session() as session:
+        for identifier, text in ((first, "ありがとう。"), (second, "ございました！")):
+            row = session.get(m.GenerationSegment, identifier)
+            row.text, row.optimized_text, row.speech_plan_json = text, None, {}
+            row.paragraph_break_after = False
+    merged = topology(
+        case,
+        case["revision_id"],
+        action="resegment",
+        segment_ids=[first, second],
+        boundaries=[],
+    )
+    assert merged.status_code == 201, merged.get_json()
+    row = rows(case, merged.get_json()["plan_revision_id"])[0]
+    assert row.text == "ありがとう。ございました！"
+    parsed = parse_speech_markup(
+        remap_markup(row.speech_plan_json["speech_xml"], row.id, row.text, []),
+        expected_segment_id=row.id,
+        expected_text=row.text,
+    )
+    assert "".join(span.text for span in parsed.spans) == row.text
+    spans = row.speech_block_provenance_json["resegmentation"]["source_spans"]
+    assert [(span["start"], span["end"]) for span in spans] == [(0, 6), (0, 7)]
+
+
+def test_automatic_boundaries_find_unspaced_cjk_sentence_and_block_ends():
+    sentence = "あ" * 30 + "。" + "い" * 30 + "。"
+    assert _automatic_boundaries(sentence, 40, set(), set()) == [31]
+    unpunctuated = "あ" * 30 + "い" * 30
+    assert _automatic_boundaries(unpunctuated, 40, set(), {30, 60}) == [30]

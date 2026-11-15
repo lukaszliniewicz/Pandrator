@@ -6,6 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections import Counter
 from copy import deepcopy
+from itertools import pairwise
 
 from sqlalchemy import select
 
@@ -220,14 +221,17 @@ def project_merge_markup(session, left, right, values: dict, session_id: str) ->
 
 
 def _automatic_boundaries(
-    text: str, max_chars: int, paragraph_ends: set[int]
+    text: str, max_chars: int, paragraph_ends: set[int], row_ends: set[int]
 ) -> list[int]:
-    """Prefer sentence ends, then whitespace; retain every source character."""
+    """Prefer sentence ends, then whitespace or old block ends; retain every character."""
     sentences = [
         match.end()
-        for match in re.finditer(r"[.!?…。！？][\"\u201d\u2019\)\]]*(?:\s+|$)", text)
+        for match in re.finditer(
+            # Full-width sentence ends need no following space.
+            r"[.!?…][\"\u201d\u2019\)\]]*(?:\s+|$)|[。！？][」』\u201d\u2019）\)\]]*\s*", text
+        )
     ]
-    whitespace = [match.end() for match in re.finditer(r"\s+", text)]
+    whitespace = sorted({match.end() for match in re.finditer(r"\s+", text)} | row_ends)
     result, start = [], 0
     while start < len(text):
         paragraph_end = min(
@@ -314,18 +318,23 @@ def prepare_resegmentation(
         raise ValueError(
             "Range resegmentation requires matching display and speech text; use mapped split/merge for optimized variants."
         )
-    text = " ".join(row.text for row in selected)
+    # The same seams as a merge, so Japanese and Chinese stay unspaced.
+    seams = [fragment_separator(left.text, right.text) for left, right in pairwise(selected)]
+    text = "".join(
+        row.text if not index else seams[index - 1] + row.text
+        for index, row in enumerate(selected)
+    )
     if len(text) > 24000:
         raise ValueError("Select at most 24,000 characters per resegmentation draft.")
     source_ranges, source_ends, paragraph_ends = [], {}, set()
     cursor = 0
-    for row in selected:
+    for index, row in enumerate(selected):
         end = cursor + len(row.text)
         source_ranges.append((row, cursor, end))
         source_ends[end] = row
         if row.paragraph_break_after:
             paragraph_ends.add(end)
-        cursor = end + 1
+        cursor = end + (len(seams[index]) if index < len(seams) else 0)
     boundaries = operation.get("boundaries")
     if boundaries is None:
         max_chars = operation.get("max_chars") or 300
@@ -335,7 +344,7 @@ def prepare_resegmentation(
             or not 40 <= max_chars <= 4000
         ):
             raise ValueError("max_chars must be an integer between 40 and 4000.")
-        boundaries = _automatic_boundaries(text, max_chars, paragraph_ends)
+        boundaries = _automatic_boundaries(text, max_chars, paragraph_ends, set(source_ends))
     if (
         len(boundaries) > 199
         or any(
@@ -355,6 +364,7 @@ def prepare_resegmentation(
     xml = join_speech_markup(
         [(row.id, row.text, source_markup[row.id]) for row in selected],
         segment_id=selected[0].id,
+        separator=seams,
         characters=characters,
     )
     source_boundaries = {
