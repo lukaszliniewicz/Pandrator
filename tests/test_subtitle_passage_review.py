@@ -260,7 +260,8 @@ def test_combined_canonical_cue_saves_again_without_spreading_review_state(revie
     source_id, source_hash, _revision_id = _source(
         review_case,
         "1\n00:00:00,000 --> 00:00:02,000\nYes. Rigth?\n\n"
-        "2\n00:00:01,500 --> 00:00:02,500\nMm.\n",
+        # Longer than its passage, so a resave checks its display fragment.
+        "2\n00:00:01,500 --> 00:00:02,600\nMm.\n",
         [
             {
                 "id": "yes",
@@ -270,8 +271,17 @@ def test_combined_canonical_cue_saves_again_without_spreading_review_state(revie
                 "speaker": "A",
                 "review_state": "uncertain",
                 "uncertain_source_cue_ids": [1],
+                # With the sibling's note, the cue's joined note hits the cap.
+                "review_note": "a" * 3999,
             },
-            {"id": "right", "text": "Rigth?", "start_ms": 1000, "end_ms": 2000, "speaker": "A"},
+            {
+                "id": "right",
+                "text": "Rigth?",
+                "start_ms": 1000,
+                "end_ms": 2000,
+                "speaker": "A",
+                "review_note": "b",
+            },
             {
                 "id": "mm",
                 "text": "Mm.",
@@ -312,6 +322,9 @@ def test_combined_canonical_cue_saves_again_without_spreading_review_state(revie
     assert by_id["yes"]["uncertain_source_cue_ids"] == [1]
     assert by_id["right"]["review_state"] == "clear"
     assert by_id["right"]["uncertain_source_cue_ids"] == []
+    assert by_id["yes"]["review_note"] == "a" * 3999
+    assert by_id["right"]["review_note"] == "b"
+    assert by_id["mm"]["text"] == "Mm."
 
 
 def test_untouched_cues_keep_their_timing_when_another_passage_changes(review_case):

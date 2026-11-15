@@ -300,8 +300,14 @@ def _combined_review_additions(
     back whole would copy one passage's evidence onto its siblings.
     """
     baseline = passage_review_metadata([dict(row) for row in owned])
-    note = str(cue.get("review_note") or "").strip()
-    baseline_note = str(baseline["review_note"])[:4_000]
+
+    def normalized(text: object) -> str:
+        # The same collapse and cap a saved note gets, so an unchanged note
+        # always matches its baseline even at the length limit.
+        return " ".join(str(text or "").split())[:4_000].strip()
+
+    note = normalized(cue.get("review_note"))
+    baseline_note = normalized(baseline["review_note"])
     if baseline_note and note.startswith(baseline_note):
         note = note[len(baseline_note):].strip()
     return {
@@ -793,11 +799,22 @@ def _review_passage_rows(
         stored.update(passage_review_metadata(reviews))
         if row_id not in fragments:
             continue
-        direct_ids = set(source.get("source_cue_ids", []))
+        # A published canonical cue names its passages; its passages' cue ids
+        # may still name the segments it replaced.
         direct = [
-            segment for segment_id in direct_ids
-            for segment in source_owners.get(segment_id, [])
+            segment for segment in source_segments
+            if (segment.metadata_json or {}).get("canonical_passage_review")
+            and row_id in [
+                str(value)
+                for value in (segment.metadata_json or {}).get("source_passage_ids") or []
+            ]
         ]
+        if not direct:
+            direct_ids = set(source.get("source_cue_ids", []))
+            direct = [
+                segment for segment_id in direct_ids
+                for segment in source_owners.get(segment_id, [])
+            ]
         expected = direct or [
             source_segments[index]
             for index in source_segment_indexes[source_indexes_by_id[row_id]]
