@@ -426,6 +426,26 @@ class SubtitleEvidenceCacheTests(unittest.TestCase):
             self.assertEqual("completed", self._run(refreshed)["status"])
             self.assertEqual(["whisper", "whisper", "whisper"], self.transcription_calls)
 
+    def test_rerun_never_rewrites_an_earlier_registered_clip(self):
+        with self._stt_mocks()[0], self._stt_mocks()[1], self._stt_mocks()[2], self._stt_mocks()[3]:
+            # A failed attempt keeps its registered clip, and a retry runs again.
+            self.fail_next_transcription = True
+            created = self._request()
+            self.assertEqual("failed", self._run(created)["status"])
+            first = self._clip_paths()
+            self.assertTrue(first)
+            identities = {path: (path.stat().st_ino, path.stat().st_mtime_ns) for path in first}
+            self.assertEqual("completed", self._run(created)["status"])
+            second = self._clip_paths()
+            self.assertGreater(len(second), len(first))
+            for path, identity in identities.items():
+                self.assertEqual(identity, (path.stat().st_ino, path.stat().st_mtime_ns))
+
+    def _clip_paths(self):
+        with self.services.database.session() as session:
+            rows = session.scalars(select(Artifact).where(Artifact.role == "subtitle_evidence_audio"))
+            return [self.services.paths.managed_path(row.relative_path) for row in rows]
+
     def test_cache_does_not_cross_session_boundaries(self):
         with self._stt_mocks()[0], self._stt_mocks()[1], self._stt_mocks()[2], self._stt_mocks()[3]:
             self._run(self._request())

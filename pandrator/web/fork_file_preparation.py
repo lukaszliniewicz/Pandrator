@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
-from .artifacts import PreparedArtifactRegistration, sha256_file
+from .artifacts import PreparedArtifactRegistration, link_or_copy, sha256_file
 from .models import (
     Artifact,
     ArtifactEdge,
@@ -67,11 +67,14 @@ def _row(value: Any) -> dict[str, Any]:
     }
 
 
-def _signature(path: Path) -> tuple[int, int, int, int, int]:
+def _signature(path: Path) -> tuple[int, int, int, int]:
+    # No ctime: branches hard-link their source files, and adding or removing
+    # any name of a shared inode changes its ctime, including concurrent
+    # branch requests and purges of earlier branches. Content is hash-checked.
     stat = path.stat()
     if not path.is_file():
         raise FileNotFoundError(f"Referenced fork artifact file is missing: {path}")
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
 @dataclass(slots=True)
@@ -80,7 +83,7 @@ class _TargetFiles:
     staging: Path
     destination: Path
     registrations: dict[str, PreparedArtifactRegistration] = field(default_factory=dict)
-    signatures: dict[str, tuple[int, int, int, int, int]] = field(default_factory=dict)
+    signatures: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)
     installed: bool = False
     created: bool = False
 
@@ -100,7 +103,7 @@ class _PreparedForkFiles:
     checkpoint_ids: set[str]
     revision_records: dict[str, Any]
     fallback_artifacts: dict[str, Artifact]
-    source_signatures: dict[str, tuple[int, int, int, int, int]] = field(default_factory=dict)
+    source_signatures: dict[str, tuple[int, int, int, int]] = field(default_factory=dict)
     targets: list[_TargetFiles] = field(default_factory=list)
     next_target: int = 0
 
@@ -277,7 +280,7 @@ class _PreparedForkFiles:
                    revision_records, fallback_artifacts)
 
     def materialize(self) -> None:
-        """Hash each original once, then copy and verify each independent target."""
+        """Hash each original once, then link (or copy and verify) it per target."""
         try:
             hashes: dict[str, str] = {}
             for artifact_id, row in self.artifacts.items():
@@ -317,14 +320,22 @@ class _PreparedForkFiles:
                     relative = Path(kind) / f"{new_id()}{source.suffix.lower()}"
                     staged = target.staging / relative
                     staged.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source, staged)
+                    linked = link_or_copy(source, staged)
                     staged_signature = _signature(staged)
-                    digest = sha256_file(staged)
-                    if (
-                        digest != hashes[artifact_id]
-                        or staged_signature != _signature(staged)
-                        or self.source_signatures[artifact_id] != _signature(source)
-                    ):
+                    digest = hashes[artifact_id]
+                    # A link is the same unchanged inode that was hashed above.
+                    # Copies, and links on filesystems that report a separate
+                    # inode per name (CIFS noserverino, some FUSE mounts), are
+                    # hashed and checked instead.
+                    unchanged = linked and staged_signature == self.source_signatures[artifact_id]
+                    if not unchanged:
+                        digest = sha256_file(staged)
+                        unchanged = (
+                            digest == hashes[artifact_id]
+                            and staged_signature == _signature(staged)
+                            and self.source_signatures[artifact_id] == _signature(source)
+                        )
+                    if not unchanged:
                         raise RevisionConflict(f"Referenced fork artifact hash changed: {artifact_id}")
                     target.signatures[artifact_id] = staged_signature
                     target.registrations[artifact_id] = PreparedArtifactRegistration(

@@ -109,8 +109,10 @@ def _record_values(record, fields: Sequence[str]) -> dict[str, Any]:
 
 
 def _stat_witness(path: Path) -> tuple[int, ...]:
+    # No ctime: language branches hard-link checkpoint files, and creating or
+    # purging any branch changes the shared inode's ctime.
     stat = path.stat()
-    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
 _SOURCE_FIELDS = (
