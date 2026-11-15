@@ -129,6 +129,10 @@ class RefusedSegmentRunTests(unittest.TestCase):
     def _run(self, texts, synthesize):
         session_id, _revision, segment_ids = self._create_case(texts=texts)
         started = self.generation.start(session_id, run_override=self._override())
+        finished, progress_details = self._execute(started, synthesize)
+        return started["id"], segment_ids, finished, progress_details
+
+    def _execute(self, started, synthesize):
         payload = self._job_payload(started["job_id"])
         progress_details = []
         with (
@@ -148,7 +152,7 @@ class RefusedSegmentRunTests(unittest.TestCase):
                 lambda _value, detail=None: progress_details.append(detail),
                 threading.Event(),
             )
-        return started["id"], segment_ids, finished, progress_details
+        return finished, progress_details
 
     def test_refused_segment_is_skipped_and_reported(self):
         from pydub import AudioSegment
@@ -187,6 +191,42 @@ class RefusedSegmentRunTests(unittest.TestCase):
                 for segment_id in segment_ids
             ]
         self.assertEqual(["completed", "failed", "completed"], statuses)
+
+    def test_declined_regeneration_keeps_the_earlier_take(self):
+        from pydub import AudioSegment
+
+        def succeed(_text, _settings, **_kwargs):
+            return AudioSegment.silent(duration=20)
+
+        def decline(_text, _settings, **_kwargs):
+            raise tts_handler.TtsGenerationError(
+                "Gemini declined to synthesise this text (SAFETY).",
+                retryable=False,
+                reason="content_refused",
+            )
+
+        run_id, segment_ids, first, _details = self._run(["Alpha", "Bravo", "Charlie"], succeed)
+        self.assertEqual("completed", first["status"])
+        with self.database.session() as session:
+            session_id = session.get(GenerationRun, run_id).session_id
+        regenerated = self.generation.start(
+            session_id,
+            run_override=self._override(),
+            segment_ids=segment_ids[1:2],
+            generation_run_id=run_id,
+            operation="regenerate",
+        )
+        finished, _details = self._execute(regenerated, decline)
+
+        self.assertEqual(
+            [(segment_ids[1], "content_refused", True)],
+            [
+                (item["segment_id"], item["reason"], item["kept_previous_take"])
+                for item in finished["failed_segments"]
+            ],
+        )
+        with self.database.session() as session:
+            self.assertEqual("completed", session.get(GenerationSegment, segment_ids[1]).status)
 
     def test_a_refusal_breaks_a_run_of_empty_responses(self):
         sequence = iter(["no_audio", "content_refused", "no_audio", "no_audio"])
