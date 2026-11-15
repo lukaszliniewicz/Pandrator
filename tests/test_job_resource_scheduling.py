@@ -283,6 +283,33 @@ def test_delivery_lane_never_overtakes_older_work_in_its_session(queue):
     assert chosen is not None and chosen.id == export.id
 
 
+def test_delivery_lane_waits_for_older_work_with_a_lapsed_lease(queue):
+    jobs, database = queue
+    project = SessionService(database).create("Assembly lease lapsed").id
+    assemble = jobs.enqueue(
+        "generation.assemble", session_id=project, max_attempts=2,
+        resource_keys=[f"session:{project}"],
+    )
+    export = jobs.enqueue("export.create", session_id=project)
+    claimed = jobs.claim("crashed")
+    assert claimed is not None and claimed.id == assemble.id
+    assert jobs.acquire_resources(
+        assemble.id, "crashed", [f"session:{project}"], lease_generation=claimed.lease_generation,
+    )
+    expired = utcnow() - timedelta(seconds=1)
+    with database.immediate_session() as unit:
+        unit.get(Job, assemble.id).lease_expires_at = expired
+        unit.get(ResourceClaim, f"session:{project}").expires_at = expired
+    # The assembly will be reclaimed; the export must not run before it.
+    assert jobs.claim("main.delivery", kinds={"export.create"}) is None
+    assert jobs.get(assemble.id).status == "running"
+    reclaimed = jobs.claim("main")
+    assert reclaimed is not None and reclaimed.id == assemble.id
+    jobs.complete(assemble.id, "main", {}, lease_generation=reclaimed.lease_generation)
+    chosen = jobs.claim("main.delivery", kinds={"export.create"})
+    assert chosen is not None and chosen.id == export.id
+
+
 def test_worker_delivery_lane_handles_every_delivery_kind(tmp_path):
     from pandrator.web.cli import _delivery_lane
     from pandrator.web.comparison_exports import COMPARISON_EXPORT_JOB_KIND
@@ -294,7 +321,7 @@ def test_worker_delivery_lane_handles_every_delivery_kind(tmp_path):
     providers = TtsProviderRegistry()
     try:
         lane = _delivery_lane(database, paths, JobQueue(database), providers, "worker")
-        assert lane.worker_id == "worker.delivery"
+        assert lane is not None and lane.worker_id == "worker.delivery"
         assert lane.kinds == DELIVERY_LANE_JOB_KINDS == frozenset(lane.handlers)
         assert COMPARISON_EXPORT_JOB_KIND in DELIVERY_LANE_JOB_KINDS
     finally:

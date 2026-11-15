@@ -499,8 +499,8 @@ def command_serve(args) -> int:
 def _delivery_lane(
     database: Database, paths: DataPaths, queue: JobQueue,
     tts_providers: TtsProviderRegistry, worker_id: str,
-) -> Worker:
-    """Claim only short delivery jobs beside the main worker loop.
+) -> Worker | None:
+    """Claim only delivery jobs beside the main worker loop, if any are registered.
 
     Its own handler instances keep its job's state apart from the job the main
     loop is running, as a second worker process would.
@@ -508,11 +508,14 @@ def _delivery_lane(
     handlers = WorkflowHandlers(
         database, paths, tts_providers=tts_providers, jobs=queue
     ).handler_registry
+    kinds = DELIVERY_LANE_JOB_KINDS.intersection(handlers)
+    if not kinds:
+        return None
     return Worker(
         queue,
         f"{worker_id}.delivery",
-        {kind: handlers[kind] for kind in DELIVERY_LANE_JOB_KINDS},
-        kinds=DELIVERY_LANE_JOB_KINDS,
+        {kind: handlers[kind] for kind in kinds},
+        kinds=kinds,
     )
 
 

@@ -302,12 +302,15 @@ class JobQueue:
             and as_utc(job.lease_expires_at) > utcnow()
         )
 
-    def _reconcile_stale_locked(self, session) -> None:
+    def _reconcile_stale_locked(
+        self, session, kinds: frozenset[str] | None = None,
+    ) -> None:
         """Close jobs whose worker lease vanished instead of leaving them running forever."""
         now = utcnow()
-        records = list(
-            session.scalars(select(Job).where(self._stale_filter(now))).all()
-        )
+        stale = select(Job).where(self._stale_filter(now))
+        if kinds is not None:
+            stale = stale.where(Job.kind.in_(kinds))
+        records = list(session.scalars(stale).all())
         terminal_job_ids: list[str] = []
         for job in records:
             if job.status == "cancel_requested":
@@ -1050,14 +1053,15 @@ class JobQueue:
             .order_by(Job.created_at.asc(), Job.id.asc())
         )
         if kinds is not None:
-            # A lane must not overtake older queued work in the same session:
-            # an export queued after an assembly has to see its output.
+            # A lane must not overtake older unfinished work in the same
+            # session, including work a lapsed lease left to be reclaimed: an
+            # export queued after an assembly has to see its output.
             older = aliased(Job)
             statement = statement.where(
                 Job.kind.in_(kinds),
                 ~select(older.id).where(
                     older.session_id == Job.session_id,
-                    older.status == "queued",
+                    older.status.in_(("queued", "running", "cancel_requested")),
                     or_(
                         older.created_at < Job.created_at,
                         and_(older.created_at == Job.created_at, older.id < Job.id),
@@ -1117,7 +1121,7 @@ class JobQueue:
             if update_maintenance_active(self.database.path.parent):
                 return None
             now = utcnow()
-            self._reconcile_stale_locked(session)
+            self._reconcile_stale_locked(session, kind_filter)
             session.flush()
             candidate_id = self._next_claimable_job_id(session, now, kind_filter)
             job = session.get(Job, candidate_id) if candidate_id is not None else None
@@ -2054,7 +2058,11 @@ class Worker:
         lease_generation: int | None = None
         resources_acquired = False
         try:
-            job = self.queue.claim(self.worker_id, kinds=self.kinds)
+            job = (
+                self.queue.claim(self.worker_id)
+                if self.kinds is None
+                else self.queue.claim(self.worker_id, kinds=self.kinds)
+            )
             if job is None:
                 return False
             lease_generation = int(job.lease_generation)
