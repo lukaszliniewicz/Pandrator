@@ -38,7 +38,7 @@ uses.
   and names the session's translation project, if it has one. The hint is
   shown only to callers who can read that session.
 - The subtitle provenance error names the artifact and the parent that blocks
-  it, and whether that parent was deleted or belongs elsewhere.
+  it, and whether that parent is missing, deleted or belongs elsewhere.
 
 ## Manager
 

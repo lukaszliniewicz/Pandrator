@@ -103,7 +103,9 @@ def _lineage_artifacts(
             if related is None or not artifact_accessible_in_session(
                 session, session_id, related
             ):
-                if related is None or related.state == "deleted":
+                if related is None:
+                    problem = "does not exist"
+                elif related.state == "deleted":
                     problem = "is deleted"
                 else:
                     problem = "is neither owned by nor attached to this session"

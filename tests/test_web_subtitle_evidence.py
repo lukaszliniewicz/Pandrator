@@ -434,6 +434,36 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
                 },
             )
 
+    def test_provenance_error_names_a_missing_parent(self):
+        correction_path = (
+            self.services.paths.sessions / self.session.storage_key / "missing-parent.srt"
+        )
+        correction_path.write_text("1\n00:00:10,000 --> 00:00:12,000\nhello\n")
+        correction = self.services.artifacts.register(
+            correction_path,
+            kind="srt",
+            role="correction",
+            session_id=self.session.id,
+            metadata={
+                "revision_id": self.revision_id,
+                "source_artifact_id": "no-such-artifact",
+            },
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            f"artifact {correction.id} declares parent no-such-artifact, which does not exist",
+        ):
+            self.services.subtitle_evidence.request(
+                self.session.id,
+                {
+                    "source_artifact_id": correction.id,
+                    "cue_id": 1,
+                    "reason": "A missing parent must fail closed.",
+                    "routes": ["whisper"],
+                },
+            )
+
     def test_cut_descendant_rejects_foreign_metadata_parent(self):
         foreign_session = self.services.sessions.create(
             "Foreign", workflow_kind="media_edit"
