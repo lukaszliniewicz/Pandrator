@@ -341,6 +341,19 @@ This cue contains forty readable characters.
             "source cue 2 'So what about it?' differs from finalized cue 2 'So what about that?'",
             describe_text_difference(source, changed),
         )
+        cjk_source = (
+            "1\n00:00:00,000 --> 00:00:01,000\n你好\n\n"
+            "2\n00:00:01,000 --> 00:00:02,000\n世界\n\n"
+            "3\n00:00:02,000 --> 00:00:03,000\n正确\n"
+        )
+        cjk_final = (
+            "1\n00:00:00,000 --> 00:00:02,000\n你好世界\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\n错误\n"
+        )
+        self.assertEqual(
+            "source cue 3 '正确' differs from finalized cue 2 '错误'",
+            describe_text_difference(cjk_source, cjk_final),
+        )
 
     def test_overlapping_source_cues_keep_repeated_lexemes_in_source_order(self):
         payload = {

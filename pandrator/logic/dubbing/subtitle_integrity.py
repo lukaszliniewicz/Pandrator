@@ -128,26 +128,17 @@ def subtitle_text_integrity(source: str, finalized: str) -> dict[str, bool | str
 def describe_text_difference(source: str, finalized: str) -> str:
     """Name the first source and finalized cues whose body text diverges.
 
-    This only explains a failed :func:`subtitle_text_integrity` check; it
-    compares cue by cue with a plain space between cues, so it may fall back
-    to a generic description when the difference is only a cue seam.
+    This only explains a failed :func:`subtitle_text_integrity` check. It
+    finds the first differing position in the same signature that check
+    compares, then names the cue whose text reaches that position.
     """
 
-    def located(content: str) -> tuple[str, list[int], list[str]]:
-        bodies, _valid = _subtitle_bodies(content)
-        text = ""
-        owners: list[int] = []
-        for number, body in enumerate(bodies, start=1):
-            signature = _body_signature(body)
-            if text:
-                text += " "
-                owners.append(number)
-            text += signature
-            owners.extend([number] * len(signature))
-        return text, owners, bodies
-
-    source_text, source_owners, source_bodies = located(source)
-    final_text, final_owners, final_bodies = located(finalized)
+    source_bodies, _source_valid = _subtitle_bodies(source)
+    final_bodies, _final_valid = _subtitle_bodies(finalized)
+    source_text = _body_signature("\n".join(source_bodies))
+    final_text = _body_signature("\n".join(final_bodies))
+    if source_text == final_text or not source_bodies or not final_bodies:
+        return "the cue texts differ only in their structure"
     index = next(
         (
             position
@@ -158,15 +149,20 @@ def describe_text_difference(source: str, finalized: str) -> str:
         ),
         min(len(source_text), len(final_text)),
     )
-    if source_text == final_text or not source_owners or not final_owners:
-        return "the cue texts differ only in their seams or structure"
 
-    def excerpt(owners: list[int], bodies: list[str]) -> str:
-        number = owners[min(index, len(owners) - 1)]
-        body = " ".join(bodies[number - 1].split())
-        return f"cue {number} {body[:80]!r}"
+    def excerpt(bodies: list[str]) -> str:
+        # The first cue whose prefix signature reaches past the mismatch.
+        low, high = 1, len(bodies)
+        while low < high:
+            middle = (low + high) // 2
+            if len(_body_signature("\n".join(bodies[:middle]))) > index:
+                high = middle
+            else:
+                low = middle + 1
+        body = " ".join(bodies[low - 1].split())
+        return f"cue {low} {body[:80]!r}"
 
     return (
-        f"source {excerpt(source_owners, source_bodies)} differs from "
-        f"finalized {excerpt(final_owners, final_bodies)}"
+        f"source {excerpt(source_bodies)} differs from "
+        f"finalized {excerpt(final_bodies)}"
     )
