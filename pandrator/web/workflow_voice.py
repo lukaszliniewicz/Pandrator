@@ -1474,8 +1474,9 @@ def convert_with_rvc(
     destination_dir.mkdir(parents=True, exist_ok=True)
     settings_hash = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:10]
     # A fresh name per conversion: repeating one never rewrites a registered
-    # file, which forks may share by hard link.
-    destination = destination_dir / f"{source_path.stem}-rvc-{settings_hash}-{new_id()[:8]}.wav"
+    # file, which forks may share by hard link. The stem is capped so the name
+    # stays within the usual 255-character limit.
+    destination = destination_dir / f"{source_path.stem[:200]}-rvc-{settings_hash}-{new_id()[:8]}.wav"
     with context.database.session() as session:
         _local_tool_worker_workspace(
             session, payload, LocalToolOperation.RVC_CONVERT,
