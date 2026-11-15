@@ -316,6 +316,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     ),
     "system-media-serial": (
         "tests/test_export_container_integrity.py",
+        "tests/test_dubbed_audio_language.py",
         "tests/test_output_storage_integration.py",
         "tests/test_selected_subtitle_master.py",
         "tests/test_export_assembly_plan_selection.py",
