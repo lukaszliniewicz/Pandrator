@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pandrator.logic.dubbing import subtitle_finalization
-from pandrator.logic.dubbing.srt_utils import parse_srt
+from pandrator.logic.dubbing.srt_utils import compose_srt, parse_srt
 from pandrator.logic.dubbing.subtitle_finalization import (
     SubtitleFinalizationConfig,
     compose_from_crispasr_json,
@@ -16,6 +16,10 @@ from pandrator.logic.dubbing.subtitle_finalization import (
     finalize_srt_content,
     subtitle_timing_words,
     wrap_subtitle_text,
+)
+from pandrator.logic.dubbing.subtitle_integrity import (
+    describe_text_difference,
+    subtitle_text_integrity,
 )
 from pandrator.logic.dubbing.transcript_normalization import (
     NormalizedTranscript,
@@ -273,6 +277,70 @@ This cue contains forty readable characters.
         )
         self.assertEqual(["Alice", "Bob"], [item.speaker for item in result.segments])
         self.assertEqual({0: 0, 1: 0, 2: 1, 3: 0, 4: 1}, result.word_segment_ordinals)
+
+    def test_interjection_before_an_early_aligned_cue_keeps_source_order(self):
+        words = "So what about the rest of it?".split()
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "john",
+                    "start_ms": 1000,
+                    "end_ms": 1500,
+                    "speaker": "John",
+                    "text": "Marriages.",
+                    "words": [],
+                },
+                {
+                    "id": "lucie",
+                    "start_ms": 1020,
+                    "end_ms": 4000,
+                    "speaker": "Lucie",
+                    "text": " ".join(words),
+                    # Alignment puts the first word 10 ms before John's cue.
+                    "words": [
+                        {"text": word, "start_ms": 990 + index * 400, "end_ms": 1300 + index * 400}
+                        for index, word in enumerate(words)
+                    ],
+                },
+            ],
+        }
+        source = (
+            "1\n00:00:01,000 --> 00:00:01,500\nMarriages.\n\n"
+            "2\n00:00:01,020 --> 00:00:04,000\nSo what about the rest of it?\n"
+        )
+
+        result = compose_transcript_segments_with_ownership(payload)
+
+        self.assertEqual(
+            ["Marriages.", "So what about the rest of it?"],
+            [item.text.replace("\n", " ") for item in result.segments],
+        )
+        self.assertEqual(["John", "Lucie"], [item.speaker for item in result.segments])
+        self.assertEqual([1000, 1000], [item.start_ms for item in result.segments])
+        self.assertTrue(
+            subtitle_text_integrity(source, compose_srt(result.segments))["matches"]
+        )
+
+    def test_text_difference_names_the_first_diverging_cues(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:01,500\nMarriages.\n\n"
+            "2\n00:00:01,020 --> 00:00:04,000\nSo what about it?\n"
+        )
+        reordered = (
+            "1\n00:00:00,990 --> 00:00:01,500\nSo what about it?\n\n"
+            "2\n00:00:01,000 --> 00:00:04,000\nMarriages.\n"
+        )
+        changed = source.replace("about it?", "about that?")
+
+        self.assertEqual(
+            "source cue 1 'Marriages.' differs from finalized cue 1 'So what about it?'",
+            describe_text_difference(source, reordered),
+        )
+        self.assertEqual(
+            "source cue 2 'So what about it?' differs from finalized cue 2 'So what about that?'",
+            describe_text_difference(source, changed),
+        )
 
     def test_overlapping_source_cues_keep_repeated_lexemes_in_source_order(self):
         payload = {

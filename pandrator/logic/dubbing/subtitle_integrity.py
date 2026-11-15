@@ -27,6 +27,11 @@ def _subtitle_body(content: str) -> tuple[str, bool]:
     whose timestamp cannot be read is retained for hashing and invalidates
     the comparison rather than being silently skipped.
     """
+    bodies, valid = _subtitle_bodies(content)
+    return "\n".join(bodies), valid
+
+
+def _subtitle_bodies(content: str) -> tuple[list[str], bool]:
     normalized = content.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     bodies: list[str] = []
     valid = True
@@ -54,7 +59,7 @@ def _subtitle_body(content: str) -> tuple[str, bool]:
             body = explicit_speaker.group("body").strip(_ASCII_SPACE)
         if body:
             bodies.append(body)
-    return "\n".join(bodies), valid
+    return bodies, valid
 
 
 def _body_signature(text: str) -> str:
@@ -118,3 +123,50 @@ def subtitle_text_integrity(source: str, finalized: str) -> dict[str, bool | str
         "units": "Unicode code points and required word/quote spaces",
         "normalization": "ASCII presentation whitespace and Han/kana layout; explicit speaker metadata excluded",
     }
+
+
+def describe_text_difference(source: str, finalized: str) -> str:
+    """Name the first source and finalized cues whose body text diverges.
+
+    This only explains a failed :func:`subtitle_text_integrity` check; it
+    compares cue by cue with a plain space between cues, so it may fall back
+    to a generic description when the difference is only a cue seam.
+    """
+
+    def located(content: str) -> tuple[str, list[int], list[str]]:
+        bodies, _valid = _subtitle_bodies(content)
+        text = ""
+        owners: list[int] = []
+        for number, body in enumerate(bodies, start=1):
+            signature = _body_signature(body)
+            if text:
+                text += " "
+                owners.append(number)
+            text += signature
+            owners.extend([number] * len(signature))
+        return text, owners, bodies
+
+    source_text, source_owners, source_bodies = located(source)
+    final_text, final_owners, final_bodies = located(finalized)
+    index = next(
+        (
+            position
+            for position, (left, right) in enumerate(
+                zip(source_text, final_text, strict=False)
+            )
+            if left != right
+        ),
+        min(len(source_text), len(final_text)),
+    )
+    if source_text == final_text or not source_owners or not final_owners:
+        return "the cue texts differ only in their seams or structure"
+
+    def excerpt(owners: list[int], bodies: list[str]) -> str:
+        number = owners[min(index, len(owners) - 1)]
+        body = " ".join(bodies[number - 1].split())
+        return f"cue {number} {body[:80]!r}"
+
+    return (
+        f"source {excerpt(source_owners, source_bodies)} differs from "
+        f"finalized {excerpt(final_owners, final_bodies)}"
+    )
