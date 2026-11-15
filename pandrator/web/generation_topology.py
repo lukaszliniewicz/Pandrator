@@ -1272,6 +1272,16 @@ class GenerationTopologyService:
 
             rebase_sound_plan(session, session_id, revision.id, boundary_mapping)
 
+    def topology_batch(
+        self,
+        session: Session,
+        session_id: str,
+        plan: GenerationPlan,
+        current: GenerationPlanRevision,
+    ) -> TopologyBatch:
+        """An unsaved working copy of ``current`` for a batch of edits."""
+        return TopologyBatch(self, session, session_id, plan, current)
+
     def revise_topology(
         self,
         session_id: str,

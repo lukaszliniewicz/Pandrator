@@ -363,7 +363,6 @@ def revise_topology_batch_in_session(service, session, session_id: str, expected
     guessed.
     """
     require_generation_content_write(session, "session", session_id)
-    from .generation_topology import GenerationTopologyService, TopologyBatch
     from .settings_policy import RevisionConflict
 
     if not operations or len(operations) > 50:
@@ -374,12 +373,7 @@ def revise_topology_batch_in_session(service, session, session_id: str, expected
     current = session.get(GenerationPlanRevision, expected_revision_id)
     if current is None or current.plan_id != plan.id:
         raise KeyError(expected_revision_id)
-    topology = (
-        service
-        if isinstance(service, GenerationTopologyService)
-        else GenerationTopologyService(service.database, service.jobs)
-    )
-    batch = TopologyBatch(topology, session, session_id, plan, current)
+    batch = service.topology_batch(session, session_id, plan, current)
     lineage = {row_id: [row_id] for row_id in batch.original_ids}
     aliases: dict[str, list[str]] = {}
     used_labels: set[str] = set()
