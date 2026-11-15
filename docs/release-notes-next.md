@@ -40,3 +40,16 @@ exports, mix previews and bundle exports, so exporting the French branch can
 start while the German branch is still generating. Jobs within one project
 still run one at a time and in the order they were queued. Set
 `PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
+
+## Subtitle review
+
+Fixing the wording of one passage no longer re-times the whole subtitle.
+Passage review, in the app and through `pandrator_patch_subtitle_passages`,
+keeps every display cue that shares no passage with your edit, and a wording
+fix keeps its cue's timing when the text still fits, even inside a cue that
+holds several short passages. Previously each save rebuilt every cue from its passage
+alone, which could split a line such as "Yes. Traditional Christianity? Yes."
+into three cues, some as short as 80 ms. A passage whose timing, speaker or turn
+changes is still recomposed, and a cue that comes out shorter than the minimum
+duration now borrows free time around it, without widening an overlap between
+speakers. A dry run reports how many cues change timing.

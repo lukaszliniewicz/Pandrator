@@ -6,6 +6,7 @@ import hashlib
 import tempfile
 import unittest
 from copy import deepcopy
+from itertools import pairwise
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -217,6 +218,188 @@ def test_combined_display_can_edit_each_canonical_passage_independently(review_c
     assert [item["edit_capabilities"]["ownership"] for item in reopened["segments"]] == [
         "exact",
         "exact",
+    ]
+
+
+def test_text_fix_in_combined_cue_keeps_its_timing(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:10,000 --> 00:00:12,000\nYes. Traditonal Christianity? Yes.\n",
+        [
+            {"id": "yes-a", "text": "Yes.", "start_ms": 10000, "end_ms": 10300, "speaker": "A"},
+            {
+                "id": "question",
+                "text": "Traditonal Christianity?",
+                "start_ms": 10300,
+                "end_ms": 11500,
+                "speaker": "A",
+            },
+            {"id": "yes-b", "text": "Yes.", "start_ms": 11500, "end_ms": 11800, "speaker": "A"},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, question={"text": "Traditional Christianity?"})
+
+    preview = _save(review_case, source_id, source_hash, 1, values, dry_run=True)
+    assert (preview["cue_count"], preview["previous_cue_count"], preview["retimed_cue_count"]) == (1, 1, 0)
+    result = _save(review_case, source_id, source_hash, 1, values)
+    saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert [row["text"] for row in saved] == ["Yes.", "Traditional Christianity?", "Yes."]
+    assert [(item.start_ms, item.end_ms, item.text) for item in segments] == [
+        (10000, 12000, "Yes. Traditional Christianity? Yes.")
+    ]
+    assert segments[0].metadata_json["source_passage_ids"] == ["yes-a", "question", "yes-b"]
+    assert segments[0].metadata_json["canonical_passage_review"] is True
+
+
+def test_untouched_cues_keep_their_timing_when_another_passage_changes(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:01,500\nFirst line.\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nHi.\n\n"
+        "3\n00:00:04,000 --> 00:00:06,000\nThird.\n",
+        [
+            {"id": "keep-a", "text": "First line.", "start_ms": 0, "end_ms": 1500, "speaker": "A", "cue_indices": [0]},
+            {"id": "keep-b", "text": "Hi.", "start_ms": 2000, "end_ms": 2600, "speaker": "A", "cue_indices": [1]},
+            {"id": "keep-c", "text": "Third.", "start_ms": 4000, "end_ms": 6000, "speaker": "B", "cue_indices": [2]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, **{"keep-c": {"text": "Third, edited."}})
+
+    preview = _save(review_case, source_id, source_hash, 1, values, dry_run=True)
+    assert (preview["previous_cue_count"], preview["retimed_cue_count"]) == (3, 0)
+    result = _save(review_case, source_id, source_hash, 1, values)
+    _saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert [(item.start_ms, item.end_ms, item.text) for item in segments] == [
+        (0, 1500, "First line."),
+        (2000, 3000, "Hi."),
+        (4000, 6000, "Third, edited."),
+    ]
+    assert [item.metadata_json["source_passage_ids"] for item in segments] == [
+        ["keep-a"],
+        ["keep-b"],
+        ["keep-c"],
+    ]
+
+
+def test_retimed_passage_borrows_free_time_for_minimum_duration(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:01,000\nOne.\n\n"
+        "2\n00:00:02,000 --> 00:00:02,600\nTwo.\n\n"
+        "3\n00:00:05,000 --> 00:00:06,000\nThree.\n",
+        [
+            {"id": "short-a", "text": "One.", "start_ms": 0, "end_ms": 1000, "speaker": "A", "cue_indices": [0]},
+            {"id": "short-b", "text": "Two.", "start_ms": 2000, "end_ms": 2600, "speaker": "A", "cue_indices": [1]},
+            {"id": "short-c", "text": "Three.", "start_ms": 5000, "end_ms": 6000, "speaker": "A", "cue_indices": [2]},
+        ],
+    )
+    column = review_case.service.review(review_case.session.id, [source_id])["columns"][0]
+    values = _edits(
+        column["logical_passages"],
+        **{
+            "short-a": {"start_ms": 600, "end_ms": 900},
+            "short-b": {"start_ms": 2100, "end_ms": 2400},
+        },
+    )
+
+    result = _save(review_case, source_id, source_hash, 1, values)
+    saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert [(row["start_ms"], row["end_ms"]) for row in saved[:2]] == [(600, 900), (2100, 2400)]
+    timings = [(item.start_ms, item.end_ms) for item in segments]
+    assert timings[2] == (5000, 6000)
+    minimum = 833
+    gap = 80
+    # The first cue extends forward into the free gap; the second, too.
+    assert timings[0] == (600, 600 + minimum)
+    assert timings[1] == (2100, 2100 + minimum)
+    assert all(
+        later[0] - earlier[1] >= gap for earlier, later in pairwise(timings)
+    )
+
+
+def test_borrowed_time_stops_at_the_next_cue(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:01,000 --> 00:00:02,000\nOne.\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nTwo.\n",
+        [
+            {"id": "tight-a", "text": "One.", "start_ms": 1000, "end_ms": 2000, "speaker": "A", "cue_indices": [0]},
+            {"id": "tight-b", "text": "Two.", "start_ms": 2000, "end_ms": 3000, "speaker": "A", "cue_indices": [1]},
+        ],
+    )
+    column = review_case.service.review(review_case.session.id, [source_id])["columns"][0]
+    values = _edits(column["logical_passages"], **{"tight-a": {"start_ms": 1500, "end_ms": 1800}})
+
+    result = _save(review_case, source_id, source_hash, 1, values)
+    _saved, segments, _artifact = _saved_rows(review_case, result)
+
+    # Forward room ends 80 ms before the next cue, so the rest comes from before.
+    assert [(item.start_ms, item.end_ms) for item in segments] == [
+        (1920 - 833, 1920),
+        (2000, 3000),
+    ]
+
+
+def test_longer_wording_gets_reading_time_instead_of_keeping_a_fast_cue(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:01,000\nHi.\n\n"
+        "2\n00:00:05,000 --> 00:00:06,000\nBye.\n",
+        [
+            {"id": "fast-a", "text": "Hi.", "start_ms": 0, "end_ms": 1000, "speaker": "A", "cue_indices": [0]},
+            {"id": "fast-b", "text": "Bye.", "start_ms": 5000, "end_ms": 6000, "speaker": "A", "cue_indices": [1]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, **{"fast-a": {"text": "I would rather stay here and wait."}})
+
+    result = _save(review_case, source_id, source_hash, 1, values)
+    _saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert segments[0].start_ms == 0
+    assert 1000 < segments[0].end_ms <= 5000 - 80
+    assert (segments[1].start_ms, segments[1].end_ms) == (5000, 6000)
+
+
+def test_borrowed_time_never_widens_crosstalk(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:01,000 --> 00:00:03,000\nA long line from the first speaker.\n\n"
+        "2\n00:00:01,500 --> 00:00:01,800\nYes.\n",
+        [
+            {
+                "id": "talk-a",
+                "text": "A long line from the first speaker.",
+                "start_ms": 1000,
+                "end_ms": 3000,
+                "speaker": "A",
+                "cue_indices": [0],
+            },
+            {"id": "talk-b", "text": "Yes.", "start_ms": 1500, "end_ms": 1800, "speaker": "B", "cue_indices": [1]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, **{"talk-b": {"end_ms": 1750}})
+
+    result = _save(review_case, source_id, source_hash, 1, values)
+    _saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert [(item.start_ms, item.end_ms, item.speaker) for item in segments] == [
+        (1000, 3000, "A"),
+        (1500, 1750, "B"),
     ]
 
 
