@@ -321,6 +321,7 @@ def register_generation_routes(
                 whole_word=optional_bool_arg("whole_word", default=False) is True,
                 text_field=request.args.get("text_field", "text"),
                 boundary_flags=optional_bool_arg("boundary_flags"),
+                operation=request.args.get("operation", "summary"),
             )
         except KeyError:
             return error_response(

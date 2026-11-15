@@ -24,6 +24,7 @@ class ListGenerationSegmentsInput(ToolInput):
     source_cue_id: str | None = Field(default=None, min_length=1, max_length=80)
     radius: int = Field(default=2, ge=0, le=25)
     audio_version_side: Literal["before", "after"] = "after"
+    operation: Literal["summary", "full"] = "summary"
 
     @model_validator(mode="after")
     def validate_projection(self):

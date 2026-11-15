@@ -563,6 +563,7 @@ class GenerationService(GenerationHistoryReader):
         whole_word: bool = False,
         text_field: str = "text",
         boundary_flags: bool | None = None,
+        operation: str = "summary",
     ) -> dict[str, Any]:
         return GenerationSegmentReader(self.database, self.settings).list_segments(
             session_id,
@@ -587,6 +588,7 @@ class GenerationService(GenerationHistoryReader):
             whole_word=whole_word,
             text_field=text_field,
             boundary_flags=boundary_flags,
+            operation=operation,
         )
 
     @staticmethod

@@ -108,9 +108,15 @@ def register_generation_plan_tools(
         source_cue_id: NativeNullableString = None,
         radius: Annotated[int, Field(ge=0, le=25)] = 2,
         audio_version_side: Literal["before", "after"] = "after",
+        operation: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
-        """List generation segments, assigned voices, takes, and text."""
+        """List generation segments, assigned voices, takes, and text.
+
+        operation_json leaves out values over 4 KB (such as a restore's per-segment
+        mapping and lineage) and names them in operation_json_omitted; pass
+        operation="full" to get the whole operation.
+        """
 
         return response(_call(
             list_generation_segments,
@@ -129,6 +135,7 @@ def register_generation_plan_tools(
                 source_cue_id=source_cue_id,
                 radius=radius,
                 audio_version_side=audio_version_side,
+                operation=operation,
             ),
         ), response_mode)
 
