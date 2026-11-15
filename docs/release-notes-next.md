@@ -49,8 +49,12 @@ still run one at a time and in the order they were queued. Set
   reason is tried at most three times. The segment is marked failed, the rest
   of the run carries on, and the run finishes `partial` with a
   `failed_segments` list giving each segment's ordinal, reason and the
-  provider's message. Reword those blocks and resume with `missing_only`. If
-  three segments in a row come back empty with no reason, the run still stops,
-  since the provider is then the more likely problem.
+  provider's message. Reword those blocks and resume with `missing_only`. A
+  regenerated segment that already had audio keeps it. If three segments in a
+  row come back empty with no reason, or the retry budget runs out, the run
+  still stops, since the provider is then the more likely problem. The
+  one-step automatic audiobook and dubbing pipelines still stop at the first
+  failed segment, but now after one attempt for a refusal and three for empty
+  audio instead of ten.
 - Retry progress now says why it is retrying, for example "Retrying segment
   42 (4/10) in 19.1s: rate limited".

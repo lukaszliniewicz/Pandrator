@@ -607,17 +607,29 @@ def _run_generation(
         """Mark one declined segment failed and keep the run going."""
         nonlocal consecutive_no_audio
         reason = tts_failure_reason(error)
-        if reason not in SKIPPABLE_TTS_FAILURES:
+        # A retryable failure (an outage, an exhausted retry budget) is not
+        # about the text, so it still stops the run.
+        if reason not in SKIPPABLE_TTS_FAILURES or getattr(error, "retryable", False):
             return False
         if reason == "no_audio":
             consecutive_no_audio += 1
             if consecutive_no_audio >= MAX_CONSECUTIVE_NO_AUDIO_SEGMENTS:
                 return False
+        else:
+            consecutive_no_audio = 0
         with context.database.immediate_session() as session:
             segment = session.get(GenerationSegment, segment_id)
             if segment is None:
                 return False
-            segment.status = "failed"
+            # A regenerated segment keeps its earlier take, so it stays usable.
+            kept_take = session.scalar(
+                select(AudioTake.id).where(
+                    AudioTake.generation_segment_id == segment_id,
+                    AudioTake.is_active.is_(True),
+                    AudioTake.status == "completed",
+                ).limit(1)
+            )
+            segment.status = "completed" if kept_take else "failed"
             segment.updated_at = utcnow()
             ordinal = segment.ordinal
         failed_segments.append(
@@ -625,6 +637,7 @@ def _run_generation(
                 "segment_id": segment_id,
                 "ordinal": ordinal,
                 "reason": reason,
+                "kept_previous_take": bool(kept_take),
                 "message": (
                     context.secret_redactor.redact(str(error))
                     if context.secret_redactor is not None

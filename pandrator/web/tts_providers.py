@@ -218,16 +218,17 @@ def _synthesize_serial_batch(
                 ),
             )
         except Exception as error:  # noqa: BLE001 - stable result boundary
-            projected = (
-                error
-                if isinstance(error, TtsProviderError)
-                else TtsProviderError(
+            if isinstance(error, TtsProviderError):
+                projected = error
+            else:
+                projected = TtsProviderError(
                     adapter.service_id,
                     "synthesize",
                     str(error),
-                    retryable=True,
+                    retryable=bool(getattr(error, "retryable", True)),
                 )
-            )
+                # Keep the chain so the failure reason survives the boundary.
+                projected.__cause__ = error
             yield TtsBatchResult(id=item.id, error=projected)
 
 

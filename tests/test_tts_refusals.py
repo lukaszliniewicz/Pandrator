@@ -188,6 +188,30 @@ class RefusedSegmentRunTests(unittest.TestCase):
             ]
         self.assertEqual(["completed", "failed", "completed"], statuses)
 
+    def test_a_refusal_breaks_a_run_of_empty_responses(self):
+        sequence = iter(["no_audio", "content_refused", "no_audio", "no_audio"])
+
+        def synthesize(_text, _settings, **_kwargs):
+            raise tts_handler.TtsGenerationError(
+                "declined or empty", retryable=False, reason=next(sequence)
+            )
+
+        _run_id, _segment_ids, finished, _details = self._run(
+            ["One", "Two", "Three", "Four"], synthesize
+        )
+
+        self.assertEqual("partial", finished["status"])
+        self.assertEqual(4, len(finished["failed_segments"]))
+
+    def test_retryable_empty_audio_still_fails_the_run(self):
+        def synthesize(_text, _settings, **_kwargs):
+            raise tts_handler.TtsGenerationError(
+                "budget expired", retryable=True, reason="no_audio"
+            )
+
+        with self.assertRaises(tts_handler.TtsGenerationError):
+            self._run(["One", "Two"], synthesize)
+
     def test_run_fails_when_several_segments_in_a_row_return_no_audio(self):
         def synthesize(_text, _settings, **_kwargs):
             raise tts_handler.TtsGenerationError(
@@ -198,3 +222,27 @@ class RefusedSegmentRunTests(unittest.TestCase):
 
         with self.assertRaises(tts_handler.TtsGenerationError):
             self._run(["One", "Two", "Three", "Four"], synthesize)
+
+
+def test_exhausted_retry_budget_is_not_mistaken_for_a_refusal():
+    from pandrator.logic.tts_retry import TtsRetryBudgetExceeded
+
+    exhausted = TtsRetryBudgetExceeded("The TTS retry budget expired.")
+    exhausted.__cause__ = TtsNoAudioError("empty")
+
+    assert tts_failure_reason(exhausted) == "timeout"
+
+
+def test_batch_boundary_keeps_the_failure_reason():
+    from pandrator.web.tts_providers import _synthesize_serial_batch
+
+    adapter = Mock(service_id="openai")
+    adapter.synthesize.side_effect = tts_handler.TtsGenerationError(
+        "declined", retryable=False, reason="content_refused"
+    )
+    item = Mock(id="one", text="Line", settings={})
+
+    [result] = list(_synthesize_serial_batch(adapter, [item]))
+
+    assert result.error.retryable is False
+    assert tts_failure_reason(result.error) == "content_refused"

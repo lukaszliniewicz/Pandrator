@@ -12,8 +12,19 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 
-from .google_tts_audio import TtsNoAudioError
 from .retry_utils import status_code_from_error
+
+
+class TtsNoAudioError(RuntimeError):
+    """A completed provider response that carries no audio.
+
+    ``refusal_reason`` is set when the provider said why, for example a safety
+    block; such a request will not succeed when repeated unchanged.
+    """
+
+    def __init__(self, message: str, *, refusal_reason: str = ""):
+        super().__init__(message)
+        self.refusal_reason = refusal_reason
 
 DEFAULT_TTS_MAX_ATTEMPTS = 10
 DEFAULT_TTS_RETRY_TIMEOUT_SECONDS = 900
@@ -33,20 +44,29 @@ TTS_FAILURE_LABELS = {
 SKIPPABLE_TTS_FAILURES = frozenset({"content_refused", "no_audio"})
 
 
-def tts_failure_reason(error: BaseException | None) -> str:
-    """Classify a provider failure for progress messages and run results."""
-    if error is None:
-        return "provider_error"
-    reason = getattr(error, "reason", None)
-    if isinstance(reason, str) and reason in TTS_FAILURE_LABELS:
-        return reason
+def _error_chain(error: BaseException) -> Iterator[BaseException]:
     current: BaseException | None = error
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, TtsNoAudioError):
-            return "content_refused" if current.refusal_reason else "no_audio"
+        yield current
         current = current.__cause__
+
+
+def tts_failure_reason(error: BaseException | None) -> str:
+    """Classify a provider failure for progress messages and run results.
+
+    A reason recorded where the failure was classified wins. Otherwise a rate
+    limit, outage or timeout on the final error comes before an earlier empty
+    response in its chain, so an exhausted retry budget is never mistaken for
+    a refusal.
+    """
+    if error is None:
+        return "provider_error"
+    for item in _error_chain(error):
+        reason = getattr(item, "reason", None)
+        if isinstance(reason, str) and reason in TTS_FAILURE_LABELS:
+            return reason
     status = status_code_from_error(error)
     if status == 429:
         return "rate_limited"
@@ -54,6 +74,9 @@ def tts_failure_reason(error: BaseException | None) -> str:
         return "provider_unavailable"
     if status == 408 or isinstance(error, TimeoutError) or "timeout" in type(error).__name__.lower():
         return "timeout"
+    for item in _error_chain(error):
+        if isinstance(item, TtsNoAudioError):
+            return "content_refused" if item.refusal_reason else "no_audio"
     return "provider_error"
 
 

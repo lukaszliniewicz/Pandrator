@@ -8,6 +8,9 @@ from typing import Any
 
 import requests
 
+# Re-exported: the decoder raises it, and callers import it from here.
+from .tts_retry import TtsNoAudioError as TtsNoAudioError
+
 STRUCTURED_TTS_MODELS = frozenset(
     {"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"}
 )
@@ -17,18 +20,6 @@ STRUCTURED_TTS_MODELS = frozenset(
 _REFUSAL_REASONS = frozenset(
     {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION"}
 )
-
-
-class TtsNoAudioError(RuntimeError):
-    """A completed provider response that carries no audio.
-
-    ``refusal_reason`` is set when the provider said why, for example a safety
-    block; such a request will not succeed when repeated unchanged.
-    """
-
-    def __init__(self, message: str, *, refusal_reason: str = ""):
-        super().__init__(message)
-        self.refusal_reason = refusal_reason
 
 
 class _MissingAudio(ValueError):
