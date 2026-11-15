@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -89,6 +91,25 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
         while chunk := handle.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def link_or_copy(source: Path, destination: Path) -> bool:
+    """Give an immutable managed file a second name; copy only where links fail.
+
+    Artifact files are never rewritten in place, so a hard link shares their
+    bytes safely, and removing either name leaves the other intact. Returns
+    True when ``destination`` is a hard link to ``source``.
+    """
+    try:
+        os.link(source, destination)
+    except FileExistsError:
+        raise
+    except OSError:
+        # Other volumes, filesystems without hard links (FAT, exFAT, some
+        # network shares), link-count limits and policy restrictions copy.
+        shutil.copy2(source, destination)
+        return False
+    return True
 
 
 def copy_stream_and_hash(source: BinaryIO, destination: Path, chunk_size: int = 1024 * 1024) -> tuple[int, str]:

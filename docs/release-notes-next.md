@@ -10,6 +10,17 @@ check reuses the cast freeze's parse of the same speech XML, and retained voice
 checks share one provider registry. On a 5,167-segment cast book, the detail
 read went from 6.55 s to 5.85 s, measured by Patrick Nadeau (#146).
 
+## Storage
+
+Language branches and other project branches no longer copy the files they
+carry from the source. A branch hard-links its checkpoint, edited media, renders,
+transcripts and evidence clips, so a video with four target languages stores
+its edited media once instead of five times. Where the data folder cannot use
+hard links (another volume, FAT or exFAT, some network shares), branches copy
+as before. Branches created earlier keep their own copies. Deleting a project
+now shows only the space it frees, which excludes files another branch still
+uses.
+
 ## Manager
 
 Restarting Pandrator through the Manager's runtime API or `pandrator-manager

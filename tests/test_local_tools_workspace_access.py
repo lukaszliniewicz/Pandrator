@@ -582,6 +582,26 @@ def test_registered_owner_rvc_upload_conversion_training_survive_browser_logout(
             require_local_tool_workspace(session, Op.RVC_READ)
 
 
+def test_repeated_rvc_conversion_never_rewrites_a_registered_file(tools, monkeypatch):
+    t = tools
+    fake_local_services(t, monkeypatch)
+    paths = []
+    for _attempt in range(2):
+        conversion = enqueue_rvc(t, "rvc.convert", t.owner)
+        run_one(t)
+        result = t.f.services.jobs.get(conversion.id)
+        assert result.status == "succeeded", result.error_message
+        with t.f.case.database.snapshot_session() as session:
+            relative = session.get_one(m.Artifact, result.result_json["artifact_id"]).relative_path
+        path = t.f.services.paths.managed_path(relative)
+        paths.append(path)
+        if len(paths) == 1:
+            first = path.stat()
+    assert paths[0] != paths[1]
+    unchanged = paths[0].stat()
+    assert (unchanged.st_ino, unchanged.st_mtime_ns) == (first.st_ino, first.st_mtime_ns)
+
+
 def test_registered_token_natural_expiry_preserves_conversion_and_training(tools, monkeypatch):
     t = tools
     actor, token = api_owner(t)

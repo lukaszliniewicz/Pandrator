@@ -1746,6 +1746,10 @@ class SubtitleEvidenceService:
             root = Path(self.session_dir_resolver(session_id)) / "subtitle-evidence" / evidence_id
             if _execution is not None:
                 root = _execution.create_attempt(root, self.paths)
+            else:
+                # Never rewrite an earlier attempt's registered clip or transcript;
+                # forks share those files by hard link.
+                root = root / f"attempt-{uuid4().hex}"
             clip_dir = root / "clip"
             clip_dir.mkdir(parents=True, exist_ok=True)
             if _execution is not None:

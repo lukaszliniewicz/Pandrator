@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from pandrator.logic.dubbing.srt_utils import parse_srt
 from pandrator.runtime import DataPaths
 
-from .artifacts import ArtifactService, sha256_file
+from .artifacts import ArtifactService, link_or_copy, sha256_file
 from .database import Database
 from .logical_passages import stored_passages
 from .media_edit import MediaEditService
@@ -588,7 +588,7 @@ class SessionForkService:
                         / f"{artifact.role}-{new_id()}{source_path.suffix.lower()}"
                     )
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_path, destination)
+                    link_or_copy(source_path, destination)
                 metadata = deepcopy(artifact.metadata_json or {})
                 metadata.update(
                     {
@@ -783,7 +783,7 @@ class SessionForkService:
                         destination_dir / "dependencies" / f"{new_id()}{original_path.suffix.lower()}"
                     )
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(original_path, destination)
+                    link_or_copy(original_path, destination)
                 metadata = deepcopy(original.metadata_json or {})
                 old_revision_id = str(metadata.get("revision_id") or "")
                 if old_revision_id:

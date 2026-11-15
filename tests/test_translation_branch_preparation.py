@@ -1,6 +1,8 @@
 """Branch file preparation keeps media IO outside the SQLite writer lease."""
 from __future__ import annotations
 
+import errno
+import os
 import threading
 from collections import Counter
 from contextlib import contextmanager
@@ -79,6 +81,13 @@ def _project(case, *, planned=False):
             {**case.headers, "Idempotency-Key": "prepared-branches-key"})
 
 
+def _without_hard_links(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise OSError(errno.EXDEV, "synthetic: hard links unavailable")
+
+    monkeypatch.setattr(os, "link", unavailable)
+
+
 def _io_guard(case, monkeypatch):
     state = threading.local()
     original = case.database.immediate_session
@@ -108,16 +117,22 @@ def _io_guard(case, monkeypatch):
         return hash_file(path)
 
     copy_file = fork_file_preparation.shutil.copy2
+    share_file = fork_file_preparation.link_or_copy
 
     def copy_checked(*args, **kwargs):
         check()
         return copy_file(*args, **kwargs)
+
+    def share_checked(*args, **kwargs):
+        check()
+        return share_file(*args, **kwargs)
 
     monkeypatch.setattr(case.database, "immediate_session", writer)
     for module in (artifacts, fork_file_preparation, session_forks, translation_projects):
         monkeypatch.setattr(module, "sha256_file", hash_checked)
     monkeypatch.setattr(fork_file_preparation, "sha256_file", preparation_hash)
     monkeypatch.setattr(fork_file_preparation.shutil, "copy2", copy_checked)
+    monkeypatch.setattr(fork_file_preparation, "link_or_copy", share_checked)
     for name in ("open", "read_text", "read_bytes"):
         method = getattr(Path, name)
 
@@ -131,10 +146,13 @@ def _io_guard(case, monkeypatch):
     return hashes
 
 
+@pytest.mark.parametrize("links", [True, False], ids=["hard_links", "copies"])
 @pytest.mark.parametrize("planned", [False, True])
-def test_edited_four_branch_http_has_no_writer_file_io_and_replays(edited_case, monkeypatch, planned):
+def test_edited_four_branch_http_has_no_writer_file_io_and_replays(edited_case, monkeypatch, planned, links):
     case = edited_case
     url, payload, headers = _project(case, planned=planned)
+    if not links:
+        _without_hard_links(monkeypatch)
     original_paths = {path for path in case.session_dir.rglob("*") if path.is_file()}
     hashes = _io_guard(case, monkeypatch)
     response = case.client.post(url, json=payload, headers=headers)
@@ -148,6 +166,7 @@ def test_edited_four_branch_http_has_no_writer_file_io_and_replays(edited_case, 
         assert len(list(db.scalars(select(ApiIdempotency).where(
             ApiIdempotency.idempotency_key == headers["Idempotency-Key"])))) == 1
         child_paths = []
+        originals = {}
         for branch in branches:
             child_id = branch["session_id"]
             assert db.scalar(select(MediaEditPlan).where(MediaEditPlan.session_id == child_id))
@@ -156,8 +175,18 @@ def test_edited_four_branch_http_has_no_writer_file_io_and_replays(edited_case, 
             assert len([item for item in children if item.role.startswith("media_edit_")]) == 3
             assert not any(item.role in {"assembled_audio", "translation"} for item in children)
             for item in children:
-                child_paths.append(case.paths.managed_path(item.relative_path))
-        assert len({path.stat().st_ino for path in child_paths}) == len(child_paths)
+                path = case.paths.managed_path(item.relative_path)
+                child_paths.append(path)
+                originals[path] = item.content_hash
+        assert len(set(child_paths)) == len(child_paths)
+        originals_by_inode = {path.stat().st_ino for path in original_paths}
+        shared = [path for path in child_paths if path.stat().st_ino in originals_by_inode]
+        if links:
+            # Every carried file is another name for its source; nothing is copied.
+            assert len(shared) == len(child_paths)
+        else:
+            assert shared == []
+            assert len({path.stat().st_ino for path in child_paths}) == len(child_paths)
     with monkeypatch.context() as retry_patch:
         retry_patch.setattr(_PreparedForkFiles, "materialize", lambda self: pytest.fail("replay prepared files"))
         replay = case.client.post(url, json=payload, headers=headers)
@@ -165,6 +194,16 @@ def test_edited_four_branch_http_has_no_writer_file_io_and_replays(edited_case, 
     assert replay.headers["Idempotency-Replayed"] == "true"
     assert replay.get_json() == response.get_json()
     assert not list(case.paths.sessions.glob(".fork-preparation-*"))
+    # Removing one branch's files leaves the source and the other branches intact.
+    first_branch = case.paths.sessions / child_paths[0].relative_to(case.paths.sessions).parts[0]
+    for path in first_branch.rglob("*"):
+        if path.is_file():
+            path.unlink()
+    for path, digest in originals.items():
+        if not path.is_relative_to(first_branch):
+            assert artifacts.sha256_file(path) == digest
+    for path in original_paths:
+        assert path.is_file()
 
 
 def test_copy_gate_allows_actual_queue_heartbeat(simple_case, monkeypatch):
@@ -176,7 +215,7 @@ def test_copy_gate_allows_actual_queue_heartbeat(simple_case, monkeypatch):
     assert job is not None
     entered = threading.Event()
     release = threading.Event()
-    original_copy = fork_file_preparation.shutil.copy2
+    original_copy = fork_file_preparation.link_or_copy
     gated = False
 
     def gated_copy(*args, **kwargs):
@@ -187,7 +226,7 @@ def test_copy_gate_allows_actual_queue_heartbeat(simple_case, monkeypatch):
             assert release.wait(10), "test did not release copy gate"
         return original_copy(*args, **kwargs)
 
-    monkeypatch.setattr(fork_file_preparation.shutil, "copy2", gated_copy)
+    monkeypatch.setattr(fork_file_preparation, "link_or_copy", gated_copy)
     result = []
     errors = []
 
@@ -256,8 +295,10 @@ def test_failed_preparation_cleans_every_owned_tree(simple_case, monkeypatch, fa
     case = simple_case
     url, payload, headers = _project(case)
     before = {path.name for path in case.paths.sessions.iterdir()}
+    source_path = case.paths.managed_path(case.checkpoint.relative_path)
+    source_bytes = source_path.read_bytes()
     if failure == "copy":
-        original_copy = fork_file_preparation.shutil.copy2
+        original_copy = fork_file_preparation.link_or_copy
         count = 0
 
         def fail_copy(*args, **kwargs):
@@ -267,7 +308,7 @@ def test_failed_preparation_cleans_every_owned_tree(simple_case, monkeypatch, fa
             if count == 2:
                 raise OSError("synthetic disk full")
 
-        monkeypatch.setattr(fork_file_preparation.shutil, "copy2", fail_copy)
+        monkeypatch.setattr(fork_file_preparation, "link_or_copy", fail_copy)
     else:
         path = case.paths.managed_path(case.checkpoint.relative_path)
         if failure == "missing":
@@ -277,6 +318,9 @@ def test_failed_preparation_cleans_every_owned_tree(simple_case, monkeypatch, fa
     response = case.client.post(url, json=payload, headers=headers)
     assert response.status_code == 409, response.get_json()
     assert {path.name for path in case.paths.sessions.iterdir()} == before
+    if failure == "copy":
+        # Cleaning up linked staging trees removes names, never the source file.
+        assert source_path.read_bytes() == source_bytes
     with case.database.snapshot_session() as db:
         assert list(db.scalars(select(TranslationProjectBranch))) == []
         assert len(list(db.scalars(select(SessionRecord)))) == 1
@@ -416,20 +460,23 @@ def test_empty_srt_retains_existing_success_semantics(simple_case, monkeypatch):
     assert len(response.get_json()["project"]["branches"]) == 4
 
 
-@pytest.mark.parametrize("moment", ["copy", "after_hash"])
+@pytest.mark.parametrize("moment", ["link", "copy", "after_hash"])
 def test_staged_corruption_is_rejected_and_cleaned(simple_case, monkeypatch, moment):
     case = simple_case
     url, payload, headers = _project(case)
     before = {path.name for path in case.paths.sessions.iterdir()}
-    if moment == "copy":
-        original_copy = fork_file_preparation.shutil.copy2
+    if moment != "link":
+        _without_hard_links(monkeypatch)
+    if moment in {"link", "copy"}:
+        original_copy = fork_file_preparation.link_or_copy
 
-        def corrupted_copy(source, destination, *args, **kwargs):
-            result = original_copy(source, destination, *args, **kwargs)
+        def corrupted_copy(source, destination):
+            result = original_copy(source, destination)
+            assert result is (moment == "link")
             Path(destination).write_bytes(b"corrupted staged file")
             return result
 
-        monkeypatch.setattr(fork_file_preparation.shutil, "copy2", corrupted_copy)
+        monkeypatch.setattr(fork_file_preparation, "link_or_copy", corrupted_copy)
     else:
         original_hash = fork_file_preparation.sha256_file
 
@@ -456,13 +503,13 @@ def test_cancellation_cleans_staged_and_installed_files(simple_case, monkeypatch
     before = {path.name for path in case.paths.sessions.iterdir()}
     count = 0
     if moment == "copy":
-        original_copy = fork_file_preparation.shutil.copy2
+        original_copy = fork_file_preparation.link_or_copy
 
         def cancelled_copy(*args, **kwargs):
             original_copy(*args, **kwargs)
             raise asyncio.CancelledError("synthetic cancellation")
 
-        monkeypatch.setattr(fork_file_preparation.shutil, "copy2", cancelled_copy)
+        monkeypatch.setattr(fork_file_preparation, "link_or_copy", cancelled_copy)
     else:
         original_fork = case.forks.fork_in_session
 
@@ -489,6 +536,8 @@ def _forbid_preparation_io(monkeypatch):
 
     monkeypatch.setattr(_PreparedForkFiles, "materialize", unexpected)
     monkeypatch.setattr(fork_file_preparation.shutil, "copy2", unexpected)
+    monkeypatch.setattr(fork_file_preparation, "link_or_copy", unexpected)
+    monkeypatch.setattr(os, "link", unexpected)
     for module in (artifacts, fork_file_preparation, session_forks, translation_projects):
         monkeypatch.setattr(module, "sha256_file", unexpected)
 
@@ -548,3 +597,73 @@ def test_invalid_planned_project_fails_before_preparation_io(simple_case, monkey
     assert response.status_code == (409 if invalid == "existing_project" else 422), response.get_json()
     assert {path.name for path in case.paths.sessions.iterdir()} == before
     assert _persisted_ids(case) == before_ids
+
+
+def test_link_or_copy_links_when_possible(tmp_path):
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"immutable media")
+    destination = tmp_path / "branch" / "copy.wav"
+    destination.parent.mkdir()
+    assert artifacts.link_or_copy(source, destination) is True
+    assert os.path.samefile(source, destination)
+    destination.unlink()
+    assert source.read_bytes() == b"immutable media"
+
+
+@pytest.mark.parametrize("code", [errno.EXDEV, errno.EPERM, errno.EMLINK, errno.EOPNOTSUPP])
+def test_link_or_copy_copies_when_links_fail(tmp_path, monkeypatch, code):
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"immutable media")
+    destination = tmp_path / "copy.wav"
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError(code, "synthetic link failure")
+
+    monkeypatch.setattr(os, "link", unavailable)
+    assert artifacts.link_or_copy(source, destination) is False
+    assert destination.read_bytes() == b"immutable media"
+    assert not os.path.samefile(source, destination)
+
+
+def test_link_or_copy_never_replaces_an_existing_file(tmp_path):
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"new")
+    destination = tmp_path / "existing.wav"
+    destination.write_bytes(b"existing")
+    with pytest.raises(FileExistsError):
+        artifacts.link_or_copy(source, destination)
+    assert destination.read_bytes() == b"existing"
+
+
+def test_links_reporting_their_own_inode_are_hash_verified(simple_case, monkeypatch):
+    # CIFS with noserverino and some FUSE mounts give each name its own inode.
+    case = simple_case
+    url, payload, headers = _project(case)
+    copy_file = fork_file_preparation.shutil.copy2
+    hashed = []
+    hash_file = fork_file_preparation.sha256_file
+
+    def link_with_own_inode(source, destination):
+        copy_file(source, destination)
+        return True
+
+    def counted(path):
+        hashed.append(Path(path))
+        return hash_file(path)
+
+    monkeypatch.setattr(fork_file_preparation, "link_or_copy", link_with_own_inode)
+    monkeypatch.setattr(fork_file_preparation, "sha256_file", counted)
+    response = case.client.post(url, json=payload, headers=headers)
+    assert response.status_code == 200, response.get_json()
+    assert len(response.get_json()["project"]["branches"]) == 4
+    assert sum(".fork-preparation-" in str(path) for path in hashed) == 4
+
+
+def test_subtitle_review_witness_ignores_new_links(tmp_path):
+    from pandrator.web.subtitle_review import _stat_witness
+
+    source = tmp_path / "checkpoint.srt"
+    source.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello.\n", encoding="utf-8")
+    before = _stat_witness(source)
+    os.link(source, tmp_path / "branch.srt")
+    assert _stat_witness(source) == before

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from copy import deepcopy
 from datetime import timedelta
@@ -266,10 +267,18 @@ def test_preview_skips_blocked_language_and_replays_without_jobs(case):
     assert len(jobs(case)) == 2
 
 
+def _replace_file(path: Path, text: str) -> None:
+    # Managed files change only by replacement. Branches share unchanged source
+    # files by hard link, so an in-place write would not model a real change.
+    staged = path.with_name(f".{path.name}.changed")
+    staged.write_text(text, encoding="utf-8")
+    os.replace(staged, path)
+
+
 def test_changed_project_source_does_not_move_pinned_branch_inputs(case):
     operation = preview(case)
     path = case.services.paths.managed_path(case.checkpoint.relative_path)
-    path.write_text("Changed project source", encoding="utf-8")
+    _replace_file(path, "Changed project source")
     with case.database.session() as db:
         db.get(m.Artifact, case.checkpoint.id).state = "historical"
         db.get(m.SessionRecord, case.source.id).revision += 1
@@ -292,9 +301,7 @@ def test_child_guard_changes_block_only_that_child(case, change):
             db.get(m.SessionRecord, branch["session_id"]).trashed_at = m.utcnow()
         if change == "file":
             checkpoint = db.get(m.Artifact, row.source_checkpoint_artifact_id)
-            case.services.paths.managed_path(checkpoint.relative_path).write_text(
-                "changed", encoding="utf-8"
-            )
+            _replace_file(case.services.paths.managed_path(checkpoint.relative_path), "changed")
     if change == "settings":
         set_settings(case, branch["session_id"], "translation", {"target_language": "fr"})
     result = execute(case, operation)

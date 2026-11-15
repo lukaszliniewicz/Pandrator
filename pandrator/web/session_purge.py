@@ -626,17 +626,20 @@ class SessionPurgeService:
         if any(relative.startswith(prefix) for relative in retained for prefix in upload_prefixes):
             blockers.append("shared_upload_storage")
         safe: list[str] = []
-        bytes_total = 0
+        freed_bytes = 0
         for relative in sorted(files):
             try:
                 path = self._absolute(self.paths.root, relative)
                 if path.exists():
-                    bytes_total += path.stat().st_size
+                    stat = path.stat()
+                    # A file another session still links to is not freed.
+                    if stat.st_nlink <= 1:
+                        freed_bytes += stat.st_size
                 safe.append(relative)
             except ValueError:
                 blockers.append(f"unsafe_path:{relative}")
         payload = {"revision": record.revision, "owned_file_count": len(safe),
-                   "owned_bytes": bytes_total, "retained_shared_count": len(retained),
+                   "retained_shared_count": len(retained),
                    "scheduled_delete_at": record.purge_after.isoformat() if record.purge_after else None,
                    "blockers": sorted(set(blockers))}
         payload["retained_project_exports"] = {
@@ -648,6 +651,9 @@ class SessionPurgeService:
                        "uploads": sorted(upload_identity, key=lambda upload: upload["id"]),
                        "upload_directories": sorted(upload_directories)}
         payload["impact_token"] = hashlib.sha256(json.dumps(token_input, sort_keys=True).encode()).hexdigest()
+        # Outside the token: linking or purging another branch changes link
+        # counts without changing what this purge deletes.
+        payload["owned_bytes"] = freed_bytes
         payload["can_purge"] = not payload["blockers"]
         payload["_files"] = safe
         payload["_retained"] = retained

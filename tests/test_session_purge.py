@@ -763,6 +763,27 @@ def test_purge_removes_owned_file_and_session_only_after_cleanup(harness):
         assert session.get(SessionPurge, record.id).state == "complete"
 
 
+def test_purge_preview_counts_only_bytes_it_frees(harness):
+    _database, paths, _sessions, purge = harness
+    record, folder = _session(harness)
+    owned = folder / "owned.txt"
+    owned.write_text("abc")
+    shared = folder / "shared.wav"
+    shared.write_bytes(b"branch media")
+    _artifact(harness, record, owned, "owned")
+    _artifact(harness, record, shared, "shared")
+    # Another session's hard link keeps the shared bytes on disk.
+    other_name = paths.sessions / "another-branch-shared.wav"
+    os.link(shared, other_name)
+    _trashed(harness, record)
+    preview = purge.preview(record.id)
+    assert preview["owned_file_count"] == 2 and preview["owned_bytes"] == 3
+    other_name.unlink()
+    unshared = purge.preview(record.id)
+    assert unshared["owned_bytes"] == 3 + len(b"branch media")
+    assert unshared["impact_token"] == preview["impact_token"]
+
+
 def test_reference_impact_preview_select_count_is_artifact_count_independent(harness):
     database, paths, _sessions, purge = harness
 
