@@ -106,9 +106,10 @@ changed logical passage IDs. This avoids replaying every batch for a name or
 speaker handoff. `dry_run=true` executes the save validation without publishing,
 and reports `previous_cue_count` and `retimed_cue_count`. A display cue keeps
 its timing unless it shares a passage with one you changed. A wording fix keeps
-its cue's timing when the cue holds only the edited passages and the new text
-fits the line and reading-speed limits (or is no longer than before). Other
-changes recompose only the cues that share the changed passages.
+its cue's timing, even in a cue that holds several short passages, when none of
+those passages also appears in another cue and the new text fits the line and
+reading-speed limits (or is no longer than before). Other changes recompose
+only the cues that share the changed passages.
 Preserve the accepted English artifact before starting another language, and
 use persisted accepted output or its verified export as the authoritative text.
 
