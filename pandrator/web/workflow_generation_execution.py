@@ -17,7 +17,13 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from pandrator.logic.local_audio_decode import load_local_audio_segment
-from pandrator.logic.tts_retry import DEFAULT_TTS_MAX_ATTEMPTS
+from pandrator.logic.tts_retry import (
+    DEFAULT_TTS_MAX_ATTEMPTS,
+    SKIPPABLE_TTS_FAILURES,
+    TTS_FAILURE_LABELS,
+    retry_reason_suffix,
+    tts_failure_reason,
+)
 
 from .access.generation_execution_policy import (
     GenerationExecutionProof,
@@ -50,6 +56,10 @@ from .workflow_generation_publication import (
     GenerationTakePublication,
     publish_generation_take,
 )
+
+# A run stops after this many consecutive segments come back without audio
+# for no stated reason: by then the provider, not the text, is the likely cause.
+MAX_CONSECUTIVE_NO_AUDIO_SEGMENTS = 3
 
 if TYPE_CHECKING:
     from pydub import AudioSegment
@@ -586,6 +596,52 @@ def _run_generation(
                 rvc_source_sequence = source_run.sequence_number
     generated = 0
     skipped = 0
+    # Segments the provider declined or returned without audio. The run goes
+    # on and finishes partial; these are reported with their reasons.
+    failed_segments: list[dict[str, Any]] = []
+    consecutive_no_audio = 0
+
+    def skip_failed_segment(
+        segment_id: str, index: int, error: BaseException
+    ) -> bool:
+        """Mark one declined segment failed and keep the run going."""
+        nonlocal consecutive_no_audio
+        reason = tts_failure_reason(error)
+        if reason not in SKIPPABLE_TTS_FAILURES:
+            return False
+        if reason == "no_audio":
+            consecutive_no_audio += 1
+            if consecutive_no_audio >= MAX_CONSECUTIVE_NO_AUDIO_SEGMENTS:
+                return False
+        with context.database.immediate_session() as session:
+            segment = session.get(GenerationSegment, segment_id)
+            if segment is None:
+                return False
+            segment.status = "failed"
+            segment.updated_at = utcnow()
+            ordinal = segment.ordinal
+        failed_segments.append(
+            {
+                "segment_id": segment_id,
+                "ordinal": ordinal,
+                "reason": reason,
+                "message": (
+                    context.secret_redactor.redact(str(error))
+                    if context.secret_redactor is not None
+                    else str(error)
+                )[:500],
+            }
+        )
+        context._logger.warning(
+            "Skipped generation segment %s: %s", segment_id, TTS_FAILURE_LABELS[reason]
+        )
+        progress(
+            optimization_share
+            + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
+            f"Skipped segment {index + 1} of {len(segment_ids)}: {TTS_FAILURE_LABELS[reason]}",
+        )
+        return True
+
     verified_qwen_voices: set[str] = set()
     batch_results = None
     batch_contexts: dict[str, dict[str, Any]] = {}
@@ -966,11 +1022,12 @@ def _run_generation(
                             or DEFAULT_TTS_MAX_ATTEMPTS
                         ),
                         cancel_event=cancel_event,
-                        retry_callback=lambda attempt, total, delay: progress(
+                        retry_callback=lambda attempt, total, delay, reason="": progress(
                             optimization_share
                             + (segment_index / len(segment_ids))
                             * (1.0 - optimization_share),
-                            f"Retrying segment {segment_index + 1} ({attempt}/{total}) in {delay:.1f}s",
+                            f"Retrying segment {segment_index + 1} ({attempt}/{total}) in {delay:.1f}s"
+                            + retry_reason_suffix(reason),
                         ),
                         recovery_callback=lambda cycle, total, timeout: progress(
                             optimization_share
@@ -1041,6 +1098,8 @@ def _run_generation(
                             "The grouped TTS batch returned segments out of order."
                         )
                     if batch_result.error is not None:
+                        if skip_failed_segment(segment_id, index, batch_result.error):
+                            continue
                         if parallel_synthesis_batch:
                             parallel_wave_error = (
                                 parallel_wave_error or batch_result.error
@@ -1190,12 +1249,13 @@ def _run_generation(
                 )
             take_committed = True
             generated += 1
+            consecutive_no_audio = 0
             progress(
                 optimization_share
                 + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
                 f"Generated segment {index + 1} of {len(segment_ids)}",
             )
-        except Exception:
+        except Exception as error:
             if take_path is not None and take_file_identity is not None and not take_committed:
                 try:
                     info = take_path.lstat()
@@ -1211,6 +1271,12 @@ def _run_generation(
                         take_path,
                         exc_info=True,
                     )
+            if (
+                not take_committed
+                and not cancel_event.is_set()
+                and skip_failed_segment(segment_id, index, error)
+            ):
+                continue
             with context.database.immediate_session() as session:
                 segment = session.get(GenerationSegment, segment_id)
                 run = session.get(GenerationRun, run_id)
@@ -1252,7 +1318,12 @@ def _run_generation(
         "Generation paused" if final_status == "paused"
         else "Generation canceled" if final_status in {"cancel_requested", "canceled"}
         else "Generation run complete" if final_status == "completed"
-        else f"Generation saved; {incomplete} segment(s) remain",
+        else f"Generation saved; {incomplete} segment(s) remain"
+        + (
+            f", {len(failed_segments)} declined or without audio"
+            if failed_segments
+            else ""
+        ),
     )
     auto_resume_source_id = str(
         payload.get("auto_resume_source_generation_run_id") or ""
@@ -1272,6 +1343,7 @@ def _run_generation(
         "skipped": skipped,
         "remaining": incomplete,
         "verification_warnings": verification_warning_count,
+        **({"failed_segments": failed_segments} if failed_segments else {}),
     }
     if auto_resume_source_id:
         result["resumed_source_job_id"] = resumed_job_id

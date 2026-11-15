@@ -12,8 +12,55 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 
+from .google_tts_audio import TtsNoAudioError
+from .retry_utils import status_code_from_error
+
 DEFAULT_TTS_MAX_ATTEMPTS = 10
 DEFAULT_TTS_RETRY_TIMEOUT_SECONDS = 900
+# An empty audio response without a stated reason is retried this many times
+# at most: repeating it usually means the provider declined the text.
+NO_AUDIO_MAX_ATTEMPTS = 3
+
+TTS_FAILURE_LABELS = {
+    "content_refused": "the provider declined the text",
+    "no_audio": "no audio returned",
+    "rate_limited": "rate limited",
+    "provider_unavailable": "provider unavailable",
+    "timeout": "timed out",
+    "provider_error": "provider error",
+}
+# A run skips a segment that failed for one of these reasons instead of failing.
+SKIPPABLE_TTS_FAILURES = frozenset({"content_refused", "no_audio"})
+
+
+def tts_failure_reason(error: BaseException | None) -> str:
+    """Classify a provider failure for progress messages and run results."""
+    if error is None:
+        return "provider_error"
+    reason = getattr(error, "reason", None)
+    if isinstance(reason, str) and reason in TTS_FAILURE_LABELS:
+        return reason
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TtsNoAudioError):
+            return "content_refused" if current.refusal_reason else "no_audio"
+        current = current.__cause__
+    status = status_code_from_error(error)
+    if status == 429:
+        return "rate_limited"
+    if status in {502, 503, 504}:
+        return "provider_unavailable"
+    if status == 408 or isinstance(error, TimeoutError) or "timeout" in type(error).__name__.lower():
+        return "timeout"
+    return "provider_error"
+
+
+def retry_reason_suffix(reason: str) -> str:
+    """A short cause for a retry progress message, such as ": rate limited"."""
+    label = TTS_FAILURE_LABELS.get(reason)
+    return f": {label}" if label else ""
 
 
 def normalize_retry_timeout_seconds(value: Any) -> int:

@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from pandrator.logic.tts_retry import retry_reason_suffix
+
 from .generation_plan_store import DefaultSilenceProtocol
 from .models import Artifact, GenerationPlan, GenerationSegment, SessionRecord, new_id, utcnow
 from .tts_provider_contracts import synthesize_with_optional_timing
@@ -349,11 +351,12 @@ def generate_audio(
                 settings_for_segment,
                 max_attempts=int(settings_for_segment.get("max_attempts") or 5),
                 cancel_event=cancel_event,
-                retry_callback=lambda attempt, total, delay: progress(
+                retry_callback=lambda attempt, total, delay, reason="": progress(
                     optimization_share
                     + ((segment_index - 1) / len(records))
                     * synthesis_progress_share,
-                    f"Retrying segment {segment_index} ({attempt}/{total}) in {delay:.1f}s",
+                    f"Retrying segment {segment_index} ({attempt}/{total}) in {delay:.1f}s"
+                    + retry_reason_suffix(reason),
                 ),
                 recovery_callback=lambda cycle, total, timeout: progress(
                     optimization_share

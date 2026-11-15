@@ -40,3 +40,17 @@ exports, mix previews and bundle exports, so exporting the French branch can
 start while the German branch is still generating. Jobs within one project
 still run one at a time and in the order they were queued. Set
 `PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
+
+## Speech generation
+
+- When Gemini or Vertex AI declines a line (a safety block, for example),
+  Pandrator no longer retries it ten times and then fails the whole run. A
+  stated refusal is not retried, and audio that comes back empty with no
+  reason is tried at most three times. The segment is marked failed, the rest
+  of the run carries on, and the run finishes `partial` with a
+  `failed_segments` list giving each segment's ordinal, reason and the
+  provider's message. Reword those blocks and resume with `missing_only`. If
+  three segments in a row come back empty with no reason, the run still stops,
+  since the provider is then the more likely problem.
+- Retry progress now says why it is retrying, for example "Retrying segment
+  42 (4/10) in 19.1s: rate limited".
