@@ -40,3 +40,12 @@ exports, mix previews and bundle exports, so exporting the French branch can
 start while the German branch is still generating. Jobs within one project
 still run one at a time and in the order they were queued. Set
 `PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
+
+## Media edits
+
+Rendering a media edit no longer fails when two speakers overlap and the later
+speaker's first word is aligned a few milliseconds before the earlier speaker's
+interjection. Composed subtitles now keep the source order instead of sorting
+by start time, and a cue that would start before the previous one starts with
+it instead. When the text check still fails, the error names the first source
+cue and composed cue that differ.

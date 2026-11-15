@@ -435,7 +435,11 @@ def test_reordered_composed_text_is_rejected_before_publication(case):
             "pandrator.logic.dubbing.subtitle_finalization.compose_transcript_segments_with_ownership",
             return_value=corrupted,
         ),
-        pytest.raises(ValueError, match="text preservation verification"),
+        pytest.raises(
+            ValueError,
+            match=r"text preservation verification: source cue 1 .+ differs from "
+            r"finalized cue 1 'world Hello'",
+        ),
     ):
         _run(case, subtitles_only=True)
 

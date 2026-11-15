@@ -24,7 +24,7 @@ from .cjk_words import word_boundaries as cjk_word_boundaries
 from .languages import normalize_language_code
 from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
-from .subtitle_integrity import subtitle_text_integrity
+from .subtitle_integrity import describe_text_difference, subtitle_text_integrity
 from .text_units import (
     clean_text,
     contains_cjk,
@@ -762,7 +762,10 @@ def finalize_srt_file(
     content = source_path.read_text(encoding="utf-8-sig")
     finalized = finalize_srt_content(content, settings, preserve_timing=preserve_timing)
     if not subtitle_text_integrity(content, finalized)["matches"]:
-        raise ValueError("Subtitle finalization failed text preservation verification")
+        raise ValueError(
+            "Subtitle finalization failed text preservation verification: "
+            + describe_text_difference(content, finalized)
+        )
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     destination_path.write_text(
         finalized,
@@ -1490,7 +1493,25 @@ def compose_transcript_segments_with_ownership(
         )
     flush_timed_run()
 
-    ordered = sorted(output, key=lambda item: item.cue.start_ms)
+    # Keep composition order, which is source order. Sorting by start time
+    # can move a cue whose first word was aligned a few ms early ahead of the
+    # preceding speaker's interjection and reorder the text. Instead, a start
+    # that would go backwards is held at the previous cue's start.
+    ordered: list[_ComposedCue] = []
+    previous_start: int | None = None
+    for item in output:
+        start = (
+            item.cue.start_ms
+            if previous_start is None
+            else max(item.cue.start_ms, previous_start)
+        )
+        if start != item.cue.start_ms:
+            item = _ComposedCue(
+                replace(item.cue, start_ms=start, end_ms=max(item.cue.end_ms, start + 1)),
+                item.word_ordinals,
+            )
+        ordered.append(item)
+        previous_start = start
     adjusted = _adjust_durations([item.cue for item in ordered], config)
     final_segments: list[SubtitleSegment] = []
     word_segment_ordinals: dict[int, int] = {}
