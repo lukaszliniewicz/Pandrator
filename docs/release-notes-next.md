@@ -32,15 +32,6 @@ service, so old and new processes never share the database, then starts them
 all on the active slot. Without such a change, a restart still affects only the
 selected services. This ships with the next Manager release.
 
-## Exports
-
-An export no longer waits for a long job in another project to finish. Each
-worker now runs a second loop that takes only exports, variants, comparison
-exports, mix previews and bundle exports, so exporting the French branch can
-start while the German branch is still generating. Jobs within one project
-still run one at a time and in the order they were queued. Set
-`PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
-
 ## Speech generation
 
 - When Gemini or Vertex AI declines a line (a safety block, for example),
@@ -58,3 +49,21 @@ still run one at a time and in the order they were queued. Set
   audio instead of ten.
 - Retry progress now says why it is retrying, for example "Retrying segment
   42 (4/10) in 19.1s: rate limited".
+
+## Exports
+
+An export no longer waits for a long job in another project to finish. Each
+worker now runs a second loop that takes only exports, variants, comparison
+exports, mix previews and bundle exports, so exporting the French branch can
+start while the German branch is still generating. Jobs within one project
+still run one at a time and in the order they were queued. Set
+`PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
+
+## Media edits
+
+Rendering a media edit no longer fails when two speakers overlap and the later
+speaker's first word is aligned a few milliseconds before the earlier speaker's
+interjection. Composed subtitles now keep the source order instead of sorting
+by start time, and a cue that would start before the previous one starts with
+it instead. When the text check still fails, the error names the first source
+cue and composed cue that differ.

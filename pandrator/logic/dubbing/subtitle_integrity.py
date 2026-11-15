@@ -27,6 +27,11 @@ def _subtitle_body(content: str) -> tuple[str, bool]:
     whose timestamp cannot be read is retained for hashing and invalidates
     the comparison rather than being silently skipped.
     """
+    bodies, valid = _subtitle_bodies(content)
+    return "\n".join(bodies), valid
+
+
+def _subtitle_bodies(content: str) -> tuple[list[str], bool]:
     normalized = content.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     bodies: list[str] = []
     valid = True
@@ -54,7 +59,7 @@ def _subtitle_body(content: str) -> tuple[str, bool]:
             body = explicit_speaker.group("body").strip(_ASCII_SPACE)
         if body:
             bodies.append(body)
-    return "\n".join(bodies), valid
+    return bodies, valid
 
 
 def _body_signature(text: str) -> str:
@@ -118,3 +123,46 @@ def subtitle_text_integrity(source: str, finalized: str) -> dict[str, bool | str
         "units": "Unicode code points and required word/quote spaces",
         "normalization": "ASCII presentation whitespace and Han/kana layout; explicit speaker metadata excluded",
     }
+
+
+def describe_text_difference(source: str, finalized: str) -> str:
+    """Name the first source and finalized cues whose body text diverges.
+
+    This only explains a failed :func:`subtitle_text_integrity` check. It
+    finds the first differing position in the same signature that check
+    compares, then names the cue whose text reaches that position.
+    """
+
+    source_bodies, _source_valid = _subtitle_bodies(source)
+    final_bodies, _final_valid = _subtitle_bodies(finalized)
+    source_text = _body_signature("\n".join(source_bodies))
+    final_text = _body_signature("\n".join(final_bodies))
+    if source_text == final_text or not source_bodies or not final_bodies:
+        return "the cue texts differ only in their structure"
+    index = next(
+        (
+            position
+            for position, (left, right) in enumerate(
+                zip(source_text, final_text, strict=False)
+            )
+            if left != right
+        ),
+        min(len(source_text), len(final_text)),
+    )
+
+    def excerpt(bodies: list[str]) -> str:
+        # The first cue whose prefix signature reaches past the mismatch.
+        low, high = 1, len(bodies)
+        while low < high:
+            middle = (low + high) // 2
+            if len(_body_signature("\n".join(bodies[:middle]))) > index:
+                high = middle
+            else:
+                low = middle + 1
+        body = " ".join(bodies[low - 1].split())
+        return f"cue {low} {body[:80]!r}"
+
+    return (
+        f"source {excerpt(source_bodies)} differs from "
+        f"finalized {excerpt(final_bodies)}"
+    )
