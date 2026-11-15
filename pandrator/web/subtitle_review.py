@@ -278,6 +278,47 @@ def _canonical_display_cue(
     }
 
 
+def _canonical_owners(
+    segment: Segment, by_passage: Mapping[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Passages a published canonical cue owns, when they are all still present."""
+    metadata = segment.metadata_json or {}
+    ids = [str(value) for value in metadata.get("source_passage_ids") or []]
+    if not (metadata.get("canonical_passage_review") and ids):
+        return []
+    if any(value not in by_passage for value in ids):
+        return []
+    return [by_passage[value] for value in ids]
+
+
+def _combined_review_additions(
+    cue: Mapping[str, Any], owned: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """What a review of a multi-passage cue adds to its passages' own state.
+
+    The cue shows the union of its passages' review state, so carrying it
+    back whole would copy one passage's evidence onto its siblings.
+    """
+    baseline = passage_review_metadata([dict(row) for row in owned])
+    note = str(cue.get("review_note") or "").strip()
+    baseline_note = str(baseline["review_note"])[:4_000]
+    if baseline_note and note.startswith(baseline_note):
+        note = note[len(baseline_note):].strip()
+    return {
+        "review_state": (
+            "uncertain"
+            if cue.get("review_state") == "uncertain"
+            and baseline["review_state"] != "uncertain"
+            else "clear"
+        ),
+        "review_note": note,
+        **{
+            key: [value for value in cue.get(key) or [] if value not in baseline[key]]
+            for key in ("evidence_ids", "uncertain_source_cue_ids")
+        },
+    }
+
+
 def _passage_changes(row: Mapping[str, Any], source_row: Mapping[str, Any]) -> set[str]:
     changes: set[str] = set()
     if row["_deleted"]:
@@ -582,7 +623,7 @@ def _review_passage_rows(
     output: list[dict[str, Any]] = []
     used: set[str] = set()
     carried: dict[str, dict[str, Any]] = {}
-    carried_reviews: dict[str, list[ReviewedSubtitleSegment]] = {}
+    carried_reviews: dict[str, list[Mapping[str, Any]]] = {}
     fragments: dict[str, list[tuple[Segment, ReviewedSubtitleSegment]]] = {}
     track_turns = any(row.get("turn_id") for row in source_rows) or any(
         cue.get("starts_new_turn") for cue in reviewed
@@ -615,10 +656,9 @@ def _review_passage_rows(
             if len(exact) == 1:
                 segment = exact[0]
         candidates = [source_rows[index] for index in candidate_indexes[ordinal]]
-        owned = (
-            [row for row in candidates if segment.id in row.get("source_cue_ids", [])]
-            if segment is not None else []
-        )
+        owned = _canonical_owners(segment, by_passage) if segment is not None else []
+        if not owned and segment is not None:
+            owned = [row for row in candidates if segment.id in row.get("source_cue_ids", [])]
         if not owned and segment is not None:
             owned = [
                 row for row in candidates
@@ -667,6 +707,7 @@ def _review_passage_rows(
             # Keep each canonical row once even when display cues split or
             # combine it. Fragment text is reconstructed only after complete
             # source ownership has been verified below.
+            review = cue if len(owned) == 1 else _combined_review_additions(cue, owned)
             for row in owned:
                 row_id = row["id"]
                 if row_id not in carried:
@@ -674,7 +715,7 @@ def _review_passage_rows(
                     carried[row_id]["source_passage_ids"] = [row_id]
                     output.append(carried[row_id])
                     used.add(row_id)
-                carried_reviews.setdefault(row_id, []).append(cue)
+                carried_reviews.setdefault(row_id, []).append(review)
                 if len(owned) == 1:
                     fragments.setdefault(row_id, []).append((segment, cue))
             continue

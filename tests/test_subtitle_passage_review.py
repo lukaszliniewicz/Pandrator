@@ -34,6 +34,7 @@ from pandrator.web.schemas import (
     SubtitlePassageReviewRequest,
     SubtitleReviewRequest,
 )
+from pandrator.web.subtitle_review import ReviewedSubtitleSegment
 from pandrator.web.workspace_settings import WorkspaceSettingsService
 from tests import test_web_subtitle_review as legacy_review_tests
 from tests.web_test_support import prepare_web_test_data_root
@@ -253,6 +254,64 @@ def test_text_fix_in_combined_cue_keeps_its_timing(review_case):
     ]
     assert segments[0].metadata_json["source_passage_ids"] == ["yes-a", "question", "yes-b"]
     assert segments[0].metadata_json["canonical_passage_review"] is True
+
+
+def test_combined_canonical_cue_saves_again_without_spreading_review_state(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:02,000\nYes. Rigth?\n\n"
+        "2\n00:00:01,500 --> 00:00:02,500\nMm.\n",
+        [
+            {
+                "id": "yes",
+                "text": "Yes.",
+                "start_ms": 0,
+                "end_ms": 1000,
+                "speaker": "A",
+                "review_state": "uncertain",
+                "uncertain_source_cue_ids": [1],
+            },
+            {"id": "right", "text": "Rigth?", "start_ms": 1000, "end_ms": 2000, "speaker": "A"},
+            {
+                "id": "mm",
+                "text": "Mm.",
+                "start_ms": 1500,
+                "end_ms": 2500,
+                "speaker": "B",
+                "cue_indices": [1],
+            },
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    published = _save(
+        review_case, source_id, source_hash, 1, _edits(rows, right={"text": "Right?"})
+    )
+    _saved, segments, artifact = _saved_rows(review_case, published)
+    assert segments[0].metadata_json["source_passage_ids"] == ["yes", "right"]
+
+    column = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+    keys = ReviewedSubtitleSegment.__annotations__
+    values = [
+        {key: value for key, value in item.items() if key in keys and not key.startswith("_")}
+        for item in column["segments"]
+    ]
+    resaved = review_case.service.save_review(
+        review_case.session.id,
+        "correction",
+        published["revision"],
+        values,
+        source_artifact_id=artifact.id,
+        expected_source_hash=artifact.content_hash,
+    )
+    rows, _segments, _artifact = _saved_rows(review_case, resaved)
+
+    by_id = {row["source_passage_ids"][0]: row for row in rows}
+    assert by_id["yes"]["review_state"] == "uncertain"
+    assert by_id["yes"]["uncertain_source_cue_ids"] == [1]
+    assert by_id["right"]["review_state"] == "clear"
+    assert by_id["right"]["uncertain_source_cue_ids"] == []
 
 
 def test_untouched_cues_keep_their_timing_when_another_passage_changes(review_case):
