@@ -9,6 +9,7 @@ import os
 import shutil
 import socket
 import sys
+import threading
 import uuid
 import webbrowser
 from collections.abc import Iterator
@@ -32,6 +33,7 @@ from .auth import ALL_SCOPES, AuthService, BootstrapTokenStore
 from .automation_enrollment import AutomationEnrollmentService
 from .bundles import SessionBundleService
 from .database import Database
+from .job_handler_domains import DELIVERY_LANE_JOB_KINDS
 from .job_inputs import artifact_job_ownership
 from .job_registry import JobHandlerRegistry
 from .jobs import JobQueue, Worker, noop_handler
@@ -494,6 +496,26 @@ def command_serve(args) -> int:
     return 0
 
 
+def _delivery_lane(
+    database: Database, paths: DataPaths, queue: JobQueue,
+    tts_providers: TtsProviderRegistry, worker_id: str,
+) -> Worker:
+    """Claim only short delivery jobs beside the main worker loop.
+
+    Its own handler instances keep its job's state apart from the job the main
+    loop is running, as a second worker process would.
+    """
+    handlers = WorkflowHandlers(
+        database, paths, tts_providers=tts_providers, jobs=queue
+    ).handler_registry
+    return Worker(
+        queue,
+        f"{worker_id}.delivery",
+        {kind: handlers[kind] for kind in DELIVERY_LANE_JOB_KINDS},
+        kinds=DELIVERY_LANE_JOB_KINDS,
+    )
+
+
 def command_worker(args) -> int:
     paths, database = _database(args)
     tts_providers: TtsProviderRegistry | None = None
@@ -556,8 +578,26 @@ def command_worker(args) -> int:
                 ),
             )
             worker = Worker(queue, worker_id, handler_registry)
-            with worker_termination(worker.stop) as termination_requested:
+            lane = None
+            if not args.once and os.environ.get("PANDRATOR_DELIVERY_LANE", "1") != "0":
+                lane = _delivery_lane(database, paths, queue, tts_providers, worker_id)
+            lanes = [worker] if lane is None else [worker, lane]
+
+            def stop_all() -> None:
+                for item in lanes:
+                    item.stop()
+
+            with worker_termination(stop_all) as termination_requested:
+                lane_thread = None
                 try:
+                    if lane is not None:
+                        lane_thread = threading.Thread(
+                            target=lane.run_forever,
+                            args=(args.poll_interval,),
+                            kwargs={"stop_requested": termination_requested},
+                            name="pandrator-delivery-lane",
+                        )
+                        lane_thread.start()
                     if args.once:
                         worker.run_once()
                     else:
@@ -566,7 +606,12 @@ def command_worker(args) -> int:
                             stop_requested=termination_requested,
                         )
                 except KeyboardInterrupt:
-                    worker.stop()
+                    stop_all()
+                finally:
+                    stop_all()
+                    if lane_thread is not None:
+                        # The lane finishes its current job before stopping.
+                        lane_thread.join()
     finally:
         try:
             if tts_providers is not None:

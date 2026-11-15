@@ -20,3 +20,12 @@ restart that includes the API or a worker first stops every running Pandrator
 service, so old and new processes never share the database, then starts them
 all on the active slot. Without such a change, a restart still affects only the
 selected services. This ships with the next Manager release.
+
+## Exports
+
+An export no longer waits for a long job in another project to finish. Each
+worker now runs a second loop that takes only exports, variants, comparison
+exports, mix previews and bundle exports, so exporting the French branch can
+start while the German branch is still generating. Jobs within one project
+still run one at a time and in the order they were queued. Set
+`PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
