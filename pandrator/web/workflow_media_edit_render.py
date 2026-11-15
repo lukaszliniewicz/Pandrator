@@ -40,7 +40,10 @@ def media_edit_render(context: MediaEditRenderContext, payload, progress, cancel
 
     from pandrator.logic.dubbing.audio_sync import media_has_audio_stream
     from pandrator.logic.dubbing.srt_utils import compose_srt
-    from pandrator.logic.dubbing.subtitle_integrity import subtitle_text_integrity
+    from pandrator.logic.dubbing.subtitle_integrity import (
+        describe_text_difference,
+        subtitle_text_integrity,
+    )
     from pandrator.logic.dubbing.video_muxing import (
         build_removal_only_video_command,
         normalize_video_resolution,
@@ -152,10 +155,12 @@ def media_edit_render(context: MediaEditRenderContext, payload, progress, cancel
         word_segment_ordinals = None
         published_srt = caption_to_srt(retimed_cues)
         composition_mode = "source_cues"
-    if not subtitle_text_integrity(
-        caption_to_srt(retimed_cues), published_srt
-    )["matches"]:
-        raise ValueError("Subtitle finalization failed text preservation verification")
+    source_srt = caption_to_srt(retimed_cues)
+    if not subtitle_text_integrity(source_srt, published_srt)["matches"]:
+        raise ValueError(
+            "Subtitle finalization failed text preservation verification: "
+            + describe_text_difference(source_srt, published_srt)
+        )
     subtitle_path.write_text(published_srt, encoding="utf-8")
     composition_metadata = {
         "source_cue_count": len(retimed_cues),
