@@ -31,11 +31,18 @@ class AudioLanguageMetadataTests(unittest.TestCase):
             audio_language_metadata("hu"),
         )
 
-    def test_unknown_language_adds_no_tags(self):
-        for language in ("", "auto", "und", "zz"):
-            self.assertEqual([], audio_language_metadata(language))
+    def test_three_letter_codes_name_the_stream_too(self):
+        self.assertEqual(audio_language_metadata("en"), audio_language_metadata("eng"))
+        self.assertIn("title=French", audio_language_metadata("fra"))
+
+    def test_no_language_leaves_the_stream_alone(self):
+        self.assertEqual([], audio_language_metadata(""))
         command = build_replace_video_audio_command("v.mp4", "a.wav", "o.mp4")
-        self.assertFalse(any(item.startswith("-metadata") for item in command))
+        self.assertFalse(any(item.startswith(("-metadata", "-map_metadata")) for item in command))
+
+    def test_unknown_language_drops_inherited_tags(self):
+        for language in ("auto", "und", "zz"):
+            self.assertEqual(["-map_metadata:s:a:0", "-1"], audio_language_metadata(language))
 
     def test_replace_command_tags_before_the_output(self):
         command = build_replace_video_audio_command(
@@ -103,6 +110,25 @@ class AudioLanguageIntegrationTests(unittest.TestCase):
             tags = self._audio_tags(path)
             self.assertEqual("hun", tags.get("language"), path.name)
             self.assertEqual("Hungarian", tags.get("handler_name"), path.name)
+
+    def test_unknown_language_does_not_inherit_the_input_language(self):
+        video = self.root / "source.mp4"
+        speech = self.root / "speech.m4a"
+        self._run([
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-i", "color=black:s=64x64:r=25:d=1",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video),
+        ])
+        self._run([
+            "ffmpeg", "-v", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-c:a", "aac", "-metadata:s:a:0", "language=fra", str(speech),
+        ])
+        dubbed = self.root / "dubbed.mp4"
+        self._run(build_replace_video_audio_command(
+            str(video), str(speech), str(dubbed), audio_language="zz"
+        ))
+        self.assertEqual("und", self._audio_tags(dubbed).get("language", "und"))
 
 
 if __name__ == "__main__":

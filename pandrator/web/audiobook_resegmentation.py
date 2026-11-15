@@ -6,7 +6,6 @@ import re
 import xml.etree.ElementTree as ET
 from collections import Counter
 from copy import deepcopy
-from itertools import pairwise
 
 from sqlalchemy import select
 
@@ -219,6 +218,9 @@ def project_merge_markup(session, left, right, values: dict, session_id: str) ->
         characters=characters,
     )
 
+# Closing quotes and brackets that may follow a sentence end.
+_CLOSERS = "[\"\u201d\u2019)\\]」』）]"
+
 
 def _automatic_boundaries(
     text: str, max_chars: int, paragraph_ends: set[int], row_ends: set[int]
@@ -228,7 +230,7 @@ def _automatic_boundaries(
         match.end()
         for match in re.finditer(
             # Full-width sentence ends need no following space.
-            r"[.!?…][\"\u201d\u2019\)\]]*(?:\s+|$)|[。！？][」』\u201d\u2019）\)\]]*\s*", text
+            rf"[.!?…]{_CLOSERS}*(?:\s+|$)|[。！？]{_CLOSERS}*\s*", text
         )
     ]
     whitespace = sorted({match.end() for match in re.finditer(r"\s+", text)} | row_ends)
@@ -318,12 +320,13 @@ def prepare_resegmentation(
         raise ValueError(
             "Range resegmentation requires matching display and speech text; use mapped split/merge for optimized variants."
         )
-    # The same seams as a merge, so Japanese and Chinese stay unspaced.
-    seams = [fragment_separator(left.text, right.text) for left, right in pairwise(selected)]
-    text = "".join(
-        row.text if not index else seams[index - 1] + row.text
-        for index, row in enumerate(selected)
-    )
+    # The same seams as a merge, so Japanese and Chinese stay unspaced. Each
+    # seam reads the text so far, so an open quote is known to be closed.
+    seams: list[str] = []
+    text = selected[0].text
+    for row in selected[1:]:
+        seams.append(fragment_separator(text, row.text))
+        text += seams[-1] + row.text
     if len(text) > 24000:
         raise ValueError("Select at most 24,000 characters per resegmentation draft.")
     source_ranges, source_ends, paragraph_ends = [], {}, set()
@@ -393,7 +396,7 @@ def prepare_resegmentation(
             if paragraph
             else (
                 None
-                if re.search(r"[.!?…。！？][\"\u201d\u2019\)\]]*$", text[start:end])
+                if re.search(rf"[.!?…。！？]{_CLOSERS}*$", text[start:end])
                 else "continuation"
             )
         )

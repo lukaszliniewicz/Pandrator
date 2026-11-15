@@ -344,3 +344,34 @@ def test_automatic_boundaries_find_unspaced_cjk_sentence_and_block_ends():
     assert _automatic_boundaries(sentence, 40, set(), set()) == [31]
     unpunctuated = "あ" * 30 + "い" * 30
     assert _automatic_boundaries(unpunctuated, 40, set(), {30, 60}) == [30]
+    quoted = "「" + "あ" * 28 + "。」" + "い" * 30 + "。"
+    assert _automatic_boundaries(quoted, 40, set(), set()) == [31]
+
+
+def test_resegmentation_seams_follow_quotes_across_blocks(case):
+    ids = case["segment_ids"][:3]
+    with case["services"]["database"].session() as session:
+        for identifier, text in zip(ids, ('He said "', 'hello"', "Next."), strict=True):
+            row = session.get(m.GenerationSegment, identifier)
+            row.text, row.optimized_text, row.speech_plan_json = text, None, {}
+            row.paragraph_break_after = False
+    merged = topology(
+        case, case["revision_id"], action="resegment", segment_ids=ids, boundaries=[]
+    )
+    assert merged.status_code == 201, merged.get_json()
+    assert rows(case, merged.get_json()["plan_revision_id"])[0].text == 'He said "hello" Next.'
+
+
+def test_cut_after_a_closing_corner_bracket_is_a_sentence_end(case):
+    first = case["segment_ids"][0]
+    with case["services"]["database"].session() as session:
+        row = session.get(m.GenerationSegment, first)
+        row.text, row.optimized_text, row.speech_plan_json = "「はい。」いいえ。", None, {}
+        row.paragraph_break_after = False
+    split = topology(
+        case, case["revision_id"], action="resegment", segment_ids=[first], boundaries=[5]
+    )
+    assert split.status_code == 201, split.get_json()
+    head = rows(case, split.get_json()["plan_revision_id"])[0]
+    assert head.text == "「はい。」"
+    assert head.silence_after_ms == 250

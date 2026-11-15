@@ -521,11 +521,18 @@ def build_add_subtitles_command(
 
 
 def audio_language_metadata(language: str, stream: int = 0) -> list[str]:
-    """FFmpeg options naming an audio stream's language, or none if unknown."""
+    """FFmpeg options naming an audio stream's language.
+
+    With no language the stream is left as it is. A language that is not
+    recognised drops any tags inherited from the audio input, so the track is
+    not mislabelled, and FFmpeg marks it undetermined.
+    """
+    if not str(language or "").strip():
+        return []
     code = ffmpeg_subtitle_language_code(language, default="")
     title = subtitle_language_title(language, default="")
     if not code or not title:
-        return []
+        return [f"-map_metadata:s:a:{stream}", "-1"]
     return [
         f"-metadata:s:a:{stream}",
         f"language={code}",
