@@ -80,6 +80,23 @@ start while the German branch is still generating. Jobs within one project
 still run one at a time and in the order they were queued. Set
 `PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
 
+## Output
+
+- Exported videos now name the dubbed audio track. The track carries the
+  target language, a title and a handler name (for example `hun`,
+  "Hungarian"), so players no longer list it as "Unknown". Three-letter codes
+  such as `eng` work as well as `en`. With a target language Pandrator does not
+  recognise, the track is marked undetermined rather than keeping a language
+  tag from the audio it was made from.
+- Merging two Japanese or Chinese speech blocks, by hand, through passage
+  regroup or through audiobook range re-segmentation, no longer inserts a space
+  between them in the text, the speech text or the speech markup. Automatic
+  re-segmentation also finds 。, ！ and ？ without a following space, so a
+  Japanese range no longer fails with "A word exceeds max_chars".
+- Japanese subtitle lines no longer break inside a dotted name such as
+  「ラリー・キング」 or between a number and its counter such as 「2014年」,
+  unless no other two-line split fits.
+
 ## Media edits
 
 Rendering a media edit no longer fails when two speakers overlap and the later

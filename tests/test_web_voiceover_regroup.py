@@ -669,3 +669,16 @@ class VoiceoverRegroupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_regroup_joins_japanese_passages_without_a_space():
+    from pandrator.web.voiceover_regroup import _join_with_offsets
+
+    assert _join_with_offsets(["ありがとう。", "ございました！"]) == (
+        "ありがとう。ございました！",
+        [0, 6],
+    )
+    assert _join_with_offsets(["Thank you.", "Goodbye."]) == (
+        "Thank you. Goodbye.",
+        [0, 11],
+    )

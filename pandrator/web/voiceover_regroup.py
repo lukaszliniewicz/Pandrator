@@ -39,6 +39,7 @@ from pandrator.logic.dubbing.passage_regroup import (
     regenerated_group_fits,
     select_regroup_candidates,
 )
+from pandrator.logic.dubbing.text_units import fragment_separator
 
 from .generation_audio_identity import plan_audio_identities
 from .generation_start_preparation import snapshot_guard
@@ -275,6 +276,17 @@ def _load_source_cuts(
         return output_cut_positions_ms(ranges), True
 
 
+def _join_with_offsets(values: list[str]) -> tuple[str, list[int]]:
+    """Join passage texts as speech is joined, with each one's start offset."""
+    merged = ""
+    offsets: list[int] = []
+    for value in values:
+        merged += fragment_separator(merged, value)
+        offsets.append(len(merged))
+        merged += value
+    return merged, offsets
+
+
 def _stage_group_revision(
     session: Session,
     session_id: str,
@@ -339,14 +351,13 @@ def _stage_group_revision(
     ]
     if any(not text for text in texts) or any(not text for text in speeches):
         raise ValueError("Regroup candidates must have usable text.")
-    merged_text = " ".join(texts)
-    merged_speech = " ".join(speeches)
+    # Japanese and Chinese passages join without a space.
+    merged_text, text_offsets = _join_with_offsets(texts)
+    merged_speech, speech_offsets = _join_with_offsets(speeches)
     if len(merged_text) > max_chars or len(merged_speech) > max_chars:
         raise ValueError("Merged speech text exceeds speech_block_max_chars.")
 
     provenance = dict(members[0].speech_block_provenance_json or {})
-    display_len = len(texts[0])
-    speech_len = len(speeches[0])
     for position, member in enumerate(members[1:], start=1):
         member_provenance = dict(member.speech_block_provenance_json or {})
         references = list(
@@ -375,12 +386,10 @@ def _stage_group_revision(
         provenance = GenerationService._merge_provenance(
             provenance,
             member_provenance,
-            display_offset=display_len + 1,
-            speech_offset=speech_len + 1,
+            display_offset=text_offsets[position],
+            speech_offset=speech_offsets[position],
             event=event,
         )
-        display_len += 1 + len(texts[position])
-        speech_len += 1 + len(speeches[position])
     if turn_id:
         provenance["turn_id"] = turn_id
     provenance["manual_topology"] = {
