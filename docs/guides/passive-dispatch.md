@@ -103,7 +103,14 @@ After publication, use `pandrator_preview_subtitle_passages` and
 `pandrator_patch_subtitle_passages` for a small wording or turn correction.
 Pin the returned artifact hash, revision and composition hash; submit only the
 changed logical passage IDs. This avoids replaying every batch for a name or
-speaker handoff. `dry_run=true` executes the save validation without publishing.
+speaker handoff. `dry_run=true` executes the save validation without publishing,
+and reports `previous_cue_count` and `retimed_cue_count`. Cues that share a
+passage form a group, including chains where one cue shares a passage with the
+next. A group you did not touch keeps its cues exactly. A wording fix keeps its
+cue's timing, even in a cue that holds several short passages, when the cue is
+a group of its own, its passages share one speaker, and the new text fits the
+line and reading-speed limits (or is no longer than before). Any other change
+recomposes the whole group it touches.
 Preserve the accepted English artifact before starting another language, and
 use persisted accepted output or its verified export as the authoritative text.
 

@@ -6,6 +6,7 @@ import hashlib
 import tempfile
 import unittest
 from copy import deepcopy
+from itertools import pairwise
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ from pandrator.web.schemas import (
     SubtitlePassageReviewRequest,
     SubtitleReviewRequest,
 )
+from pandrator.web.subtitle_review import ReviewedSubtitleSegment
 from pandrator.web.workspace_settings import WorkspaceSettingsService
 from tests import test_web_subtitle_review as legacy_review_tests
 from tests.web_test_support import prepare_web_test_data_root
@@ -218,6 +220,301 @@ def test_combined_display_can_edit_each_canonical_passage_independently(review_c
         "exact",
         "exact",
     ]
+
+
+def test_text_fix_in_combined_cue_keeps_its_timing(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:10,000 --> 00:00:12,000\nYes. Traditonal Christianity? Yes.\n",
+        [
+            {"id": "yes-a", "text": "Yes.", "start_ms": 10000, "end_ms": 10300, "speaker": "A"},
+            {
+                "id": "question",
+                "text": "Traditonal Christianity?",
+                "start_ms": 10300,
+                "end_ms": 11500,
+                "speaker": "A",
+            },
+            {"id": "yes-b", "text": "Yes.", "start_ms": 11500, "end_ms": 11800, "speaker": "A"},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, question={"text": "Traditional Christianity?"})
+
+    preview = _save(review_case, source_id, source_hash, 1, values, dry_run=True)
+    assert (preview["cue_count"], preview["previous_cue_count"], preview["retimed_cue_count"]) == (1, 1, 0)
+    result = _save(review_case, source_id, source_hash, 1, values)
+    saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert [row["text"] for row in saved] == ["Yes.", "Traditional Christianity?", "Yes."]
+    assert [(item.start_ms, item.end_ms, item.text) for item in segments] == [
+        (10000, 12000, "Yes. Traditional Christianity? Yes.")
+    ]
+    assert segments[0].metadata_json["source_passage_ids"] == ["yes-a", "question", "yes-b"]
+    assert segments[0].metadata_json["canonical_passage_review"] is True
+
+
+def test_combined_canonical_cue_saves_again_without_spreading_review_state(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:02,000\nYes. Rigth?\n\n"
+        # Longer than its passage, so a resave checks its display fragment.
+        "2\n00:00:01,500 --> 00:00:02,600\nMm.\n",
+        [
+            {
+                "id": "yes",
+                "text": "Yes.",
+                "start_ms": 0,
+                "end_ms": 1000,
+                "speaker": "A",
+                "review_state": "uncertain",
+                "uncertain_source_cue_ids": [1],
+                # With the sibling's note, the cue's joined note hits the cap.
+                "review_note": "a" * 3999,
+            },
+            {
+                "id": "right",
+                "text": "Rigth?",
+                "start_ms": 1000,
+                "end_ms": 2000,
+                "speaker": "A",
+                "review_note": "b",
+            },
+            {
+                "id": "mm",
+                "text": "Mm.",
+                "start_ms": 1500,
+                "end_ms": 2500,
+                "speaker": "B",
+                "cue_indices": [1],
+            },
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    published = _save(
+        review_case, source_id, source_hash, 1, _edits(rows, right={"text": "Right?"})
+    )
+    _saved, segments, artifact = _saved_rows(review_case, published)
+    assert segments[0].metadata_json["source_passage_ids"] == ["yes", "right"]
+
+    column = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+    keys = ReviewedSubtitleSegment.__annotations__
+    values = [
+        {key: value for key, value in item.items() if key in keys and not key.startswith("_")}
+        for item in column["segments"]
+    ]
+    resaved = review_case.service.save_review(
+        review_case.session.id,
+        "correction",
+        published["revision"],
+        values,
+        source_artifact_id=artifact.id,
+        expected_source_hash=artifact.content_hash,
+    )
+    rows, _segments, _artifact = _saved_rows(review_case, resaved)
+
+    by_id = {row["source_passage_ids"][0]: row for row in rows}
+    assert by_id["yes"]["review_state"] == "uncertain"
+    assert by_id["yes"]["uncertain_source_cue_ids"] == [1]
+    assert by_id["right"]["review_state"] == "clear"
+    assert by_id["right"]["uncertain_source_cue_ids"] == []
+    assert by_id["yes"]["review_note"] == "a" * 3999
+    assert by_id["right"]["review_note"] == "b"
+    assert by_id["mm"]["text"] == "Mm."
+
+
+def test_untouched_cues_keep_their_timing_when_another_passage_changes(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:01,500\nFirst line.\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nHi.\n\n"
+        "3\n00:00:04,000 --> 00:00:06,000\nThird.\n",
+        [
+            {"id": "keep-a", "text": "First line.", "start_ms": 0, "end_ms": 1500, "speaker": "A", "cue_indices": [0]},
+            {"id": "keep-b", "text": "Hi.", "start_ms": 2000, "end_ms": 2600, "speaker": "A", "cue_indices": [1]},
+            {"id": "keep-c", "text": "Third.", "start_ms": 4000, "end_ms": 6000, "speaker": "B", "cue_indices": [2]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, **{"keep-c": {"text": "Third, edited."}})
+
+    preview = _save(review_case, source_id, source_hash, 1, values, dry_run=True)
+    assert (preview["previous_cue_count"], preview["retimed_cue_count"]) == (3, 0)
+    result = _save(review_case, source_id, source_hash, 1, values)
+    _saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert [(item.start_ms, item.end_ms, item.text) for item in segments] == [
+        (0, 1500, "First line."),
+        (2000, 3000, "Hi."),
+        (4000, 6000, "Third, edited."),
+    ]
+    assert [item.metadata_json["source_passage_ids"] for item in segments] == [
+        ["keep-a"],
+        ["keep-b"],
+        ["keep-c"],
+    ]
+
+
+def test_retimed_passage_borrows_free_time_for_minimum_duration(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:01,000\nOne.\n\n"
+        "2\n00:00:02,000 --> 00:00:02,600\nTwo.\n\n"
+        "3\n00:00:05,000 --> 00:00:06,000\nThree.\n",
+        [
+            {"id": "short-a", "text": "One.", "start_ms": 0, "end_ms": 1000, "speaker": "A", "cue_indices": [0]},
+            {"id": "short-b", "text": "Two.", "start_ms": 2000, "end_ms": 2600, "speaker": "A", "cue_indices": [1]},
+            {"id": "short-c", "text": "Three.", "start_ms": 5000, "end_ms": 6000, "speaker": "A", "cue_indices": [2]},
+        ],
+    )
+    column = review_case.service.review(review_case.session.id, [source_id])["columns"][0]
+    values = _edits(
+        column["logical_passages"],
+        **{
+            "short-a": {"start_ms": 600, "end_ms": 900},
+            "short-b": {"start_ms": 2100, "end_ms": 2400},
+        },
+    )
+
+    result = _save(review_case, source_id, source_hash, 1, values)
+    saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert [(row["start_ms"], row["end_ms"]) for row in saved[:2]] == [(600, 900), (2100, 2400)]
+    timings = [(item.start_ms, item.end_ms) for item in segments]
+    assert timings[2] == (5000, 6000)
+    minimum = 833
+    gap = 80
+    # The first cue extends forward into the free gap; the second, too.
+    assert timings[0] == (600, 600 + minimum)
+    assert timings[1] == (2100, 2100 + minimum)
+    assert all(
+        later[0] - earlier[1] >= gap for earlier, later in pairwise(timings)
+    )
+
+
+def test_borrowed_time_stops_at_the_next_cue(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:01,000 --> 00:00:02,000\nOne.\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nTwo.\n",
+        [
+            {"id": "tight-a", "text": "One.", "start_ms": 1000, "end_ms": 2000, "speaker": "A", "cue_indices": [0]},
+            {"id": "tight-b", "text": "Two.", "start_ms": 2000, "end_ms": 3000, "speaker": "A", "cue_indices": [1]},
+        ],
+    )
+    column = review_case.service.review(review_case.session.id, [source_id])["columns"][0]
+    values = _edits(column["logical_passages"], **{"tight-a": {"start_ms": 1500, "end_ms": 1800}})
+
+    result = _save(review_case, source_id, source_hash, 1, values)
+    _saved, segments, _artifact = _saved_rows(review_case, result)
+
+    # Forward room ends 80 ms before the next cue, so the rest comes from before.
+    assert [(item.start_ms, item.end_ms) for item in segments] == [
+        (1920 - 833, 1920),
+        (2000, 3000),
+    ]
+
+
+def test_longer_wording_gets_reading_time_instead_of_keeping_a_fast_cue(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:01,000\nHi.\n\n"
+        "2\n00:00:05,000 --> 00:00:06,000\nBye.\n",
+        [
+            {"id": "fast-a", "text": "Hi.", "start_ms": 0, "end_ms": 1000, "speaker": "A", "cue_indices": [0]},
+            {"id": "fast-b", "text": "Bye.", "start_ms": 5000, "end_ms": 6000, "speaker": "A", "cue_indices": [1]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, **{"fast-a": {"text": "I would rather stay here and wait."}})
+
+    result = _save(review_case, source_id, source_hash, 1, values)
+    _saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert segments[0].start_ms == 0
+    assert 1000 < segments[0].end_ms <= 5000 - 80
+    assert (segments[1].start_ms, segments[1].end_ms) == (5000, 6000)
+
+
+def test_borrowed_time_never_widens_crosstalk(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:01,000 --> 00:00:03,000\nA long line from the first speaker.\n\n"
+        "2\n00:00:01,500 --> 00:00:01,800\nYes.\n",
+        [
+            {
+                "id": "talk-a",
+                "text": "A long line from the first speaker.",
+                "start_ms": 1000,
+                "end_ms": 3000,
+                "speaker": "A",
+                "cue_indices": [0],
+            },
+            {"id": "talk-b", "text": "Yes.", "start_ms": 1500, "end_ms": 1800, "speaker": "B", "cue_indices": [1]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, **{"talk-b": {"end_ms": 1750}})
+
+    result = _save(review_case, source_id, source_hash, 1, values)
+    _saved, segments, _artifact = _saved_rows(review_case, result)
+
+    assert [(item.start_ms, item.end_ms, item.speaker) for item in segments] == [
+        (1000, 3000, "A"),
+        (1500, 1750, "B"),
+    ]
+
+
+def test_retimed_passage_cannot_overlap_a_kept_cue_of_another_speaker(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:01,000 --> 00:00:03,000\nFirst.\n\n"
+        "2\n00:00:04,000 --> 00:00:05,000\nSecond.\n",
+        [
+            {"id": "kept-a", "text": "First.", "start_ms": 1000, "end_ms": 2000, "speaker": "A", "cue_indices": [0]},
+            {"id": "moved-b", "text": "Second.", "start_ms": 4000, "end_ms": 5000, "speaker": "B", "cue_indices": [1]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(rows, **{"moved-b": {"start_ms": 2500, "end_ms": 3500}})
+
+    with pytest.raises(ValueError, match="cross-speaker overlap"):
+        _save(review_case, source_id, source_hash, 1, values)
+
+
+def test_retimed_count_follows_the_cue_not_another_cues_old_timing(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:01,000\nFirst.\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nSecond.\n",
+        [
+            {"id": "count-a", "text": "First.", "start_ms": 0, "end_ms": 1000, "speaker": "A", "cue_indices": [0]},
+            {"id": "count-b", "text": "Second.", "start_ms": 2000, "end_ms": 3000, "speaker": "A", "cue_indices": [1]},
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    values = _edits(
+        rows,
+        **{"count-a": {"start_ms": 2000, "end_ms": 3000}, "count-b": {"deleted": True}},
+    )
+
+    preview = _save(review_case, source_id, source_hash, 1, values, dry_run=True)
+
+    assert (preview["cue_count"], preview["retimed_cue_count"]) == (1, 1)
 
 
 def test_fragmented_passage_edits_preserve_anchors_evidence_and_materialized_speaker(
@@ -993,3 +1290,219 @@ class PassageReviewRouteTests(unittest.TestCase):
                 )
             )
             self.assertEqual([1, 2], [row.revision_number for row in revisions])
+
+
+def test_shared_passage_resaves_when_one_cue_also_owns_another(review_case):
+    # C1 owns A and B; C2 owns only B. An unchanged resave must not expect a
+    # display fragment of B from C1, which validates as a two-passage cue.
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:02,000\nAlpha. Bravo one\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nbravo two.\n",
+        [
+            {"id": "a", "text": "Alpha.", "start_ms": 0, "end_ms": 1000, "speaker": "A"},
+            {
+                "id": "b",
+                "text": "Bravo one bravo two.",
+                "start_ms": 1000,
+                "end_ms": 3000,
+                "speaker": "A",
+                "cue_indices": [0, 1],
+            },
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    published = _save(review_case, source_id, source_hash, 1, _edits(rows))
+    _saved, segments, artifact = _saved_rows(review_case, published)
+    assert [item.metadata_json["source_passage_ids"] for item in segments] == [["a", "b"], ["b"]]
+    shown = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+    assert [
+        (row["edit_capabilities"]["ownership"], row["edit_capabilities"]["text"])
+        for row in shown["segments"]
+    ] == [("combined", False), ("fragment", False)]
+
+    column = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+    keys = ReviewedSubtitleSegment.__annotations__
+    values = [
+        {key: value for key, value in item.items() if key in keys and not key.startswith("_")}
+        for item in column["segments"]
+    ]
+    resaved = review_case.service.save_review(
+        review_case.session.id,
+        "correction",
+        published["revision"],
+        values,
+        source_artifact_id=artifact.id,
+        expected_source_hash=artifact.content_hash,
+    )
+    rows, _segments, _artifact = _saved_rows(review_case, resaved)
+    assert [(row["source_passage_ids"], row["text"]) for row in rows] == [
+        (["a"], "Alpha."),
+        (["b"], "Bravo one bravo two."),
+    ]
+
+
+def _shared_passage_layout(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:02,000\nAlpha. Bravo one\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nbravo two.\n",
+        [
+            {"id": "a", "text": "Alpha.", "start_ms": 0, "end_ms": 1000, "speaker": "A"},
+            {
+                "id": "b",
+                "text": "Bravo one bravo two.",
+                "start_ms": 1000,
+                "end_ms": 3000,
+                "speaker": "A",
+                "cue_indices": [0, 1],
+            },
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    published = _save(review_case, source_id, source_hash, 1, _edits(rows))
+    _saved, _segments, artifact = _saved_rows(review_case, published)
+    column = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+    keys = ReviewedSubtitleSegment.__annotations__
+    values = [
+        {key: value for key, value in item.items() if key in keys and not key.startswith("_")}
+        for item in column["segments"]
+    ]
+    return published, artifact, values
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("omit_combined", "combines this passage with another must be kept"),
+        ("edit_shared_fragment", "edit their source passages separately"),
+        ("omit_own_cue", "every inherited source segment exactly once"),
+        ("change_fragment_speaker", "edit their source passages separately"),
+    ],
+)
+def test_shared_passage_save_cannot_drop_the_combined_cue_text(review_case, change, message):
+    published, artifact, values = _shared_passage_layout(review_case)
+    if change == "omit_combined":
+        values = values[1:]
+    elif change == "omit_own_cue":
+        values = values[:1]
+    elif change == "change_fragment_speaker":
+        values[1]["speaker"] = "B"
+    else:
+        values[1]["text"] = "bravo 2."
+    with pytest.raises(ValueError, match=message):
+        review_case.service.save_review(
+            review_case.session.id,
+            "correction",
+            published["revision"],
+            values,
+            source_artifact_id=artifact.id,
+            expected_source_hash=artifact.content_hash,
+        )
+
+
+def test_legacy_resave_keeps_explicit_cue_ownership(review_case):
+    # The first cue keeps a display window longer than its passage and
+    # overlapping the next passage; ownership, not timing, links them.
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:01,000 --> 00:00:03,000\nAlpha.\n\n"
+        "2\n00:00:02,500 --> 00:00:03,500\nBravo.\n",
+        [
+            {"id": "a", "text": "Alpha.", "start_ms": 1000, "end_ms": 2000, "speaker": "A"},
+            {
+                "id": "b",
+                "text": "Bravo.",
+                "start_ms": 2500,
+                "end_ms": 3500,
+                "speaker": "B",
+                "cue_indices": [1],
+            },
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    saved = _save(review_case, source_id, source_hash, 1, _edits(rows))
+    keys = ReviewedSubtitleSegment.__annotations__
+    for _round in range(2):
+        _rows, segments, artifact = _saved_rows(review_case, saved)
+        column = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+        values = [
+            {key: value for key, value in item.items() if key in keys and not key.startswith("_")}
+            for item in column["segments"]
+        ]
+        saved = review_case.service.save_review(
+            review_case.session.id,
+            "correction",
+            saved["revision"],
+            values,
+            source_artifact_id=artifact.id,
+            expected_source_hash=artifact.content_hash,
+        )
+        rows, segments, _artifact = _saved_rows(review_case, saved)
+        assert [(item.start_ms, item.end_ms) for item in segments] == [(1000, 3000), (2500, 3500)]
+        assert [item.metadata_json.get("canonical_passage_review") for item in segments] == [True, True]
+        assert [item.metadata_json["source_passage_ids"] for item in segments] == [
+            [rows[0]["id"]],
+            [rows[1]["id"]],
+        ]
+
+
+def _add_evidence(review_case, artifact, segment, evidence_id, start_ms, end_ms):
+    with review_case.database.session() as session:
+        session.add(
+            SubtitleEvidence(
+                id=evidence_id,
+                session_id=review_case.session.id,
+                source_artifact_id=artifact.id,
+                source_revision_id=segment.revision_id,
+                source_segment_id=segment.id,
+                cue_id=1,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                clip_start_ms=start_ms,
+                clip_end_ms=end_ms,
+                reason="Listen here.",
+                routes_json=["whisper"],
+                audio_model_ids_json=[],
+                status="completed",
+                candidates_json=[],
+                resolution_json={},
+            )
+        )
+
+
+def test_shared_passage_evidence_follows_the_passage_it_overlaps(review_case):
+    # C1 owns A (0-1000) and B (1000-3000) and shows 0-2000; C2 owns B and
+    # shows 2000-3000. Evidence at 2500-2600 lies in B but outside C1.
+    published, artifact, values = _shared_passage_layout(review_case)
+    with review_case.database.session() as session:
+        segments = list(
+            session.scalars(
+                select(Segment)
+                .where(Segment.revision_id == published["revision_id"])
+                .order_by(Segment.ordinal)
+            )
+        )
+    _add_evidence(review_case, artifact, segments[1], "b-evidence", 2500, 2600)
+    # The review shows a passage's evidence on every cue that holds it.
+    for value in values:
+        value["evidence_ids"] = ["b-evidence"]
+    resaved = review_case.service.save_review(
+        review_case.session.id,
+        "correction",
+        published["revision"],
+        values,
+        source_artifact_id=artifact.id,
+        expected_source_hash=artifact.content_hash,
+    )
+    rows, _segments, _artifact = _saved_rows(review_case, resaved)
+    assert [(row["text"], row["evidence_ids"]) for row in rows] == [
+        ("Alpha.", []),
+        ("Bravo one bravo two.", ["b-evidence"]),
+    ]

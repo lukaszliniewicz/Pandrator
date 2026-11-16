@@ -24,7 +24,9 @@ from pandrator.logic.dubbing.srt_utils import compose_srt, split_speaker_label
 from pandrator.logic.dubbing.subtitle_finalization import (
     SubtitleFinalizationConfig,
     finalize_segments,
+    wrap_subtitle_text,
 )
+from pandrator.logic.dubbing.text_units import join_fragments
 
 from .access.contracts import ProjectAction
 from .access.current_session_policy import require_current_session_access
@@ -141,7 +143,8 @@ class ReviewedSubtitleSegment(TypedDict):
     evidence_ids: list[str]
     uncertain_source_cue_ids: list[int]
     _source_word_ids: NotRequired[list[str]]
-    _canonical_passage_id: NotRequired[str]
+    _canonical_passage_ids: NotRequired[list[str]]
+    _timing_kept: NotRequired[bool]
 
 
 def _speaker_and_text(segment: Segment) -> tuple[str, str]:
@@ -236,14 +239,382 @@ def _merge_prepared_canonical_rows(
     return output
 
 
+def _canonical_display_cue(
+    rows: Sequence[Mapping[str, Any]], *, start_ms: int, end_ms: int, text: str
+) -> dict[str, Any]:
+    ids = [str(row["id"]) for row in rows]
+    turns = {str(row.get("turn_id") or "") for row in rows}
+    notes = dict.fromkeys(
+        str(row.get("review_note") or "") for row in rows if row.get("review_note")
+    )
+    return {
+        "_canonical_passage_ids": ids,
+        "source_passage_ids": ids,
+        "turn_id": (next(iter(turns)) or None) if len(turns) == 1 else None,
+        "starts_new_turn": False,
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "text": text,
+        "speaker": str(rows[0].get("speaker") or ""),
+        "review_state": (
+            "uncertain"
+            if any(row.get("review_state") == "uncertain" for row in rows)
+            else "clear"
+        ),
+        "review_note": " ".join(notes)[:4_000],
+        # Capped like submitted cues, so every saved id is also validated.
+        "evidence_ids": list(
+            dict.fromkeys(
+                value for row in rows for value in row.get("evidence_ids") or []
+            )
+        )[:20],
+        "uncertain_source_cue_ids": list(
+            dict.fromkeys(
+                value
+                for row in rows
+                for value in row.get("uncertain_source_cue_ids") or []
+            )
+        )[:20],
+    }
+
+
+def _canonical_owners(
+    segment: Segment, by_passage: Mapping[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Passages a published canonical cue owns, when they are all still present."""
+    metadata = segment.metadata_json or {}
+    ids = [str(value) for value in metadata.get("source_passage_ids") or []]
+    if not (metadata.get("canonical_passage_review") and ids):
+        return []
+    if any(value not in by_passage for value in ids):
+        return []
+    return [by_passage[value] for value in ids]
+
+
+def _combined_review_additions(
+    cue: Mapping[str, Any], owned: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """What a review of a multi-passage cue adds to its passages' own state.
+
+    The cue shows the union of its passages' review state, so carrying it
+    back whole would copy one passage's evidence onto its siblings.
+    """
+    baseline = passage_review_metadata([dict(row) for row in owned])
+
+    def normalized(text: object) -> str:
+        # The same collapse and cap a saved note gets, so an unchanged note
+        # always matches its baseline even at the length limit.
+        return " ".join(str(text or "").split())[:4_000].strip()
+
+    note = normalized(cue.get("review_note"))
+    baseline_note = normalized(baseline["review_note"])
+    if baseline_note and note.startswith(baseline_note):
+        note = note[len(baseline_note):].strip()
+    return {
+        "review_state": (
+            "uncertain"
+            if cue.get("review_state") == "uncertain"
+            and baseline["review_state"] != "uncertain"
+            else "clear"
+        ),
+        "review_note": note,
+        **{
+            key: [value for value in cue.get(key) or [] if value not in baseline[key]]
+            for key in ("evidence_ids", "uncertain_source_cue_ids")
+        },
+    }
+
+
+def _passage_changes(row: Mapping[str, Any], source_row: Mapping[str, Any]) -> set[str]:
+    changes: set[str] = set()
+    if row["_deleted"]:
+        changes.add("deleted")
+    if row["text"] != str(source_row.get("text") or "").strip():
+        changes.add("text")
+    if (row["start_ms"], row["end_ms"]) != (source_row["start_ms"], source_row["end_ms"]):
+        changes.add("timing")
+    if row["speaker"] != str(source_row.get("speaker") or "").strip():
+        changes.add("speaker")
+    if str(row.get("turn_id") or "") != str(source_row.get("turn_id") or "").strip():
+        changes.add("turn")
+    return changes
+
+
+def _extend_recomposed_cues(
+    cues: list[dict[str, Any]],
+    recomposed: set[int],
+    config: SubtitleFinalizationConfig,
+) -> None:
+    """Let re-composed cues borrow free time around them.
+
+    A cue grows towards its minimum duration or reading time, whichever is
+    longer, up to the maximum duration. A cue that already overlaps an earlier
+    one (crosstalk) is left alone, so borrowing never widens an overlap between
+    speakers.
+    """
+    gap = int(config.min_gap_ms)
+    order = sorted(
+        range(len(cues)), key=lambda index: (cues[index]["start_ms"], cues[index]["end_ms"])
+    )
+    previous_end: int | None = None
+    for position, index in enumerate(order):
+        cue = cues[index]
+        reading_ms = round(
+            config.character_count(" ".join(str(cue["text"]).split()))
+            / config.max_chars_per_second
+            * 1000
+        )
+        minimum = min(
+            int(config.max_duration_ms), max(int(config.min_duration_ms), reading_ms)
+        )
+        if (
+            index in recomposed
+            and cue["end_ms"] - cue["start_ms"] < minimum
+            and (previous_end is None or previous_end <= cue["start_ms"])
+        ):
+            end_limit = (
+                cues[order[position + 1]]["start_ms"] - gap
+                if position + 1 < len(order)
+                else cue["start_ms"] + minimum
+            )
+            cue["end_ms"] = max(
+                cue["end_ms"], min(cue["start_ms"] + minimum, end_limit)
+            )
+            start_limit = previous_end + gap if previous_end is not None else 0
+            cue["start_ms"] = min(
+                cue["start_ms"], max(cue["end_ms"] - minimum, start_limit)
+            )
+        previous_end = (
+            cue["end_ms"] if previous_end is None else max(previous_end, cue["end_ms"])
+        )
+
+
+def _fits_kept_cue(
+    text: str, previous_text: str, duration_ms: int, config: SubtitleFinalizationConfig
+) -> bool:
+    """Whether reworded text can keep its cue's timing.
+
+    The text must fit the line limits, and it must either meet the reading
+    speed limit or be no longer than the text it replaces.
+    """
+    lines = text.splitlines()
+    if len(lines) > config.max_lines or any(
+        config.character_count(line) > config.max_chars_per_line for line in lines
+    ):
+        return False
+    characters = config.character_count(" ".join(lines))
+    return characters * 1000 <= config.max_chars_per_second * duration_ms or (
+        characters <= config.character_count(" ".join(previous_text.split()))
+    )
+
+
+def _cue_timing_summary(
+    previous: Sequence[Segment], reviewed: Sequence[Mapping[str, Any]]
+) -> dict[str, int]:
+    """Count the reviewed cues that were not kept with their source timing."""
+    return {
+        "previous_cue_count": len(previous),
+        "retimed_cue_count": sum(not item.get("_timing_kept") for item in reviewed),
+    }
+
+
+def _reject_new_crosstalk(
+    cues: Sequence[Mapping[str, Any]],
+    recomposed: set[int],
+    prepared_by_id: Mapping[str, Mapping[str, Any]],
+    source_by_id: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Refuse a retimed cue that now overlaps another speaker's display cue.
+
+    Passage validation compares passage windows, but a kept cue can extend
+    past its passage. Overlap that already existed between the source
+    passages is crosstalk and stays allowed.
+    """
+    for index in recomposed:
+        cue = cues[index]
+        row_id = cue["_canonical_passage_ids"][0]
+        if "timing" not in _passage_changes(prepared_by_id[row_id], source_by_id[row_id]):
+            continue
+        speaker = str(cue.get("speaker") or "").strip().casefold()
+        source = source_by_id[row_id]
+        for other_index, other in enumerate(cues):
+            other_speaker = str(other.get("speaker") or "").strip().casefold()
+            if (
+                other_index == index
+                or not speaker
+                or not other_speaker
+                or other_speaker == speaker
+                or not _overlaps(cue["start_ms"], cue["end_ms"], other)
+            ):
+                continue
+            if any(
+                _overlaps(source["start_ms"], source["end_ms"], source_by_id[other_id])
+                for other_id in other["_canonical_passage_ids"]
+            ):
+                continue
+            raise ValueError(
+                f"Passage {row_id} timing creates cross-speaker overlap with "
+                f"passage {', '.join(other['_canonical_passage_ids'])}."
+            )
+
+
+def _compose_canonical_display(
+    source_rows: list[dict[str, Any]],
+    prepared_by_id: Mapping[str, dict[str, Any]],
+    segment_owners: Sequence[tuple[Segment, list[str]]],
+    config: SubtitleFinalizationConfig,
+) -> list[dict[str, Any]]:
+    """Build display cues for reviewed canonical passages.
+
+    Passages that share a display cue are handled together. A group whose
+    passages are untouched keeps its cues exactly, and a text-only fix inside
+    one single-speaker cue keeps that cue's timing when the new text still
+    fits. Only groups whose timing, speaker, turn or membership changed are
+    composed afresh, and those cues may borrow free time around them for their
+    minimum duration or reading time.
+    """
+    order = {str(row["id"]): index for index, row in enumerate(source_rows)}
+    source_by_id = {str(row["id"]): row for row in source_rows}
+    parent = {row_id: row_id for row_id in order}
+
+    def find(row_id: str) -> str:
+        while parent[row_id] != row_id:
+            parent[row_id] = parent[parent[row_id]]
+            row_id = parent[row_id]
+        return row_id
+
+    owned_segments: list[tuple[Segment, list[str]]] = []
+    for segment, raw_ids in segment_owners:
+        ids = sorted(
+            (row_id for row_id in dict.fromkeys(raw_ids) if row_id in order),
+            key=order.__getitem__,
+        )
+        if not ids:
+            continue
+        owned_segments.append((segment, ids))
+        root = find(ids[0])
+        for row_id in ids[1:]:
+            parent[find(row_id)] = root
+    clusters: dict[str, tuple[list[str], list[tuple[Segment, list[str]]]]] = {}
+    for row_id in order:
+        clusters.setdefault(find(row_id), ([], []))[0].append(row_id)
+    for segment, ids in owned_segments:
+        clusters[find(ids[0])][1].append((segment, ids))
+
+    cues: list[dict[str, Any]] = []
+    recomposed: set[int] = set()
+    for passage_ids, segments in clusters.values():
+        rows = [prepared_by_id[row_id] for row_id in passage_ids]
+        retained = [row for row in rows if not row["_deleted"]]
+        if not retained:
+            continue
+        changes = set().union(
+            *(_passage_changes(row, source_by_id[str(row["id"])]) for row in rows)
+        )
+        carried = [
+            (segment, ids, _speaker_and_text(segment)[1])
+            for segment, ids in segments
+        ]
+        keepable = bool(carried) and all(
+            segment.start_ms is not None
+            and segment.end_ms is not None
+            and segment.end_ms > segment.start_ms
+            and text.strip()
+            and len({str(prepared_by_id[row_id]["speaker"]).casefold() for row_id in ids})
+            == 1
+            for segment, ids, text in carried
+        )
+        if keepable and not changes:
+            cues.extend(
+                {
+                    **_canonical_display_cue(
+                        [prepared_by_id[row_id] for row_id in ids],
+                        start_ms=int(segment.start_ms or 0),
+                        end_ms=int(segment.end_ms or 0),
+                        text=text,
+                    ),
+                    "_timing_kept": True,
+                }
+                for segment, ids, text in carried
+            )
+            continue
+        if (
+            keepable
+            and changes == {"text"}
+            and len(carried) == 1
+            and carried[0][1] == passage_ids
+        ):
+            segment, _ids, previous_text = carried[0]
+            text = wrap_subtitle_text(
+                join_fragments(row["text"] for row in rows), config
+            )
+            if _fits_kept_cue(
+                text,
+                previous_text,
+                int(segment.end_ms or 0) - int(segment.start_ms or 0),
+                config,
+            ):
+                cues.append(
+                    {
+                        **_canonical_display_cue(
+                            rows,
+                            start_ms=int(segment.start_ms or 0),
+                            end_ms=int(segment.end_ms or 0),
+                            text=text,
+                        ),
+                        "_timing_kept": True,
+                    }
+                )
+                continue
+        for row in retained:
+            passage_id = str(row["id"])
+            finalized = finalize_segments(
+                [
+                    SubtitleSegment(
+                        index=1,
+                        start_ms=row["start_ms"],
+                        end_ms=row["end_ms"],
+                        text=row["text"],
+                        speaker=str(row.get("speaker") or ""),
+                    )
+                ],
+                config,
+            )
+            if not finalized:
+                raise ValueError(
+                    f"Passage {passage_id} produced no display cues during composition."
+                )
+            for cue in finalized:
+                start = max(row["start_ms"], int(cue.start_ms))
+                end = min(row["end_ms"], int(cue.end_ms))
+                if end <= start:
+                    raise ValueError(
+                        f"Passage {passage_id} produced invalid display timing."
+                    )
+                recomposed.add(len(cues))
+                cues.append(
+                    _canonical_display_cue([row], start_ms=start, end_ms=end, text=cue.text)
+                )
+    _extend_recomposed_cues(cues, recomposed, config)
+    _reject_new_crosstalk(cues, recomposed, prepared_by_id, source_by_id)
+    # Groups are emitted in ledger order; a stable sort keeps that order for
+    # cues that start together and puts a group that straddles another in time.
+    return sorted(cues, key=lambda cue: cue["start_ms"])
+
+
 def _review_passage_rows(
     source_rows: list[dict[str, Any]],
     source_segments: list[Segment],
     reviewed: list[ReviewedSubtitleSegment],
     *,
     source_hash: str,
-) -> list[dict[str, Any]]:
-    """Project reviewed display cues through explicit source identity and windows."""
+    evidence_spans: Mapping[str, tuple[int, int]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+    """Project reviewed display cues through explicit source identity and windows.
+
+    Also returns, by cue ordinal, the rows each canonical cue owns, so a save
+    keeps that ownership rather than inferring it from timing.
+    """
     by_segment = {item.id: item for item in source_segments}
     by_passage = {row["id"]: row for row in source_rows}
     exact_segments: dict[tuple[int | None, int | None], list[Segment]] = {}
@@ -263,8 +634,11 @@ def _review_passage_rows(
     output: list[dict[str, Any]] = []
     used: set[str] = set()
     carried: dict[str, dict[str, Any]] = {}
-    carried_reviews: dict[str, list[ReviewedSubtitleSegment]] = {}
+    carried_reviews: dict[str, list[Mapping[str, Any]]] = {}
     fragments: dict[str, list[tuple[Segment, ReviewedSubtitleSegment]]] = {}
+    # Source cues submitted as one cue over several passages.
+    combined_kept: set[str] = set()
+    canonical_rows: dict[int, list[dict[str, Any]]] = {}
     track_turns = any(row.get("turn_id") for row in source_rows) or any(
         cue.get("starts_new_turn") for cue in reviewed
     )
@@ -296,10 +670,10 @@ def _review_passage_rows(
             if len(exact) == 1:
                 segment = exact[0]
         candidates = [source_rows[index] for index in candidate_indexes[ordinal]]
-        owned = (
-            [row for row in candidates if segment.id in row.get("source_cue_ids", [])]
-            if segment is not None else []
-        )
+        canonical_owned = _canonical_owners(segment, by_passage) if segment is not None else []
+        owned = canonical_owned
+        if not owned and segment is not None:
+            owned = [row for row in candidates if segment.id in row.get("source_cue_ids", [])]
         if not owned and segment is not None:
             owned = [
                 row for row in candidates
@@ -345,9 +719,11 @@ def _review_passage_rows(
                     raise ValueError(
                         "Display cue contains multiple logical passages; edit their source passages separately."
                     )
+                combined_kept.add(segment.id)
             # Keep each canonical row once even when display cues split or
             # combine it. Fragment text is reconstructed only after complete
             # source ownership has been verified below.
+            review = cue if len(owned) == 1 else _combined_review_additions(cue, owned)
             for row in owned:
                 row_id = row["id"]
                 if row_id not in carried:
@@ -355,9 +731,23 @@ def _review_passage_rows(
                     carried[row_id]["source_passage_ids"] = [row_id]
                     output.append(carried[row_id])
                     used.add(row_id)
-                carried_reviews.setdefault(row_id, []).append(cue)
+                row_review = review
+                if len(owned) > 1 and evidence_spans:
+                    # Evidence added to a combined cue belongs only to the
+                    # passages it overlaps.
+                    row_review = {
+                        **review,
+                        "evidence_ids": [
+                            evidence_id for evidence_id in review["evidence_ids"]
+                            if evidence_id not in evidence_spans
+                            or _overlaps(*evidence_spans[evidence_id], row)
+                        ],
+                    }
+                carried_reviews.setdefault(row_id, []).append(row_review)
                 if len(owned) == 1:
                     fragments.setdefault(row_id, []).append((segment, cue))
+            if canonical_owned:
+                canonical_rows[ordinal] = [carried[row["id"]] for row in owned]
             continue
         turns = {
             str(row.get("turn_id") or "")
@@ -424,6 +814,14 @@ def _review_passage_rows(
         }
         output.append(mapped)
         used.update(source_ids)
+        if canonical_owned:
+            canonical_rows[ordinal] = [mapped]
+    def passages_owned_by(segment: Segment) -> int:
+        metadata = segment.metadata_json or {}
+        if metadata.get("canonical_passage_review"):
+            return len(metadata.get("source_passage_ids") or [])
+        return sum(segment.id in row.get("source_cue_ids", []) for row in source_rows)
+
     for row_id, stored in carried.items():
         source = by_passage[row_id]
         reviews: list[dict[str, Any]] = [
@@ -431,14 +829,42 @@ def _review_passage_rows(
             *(dict(cue) for cue in carried_reviews[row_id]),
         ]
         stored.update(passage_review_metadata(reviews))
-        if row_id not in fragments:
-            continue
-        direct_ids = set(source.get("source_cue_ids", []))
+        # A published canonical cue names its passages; its passages' cue ids
+        # may still name the segments it replaced.
         direct = [
-            segment for segment_id in direct_ids
-            for segment in source_owners.get(segment_id, [])
+            segment for segment in source_segments
+            if (segment.metadata_json or {}).get("canonical_passage_review")
+            and row_id in [
+                str(value)
+                for value in (segment.metadata_json or {}).get("source_passage_ids") or []
+            ]
         ]
-        expected = direct or [
+        if not direct:
+            direct_ids = set(source.get("source_cue_ids", []))
+            direct = [
+                segment for segment_id in direct_ids
+                for segment in source_owners.get(segment_id, [])
+            ]
+        # A cue that also owns another passage validates as a combined cue
+        # and adds no fragment, so only single-passage cues are expected. It
+        # still holds part of this passage's text, so it must be kept, and the
+        # passage's own fragments cannot be edited apart from it.
+        combined = [segment for segment in direct if passages_owned_by(segment) > 1]
+        if any(segment.id not in combined_kept for segment in combined):
+            raise ValueError(
+                "A display cue that combines this passage with another must be kept; "
+                "edit or delete their source passages instead."
+            )
+        if row_id not in fragments:
+            # Kept only through combined cues; any cue of its own must be kept too.
+            if any(passages_owned_by(segment) <= 1 for segment in direct):
+                raise ValueError(
+                    "Display fragment review must include every inherited source segment exactly once."
+                )
+            continue
+        expected = [
+            segment for segment in direct if passages_owned_by(segment) <= 1
+        ] if direct else [
             source_segments[index]
             for index in source_segment_indexes[source_indexes_by_id[row_id]]
         ]
@@ -450,6 +876,10 @@ def _review_passage_rows(
             raise ValueError("Display fragment review must include every inherited source segment exactly once.")
         ordered = sorted(actual, key=lambda pair: (pair[0].start_ms, pair[0].end_ms, pair[0].ordinal))
         if any(_speaker_and_text(segment)[1] != cue["text"] for segment, cue in ordered):
+            if combined:
+                raise ValueError(
+                    "Display cue contains multiple logical passages; edit their source passages separately."
+                )
             stored["text"] = " ".join(cue["text"] for _segment, cue in ordered)
         fragment_speakers = [
             str(cue.get("speaker") or "").strip()
@@ -465,6 +895,10 @@ def _review_passage_rows(
             )
         )
         if speaker_changed:
+            if combined:
+                raise ValueError(
+                    "Display cue contains multiple logical passages; edit their source passages separately."
+                )
             if len({speaker.casefold() for speaker in fragment_speakers}) > 1:
                 source_row_ids = ", ".join(segment.id for segment, _cue in ordered)
                 raise ValueError(
@@ -474,7 +908,7 @@ def _review_passage_rows(
             stored["speaker"] = fragment_speakers[0]
     for index, row in enumerate(output, start=1):
         row["id"] = f"p{index:06d}"
-    return output
+    return output, canonical_rows
 
 
 class SubtitleReviewService:
@@ -731,10 +1165,33 @@ class SubtitleReviewService:
             ordinal: [passages[index] for index in matches]
             for ordinal, matches in zip(fallback_ordinals, fallback_indexes, strict=True)
         }
-        return [cls._payload_with_passages(
+        payloads = [cls._payload_with_passages(
             item, passages, passage_by_id=passage_by_id, cue_owners=cue_owners,
             fallback=fallbacks.get(ordinal, []),
         ) for ordinal, item in enumerate(segments)]
+        # A fragment of a passage that a combined cue also holds cannot be
+        # edited apart from that cue; a save would reject it.
+        combined_passages = {
+            row_id
+            for payload in payloads
+            if payload["edit_capabilities"]["ownership"] == "combined"
+            for row_id in payload["source_passage_ids"]
+        }
+        for payload in payloads:
+            capabilities = payload["edit_capabilities"]
+            if (
+                capabilities["ownership"] == "fragment"
+                and payload["source_passage_ids"][0] in combined_passages
+            ):
+                capabilities.update(
+                    text=False,
+                    reason=(
+                        f"Spoken passage {payload['source_passage_ids'][0]} is also part "
+                        "of a display cue that combines passages. Edit it as a spoken "
+                        "passage; keep every fragment when saving."
+                    ),
+                )
+        return payloads
 
     def documents(self, session_id: str) -> dict[str, Any]:
         with self.database.session() as session:
@@ -1190,11 +1647,12 @@ class SubtitleReviewService:
                         )
                     )[:20],
                 }
-            canonical_passage_id = str(
-                item.get("_canonical_passage_id") or ""
-            ).strip()
-            if canonical_passage_id:
-                normalized_segment["_canonical_passage_id"] = canonical_passage_id
+            if _prepared_canonical is not None:
+                normalized_segment["_canonical_passage_ids"] = [
+                    str(value).strip()
+                    for value in item.get("_canonical_passage_ids") or []
+                ]
+                normalized_segment["_timing_kept"] = item.get("_timing_kept") is True
             normalized.append(normalized_segment)
         if not normalized:
             raise ValueError("A reviewed subtitle document cannot be empty.")
@@ -1250,35 +1708,36 @@ class SubtitleReviewService:
                         raise ValueError(
                             "Subtitle evidence cannot be attached while it is running."
                         )
-                    evidence_window = prepared_by_id.get(
-                        str(item.get("_canonical_passage_id") or "")
-                    )
-                    source_start = (
-                        evidence_window.get("_source_start_ms")
-                        if evidence_window is not None
-                        else None
-                    )
-                    source_end = (
-                        evidence_window.get("_source_end_ms")
-                        if evidence_window is not None
-                        else None
-                    )
-                    window_start = (
-                        source_start
-                        if isinstance(source_start, int)
-                        else item["start_ms"]
-                    )
-                    window_end = (
-                        source_end
-                        if isinstance(source_end, int)
-                        else item["end_ms"]
-                    )
-                    if min(window_end, evidence.end_ms) <= max(
-                        window_start, evidence.start_ms
-                    ):
-                        raise ValueError(
-                            "Subtitle evidence must overlap the reviewed cue timing."
-                        )
+            evidence_spans = {
+                evidence_id: (evidence.start_ms, evidence.end_ms)
+                for evidence_id, evidence in evidence_by_id.items()
+            }
+
+            def require_evidence_windows(windows_by_passage: Mapping[str, tuple[Any, Any]]) -> None:
+                """Evidence must overlap a source window of a passage the cue
+                owns, or the cue itself when it owns none. Runs once a legacy
+                save has resolved which passages each cue owns."""
+                for item in normalized:
+                    owned_windows = [
+                        windows_by_passage[row_id]
+                        for row_id in item.get("_canonical_passage_ids") or []
+                        if row_id in windows_by_passage
+                    ]
+                    windows = [
+                        (start, end)
+                        for start, end in owned_windows
+                        if isinstance(start, int) and isinstance(end, int)
+                    ] or [(item["start_ms"], item["end_ms"])]
+                    for evidence_id in item["evidence_ids"]:
+                        evidence_start, evidence_end = evidence_spans[evidence_id]
+                        if not any(
+                            min(window_end, evidence_end) > max(window_start, evidence_start)
+                            for window_start, window_end in windows
+                        ):
+                            raise ValueError(
+                                "Subtitle evidence must overlap the reviewed cue timing."
+                            )
+
             source_artifact = (
                 session.get(Artifact, source_artifact_id)
                 if source_artifact_id
@@ -1437,17 +1896,24 @@ class SubtitleReviewService:
                     )
                     canonical_ids = {str(row["id"]) for row in logical_rows}
                     if any(
-                        item.get("_canonical_passage_id") not in canonical_ids
+                        not item.get("_canonical_passage_ids")
+                        or not set(item.get("_canonical_passage_ids") or [])
+                        <= canonical_ids
                         for item in normalized
                     ):
                         raise ValueError(
                             "Finalized display cues must identify a retained canonical passage."
                         )
                 else:
-                    logical_rows = _review_passage_rows(
+                    logical_rows, canonical_rows = _review_passage_rows(
                         source_rows, previous_segments, normalized,
                         source_hash=source_artifact.content_hash or "",
+                        evidence_spans=evidence_spans,
                     )
+                    for ordinal, owned_rows in canonical_rows.items():
+                        normalized[ordinal]["_canonical_passage_ids"] = [
+                            str(row["id"]) for row in owned_rows
+                        ]
                     for item in normalized:
                         if "_source_word_ids" not in item:
                             continue
@@ -1481,6 +1947,16 @@ class SubtitleReviewService:
                         "evidence_ids": item["evidence_ids"],
                         "uncertain_source_cue_ids": item["uncertain_source_cue_ids"],
                     })
+            require_evidence_windows(
+                {
+                    row_id: (row.get("_source_start_ms"), row.get("_source_end_ms"))
+                    for row_id, row in prepared_by_id.items()
+                }
+                if _prepared_canonical is not None
+                # A legacy save names the renumbered rows, which keep their
+                # passages' windows.
+                else {str(row["id"]): (row["start_ms"], row["end_ms"]) for row in logical_rows}
+            )
             exact_speakers_by_timing: dict[tuple[int | None, int | None], dict[str, str]] = {}
             previous_speakers: list[str] = []
             for item in previous_segments:
@@ -1550,6 +2026,11 @@ class SubtitleReviewService:
                     ),
                     "cue_count": len(normalized),
                     "logical_passage_count": len(logical_rows),
+                    **(
+                        _cue_timing_summary(previous_segments, normalized)
+                        if _prepared_canonical is not None
+                        else {}
+                    ),
                 }
             next_revision_number = (
                 int(
@@ -1576,17 +2057,23 @@ class SubtitleReviewService:
                 [(row["start_ms"], row["end_ms"]) for row in normalized],
             )
             for ordinal, reviewed in enumerate(normalized):
-                canonical_passage_id = reviewed.get("_canonical_passage_id")
+                canonical_passage_ids = reviewed.get("_canonical_passage_ids") or []
                 linked = (
-                    [logical_rows_by_id[str(canonical_passage_id)]]
-                    if canonical_passage_id is not None
+                    [logical_rows_by_id[row_id] for row_id in canonical_passage_ids]
+                    if canonical_passage_ids
                     else [logical_rows[index] for index in linked_indexes[ordinal]]
                 )
                 linked_turns = {str(row.get("turn_id") or "") for row in linked}
-                canonical_metadata = (
-                    linked[0]
-                    if canonical_passage_id is not None and linked
-                    else None
+                # Canonical cues take review metadata from the passages they own.
+                metadata_source: Mapping[str, Any] = (
+                    _canonical_display_cue(
+                        linked,
+                        start_ms=reviewed["start_ms"],
+                        end_ms=reviewed["end_ms"],
+                        text=reviewed["text"],
+                    )
+                    if canonical_passage_ids
+                    else reviewed
                 )
                 child: dict[str, Any] = dict(
                     ordinal=ordinal,
@@ -1595,34 +2082,15 @@ class SubtitleReviewService:
                     text=reviewed["text"],
                     speaker=reviewed["speaker"],
                     metadata_json={
-                        "review_state": (
-                            canonical_metadata.get("review_state", "clear")
-                            if canonical_metadata is not None
-                            else reviewed["review_state"]
-                        ),
-                        "review_note": (
-                            canonical_metadata.get("review_note", "")
-                            if canonical_metadata is not None
-                            else reviewed["review_note"]
-                        ),
-                        "evidence_ids": (
-                            list(canonical_metadata.get("evidence_ids") or [])
-                            if canonical_metadata is not None
-                            else reviewed["evidence_ids"]
-                        ),
-                        "uncertain_source_cue_ids": (
-                            list(
-                                canonical_metadata.get(
-                                    "uncertain_source_cue_ids"
-                                )
-                                or []
-                            )
-                            if canonical_metadata is not None
-                            else reviewed["uncertain_source_cue_ids"]
+                        "review_state": metadata_source["review_state"],
+                        "review_note": metadata_source["review_note"],
+                        "evidence_ids": list(metadata_source["evidence_ids"]),
+                        "uncertain_source_cue_ids": list(
+                            metadata_source["uncertain_source_cue_ids"]
                         ),
                         "source_passage_ids": (
-                            [str(canonical_passage_id)]
-                            if canonical_passage_id is not None
+                            list(canonical_passage_ids)
+                            if canonical_passage_ids
                             else list(dict.fromkeys(
                                 source_id
                                 for row in linked
@@ -1631,7 +2099,7 @@ class SubtitleReviewService:
                         ),
                         **(
                             {"canonical_passage_review": True}
-                            if canonical_passage_id is not None
+                            if canonical_passage_ids
                             else {}
                         ),
                         **({"turn_id": next(iter(linked_turns))} if len(linked_turns) == 1 and next(iter(linked_turns)) else {}),
@@ -2209,16 +2677,6 @@ class SubtitleReviewService:
         active_turn = ""
         previous_source_turn: str | None = None
         prepared: list[dict[str, Any]] = []
-        display_values: list[dict[str, Any]] = []
-        runtime_settings = adapt_runtime_settings(
-            "subtitles", composition_settings
-        )
-        full_text = " ".join(str(row["text"]) for row in retained)
-        finalization = SubtitleFinalizationConfig.from_settings(
-            runtime_settings,
-            language=document.language or "",
-            text=full_text,
-        )
         for ordinal, source_row in enumerate(source_rows):
             row = prepared_by_id[str(source_row["id"])]
             source_turn = str(source_row.get("turn_id") or "").strip()
@@ -2243,50 +2701,35 @@ class SubtitleReviewService:
             else:
                 row.pop("turn_id", None)
             prepared.append(row)
-            if row["_deleted"]:
-                continue
-            passage_id = str(row["id"])
-            finalized = finalize_segments(
-                [
-                    SubtitleSegment(
-                        index=1,
-                        start_ms=row["start_ms"],
-                        end_ms=row["end_ms"],
-                        text=row["text"],
-                        speaker=str(row.get("speaker") or ""),
-                    )
-                ],
-                finalization,
-            )
-            if not finalized:
-                raise ValueError(
-                    f"Passage {passage_id} produced no display cues during composition."
+
+        runtime_settings = adapt_runtime_settings(
+            "subtitles", composition_settings
+        )
+        full_text = " ".join(str(row["text"]) for row in retained)
+        finalization = SubtitleFinalizationConfig.from_settings(
+            runtime_settings,
+            language=document.language or "",
+            text=full_text,
+        )
+        display_values = _compose_canonical_display(
+            source_rows,
+            prepared_by_id,
+            [
+                (
+                    segment,
+                    [
+                        str(row_id)
+                        for row_id in payload["source_passage_ids"]
+                    ],
                 )
-            for cue in finalized:
-                start = max(row["start_ms"], int(cue.start_ms))
-                end = min(row["end_ms"], int(cue.end_ms))
-                if end <= start:
-                    raise ValueError(
-                        f"Passage {passage_id} produced invalid display timing."
-                    )
-                display_values.append(
-                    {
-                        "_canonical_passage_id": passage_id,
-                        "source_passage_ids": [passage_id],
-                        "turn_id": row.get("turn_id"),
-                        "starts_new_turn": False,
-                        "start_ms": start,
-                        "end_ms": end,
-                        "text": cue.text,
-                        "speaker": str(row.get("speaker") or ""),
-                        "review_state": row.get("review_state", "clear"),
-                        "review_note": row.get("review_note", ""),
-                        "evidence_ids": list(row.get("evidence_ids") or []),
-                        "uncertain_source_cue_ids": list(
-                            row.get("uncertain_source_cue_ids") or []
-                        ),
-                    }
+                for segment, payload in zip(
+                    source_segments,
+                    self._payloads_with_passages(source_segments, source_rows),
+                    strict=True,
                 )
+            ],
+            finalization,
+        )
         return prepared, display_values, composition_settings
 
     def save_review_in_session(
