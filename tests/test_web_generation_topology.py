@@ -1299,6 +1299,73 @@ class GenerationTopologyTests(unittest.TestCase):
         for item in adopted_items:
             self._assert_preview(adopted_revision_id, item)
 
+    def test_batch_carries_rich_markup_through_rows_made_inside_the_batch(self):
+        self._enable_markup_preview()
+        with self.database.session() as session:
+            first = session.get(GenerationSegment, self.initial_segment_ids[0])
+            second = session.get(GenerationSegment, self.initial_segment_ids[1])
+            first.speech_plan_json = {"speech_xml": (
+                f'<segment id="{first.id}" boundary_after="scene">'
+                '<dialogue><speaker ref="c-alice">'
+                "<ins>Speak softly.</ins>A🙂 B</speaker></dialogue>"
+                '<event kind="pause" duration_ms="120"/>'
+                "</segment>"
+            )}
+            second.speech_plan_json = {"speech_xml": (
+                f'<segment id="{second.id}" boundary_after="paragraph">'
+                '<dialogue><speaker ref="c-alice">'
+                "<ins>Speak clearly.</ins>A second block.</speaker></dialogue>"
+                '<event kind="laugh"/>'
+                "</segment>"
+            )}
+
+        response = self.client.post(
+            f"/api/v1/sessions/{self.session_id}/generation-plan/topology/batch",
+            json={
+                "expected_revision_id": self.initial_revision_id,
+                "operations": [
+                    {"action": "split", "segment_id": self.initial_segment_ids[0], "boundary": {"cursor": 2}, "label": "first"},
+                    {"action": "merge", "left": {"result_ref": "first.left"}, "right": {"result_ref": "first.right"}, "label": "again"},
+                    {"action": "split", "segment": {"result_ref": "again"}, "boundary": {"cursor": 2}},
+                ],
+            },
+            headers={
+                **self.headers,
+                "If-Match": f'"{self.initial_revision_id}"',
+                "Idempotency-Key": "topology-rich-batch-1",
+            },
+        )
+        self.assertEqual(201, response.status_code, response.get_json())
+        revision_id = response.get_json()["plan_revision_id"]
+        items = self._segments()["items"]
+        self.assertEqual(["A🙂", "B", "A second block."], [item["text"] for item in items])
+        left, right, untouched = (self._parse_markup(item) for item in items)
+        self.assertEqual([item["id"] for item in items], [left.segment_id, right.segment_id, untouched.segment_id])
+        self.assertEqual("Speak softly.", left.spans[0].delivery["instruction"])
+        self.assertEqual("c-alice", right.spans[0].speaker_id)
+        self.assertEqual("scene", right.boundary_after)
+        self.assertEqual("pause", right.events[0].kind)
+        self.assertEqual("laugh", untouched.events[0].kind)
+        reused = next(take for take in items[2]["takes"] if take["is_active"])
+        self.assertEqual(self.initial_take_ids[1], reused["parent_take_id"])
+        for item in items:
+            self._assert_preview(revision_id, item)
+        with self.database.session() as session:
+            revision = session.get(GenerationPlanRevision, revision_id)
+            persisted = list(session.scalars(
+                select(GenerationSegment)
+                .where(GenerationSegment.plan_revision_id == revision_id)
+                .order_by(GenerationSegment.ordinal)
+            ).all())
+            self.assertEqual(
+                stable_hash({
+                    "parent_revision_id": revision.parent_revision_id,
+                    "operation": revision.operation_json,
+                    "segments": [GenerationService._segment_copy_values(row) for row in persisted],
+                }),
+                revision.content_hash,
+            )
+
     def test_invalid_topology_markup_rolls_back(self):
         service = self.app.extensions["pandrator"]["generation"]
         with self.database.session() as session:

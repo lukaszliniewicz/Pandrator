@@ -105,3 +105,16 @@ interjection. Composed subtitles now keep the source order instead of sorting
 by start time, and a cue that would start before the previous one starts with
 it instead. When the text check still fails, the error names the first source
 cue and composed cue that differ.
+
+## Speech plan
+
+A batch of split and merge edits (`pandrator_revise_speech_block_plan_batch`)
+now becomes one speech-plan revision instead of one per edit. The edits run on
+an unsaved copy of the plan and the result is written once, so a 31-edit batch
+on a 900-block audiobook takes about 1 s instead of 12 s, and the receipt is
+less than half the size. The batch is still all or nothing, the revision
+history lists it as "Batch of N speech-block edits", and restoring goes back to
+the state before or after the whole batch, not to a step inside it. Labels,
+original-id lineage, take reuse for untouched blocks and sound-cue anchors work
+as before. The receipt no longer repeats the revision's `operation_json` or
+lists every segment id; it gives `segment_count` instead.

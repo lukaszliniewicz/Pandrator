@@ -29,7 +29,7 @@ from .generation_scheduling import (
     revoke_regeneration_batons,
 )
 from .generation_segment_reads import GenerationSegmentReader, updated_segment_payload
-from .generation_topology import GenerationTopologyService
+from .generation_topology import GenerationTopologyService, TopologyBatch
 from .jobs import JobQueue
 from .model_base import new_id
 from .models import (
@@ -1063,6 +1063,17 @@ class GenerationService(GenerationHistoryReader):
                 session, session_id, expected_revision_id, operation
             )
 
+
+    def topology_batch(
+        self,
+        session: Session,
+        session_id: str,
+        plan: GenerationPlan,
+        current: GenerationPlanRevision,
+    ) -> TopologyBatch:
+        return GenerationTopologyService(self.database, self.jobs).topology_batch(
+            session, session_id, plan, current
+        )
 
     def revise_topology_in_session(
         self,
