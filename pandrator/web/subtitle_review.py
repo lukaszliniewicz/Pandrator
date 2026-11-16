@@ -608,6 +608,7 @@ def _review_passage_rows(
     reviewed: list[ReviewedSubtitleSegment],
     *,
     source_hash: str,
+    evidence_spans: Mapping[str, tuple[int, int]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
     """Project reviewed display cues through explicit source identity and windows.
 
@@ -730,7 +731,19 @@ def _review_passage_rows(
                     carried[row_id]["source_passage_ids"] = [row_id]
                     output.append(carried[row_id])
                     used.add(row_id)
-                carried_reviews.setdefault(row_id, []).append(review)
+                row_review = review
+                if len(owned) > 1 and evidence_spans:
+                    # Evidence added to a combined cue belongs only to the
+                    # passages it overlaps.
+                    row_review = {
+                        **review,
+                        "evidence_ids": [
+                            evidence_id for evidence_id in review["evidence_ids"]
+                            if evidence_id not in evidence_spans
+                            or _overlaps(*evidence_spans[evidence_id], row)
+                        ],
+                    }
+                carried_reviews.setdefault(row_id, []).append(row_review)
                 if len(owned) == 1:
                     fragments.setdefault(row_id, []).append((segment, cue))
             if canonical_owned:
@@ -1672,26 +1685,36 @@ class SubtitleReviewService:
                         raise ValueError(
                             "Subtitle evidence cannot be attached while it is running."
                         )
-                    # Evidence must overlap a source window of a passage the
-                    # cue owns, or the cue itself when it owns none.
-                    evidence_windows = [
-                        (row.get("_source_start_ms"), row.get("_source_end_ms"))
+            evidence_spans = {
+                evidence_id: (evidence.start_ms, evidence.end_ms)
+                for evidence_id, evidence in evidence_by_id.items()
+            }
+
+            def require_evidence_windows(windows_by_passage: Mapping[str, tuple[Any, Any]]) -> None:
+                """Evidence must overlap a source window of a passage the cue
+                owns, or the cue itself when it owns none. Runs once a legacy
+                save has resolved which passages each cue owns."""
+                for item in normalized:
+                    owned_windows = [
+                        windows_by_passage[row_id]
                         for row_id in item.get("_canonical_passage_ids") or []
-                        if (row := prepared_by_id.get(row_id)) is not None
+                        if row_id in windows_by_passage
                     ]
                     windows = [
                         (start, end)
-                        for start, end in evidence_windows
+                        for start, end in owned_windows
                         if isinstance(start, int) and isinstance(end, int)
                     ] or [(item["start_ms"], item["end_ms"])]
-                    if not any(
-                        min(window_end, evidence.end_ms)
-                        > max(window_start, evidence.start_ms)
-                        for window_start, window_end in windows
-                    ):
-                        raise ValueError(
-                            "Subtitle evidence must overlap the reviewed cue timing."
-                        )
+                    for evidence_id in item["evidence_ids"]:
+                        evidence_start, evidence_end = evidence_spans[evidence_id]
+                        if not any(
+                            min(window_end, evidence_end) > max(window_start, evidence_start)
+                            for window_start, window_end in windows
+                        ):
+                            raise ValueError(
+                                "Subtitle evidence must overlap the reviewed cue timing."
+                            )
+
             source_artifact = (
                 session.get(Artifact, source_artifact_id)
                 if source_artifact_id
@@ -1862,6 +1885,7 @@ class SubtitleReviewService:
                     logical_rows, canonical_rows = _review_passage_rows(
                         source_rows, previous_segments, normalized,
                         source_hash=source_artifact.content_hash or "",
+                        evidence_spans=evidence_spans,
                     )
                     for ordinal, owned_rows in canonical_rows.items():
                         normalized[ordinal]["_canonical_passage_ids"] = [
@@ -1900,6 +1924,16 @@ class SubtitleReviewService:
                         "evidence_ids": item["evidence_ids"],
                         "uncertain_source_cue_ids": item["uncertain_source_cue_ids"],
                     })
+            require_evidence_windows(
+                {
+                    row_id: (row.get("_source_start_ms"), row.get("_source_end_ms"))
+                    for row_id, row in prepared_by_id.items()
+                }
+                if _prepared_canonical is not None
+                # A legacy save names the renumbered rows, which keep their
+                # passages' windows.
+                else {str(row["id"]): (row["start_ms"], row["end_ms"]) for row in logical_rows}
+            )
             exact_speakers_by_timing: dict[tuple[int | None, int | None], dict[str, str]] = {}
             previous_speakers: list[str] = []
             for item in previous_segments:

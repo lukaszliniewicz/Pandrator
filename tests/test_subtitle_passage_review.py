@@ -1446,3 +1446,58 @@ def test_legacy_resave_keeps_explicit_cue_ownership(review_case):
             [rows[0]["id"]],
             [rows[1]["id"]],
         ]
+
+
+def _add_evidence(review_case, artifact, segment, evidence_id, start_ms, end_ms):
+    with review_case.database.session() as session:
+        session.add(
+            SubtitleEvidence(
+                id=evidence_id,
+                session_id=review_case.session.id,
+                source_artifact_id=artifact.id,
+                source_revision_id=segment.revision_id,
+                source_segment_id=segment.id,
+                cue_id=1,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                clip_start_ms=start_ms,
+                clip_end_ms=end_ms,
+                reason="Listen here.",
+                routes_json=["whisper"],
+                audio_model_ids_json=[],
+                status="completed",
+                candidates_json=[],
+                resolution_json={},
+            )
+        )
+
+
+def test_shared_passage_evidence_follows_the_passage_it_overlaps(review_case):
+    # C1 owns A (0-1000) and B (1000-3000) and shows 0-2000; C2 owns B and
+    # shows 2000-3000. Evidence at 2500-2600 lies in B but outside C1.
+    published, artifact, values = _shared_passage_layout(review_case)
+    with review_case.database.session() as session:
+        segments = list(
+            session.scalars(
+                select(Segment)
+                .where(Segment.revision_id == published["revision_id"])
+                .order_by(Segment.ordinal)
+            )
+        )
+    _add_evidence(review_case, artifact, segments[1], "b-evidence", 2500, 2600)
+    # The review shows a passage's evidence on every cue that holds it.
+    for value in values:
+        value["evidence_ids"] = ["b-evidence"]
+    resaved = review_case.service.save_review(
+        review_case.session.id,
+        "correction",
+        published["revision"],
+        values,
+        source_artifact_id=artifact.id,
+        expected_source_hash=artifact.content_hash,
+    )
+    rows, _segments, _artifact = _saved_rows(review_case, resaved)
+    assert [(row["text"], row["evidence_ids"]) for row in rows] == [
+        ("Alpha.", []),
+        ("Bravo one bravo two.", ["b-evidence"]),
+    ]
