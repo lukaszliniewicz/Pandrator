@@ -1317,6 +1317,11 @@ def test_shared_passage_resaves_when_one_cue_also_owns_another(review_case):
     published = _save(review_case, source_id, source_hash, 1, _edits(rows))
     _saved, segments, artifact = _saved_rows(review_case, published)
     assert [item.metadata_json["source_passage_ids"] for item in segments] == [["a", "b"], ["b"]]
+    shown = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+    assert [
+        (row["edit_capabilities"]["ownership"], row["edit_capabilities"]["text"])
+        for row in shown["segments"]
+    ] == [("combined", False), ("fragment", False)]
 
     column = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
     keys = ReviewedSubtitleSegment.__annotations__

@@ -1165,10 +1165,33 @@ class SubtitleReviewService:
             ordinal: [passages[index] for index in matches]
             for ordinal, matches in zip(fallback_ordinals, fallback_indexes, strict=True)
         }
-        return [cls._payload_with_passages(
+        payloads = [cls._payload_with_passages(
             item, passages, passage_by_id=passage_by_id, cue_owners=cue_owners,
             fallback=fallbacks.get(ordinal, []),
         ) for ordinal, item in enumerate(segments)]
+        # A fragment of a passage that a combined cue also holds cannot be
+        # edited apart from that cue; a save would reject it.
+        combined_passages = {
+            row_id
+            for payload in payloads
+            if payload["edit_capabilities"]["ownership"] == "combined"
+            for row_id in payload["source_passage_ids"]
+        }
+        for payload in payloads:
+            capabilities = payload["edit_capabilities"]
+            if (
+                capabilities["ownership"] == "fragment"
+                and payload["source_passage_ids"][0] in combined_passages
+            ):
+                capabilities.update(
+                    text=False,
+                    reason=(
+                        f"Spoken passage {payload['source_passage_ids'][0]} is also part "
+                        "of a display cue that combines passages. Edit it as a spoken "
+                        "passage; keep every fragment when saving."
+                    ),
+                )
+        return payloads
 
     def documents(self, session_id: str) -> dict[str, Any]:
         with self.database.session() as session:
