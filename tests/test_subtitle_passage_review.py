@@ -1375,12 +1375,18 @@ def _shared_passage_layout(review_case):
     [
         ("omit_combined", "combines this passage with another must be kept"),
         ("edit_shared_fragment", "edit their source passages separately"),
+        ("omit_own_cue", "every inherited source segment exactly once"),
+        ("change_fragment_speaker", "edit their source passages separately"),
     ],
 )
 def test_shared_passage_save_cannot_drop_the_combined_cue_text(review_case, change, message):
     published, artifact, values = _shared_passage_layout(review_case)
     if change == "omit_combined":
         values = values[1:]
+    elif change == "omit_own_cue":
+        values = values[:1]
+    elif change == "change_fragment_speaker":
+        values[1]["speaker"] = "B"
     else:
         values[1]["text"] = "bravo 2."
     with pytest.raises(ValueError, match=message):
@@ -1392,3 +1398,51 @@ def test_shared_passage_save_cannot_drop_the_combined_cue_text(review_case, chan
             source_artifact_id=artifact.id,
             expected_source_hash=artifact.content_hash,
         )
+
+
+def test_legacy_resave_keeps_explicit_cue_ownership(review_case):
+    # The first cue keeps a display window longer than its passage and
+    # overlapping the next passage; ownership, not timing, links them.
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:01,000 --> 00:00:03,000\nAlpha.\n\n"
+        "2\n00:00:02,500 --> 00:00:03,500\nBravo.\n",
+        [
+            {"id": "a", "text": "Alpha.", "start_ms": 1000, "end_ms": 2000, "speaker": "A"},
+            {
+                "id": "b",
+                "text": "Bravo.",
+                "start_ms": 2500,
+                "end_ms": 3500,
+                "speaker": "B",
+                "cue_indices": [1],
+            },
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    saved = _save(review_case, source_id, source_hash, 1, _edits(rows))
+    keys = ReviewedSubtitleSegment.__annotations__
+    for _round in range(2):
+        _rows, segments, artifact = _saved_rows(review_case, saved)
+        column = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+        values = [
+            {key: value for key, value in item.items() if key in keys and not key.startswith("_")}
+            for item in column["segments"]
+        ]
+        saved = review_case.service.save_review(
+            review_case.session.id,
+            "correction",
+            saved["revision"],
+            values,
+            source_artifact_id=artifact.id,
+            expected_source_hash=artifact.content_hash,
+        )
+        rows, segments, _artifact = _saved_rows(review_case, saved)
+        assert [(item.start_ms, item.end_ms) for item in segments] == [(1000, 3000), (2500, 3500)]
+        assert [item.metadata_json.get("canonical_passage_review") for item in segments] == [True, True]
+        assert [item.metadata_json["source_passage_ids"] for item in segments] == [
+            [rows[0]["id"]],
+            [rows[1]["id"]],
+        ]

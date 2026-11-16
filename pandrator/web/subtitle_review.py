@@ -608,8 +608,12 @@ def _review_passage_rows(
     reviewed: list[ReviewedSubtitleSegment],
     *,
     source_hash: str,
-) -> list[dict[str, Any]]:
-    """Project reviewed display cues through explicit source identity and windows."""
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+    """Project reviewed display cues through explicit source identity and windows.
+
+    Also returns, by cue ordinal, the rows each canonical cue owns, so a save
+    keeps that ownership rather than inferring it from timing.
+    """
     by_segment = {item.id: item for item in source_segments}
     by_passage = {row["id"]: row for row in source_rows}
     exact_segments: dict[tuple[int | None, int | None], list[Segment]] = {}
@@ -633,6 +637,7 @@ def _review_passage_rows(
     fragments: dict[str, list[tuple[Segment, ReviewedSubtitleSegment]]] = {}
     # Source cues submitted as one cue over several passages.
     combined_kept: set[str] = set()
+    canonical_rows: dict[int, list[dict[str, Any]]] = {}
     track_turns = any(row.get("turn_id") for row in source_rows) or any(
         cue.get("starts_new_turn") for cue in reviewed
     )
@@ -664,7 +669,8 @@ def _review_passage_rows(
             if len(exact) == 1:
                 segment = exact[0]
         candidates = [source_rows[index] for index in candidate_indexes[ordinal]]
-        owned = _canonical_owners(segment, by_passage) if segment is not None else []
+        canonical_owned = _canonical_owners(segment, by_passage) if segment is not None else []
+        owned = canonical_owned
         if not owned and segment is not None:
             owned = [row for row in candidates if segment.id in row.get("source_cue_ids", [])]
         if not owned and segment is not None:
@@ -727,6 +733,8 @@ def _review_passage_rows(
                 carried_reviews.setdefault(row_id, []).append(review)
                 if len(owned) == 1:
                     fragments.setdefault(row_id, []).append((segment, cue))
+            if canonical_owned:
+                canonical_rows[ordinal] = [carried[row["id"]] for row in owned]
             continue
         turns = {
             str(row.get("turn_id") or "")
@@ -793,6 +801,8 @@ def _review_passage_rows(
         }
         output.append(mapped)
         used.update(source_ids)
+        if canonical_owned:
+            canonical_rows[ordinal] = [mapped]
     def passages_owned_by(segment: Segment) -> int:
         metadata = segment.metadata_json or {}
         if metadata.get("canonical_passage_review"):
@@ -806,8 +816,6 @@ def _review_passage_rows(
             *(dict(cue) for cue in carried_reviews[row_id]),
         ]
         stored.update(passage_review_metadata(reviews))
-        if row_id not in fragments:
-            continue
         # A published canonical cue names its passages; its passages' cue ids
         # may still name the segments it replaced.
         direct = [
@@ -834,6 +842,13 @@ def _review_passage_rows(
                 "A display cue that combines this passage with another must be kept; "
                 "edit or delete their source passages instead."
             )
+        if row_id not in fragments:
+            # Kept only through combined cues; any cue of its own must be kept too.
+            if any(passages_owned_by(segment) <= 1 for segment in direct):
+                raise ValueError(
+                    "Display fragment review must include every inherited source segment exactly once."
+                )
+            continue
         expected = [
             segment for segment in direct if passages_owned_by(segment) <= 1
         ] if direct else [
@@ -867,6 +882,10 @@ def _review_passage_rows(
             )
         )
         if speaker_changed:
+            if combined:
+                raise ValueError(
+                    "Display cue contains multiple logical passages; edit their source passages separately."
+                )
             if len({speaker.casefold() for speaker in fragment_speakers}) > 1:
                 source_row_ids = ", ".join(segment.id for segment, _cue in ordered)
                 raise ValueError(
@@ -876,7 +895,7 @@ def _review_passage_rows(
             stored["speaker"] = fragment_speakers[0]
     for index, row in enumerate(output, start=1):
         row["id"] = f"p{index:06d}"
-    return output
+    return output, canonical_rows
 
 
 class SubtitleReviewService:
@@ -1840,10 +1859,14 @@ class SubtitleReviewService:
                             "Finalized display cues must identify a retained canonical passage."
                         )
                 else:
-                    logical_rows = _review_passage_rows(
+                    logical_rows, canonical_rows = _review_passage_rows(
                         source_rows, previous_segments, normalized,
                         source_hash=source_artifact.content_hash or "",
                     )
+                    for ordinal, owned_rows in canonical_rows.items():
+                        normalized[ordinal]["_canonical_passage_ids"] = [
+                            str(row["id"]) for row in owned_rows
+                        ]
                     for item in normalized:
                         if "_source_word_ids" not in item:
                             continue

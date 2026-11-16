@@ -505,7 +505,7 @@ def test_many_cues_batch_passage_ownership_and_candidates_with_linear_visits():
     passages.visited = 0
     normalized = [{**row, "starts_new_turn": False, "origin_segment_id": None,
                    "split_boundary_id": None} for row in payload]
-    output = _review_passage_rows(passages, segments, normalized, source_hash="source")
+    output, _owners = _review_passage_rows(passages, segments, normalized, source_hash="source")
     assert len(output) == size
     assert passages.visited <= 8 * size
 
