@@ -295,6 +295,43 @@ class RefusedSegmentRunTests(unittest.TestCase):
         with self.database.session() as session:
             self.assertEqual("failed", session.get(GenerationRun, started["id"]).status)
 
+    def test_lost_ownership_while_skipping_writes_nothing(self):
+        from pandrator.web import workflow_generation_execution as execution
+        from pandrator.web.access.contracts import AccessDenied
+
+        revoked = threading.Event()
+        original = execution.require_generation_execution
+
+        def require(*args, **kwargs):
+            if revoked.is_set():
+                raise AccessDenied()
+            return original(*args, **kwargs)
+
+        def batch(items, **_kwargs):
+            refusal = TtsProviderError("gemini", "synthesize", "declined", retryable=False)
+            refusal.__cause__ = TtsNoAudioError("declined", refusal_reason="SAFETY")
+            for item in items:
+                revoked.set()  # another worker takes over before the skip is saved
+                yield TtsBatchResult(id=item.id, error=refusal)
+
+        def unused(_text, _settings, **_kwargs):
+            raise AssertionError("a refused grouped segment is not retried alone")
+
+        # The grouped path skips inside the segment's try block, so a denial
+        # there reaches the generic failure handler.
+        session_id, _revision, segment_ids = self._create_case(texts=["One", "Two"])
+        started = self.generation.start(
+            session_id, run_override=self._override(tts_batch_size=2)
+        )
+        with (
+            patch.object(execution, "require_generation_execution", side_effect=require),
+            self.assertRaises(AccessDenied),
+        ):
+            self._execute(started, unused, batch)
+        with self.database.session() as session:
+            self.assertNotEqual("failed", session.get(GenerationRun, started["id"]).status)
+            self.assertNotEqual("failed", session.get(GenerationSegment, segment_ids[0]).status)
+
     def test_a_refusal_breaks_a_run_of_empty_responses(self):
         sequence = iter(["no_audio", "content_refused", "no_audio", "no_audio"])
 

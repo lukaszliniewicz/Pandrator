@@ -25,6 +25,7 @@ from pandrator.logic.tts_retry import (
     tts_failure_reason,
 )
 
+from .access.contracts import AccessDenied
 from .access.generation_execution_policy import (
     GenerationExecutionProof,
     generation_child_scope,
@@ -1287,6 +1288,10 @@ def _run_generation(
                         take_path,
                         exc_info=True,
                     )
+            if isinstance(error, AccessDenied):
+                # This worker no longer owns the run; another one may, so
+                # leave the segment and run exactly as they are.
+                raise
             if (
                 not take_committed
                 and not cancel_event.is_set()
