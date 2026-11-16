@@ -671,6 +671,75 @@ class PreviewAndGenerationTests(unittest.TestCase):
         self.assertNotIn("speech_block_provenance", batched.result["items"][0])
         self.assertNotIn("takes", batched.result["items"][0])
 
+    def test_edit_that_forks_the_plan_says_so(self):
+        runtime = cast(McpRuntime, self.runtime)
+        single_update = self.application.update_generation_segment
+        batch_update = self.application.update_generation_segments
+
+        def forked(segment):
+            return {**segment, "id": f"copy-{segment['id']}", "previous_segment_id": segment["id"]}
+
+        self.application.update_generation_segment = lambda *args, **kwargs: forked(
+            single_update(*args, **kwargs)
+        )
+        self.application.update_generation_segments = lambda *args, **kwargs: {
+            "items": [forked(item) for item in batch_update(*args, **kwargs)["items"]]
+        }
+
+        single = update_generation_segment(
+            runtime,
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=3,
+                idempotency_key="gen-update:fork:1",
+                text="Reviewed cue",
+            ),
+        )
+        batch = update_generation_segments(
+            runtime,
+            UpdateGenerationSegmentsInput(
+                session_id="session-1",
+                idempotency_key="gen-batch:fork:1",
+                updates=[
+                    UpdateGenerationSegmentBatchItem(
+                        id="segment-2",
+                        revision=2,
+                        changes=GenerationSegmentBatchChangesInput(text="Reviewed batch cue"),
+                    )
+                ],
+            ),
+        )
+
+        self.assertEqual("segment-1", single.result["previous_segment_id"])
+        self.assertEqual("segment-2", batch.result["items"][0]["previous_segment_id"])
+        for outcome in (single, batch):
+            self.assertEqual(
+                ["speech_plan_revision_forked"], [item.code for item in outcome.warnings]
+            )
+            self.assertIn("missing_only", outcome.warnings[0].message)
+            self.assertEqual(
+                "pandrator_list_generation_runs", outcome.next_actions[-1].tool
+            )
+
+    def test_edit_in_place_has_no_fork_notice(self):
+        runtime = cast(McpRuntime, self.runtime)
+        single = update_generation_segment(
+            runtime,
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=3,
+                idempotency_key="gen-update:no-fork:1",
+                text="Reviewed cue",
+            ),
+        )
+        self.assertEqual([], single.warnings)
+        self.assertNotIn("previous_segment_id", single.result)
+        self.assertEqual(
+            ["pandrator_list_generation_segments"], [a.tool for a in single.next_actions]
+        )
+
     def test_absent_or_invalid_retained_voice_stays_absent(self):
         runtime = cast(McpRuntime, self.runtime)
         absent = list_generation_segments(

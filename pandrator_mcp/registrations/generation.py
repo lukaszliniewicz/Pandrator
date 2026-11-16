@@ -27,6 +27,7 @@ from ..schemas import (
     UpdateGenerationSegmentInput,
     UpdateGenerationSegmentsInput,
 )
+from ..schemas.generation import GenerationTopologyEdit
 from ..schemas.generation_fields import GenerationSegmentField
 from ..tools import (
     assemble_generation_run,
@@ -230,18 +231,35 @@ def register_generation_plan_tools(
     def speech_plan_batch_tool(
         session_id: str,
         expected_revision_id: str,
-        operations: list[dict[str, Any]],
+        operations: Annotated[
+            list[GenerationTopologyEdit], Field(min_length=1, max_length=50)
+        ],
         idempotency_key: str,
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Apply up to 50 ordered split/merge edits atomically.
 
-        Select a split with a nested selector such as ``segment: {ordinal: 0}``,
-        and select merge inputs with nested selectors such as
-        ``left: {ordinal: 1}, right: {ordinal: 2}``.
-        Selectors may use ID, ordinal, source_cue_ids, or result_ref; split by
-        unique text, cue, sentence, or cursor. Labels expose label.left/right
-        results. Ambiguity rolls back the entire batch.
+        A split names one segment and one boundary; a merge names a left and
+        a right segment. A segment is chosen by ``segment_id`` (or
+        ``left_segment_id``/``right_segment_id``) or by a nested selector with
+        exactly one of ``segment_id``, ``ordinal``, ``source_cue_ids`` or
+        ``result_ref``. A split boundary is exactly one of ``before_text``,
+        ``after_text``, ``before_source_cue_id``, ``after_source_cue_id``,
+        ``after_sentence`` or ``cursor``. Examples::
+
+            {"action": "split", "label": "opening",
+             "segment_id": "<id>", "boundary": {"before_text": "But then"}}
+            {"action": "split", "segment": {"ordinal": 4},
+             "boundary": {"after_sentence": 1}}
+            {"action": "merge",
+             "left_segment_id": "<id>", "right_segment_id": "<id>"}
+            {"action": "merge", "left": {"result_ref": "opening.right"},
+             "right": {"ordinal": 6}}
+
+        A ``label`` makes the results addressable later in the same batch as
+        ``label.left``/``label.right`` (split) or ``label`` (merge). Original
+        ids are followed through earlier edits. Ambiguity rolls back the whole
+        batch.
         """
         return response(_call_with_validated_input(
             revise_speech_block_plan_batch,

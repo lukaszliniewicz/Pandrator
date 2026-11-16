@@ -21,6 +21,25 @@ as before. Branches created earlier keep their own copies. Deleting a project
 now shows only the space it frees, which excludes files another branch still
 uses.
 
+## MCP
+
+- Creating translation branches and reading artifact details get longer
+  deadlines (120 s and 60 s), since branch creation prepares each branch's
+  files before it replies.
+- `pandrator_revise_speech_block_plan_batch` now publishes the typed shape of
+  its operations, with split and merge examples, and accepts up to 50 at once.
+- When a segment edit lands in a new speech-plan revision (the previous one
+  was reviewed or used by a generation run), the update tools now say so,
+  keep `previous_segment_id` on the receipt, and point to the generation runs.
+  Runs already started keep the earlier text.
+- `pandrator_get_generation_operation` also accepts `generation_operation_id`,
+  the name start and regenerate results use.
+- Passing a session id where a translation project id is expected now says so
+  and names the session's translation project, if it has one. The hint is
+  shown only to callers who can read that session.
+- The subtitle provenance error names the artifact and the parent that blocks
+  it, and whether that parent is missing, deleted or belongs elsewhere.
+
 ## Manager
 
 Restarting Pandrator through the Manager's runtime API or `pandrator-manager
