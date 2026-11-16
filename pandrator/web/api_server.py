@@ -35,9 +35,10 @@ class ReadDisconnectChannel(HTTPChannel):
     """
 
     def readable(self) -> bool:
-        # Relies on waitress internals, checked against waitress 3.0.2: the channel's
-        # queue is ``self.requests`` and each parsed request has ``command``. Re-check
-        # when the waitress range moves; a rename would quietly stop disconnect checks.
+        # Relies on waitress internals: the channel's queue is ``self.requests``, and each
+        # parsed request has ``command`` and ``path``. A rename of the last two would
+        # quietly stop disconnect checks, so tests/test_abandoned_reads.py checks all three
+        # against the installed waitress; keep them passing when the waitress range moves.
         try:
             head = self.requests[0]
         except IndexError:

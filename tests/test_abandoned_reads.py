@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import Any
 from unittest import mock
 
@@ -574,6 +574,141 @@ def test_a_client_that_stays_connected_reads_false_throughout(monkeypatch):
         assert client.recv(4096).startswith(b"HTTP/1.1 200")
         client.close()
     assert seen == [False]
+
+
+# ------------------------------------------------- the waitress internals it reads
+
+# ``ReadDisconnectChannel.readable`` reads the channel's ``requests`` queue and each
+# request's ``command`` and ``path``.  A waitress release that renames ``command`` or
+# ``path`` would stop the disconnect checks without raising, because they are read through
+# ``getattr(..., None)``; one that renames ``requests`` crashes the event loop instead, and
+# one that changes which request heads the queue changes what is watched.  The tests below
+# build a real channel and parse real requests, so each assertion names what changed.
+
+_PREVIEW_PATH = "/api/v1/sessions/abc/generation-recast/preview"
+
+
+@pytest.fixture
+def channel_holding(
+    monkeypatch,
+) -> Callable[..., AbstractContextManager[ReadDisconnectChannel]]:
+    monkeypatch.undo()  # Real waitress needs loopback sockets, which no_network forbids.
+
+    @contextmanager
+    def holding(*sent: tuple[str, str]) -> Iterator[ReadDisconnectChannel]:
+        """A real waitress channel that has parsed each ``(method, target)`` and queued it.
+
+        The requests arrive in one read, as a pipelining client would send them.
+        """
+
+        socket_map: dict[int, Any] = {}
+        server = api_server.create_api_server(
+            lambda environ, start_response: [], socket_map, host="127.0.0.1", port=0, threads=1,
+        )
+        # No task starts, so the requests stay in the channel's queue.
+        server.add_task = lambda channel: None
+        sock: socket.socket | None = None
+        channel = None
+        try:
+            sock = socket.socket()
+            channel = server.channel_class(server, sock, ("127.0.0.1", 0), server.adj, map={})
+            assert isinstance(channel, ReadDisconnectChannel)
+            data = "".join(
+                f"{method} {target} HTTP/1.1\r\nHost: localhost\r\n"
+                + ("Content-Length: 0\r\n" if method == "POST" else "")
+                + "\r\n"
+                for method, target in sent
+            )
+            channel.received(data.encode("ascii"))
+            yield channel
+        finally:
+            if channel is not None:
+                channel.close()
+            if sock is not None:
+                sock.close()
+            server.task_dispatcher.shutdown(cancel_pending=True, timeout=WAIT_SECONDS)
+            server.close()
+
+    return holding
+
+
+def test_waitress_channel_queues_parsed_requests_in_requests(channel_holding):
+    with channel_holding(("GET", "/first"), ("GET", "/second")) as channel:
+        assert hasattr(channel, "requests"), (
+            "waitress no longer keeps a channel's queued requests in HTTPChannel.requests; "
+            "ReadDisconnectChannel.readable() reads that list"
+        )
+        assert len(channel.requests) == 2, (
+            "HTTPChannel.requests no longer holds each request parsed from received bytes"
+        )
+        assert [request.path for request in channel.requests] == ["/first", "/second"], (
+            "HTTPChannel.requests[0] is no longer the oldest queued request; "
+            "ReadDisconnectChannel.readable() treats requests[0] as the head"
+        )
+
+
+@pytest.mark.parametrize(
+    ("method", "target", "path"),
+    [
+        ("GET", "/queued", "/queued"),
+        ("HEAD", "/queued", "/queued"),
+        ("POST", _PREVIEW_PATH, _PREVIEW_PATH),
+        # ``watches_disconnect`` matches ``path`` whole, so it must stay free of the query.
+        ("POST", f"{_PREVIEW_PATH}?x=1", _PREVIEW_PATH),
+    ],
+)
+def test_waitress_parsed_request_carries_command_and_path(channel_holding, method, target, path):
+    with channel_holding((method, target)) as channel:
+        head = channel.requests[0]
+        assert hasattr(head, "command"), (
+            "waitress's parsed request no longer has `command`; "
+            "ReadDisconnectChannel.readable() reads it through getattr(..., None)"
+        )
+        assert hasattr(head, "path"), (
+            "waitress's parsed request no longer has `path`; "
+            "ReadDisconnectChannel.readable() reads it through getattr(..., None)"
+        )
+        assert head.command == method, "`command` no longer holds the request method as sent"
+        assert head.path == path, "`path` no longer holds the request path without its query"
+
+
+@pytest.mark.parametrize(
+    ("method", "target", "reads"),
+    [
+        ("GET", "/queued", True),
+        ("HEAD", "/queued", True),
+        ("POST", _PREVIEW_PATH, True),
+        ("POST", f"{_PREVIEW_PATH}?x=1", True),
+        ("POST", "/api/v1/sessions/abc/segments", False),
+    ],
+)
+def test_channel_reads_a_watched_head_and_stops_reading_a_mutation_head(
+    channel_holding, method, target, reads
+):
+    with channel_holding((method, target)) as channel:
+        assert channel.readable() is reads, (
+            f"ReadDisconnectChannel.readable() should be {reads} with a {method} {target} "
+            "request at the head of the queue"
+        )
+
+
+def test_channel_with_an_empty_queue_keeps_reading(channel_holding):
+    with channel_holding() as channel:
+        assert channel.requests == []
+        assert channel.readable() is True, (
+            "ReadDisconnectChannel.readable() should be True with nothing queued"
+        )
+
+
+def test_channel_defers_to_waitress_when_the_lookahead_is_used_up(channel_holding):
+    # Two queued reads exceed the lookahead of 1, so waitress's own check says no; a
+    # watched head must not make ``readable()`` skip that check.
+    assert REQUEST_LOOKAHEAD == 1
+    with channel_holding(("GET", "/first"), ("GET", "/second")) as channel:
+        assert channel.readable() is False, (
+            "ReadDisconnectChannel.readable() should defer to HTTPChannel.readable(), "
+            "which is False with more requests queued than the lookahead allows"
+        )
 
 
 # ------------------------------------------------------------------ serve_api
