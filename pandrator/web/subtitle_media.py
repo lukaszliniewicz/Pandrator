@@ -103,10 +103,17 @@ def _lineage_artifacts(
             if related is None or not artifact_accessible_in_session(
                 session, session_id, related
             ):
+                if related is None:
+                    problem = "does not exist"
+                elif related.state == "deleted":
+                    problem = "is deleted"
+                else:
+                    problem = "is neither owned by nor attached to this session"
                 raise ValueError(
-                    "Subtitle provenance is unavailable: every declared "
-                    "parent must be owned by or currently attached to this "
-                    "session and remain nondeleted."
+                    f"Subtitle provenance is unavailable: artifact {child.id} "
+                    f"declares parent {related_id}, which {problem}. Use a "
+                    "subtitle artifact produced in this session (for example "
+                    "its latest correction or media-edit subtitles) instead."
                 )
             artifacts_by_id[related.id] = related
             pending.append(related.id)

@@ -1,6 +1,7 @@
 import base64
 import binascii
 import copy
+import inspect
 import io
 import json
 import logging
@@ -185,12 +186,14 @@ from .tts_provider_profiles import (
 from .tts_retry import (
     DEFAULT_TTS_MAX_ATTEMPTS,
     DEFAULT_TTS_RETRY_TIMEOUT_SECONDS,
+    NO_AUDIO_MAX_ATTEMPTS,
     TtsRetryBudgetExceeded,
     TtsRetryGate,
     current_retry_budget,
     make_retry_scope_key,
     request_timeout,
     retry_budget_scope,
+    tts_failure_reason,
 )
 from .tts_service_catalogue import (
     _CATALOGUE_INPUT_KEYS as _CATALOGUE_INPUT_KEYS,
@@ -563,11 +566,32 @@ AUDIO_CPP_MAX_REFERENCE_BYTES = 5 * 1024 * 1024
 
 
 class TtsGenerationError(RuntimeError):
-    """A synthesis failure whose provider explanation can reach the job UI."""
+    """A synthesis failure whose provider explanation can reach the job UI.
 
-    def __init__(self, message: str, *, retryable: bool):
+    ``reason`` is one of :data:`~pandrator.logic.tts_retry.TTS_FAILURE_LABELS`.
+    """
+
+    def __init__(self, message: str, *, retryable: bool, reason: str = "provider_error"):
         super().__init__(message)
         self.retryable = retryable
+        self.reason = reason
+
+
+def _announce_retry(
+    callback: Callable[..., Any], attempt: int, total: int, delay: float, reason: str
+) -> None:
+    """Pass the retry reason only to callbacks that take one."""
+    try:
+        parameters = inspect.signature(callback).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    if any(
+        item.name == "reason" or item.kind is inspect.Parameter.VAR_KEYWORD
+        for item in parameters
+    ):
+        callback(attempt, total, delay, reason=reason)
+    else:
+        callback(attempt, total, delay)
 
 
 def _tts_error_detail(error: Exception) -> str:
@@ -3856,7 +3880,17 @@ def _google_tts_pcm_response(
     if not response.ok:
         return response
     try:
-        candidates = response.json()["candidates"]
+        payload = response.json()
+    except ValueError as error:
+        raise RuntimeError(f"{provider_name} returned no decodable audio payload.") from error
+    reason = _google_tts_audio.refusal_reason(payload)
+    if reason:
+        raise _google_tts_audio.TtsNoAudioError(
+            f"{provider_name} declined to synthesise this text ({reason}).",
+            refusal_reason=reason,
+        )
+    try:
+        candidates = payload["candidates"]
         if not isinstance(candidates, list):
             raise TypeError("candidates must be a list")
         for candidate in candidates:
@@ -3890,8 +3924,10 @@ def _google_tts_pcm_response(
                 if sample_rate <= 0:
                     raise ValueError("invalid PCM sample rate")
                 data = inline_data.get("data")
-                if not isinstance(data, str) or not data:
-                    raise ValueError("empty PCM data")
+                if not isinstance(data, str):
+                    raise ValueError("missing PCM data")
+                if not data:
+                    continue  # empty audio; no_audio unless another part has some
                 pcm = base64.b64decode(data, validate=True)
                 if not pcm or len(pcm) % 2:
                     raise ValueError("invalid 16-bit PCM data")
@@ -3903,7 +3939,9 @@ def _google_tts_pcm_response(
                 return audio_response
     except (KeyError, TypeError, ValueError, binascii.Error) as error:
         raise RuntimeError(f"{provider_name} returned no decodable audio payload.") from error
-    raise RuntimeError(f"{provider_name} returned no decodable audio payload.")
+    raise _google_tts_audio.TtsNoAudioError(
+        f"{provider_name} returned no decodable audio payload."
+    )
 
 
 def _request_gemini_native_audio(
@@ -4704,6 +4742,7 @@ def text_to_audio(
     recovery_cycles = 0
     last_error: Exception | None = None
     last_retryable = False
+    empty_audio_failures = 0
     while attempt < max_attempts:
         if cancel_event is not None and cancel_event.is_set():
             logging.info(
@@ -4874,6 +4913,10 @@ def text_to_audio(
                 and status == 500
                 and _audio_cpp_permanent_error(detail)
             )
+            if isinstance(e, _google_tts_audio.TtsNoAudioError):
+                empty_audio_failures += 1
+                if e.refusal_reason or empty_audio_failures >= NO_AUDIO_MAX_ATTEMPTS:
+                    last_retryable = False
             if not last_retryable:
                 logging.error(
                     "TTS request is not retryable%s.",
@@ -5020,7 +5063,13 @@ def text_to_audio(
             last_retryable = True
             break
         if retry_callback is not None:
-            retry_callback(provider_attempts + 1, max_attempts, delay)
+            _announce_retry(
+                retry_callback,
+                provider_attempts + 1,
+                max_attempts,
+                delay,
+                tts_failure_reason(last_error),
+            )
         logging.info(
             "Retrying TTS generation in %.1f seconds (attempt %d/%d).",
             delay,
@@ -5048,4 +5097,6 @@ def text_to_audio(
         + (f", HTTP {status}" if status else "")
         + f") after {provider_attempts} attempt(s): {detail}"
     )
-    raise TtsGenerationError(message, retryable=last_retryable) from last_error
+    raise TtsGenerationError(
+        message, retryable=last_retryable, reason=tts_failure_reason(last_error)
+    ) from last_error

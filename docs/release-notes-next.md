@@ -36,6 +36,25 @@ as before. Branches created earlier keep their own copies. Deleting a project
 now shows only the space it frees, which excludes files another branch still
 uses.
 
+## MCP
+
+- Creating translation branches and reading artifact details get longer
+  deadlines (120 s and 60 s), since branch creation prepares each branch's
+  files before it replies.
+- `pandrator_revise_speech_block_plan_batch` now publishes the typed shape of
+  its operations, with split and merge examples, and accepts up to 50 at once.
+- When a segment edit lands in a new speech-plan revision (the previous one
+  was reviewed or used by a generation run), the update tools now say so,
+  keep `previous_segment_id` on the receipt, and point to the generation runs.
+  Runs already started keep the earlier text.
+- `pandrator_get_generation_operation` also accepts `generation_operation_id`,
+  the name start and regenerate results use.
+- Passing a session id where a translation project id is expected now says so
+  and names the session's translation project, if it has one. The hint is
+  shown only to callers who can read that session.
+- The subtitle provenance error names the artifact and the parent that blocks
+  it, and whether that parent is missing, deleted or belongs elsewhere.
+
 ## Manager
 
 Restarting Pandrator through the Manager's runtime API or `pandrator-manager
@@ -47,6 +66,26 @@ service, so old and new processes never share the database, then starts them
 all on the active slot. Without such a change, a restart still affects only the
 selected services. This ships with the next Manager release.
 
+## Speech generation
+
+- When Gemini or Vertex AI declines a line (a safety block, for example),
+  Pandrator no longer retries it ten times and then fails the whole run. A
+  stated refusal is not retried, and audio that comes back empty with no
+  reason is tried at most three times. The segment is marked failed, the rest
+  of the run carries on, and the run finishes `partial` with a
+  `failed_segments` list giving each segment's ordinal, reason and the
+  provider's message (paused and cancelled runs report the list too). Reword
+  those blocks and resume with `missing_only`. A regenerated segment that
+  already had audio keeps it, and the run still ends `partial`. An empty audio
+  field counts as empty audio, not as a decode error. If three segments in a
+  row come back empty with no reason, or the retry budget runs out, the run
+  still stops, since the provider is then the more likely problem. The
+  one-step automatic audiobook and dubbing pipelines still stop at the first
+  failed segment, but now after one attempt for a refusal and three for empty
+  audio instead of ten.
+- Retry progress now says why it is retrying, for example "Retrying segment
+  42 (4/10) in 19.1s: rate limited".
+
 ## Exports
 
 An export no longer waits for a long job in another project to finish. Each
@@ -55,6 +94,23 @@ exports, mix previews and bundle exports, so exporting the French branch can
 start while the German branch is still generating. Jobs within one project
 still run one at a time and in the order they were queued. Set
 `PANDRATOR_DELIVERY_LANE=0` for the worker to turn this off.
+
+## Output
+
+- Exported videos now name the dubbed audio track. The track carries the
+  target language, a title and a handler name (for example `hun`,
+  "Hungarian"), so players no longer list it as "Unknown". Three-letter codes
+  such as `eng` work as well as `en`. With a target language Pandrator does not
+  recognise, the track is marked undetermined rather than keeping a language
+  tag from the audio it was made from.
+- Merging two Japanese or Chinese speech blocks, by hand, through passage
+  regroup or through audiobook range re-segmentation, no longer inserts a space
+  between them in the text, the speech text or the speech markup. Automatic
+  re-segmentation also finds 。, ！ and ？ without a following space, so a
+  Japanese range no longer fails with "A word exceeds max_chars".
+- Japanese subtitle lines no longer break inside a dotted name such as
+  「ラリー・キング」 or between a number and its counter such as 「2014年」,
+  unless no other two-line split fits.
 
 ## Media edits
 

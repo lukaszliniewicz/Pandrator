@@ -86,6 +86,11 @@ LANGUAGE_DISPLAY_NAMES.update({
     "zh-cn": "Chinese (Simplified)", "zh-tw": "Chinese (Traditional)",
 })
 
+# Three-letter codes such as "eng" or "fra" name the same languages.
+_ISO_639_2_TO_CODE = {
+    iso: code for code, iso in reversed(FFMPEG_SUBTITLE_LANGUAGE_CODES.items()) if "-" not in code
+}
+
 
 def normalize_language_code(language: str, default: str = "en") -> str:
     """Normalize user-facing language names and service codes."""
@@ -108,6 +113,8 @@ def normalize_language_code(language: str, default: str = "en") -> str:
         return "zh"
     if normalized in FFMPEG_SUBTITLE_LANGUAGE_CODES:
         return normalized
+    if normalized in _ISO_639_2_TO_CODE:
+        return _ISO_639_2_TO_CODE[normalized]
     if base in FFMPEG_SUBTITLE_LANGUAGE_CODES and len(parts) > 1:
         return normalized if len(normalized) <= 5 else base
     return normalized if len(normalized) <= 5 else default

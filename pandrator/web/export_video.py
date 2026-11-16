@@ -258,6 +258,8 @@ def _prepare_video_audio(
         from .sound_workflow_outputs import has_output_sounds, render_output_sounds
 
         with_sounds = has_output_sounds(context, session_id, settings)
+        # The new track carries generated speech in the target language.
+        speech_language = str(settings.get("target_language") or "")
         if audio_mode == "dubbed" and not with_sounds:
             command = build_replace_video_audio_command(
                 str(working_video),
@@ -266,6 +268,7 @@ def _prepare_video_audio(
                 ffmpeg_executable=ffmpeg_executable,
                 audio_bitrate=video_audio_bitrate,
                 shortest=not preserve_audio_tail,
+                audio_language=speech_language,
             )
             progress(0.4, "Replacing source audio with generated speech")
         else:
@@ -288,6 +291,7 @@ def _prepare_video_audio(
                 ffmpeg_executable=ffmpeg_executable,
                 audio_bitrate=video_audio_bitrate,
                 shortest=not preserve_audio_tail,
+                audio_language=speech_language,
             )
             progress(0.4, "Using the selected soundtrack")
         run_video_command(command, cancel_event, **output_io_options(context))

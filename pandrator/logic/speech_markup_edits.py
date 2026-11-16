@@ -461,15 +461,21 @@ def join_speech_markup(
     units: list[tuple[str, str, str | None]],
     *,
     segment_id: str,
-    separator: str = " ",
+    separator: str | list[str] = " ",
     characters: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Join exact text units while keeping separators outside speaker scopes."""
+    """Join exact text units while keeping separators outside speaker scopes.
+
+    ``separator`` is one string for every seam, or one string per seam.
+    """
 
     if not isinstance(units, list):
         raise TypeError("units must be a list")
-    if not isinstance(separator, str):
-        raise TypeError("separator must be a string")
+    seams = [separator] * max(len(units) - 1, 0) if isinstance(separator, str) else separator
+    if not isinstance(seams, list) or not all(isinstance(seam, str) for seam in seams):
+        raise TypeError("separator must be a string or a list of strings")
+    if len(seams) != max(len(units) - 1, 0):
+        raise ValueError("separator list must have one entry per seam")
     parsed_units: list[ParsedSpeechMarkup | None] = []
     texts: list[str] = []
     for unit in units:
@@ -498,12 +504,14 @@ def join_speech_markup(
     body: list[str] = []
     for index, (parsed, text) in enumerate(zip(parsed_units, texts, strict=True)):
         if index:
-            body.append(_escape_text(separator))
+            body.append(_escape_text(seams[index - 1]))
         if parsed is None:
             body.append(_escape_text(text))
         else:
             body.append(_serialize_body(parsed))
-    joined_text = separator.join(texts)
+    joined_text = "".join(
+        text if not index else seams[index - 1] + text for index, text in enumerate(texts)
+    )
     last_parsed = parsed_units[-1] if parsed_units else None
     boundary_after = last_parsed.boundary_after if last_parsed is not None else None
     rebuilt = _serialize_segment(
