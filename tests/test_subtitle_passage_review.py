@@ -1337,3 +1337,58 @@ def test_shared_passage_resaves_when_one_cue_also_owns_another(review_case):
         (["a"], "Alpha."),
         (["b"], "Bravo one bravo two."),
     ]
+
+
+def _shared_passage_layout(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:02,000\nAlpha. Bravo one\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nbravo two.\n",
+        [
+            {"id": "a", "text": "Alpha.", "start_ms": 0, "end_ms": 1000, "speaker": "A"},
+            {
+                "id": "b",
+                "text": "Bravo one bravo two.",
+                "start_ms": 1000,
+                "end_ms": 3000,
+                "speaker": "A",
+                "cue_indices": [0, 1],
+            },
+        ],
+    )
+    rows = review_case.service.review(review_case.session.id, [source_id])["columns"][0][
+        "logical_passages"
+    ]
+    published = _save(review_case, source_id, source_hash, 1, _edits(rows))
+    _saved, _segments, artifact = _saved_rows(review_case, published)
+    column = review_case.service.review(review_case.session.id, [artifact.id])["columns"][0]
+    keys = ReviewedSubtitleSegment.__annotations__
+    values = [
+        {key: value for key, value in item.items() if key in keys and not key.startswith("_")}
+        for item in column["segments"]
+    ]
+    return published, artifact, values
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("omit_combined", "combines this passage with another must be kept"),
+        ("edit_shared_fragment", "edit their source passages separately"),
+    ],
+)
+def test_shared_passage_save_cannot_drop_the_combined_cue_text(review_case, change, message):
+    published, artifact, values = _shared_passage_layout(review_case)
+    if change == "omit_combined":
+        values = values[1:]
+    else:
+        values[1]["text"] = "bravo 2."
+    with pytest.raises(ValueError, match=message):
+        review_case.service.save_review(
+            review_case.session.id,
+            "correction",
+            published["revision"],
+            values,
+            source_artifact_id=artifact.id,
+            expected_source_hash=artifact.content_hash,
+        )

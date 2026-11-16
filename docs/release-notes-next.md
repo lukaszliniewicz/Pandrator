@@ -14,9 +14,11 @@ read went from 6.55 s to 5.85 s, measured by Patrick Nadeau (#146).
 
 Fixing the wording of one passage no longer re-times the whole subtitle.
 Passage review, in the app and through `pandrator_patch_subtitle_passages`,
-keeps every display cue not linked to your edit through a shared passage, and a wording
-fix keeps its cue's timing when the text still fits, even inside a cue that
-holds several short passages. Previously each save rebuilt every cue from its passage
+keeps every display cue not linked to your edit through a shared passage. A
+wording fix keeps its cue's timing, even inside a cue that holds several short
+passages, when the cue shares no passage with another cue, its passages have
+one speaker, and the new text fits the line and reading-speed limits (or is no
+longer than before). Previously each save rebuilt every cue from its passage
 alone, which could split a line such as "Yes. Traditional Christianity? Yes."
 into three cues, some as short as 80 ms. A passage whose timing, speaker or turn
 changes is still recomposed, and a cue that comes out shorter than the minimum

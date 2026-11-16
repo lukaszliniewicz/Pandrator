@@ -631,6 +631,8 @@ def _review_passage_rows(
     carried: dict[str, dict[str, Any]] = {}
     carried_reviews: dict[str, list[Mapping[str, Any]]] = {}
     fragments: dict[str, list[tuple[Segment, ReviewedSubtitleSegment]]] = {}
+    # Source cues submitted as one cue over several passages.
+    combined_kept: set[str] = set()
     track_turns = any(row.get("turn_id") for row in source_rows) or any(
         cue.get("starts_new_turn") for cue in reviewed
     )
@@ -710,6 +712,7 @@ def _review_passage_rows(
                     raise ValueError(
                         "Display cue contains multiple logical passages; edit their source passages separately."
                     )
+                combined_kept.add(segment.id)
             # Keep each canonical row once even when display cues split or
             # combine it. Fragment text is reconstructed only after complete
             # source ownership has been verified below.
@@ -822,7 +825,15 @@ def _review_passage_rows(
                 for segment in source_owners.get(segment_id, [])
             ]
         # A cue that also owns another passage validates as a combined cue
-        # and adds no fragment, so only single-passage cues are expected.
+        # and adds no fragment, so only single-passage cues are expected. It
+        # still holds part of this passage's text, so it must be kept, and the
+        # passage's own fragments cannot be edited apart from it.
+        combined = [segment for segment in direct if passages_owned_by(segment) > 1]
+        if any(segment.id not in combined_kept for segment in combined):
+            raise ValueError(
+                "A display cue that combines this passage with another must be kept; "
+                "edit or delete their source passages instead."
+            )
         expected = [
             segment for segment in direct if passages_owned_by(segment) <= 1
         ] if direct else [
@@ -837,6 +848,10 @@ def _review_passage_rows(
             raise ValueError("Display fragment review must include every inherited source segment exactly once.")
         ordered = sorted(actual, key=lambda pair: (pair[0].start_ms, pair[0].end_ms, pair[0].ordinal))
         if any(_speaker_and_text(segment)[1] != cue["text"] for segment, cue in ordered):
+            if combined:
+                raise ValueError(
+                    "Display cue contains multiple logical passages; edit their source passages separately."
+                )
             stored["text"] = " ".join(cue["text"] for _segment, cue in ordered)
         fragment_speakers = [
             str(cue.get("speaker") or "").strip()
