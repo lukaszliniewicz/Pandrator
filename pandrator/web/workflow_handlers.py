@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from pandrator.logic.dubbing.settings import normalize_correction_style
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
-from pandrator.logic.tts_retry import DEFAULT_TTS_MAX_ATTEMPTS
+from pandrator.logic.tts_retry import DEFAULT_TTS_MAX_ATTEMPTS, retry_reason_suffix
 from pandrator.runtime import DataPaths
 
 from .access.speech_preview_policy import preview_execution_workspace
@@ -772,8 +772,10 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                         text, settings,
                         max_attempts=int(settings.get("max_attempts") or DEFAULT_TTS_MAX_ATTEMPTS),
                         cancel_event=cancel_event,
-                        retry_callback=lambda attempt, total, delay: progress(
-                            0.1, f"Voice preview retry {attempt} of {total} in {delay:.1f}s",
+                        retry_callback=lambda attempt, total, delay, reason="": progress(
+                            0.1,
+                            f"Voice preview retry {attempt} of {total} in {delay:.1f}s"
+                            + retry_reason_suffix(reason),
                         ),
                         recovery_callback=lambda cycle, total, timeout: progress(
                             0.1, f"Waiting for Qwen3 TTS to recover ({cycle}/{total}, up to {timeout:.0f}s)",
