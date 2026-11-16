@@ -7,6 +7,12 @@ from urllib.parse import quote
 
 from .application_requests import ApplicationRequests
 
+# A recast and its preview rebuild every segment's cast and markup, which took 13-16 s on a
+# 5,000-segment book. The default limit cut them off; undo shares the same floor. No higher
+# request_timeout_limit_seconds is needed: McpSettings caps the configured timeout at 120 s,
+# which is _request_json's default limit, as for the 120 s floors on topology edits.
+_RECAST_TIMEOUT_SECONDS = 60.0
+
 
 class ApplicationGenerationMethods(ApplicationRequests):
     def generation_recast_request(self, action: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -29,6 +35,7 @@ class ApplicationGenerationMethods(ApplicationRequests):
             path, method="POST", body=values, idempotency_key=key,
             read_only_operation=action in {"preview", "undo_preview"},
             maximum_body_bytes=512 * 1024,
+            request_timeout_seconds=max(self.timeout_seconds, _RECAST_TIMEOUT_SECONDS),
         )
 
     def performance_plan_request(self, action: str, arguments: dict[str, Any]) -> dict[str, Any]:

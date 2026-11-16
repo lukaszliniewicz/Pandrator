@@ -61,14 +61,27 @@ def test_exact_allowlisted_post_routes_preserve_null_and_empty_selectors(
     action, arguments, path, body, key
 ):
     client = object.__new__(ApplicationClient)
+    client.timeout_seconds = 15.0
     client._request_json = Mock(return_value={"ok": True})
     assert client.generation_recast_request(action, arguments) == {"ok": True}
     client._request_json.assert_called_once_with(
         path, method="POST", body=body, idempotency_key=key,
-        read_only_operation=action in {"preview", "undo_preview"}, maximum_body_bytes=512 * 1024
+        read_only_operation=action in {"preview", "undo_preview"}, maximum_body_bytes=512 * 1024,
+        request_timeout_seconds=60.0,
     )
     with pytest.raises(ValueError):
         client.generation_recast_request("delete", {})
+
+
+@pytest.mark.parametrize("configured,expected", [(15.0, 60.0), (90.0, 90.0)])
+def test_recast_requests_wait_at_least_a_minute_but_keep_a_longer_configured_limit(
+    configured, expected
+):
+    client = object.__new__(ApplicationClient)
+    client.timeout_seconds = configured
+    client._request_json = Mock(return_value={})
+    client.generation_recast_request("preview", {"session_id": "session-a"})
+    assert client._request_json.call_args.kwargs["request_timeout_seconds"] == expected
 
 
 def _runtime(payload):
