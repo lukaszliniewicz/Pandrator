@@ -51,6 +51,8 @@ class ApplicationProjectMethods(ApplicationRequests):
             method="POST",
             body={"expected_revision": expected_revision, "targets": targets},
             idempotency_key=idempotency_key,
+            # Each branch prepares its own project files before the reply.
+            request_timeout_seconds=max(self.timeout_seconds, 120.0),
         )
 
     def preview_translation_project_operation(

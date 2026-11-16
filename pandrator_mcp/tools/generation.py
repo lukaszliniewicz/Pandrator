@@ -113,6 +113,8 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
     ]
     return {
         "id": str(segment.get("id") or ""),
+        **({"previous_segment_id": segment["previous_segment_id"]}
+           if segment.get("previous_segment_id") else {}),
         "ordinal": segment.get("ordinal"),
         "revision": segment.get("revision"),
         "status": segment.get("status"),
@@ -166,6 +168,32 @@ def _generation_segment_update_projection(segment: dict[str, Any]) -> dict[str, 
     if retained_voice is not None:
         result["retained_voice"] = retained_voice
     return result
+
+
+def _plan_fork_notice(
+    session_id: str, items: list[dict[str, Any]]
+) -> tuple[list[WarningMessage], list[NextAction]]:
+    """Explain an edit that landed in a new speech-plan revision."""
+
+    forked = [item for item in items if item.get("previous_segment_id")]
+    if not forked:
+        return [], []
+    warning = WarningMessage(
+        code="speech_plan_revision_forked",
+        message=(
+            f"{len(forked)} edited segment(s) were copied into a new speech-plan revision, "
+            "because the previous revision was reviewed or used by a generation run, and "
+            "now have new ids (previous_segment_id names the old one). Runs already "
+            "started on the previous revision keep its text. Resume generation on the "
+            "active plan with missing_only to voice the edits."
+        ),
+    )
+    action = NextAction(
+        tool="pandrator_list_generation_runs",
+        arguments={"session_id": session_id, "limit": 5},
+        reason="See which runs still use the previous speech-plan revision.",
+    )
+    return [warning], [action]
 
 
 _SHORT_OPERATION_KEYS = frozenset({"action", "batch", "target_revision_id"})
@@ -487,14 +515,19 @@ def update_generation_segment(
         idempotency_key=arguments.idempotency_key,
     )
     safe_result = _segment_projection(result) if isinstance(result, dict) else result
+    warnings, fork_actions = _plan_fork_notice(
+        arguments.session_id, [result] if isinstance(result, dict) else []
+    )
     return ToolOutcome(
         result=safe_result,
+        warnings=warnings,
         next_actions=[
             NextAction(
                 tool="pandrator_list_generation_segments",
                 arguments={"session_id": arguments.session_id},
                 reason="Review updated segments and their current revisions.",
-            )
+            ),
+            *fork_actions,
         ],
     )
 
@@ -535,11 +568,12 @@ def update_generation_segments(
                 and isinstance(value, (str, int, float, bool))
             ):
                 result[key] = value
-    return ToolOutcome(result=result, next_actions=[NextAction(
+    warnings, fork_actions = _plan_fork_notice(arguments.session_id, result["items"])
+    return ToolOutcome(result=result, warnings=warnings, next_actions=[NextAction(
         tool="pandrator_list_generation_segments",
         arguments={"session_id": arguments.session_id, "view": "compact"},
         reason="Review updated rows and their current revisions.",
-    )])
+    ), *fork_actions])
 
 
 def select_take(

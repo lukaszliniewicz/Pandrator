@@ -8,9 +8,43 @@ from typing import Any
 
 import requests
 
+# Re-exported: the decoder raises it, and callers import it from here.
+from .tts_retry import TtsNoAudioError as TtsNoAudioError
+
 STRUCTURED_TTS_MODELS = frozenset(
     {"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"}
 )
+
+
+# Finish and block reasons Google reports when it declines to produce output.
+_REFUSAL_REASONS = frozenset(
+    {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION"}
+)
+
+
+class _MissingAudio(ValueError):
+    pass
+
+
+def refusal_reason(payload: object) -> str:
+    """The provider's reason for declining a request, or an empty string."""
+    if not isinstance(payload, dict):
+        return ""
+    feedback = payload.get("promptFeedback") or payload.get("prompt_feedback")
+    if isinstance(feedback, dict):
+        blocked = feedback.get("blockReason") or feedback.get("block_reason")
+        if blocked:
+            return str(blocked).upper()
+    candidates = payload.get("candidates")
+    for candidate in candidates if isinstance(candidates, list) else []:
+        if not isinstance(candidate, dict):
+            continue
+        reason = str(
+            candidate.get("finishReason") or candidate.get("finish_reason") or ""
+        ).upper()
+        if reason in _REFUSAL_REASONS:
+            return reason
+    return ""
 
 
 def is_structured_tts_model(model: str) -> bool:
@@ -69,10 +103,13 @@ def decode_google_wav_response(
 ) -> requests.Response:
     if not response.ok:
         return response
+    payload: object = None
     try:
         payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("Expected a JSON object")
+        if refusal_reason(payload):
+            raise _MissingAudio("The provider declined the request")
         selected = None
         if interactions:
             if "status" in payload and payload["status"] != "completed":
@@ -112,15 +149,25 @@ def decode_google_wav_response(
                     if mime in {"audio/wav", "audio/x-wav"}:
                         selected = inline
         if selected is None:
-            raise ValueError("Missing WAV audio")
+            raise _MissingAudio("Missing WAV audio")
         mime = selected.get("mime_type", selected.get("mimeType", "audio/wav"))
         if mime not in {"audio/wav", "audio/x-wav"}:
             raise ValueError("Unsupported audio MIME type")
         encoded = selected.get("data")
-        if not isinstance(encoded, str) or not encoded:
+        if not isinstance(encoded, str):
             raise ValueError("Missing base64 WAV audio")
+        if not encoded:
+            raise _MissingAudio("Empty WAV audio")
         data = base64.b64decode(encoded, validate=True)
         _validate_wav(data)
+    except _MissingAudio as error:
+        reason = refusal_reason(payload)
+        raise TtsNoAudioError(
+            f"{provider_name} declined to synthesise this text ({reason})."
+            if reason
+            else f"{provider_name} returned no decodable WAV audio payload.",
+            refusal_reason=reason,
+        ) from error
     except (KeyError, TypeError, ValueError, binascii.Error, wave.Error, EOFError) as error:
         raise RuntimeError(f"{provider_name} returned no decodable WAV audio payload.") from error
     result = requests.Response()

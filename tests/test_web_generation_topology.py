@@ -1605,6 +1605,45 @@ class GenerationTopologyTests(unittest.TestCase):
         self.assertEqual([[0, 12], [13, 24]], cue["display_spans"])
         self.assertEqual([[0, 12], [13, 24]], cue["speech_spans"])
 
+    def test_japanese_merge_joins_blocks_without_a_space(self):
+        blocks = []
+        for index, text in enumerate(("ありがとう。", "ございました！")):
+            blocks.append({
+                "text": text,
+                "source_segment_ids": [index],
+                "speech_block_provenance": {
+                    "schema_version": 1,
+                    "source_reference_namespace": "subtitle_ordinal",
+                    "source_cues": [{
+                        "reference": index,
+                        "start_ms": index * 1000,
+                        "end_ms": index * 1000 + 900,
+                        "display_text": text,
+                        "speech_text": text,
+                        "display_spans": [[0, len(text)]],
+                        "speech_spans": [[0, len(text)]],
+                    }],
+                },
+            })
+        service = self.app.extensions["pandrator"]["generation"]
+        plan = service.create_plan(
+            self.session_id, source_revision_id=None, segments=blocks
+        )
+        initial = self._segments()["items"]
+        response = self._topology(
+            plan["active_revision_id"],
+            {"action": "merge", "left_segment_id": initial[0]["id"],
+             "right_segment_id": initial[1]["id"]},
+            "topology-merge-japanese",
+        )
+        self.assertEqual(201, response.status_code, response.get_json())
+        merged = self._segments()["items"][0]
+        self.assertEqual("ありがとう。ございました！", merged["text"])
+        cues = merged["speech_block_provenance"]["source_cues"]
+        self.assertEqual([[0, 6]], cues[0]["display_spans"])
+        self.assertEqual([[6, 13]], cues[1]["display_spans"])
+        self.assertEqual([[6, 13]], cues[1]["speech_spans"])
+
     def test_merge_provenance_uses_first_known_time_including_zero(self):
         # Zero end time is a synthetic storage control, not a valid
         # positive-duration passage. Both fields use None for missing data.

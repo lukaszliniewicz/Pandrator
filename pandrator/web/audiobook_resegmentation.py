@@ -9,6 +9,7 @@ from copy import deepcopy
 
 from sqlalchemy import select
 
+from pandrator.logic.dubbing.text_units import fragment_separator
 from pandrator.logic.speech_markup import parse_speech_markup, plain_speech_markup
 from pandrator.logic.speech_markup_edits import join_speech_markup, slice_speech_markup
 
@@ -204,29 +205,35 @@ def project_split_markup(
 def project_merge_markup(session, left, right, values: dict, session_id: str) -> None:
     characters = get_generation_controls(session, session_id)["characters"]
     annotations = _reviewed_annotations(session, left.plan_revision_id)
+    left_speech = left.optimized_text or left.text
+    right_speech = right.optimized_text or right.text
     values["speech_plan_json"]["speech_xml"] = join_speech_markup(
         [
-            (
-                row.id,
-                row.optimized_text or row.text,
-                effective_markup(session, row, characters, annotations),
-            )
-            for row in (left, right)
+            (row.id, speech, effective_markup(session, row, characters, annotations))
+            for row, speech in ((left, left_speech), (right, right_speech))
         ],
         segment_id=left.id,
+        # The same seam as the merged speech text, so Japanese stays unspaced.
+        separator=fragment_separator(left_speech, right_speech),
         characters=characters,
     )
 
+# Closing quotes and brackets that may follow a sentence end.
+_CLOSERS = "[\"\u201d\u2019)\\]」』）]"
+
 
 def _automatic_boundaries(
-    text: str, max_chars: int, paragraph_ends: set[int]
+    text: str, max_chars: int, paragraph_ends: set[int], row_ends: set[int]
 ) -> list[int]:
-    """Prefer sentence ends, then whitespace; retain every source character."""
+    """Prefer sentence ends, then whitespace or old block ends; retain every character."""
     sentences = [
         match.end()
-        for match in re.finditer(r"[.!?…。！？][\"\u201d\u2019\)\]]*(?:\s+|$)", text)
+        for match in re.finditer(
+            # Full-width sentence ends need no following space.
+            rf"[.!?…]{_CLOSERS}*(?:\s+|$)|[。！？]{_CLOSERS}*\s*", text
+        )
     ]
-    whitespace = [match.end() for match in re.finditer(r"\s+", text)]
+    whitespace = sorted({match.end() for match in re.finditer(r"\s+", text)} | row_ends)
     result, start = [], 0
     while start < len(text):
         paragraph_end = min(
@@ -313,18 +320,24 @@ def prepare_resegmentation(
         raise ValueError(
             "Range resegmentation requires matching display and speech text; use mapped split/merge for optimized variants."
         )
-    text = " ".join(row.text for row in selected)
+    # The same seams as a merge, so Japanese and Chinese stay unspaced. Each
+    # seam reads the text so far, so an open quote is known to be closed.
+    seams: list[str] = []
+    text = selected[0].text
+    for row in selected[1:]:
+        seams.append(fragment_separator(text, row.text))
+        text += seams[-1] + row.text
     if len(text) > 24000:
         raise ValueError("Select at most 24,000 characters per resegmentation draft.")
     source_ranges, source_ends, paragraph_ends = [], {}, set()
     cursor = 0
-    for row in selected:
+    for index, row in enumerate(selected):
         end = cursor + len(row.text)
         source_ranges.append((row, cursor, end))
         source_ends[end] = row
         if row.paragraph_break_after:
             paragraph_ends.add(end)
-        cursor = end + 1
+        cursor = end + (len(seams[index]) if index < len(seams) else 0)
     boundaries = operation.get("boundaries")
     if boundaries is None:
         max_chars = operation.get("max_chars") or 300
@@ -334,7 +347,7 @@ def prepare_resegmentation(
             or not 40 <= max_chars <= 4000
         ):
             raise ValueError("max_chars must be an integer between 40 and 4000.")
-        boundaries = _automatic_boundaries(text, max_chars, paragraph_ends)
+        boundaries = _automatic_boundaries(text, max_chars, paragraph_ends, set(source_ends))
     if (
         len(boundaries) > 199
         or any(
@@ -354,6 +367,7 @@ def prepare_resegmentation(
     xml = join_speech_markup(
         [(row.id, row.text, source_markup[row.id]) for row in selected],
         segment_id=selected[0].id,
+        separator=seams,
         characters=characters,
     )
     source_boundaries = {
@@ -382,7 +396,7 @@ def prepare_resegmentation(
             if paragraph
             else (
                 None
-                if re.search(r"[.!?…。！？][\"\u201d\u2019\)\]]*$", text[start:end])
+                if re.search(rf"[.!?…。！？]{_CLOSERS}*$", text[start:end])
                 else "continuation"
             )
         )

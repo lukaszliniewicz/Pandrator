@@ -10,11 +10,12 @@ from flask import jsonify, request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 from sqlalchemy.exc import IntegrityError
 
-from .access.contracts import AccessContext, ProjectAction
+from .access.contracts import AccessContext, ProjectAction, ProjectNotFound
 from .access.session_policy import require_session_access
 from .access.translation_project_policy import require_translation_project_access
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .project_readiness import enrich_project_payload
+from .session_routes import session_project_memberships
 from .settings_policy import RevisionConflict
 from .translation_project_summary import get_compact_project, get_compact_session_project
 from .translation_projects import (
@@ -171,11 +172,21 @@ def translation_project_paths() -> dict:
     return paths
 
 
+class SessionIdGivenForProject(ProjectNotFound):
+    """A session id reached a route that expects a translation project id."""
+
+    def __init__(self, message: str) -> None:
+        KeyError.__init__(self, message)
+        self.message = message
+
+
 def register_translation_project_routes(
     app, services, require_auth, error_response, principal,
     *, access_context: Callable[[], AccessContext],
 ) -> None:
     def failure(error: Exception):
+        if isinstance(error, SessionIdGivenForProject):
+            return error_response("not_found", error.message, 404)
         if isinstance(error, KeyError):
             return error_response("not_found", "Session, correction, or project not found.", 404)
         if isinstance(
@@ -206,8 +217,30 @@ def register_translation_project_routes(
         return view == "compact"
 
     def authorize(db, resource_id, *, session_resource, action):
-        guard = require_session_access if session_resource else require_translation_project_access
-        guard(db, access_context(), resource_id, action)
+        if session_resource:
+            require_session_access(db, access_context(), resource_id, action)
+            return
+        try:
+            require_translation_project_access(db, access_context(), resource_id, action)
+        except ProjectNotFound:
+            hint = session_id_hint(db, resource_id)
+            if hint is None:
+                raise
+            raise SessionIdGivenForProject(hint) from None
+
+    def session_id_hint(db, resource_id) -> str | None:
+        # Name the mix-up only to callers who can already read that session.
+        try:
+            require_session_access(db, access_context(), resource_id, ProjectAction.READ)
+        except (KeyError, PermissionError):
+            return None
+        membership = session_project_memberships(
+            services.database, [resource_id], db_session=db
+        ).get(resource_id)
+        message = f"{resource_id} is a session id, not a translation project id."
+        if membership is None:
+            return f"{message} Create a translation project from this session first."
+        return f"{message} Its translation project is {membership['id']}."
 
     def project_response(db, resource_id, *, session_resource, compact=False):
         if session_resource:

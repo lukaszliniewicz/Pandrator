@@ -97,6 +97,48 @@ class GenerationBatchTransportContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(spec.requires_idempotency)
 
+    async def test_topology_batch_operations_are_discoverable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = build_runtime(
+                McpSettings(
+                    target_name="unconfigured",
+                    configuration_path=Path(directory) / "missing-targets.json",
+                )
+            )
+            async with Client(build_server(runtime), mode="auto", raise_exceptions=True) as client:
+                listed = await client.list_tools()
+
+        tool = {tool.name: tool for tool in listed.tools}[
+            "pandrator_revise_speech_block_plan_batch"
+        ]
+        schema = tool.input_schema
+        Draft202012Validator.check_schema(schema)
+        self.assertEqual(50, schema["properties"]["operations"]["maxItems"])
+        self.assertIn("before_text", tool.description)
+        valid = {
+            "session_id": "session-1",
+            "expected_revision_id": "revision-1",
+            "idempotency_key": "topology-batch:1",
+            "operations": [
+                {
+                    "action": "split",
+                    "label": "opening",
+                    "segment_id": "segment-1",
+                    "boundary": {"before_text": "But then"},
+                },
+                {
+                    "action": "merge",
+                    "left": {"result_ref": "opening.right"},
+                    "right": {"ordinal": 6},
+                },
+            ],
+        }
+        Draft202012Validator(schema).validate(valid)
+        wrong_selector = json.loads(json.dumps(valid))
+        wrong_selector["operations"][1]["left"] = {"id": "segment-2"}
+        with self.assertRaises(JsonSchemaValidationError):
+            Draft202012Validator(schema).validate(wrong_selector)
+
     def test_tool_failure_keeps_timeout_details_and_follow_up_actions(self):
         error = PandratorMcpError(
             "application_response_timeout",

@@ -232,6 +232,7 @@ def test_native_mcp_fork_and_parallel_language_runs(tmp_path: Path):
 
 def test_client_preserves_fork_revision_and_batch_idempotency():
     client = object.__new__(ApplicationClient)
+    client.timeout_seconds = 15.0
     client._request_json = Mock(return_value={})
     client.fork_session(
         "session/a",
@@ -256,6 +257,7 @@ def test_client_preserves_fork_revision_and_batch_idempotency():
         "/api/v1/translation-projects/project%2Fa/branches",
     )
     assert client._request_json.call_args.kwargs["idempotency_key"] == "branches-client-test"
+    assert client._request_json.call_args.kwargs["request_timeout_seconds"] == 120.0
 
 
 @pytest.mark.parametrize("value", ["true", 1, None])

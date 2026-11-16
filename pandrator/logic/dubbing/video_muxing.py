@@ -520,6 +520,29 @@ def build_add_subtitles_command(
     ]
 
 
+def audio_language_metadata(language: str, stream: int = 0) -> list[str]:
+    """FFmpeg options naming an audio stream's language.
+
+    With no language the stream is left as it is. A language that is not
+    recognised drops any tags inherited from the audio input, so the track is
+    not mislabelled, and FFmpeg marks it undetermined.
+    """
+    if not str(language or "").strip():
+        return []
+    code = ffmpeg_subtitle_language_code(language, default="")
+    title = subtitle_language_title(language, default="")
+    if not code or not title:
+        return [f"-map_metadata:s:a:{stream}", "-1"]
+    return [
+        f"-metadata:s:a:{stream}",
+        f"language={code}",
+        f"-metadata:s:a:{stream}",
+        f"title={title}",
+        f"-metadata:s:a:{stream}",
+        f"handler_name={title}",
+    ]
+
+
 def build_replace_video_audio_command(
     video_path: str,
     audio_path: str,
@@ -529,12 +552,14 @@ def build_replace_video_audio_command(
     audio_codec: str = "aac",
     audio_bitrate: str = "192k",
     shortest: bool = True,
+    audio_language: str = "",
 ) -> list[str]:
     """Build the FFmpeg command for replacing a video's audio stream.
 
     ``shortest`` keeps the historical fast path where the output ends with
     the shorter input. Callers covering generated speech with an extended
     video tail must pass ``shortest=False`` so the audio tail is preserved.
+    ``audio_language`` tags the new audio stream so players can name it.
     """
     command = [
         ffmpeg_executable,
@@ -556,6 +581,7 @@ def build_replace_video_audio_command(
     ]
     if str(audio_codec or "aac").strip().lower() == "aac":
         command.extend(["-b:a", str(audio_bitrate or "192k")])
+    command.extend(audio_language_metadata(audio_language))
     command.extend(["-movflags", "+faststart"])
     if shortest:
         command.extend(["-shortest", temp_output_path])

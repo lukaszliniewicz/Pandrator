@@ -168,6 +168,17 @@ def test_generation_operation_client_uses_only_quoted_fixed_routes():
         cast(Any, client).get_generation_run_coverage("run-id", "latest")
 
 
+def test_generation_operation_accepts_the_id_name_other_tools_return():
+    by_alias = GetGenerationOperationInput(generation_operation_id="root")
+    assert by_alias.resolved_operation_id == "root"
+    both = GetGenerationOperationInput(operation_id="root", generation_operation_id="root")
+    assert both.resolved_operation_id == "root"
+    with pytest.raises(ValidationError, match="different operations"):
+        GetGenerationOperationInput(operation_id="root", generation_operation_id="other")
+    with pytest.raises(ValidationError, match="Pass operation_id"):
+        GetGenerationOperationInput()
+
+
 def test_generation_operation_schemas_are_bounded_and_strict():
     assert GetGenerationOperationInput(operation_id="root").wait_seconds == 0
     assert GetGenerationOperationInput(operation_id="root").include_coverage is True
@@ -292,7 +303,7 @@ def test_coverage_tool_returns_only_counts_ids_side_and_bounded_ordinals():
 
 def test_registration_exposes_flat_typed_read_only_tools_and_structured_shape():
     application = FakeApplication(
-        [operation_payload(state="running")],
+        [operation_payload(state="running"), operation_payload(state="running")],
         coverage=coverage_payload(),
     )
     runtime = make_runtime(application)
@@ -316,6 +327,7 @@ def test_registration_exposes_flat_typed_read_only_tools_and_structured_shape():
     signature = inspect.signature(operation_tool["function"])
     assert list(signature.parameters) == [
         "operation_id",
+        "generation_operation_id",
         "wait_seconds",
         "include_coverage",
         "response_mode",
@@ -329,6 +341,11 @@ def test_registration_exposes_flat_typed_read_only_tools_and_structured_shape():
     )
     assert "structuredContent" in structured
     assert structured["structuredContent"]["result"]["id"] == "stable-root-id"
+    aliased = operation_tool["function"](
+        generation_operation_id="stable-root-id",
+        response_mode="structured",
+    )
+    assert aliased["structuredContent"]["result"]["id"] == "stable-root-id"
 
     coverage_tool = server.tools["pandrator_get_generation_run_coverage"]
     coverage_signature = inspect.signature(coverage_tool["function"])
@@ -345,4 +362,4 @@ def test_registration_exposes_flat_typed_read_only_tools_and_structured_shape():
     )
     assert "structuredContent" in structured_coverage
     assert structured_coverage["structuredContent"]["result"]["run_id"] == "run-id"
-    assert response_modes == ["structured", "structured"]
+    assert response_modes == ["structured", "structured", "structured"]

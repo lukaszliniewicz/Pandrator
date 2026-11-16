@@ -300,6 +300,35 @@ class TranslationProjectServiceTests(unittest.TestCase):
         with self.database.session() as db:
             self.assertIsNotNone(db.get(SessionRecord, self.source.id))
 
+    def test_session_id_in_place_of_project_id_names_the_mix_up(self):
+        payload = {"expected_revision": 1, "targets": [{"target_language": "pl"}]}
+
+        def post(resource_id, key):
+            return self.client.post(
+                f"/api/v1/translation-projects/{resource_id}/branches",
+                json=payload,
+                headers={**self.headers, "Idempotency-Key": key},
+            )
+
+        before = post(self.source.id, "session-as-project-1")
+        self.assertEqual(404, before.status_code)
+        self.assertIn("is a session id", before.get_json()["error"]["message"])
+        self.assertIn("Create a translation project", before.get_json()["error"]["message"])
+
+        project = self._create_project()["project"]
+        after = post(self.source.id, "session-as-project-2")
+        self.assertEqual(404, after.status_code)
+        self.assertIn(
+            f"Its translation project is {project['id']}.",
+            after.get_json()["error"]["message"],
+        )
+
+        unknown = post("no-such-id", "session-as-project-3")
+        self.assertEqual(
+            "Session, correction, or project not found.",
+            unknown.get_json()["error"]["message"],
+        )
+
     def test_http_replay_and_failed_batch_leave_no_orphan_sessions(self):
         create_headers = {**self.headers, "Idempotency-Key": "create-project-key"}
         create_payload = {
