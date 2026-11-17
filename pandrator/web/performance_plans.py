@@ -1452,7 +1452,9 @@ def freeze_performance_snapshot(
     )
     if plan.base_signature != signature:
         raise ValueError(
-            "The adopted performance plan is stale after a speech edit. Review a new performance plan before synthesis."
+            "The adopted performance plan is stale after a speech edit. Copy it to keep every entry the edit "
+            "did not affect (Copy unchanged blocks in Speakers & delivery, or copy_from_id), "
+            "then review and adopt the copy before synthesis."
         )
     if annotations is None:
         annotations = _annotations(session, plan)

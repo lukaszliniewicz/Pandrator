@@ -14,12 +14,13 @@ dictionary before assigning voices. If the user asks to replace one cast voice,
 design and assign that character without discarding accepted narrator or cast
 assignments. Keep voice IDs and settings in the session, not only in chat.
 
-An adopted speaker plan belongs to one speech-plan revision. After a block
-edit, list performance plans for the new revision: `ancestor_adopted_plan`
-names the earlier plan. Create a plan with that `copy_from_id`; set
-`keep_unchanged=true` to keep the unchanged blocks' speakers without new
-analysis, then review and adopt it. A cast run on a revision that lost its
-plan is refused until then, or until the user accepts
+An adopted speaker plan belongs to one speech-plan revision, and a block edit
+makes it stale. After an edit, list performance plans for the active
+revision. Copy its stale adopted plan, or, when it has none,
+the plan `ancestor_adopted_plan` names: create a plan with that
+`copy_from_id` and `keep_unchanged=true` to keep the unchanged blocks'
+speakers without new analysis, then review and adopt it. Until then a cast
+run is refused; a revision with no plan can also run if the user accepts
 `allow_without_speaker_plan`, which voices dialogue from each block's markup.
 
 New plain-text sources also need deterministic `clean_source` before

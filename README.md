@@ -40,7 +40,7 @@ Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.5 / Manager 0.9.32
 
 ## New in 0.14.5
 
-- **Speaker plans survive edits.** Restoring or editing a cast book's revision keeps its adopted speaker plan, a stale plan can be copied with only the changed blocks left to review, and a cast run no longer starts silently without one.
+- **Speaker plans survive edits.** Restoring a cast book's revision keeps its adopted speaker plan, a plan an edit made stale can be copied with only the changed blocks left to review, and a cast run no longer starts silently without one.
 - **Long cast books stay responsive.** Abandoned recast previews stop, a preview takes seconds instead of minutes, and missing-only starts, Prepare text and stage selections hold the database writer far less.
 - **Generation carries on past declined lines.** A line Gemini or Vertex AI refuses is marked failed and the rest of the run continues.
 - **Manager updates restart the new version.** Restarting through the Manager after an update runs the newly activated version.

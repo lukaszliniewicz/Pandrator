@@ -117,7 +117,9 @@ recorded words, speaker, voice, language, structure and timing match.
 Restoring a speech-plan revision, including the copy an edit makes of a
 reviewed or used revision, carries that revision's adopted plan over unchanged,
 because the restored blocks are exact copies; a plan already stale on its own
-revision is not carried.
+revision is not carried. On an edit copy the edit then makes the carried plan
+stale, so a cast run is refused until it is copied as above and the copy is
+adopted.
 
 Non-pause vocalizations are disabled by default. Enabling them permits explicit
 requested events; it does not authorize the planner to invent emotional sounds.
