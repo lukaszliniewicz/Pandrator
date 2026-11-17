@@ -71,8 +71,9 @@ class CreatePerformancePlanInput(PerformanceSessionInput):
         min_length=1,
         max_length=80,
         description=(
-            "Copy entries from another plan. A plan made stale by an edit on this same "
-            "revision keeps the entries whose block and planning context are unchanged; "
+            "Copy entries from another plan. Pass that plan's purpose and "
+            "annotation_format too; a copy does not inherit them. A plan made stale by "
+            "an edit keeps the entries whose block and planning context are unchanged; "
             "the response reports copied_count and skipped_count."
         ),
     )

@@ -18,8 +18,10 @@ An adopted speaker plan belongs to one speech-plan revision, and a block edit
 makes it stale. After an edit, list performance plans for the active
 revision. Copy its stale adopted plan, or, when it has none,
 the plan `ancestor_adopted_plan` names: create a plan with that
-`copy_from_id` and `keep_unchanged=true` to keep the unchanged blocks'
-speakers without new analysis, then review and adopt it. Until then a cast
+`copy_from_id`, the source plan's `purpose` and `annotation_format` (a copy
+does not inherit them, and the defaults are `delivery` and `pssml`), and
+`keep_unchanged=true` to keep the unchanged blocks' speakers without new
+analysis, then review and adopt it. Until then a cast
 run is refused; a revision with no plan can also run if the user accepts
 `allow_without_speaker_plan`, which voices dialogue from each block's markup.
 
