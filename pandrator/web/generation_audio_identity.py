@@ -567,6 +567,14 @@ class AudioIdentityContext:
             pinned, contexts = self.performance_states[revision_id]
             if pinned.get("_performance_error"):
                 raise ValueError(pinned["_performance_error"])
+            review_ids = (pinned.get("performance_snapshot") or {}).get("review_segment_ids")
+            if review_ids and segment.id in review_ids:
+                # Only this segment's speaker plan entry no longer fits; the
+                # rest of the revision keeps its frozen performance.
+                from .performance_validity import REVIEW_MESSAGE
+
+                return {**identity, "performance_request_hash": "unavailable",
+                        "performance_error": REVIEW_MESSAGE}
             text = segment.optimized_text or segment.text
             prepared = segment_performance_settings(
                 settings, pinned, segment.id, text, contexts=contexts,

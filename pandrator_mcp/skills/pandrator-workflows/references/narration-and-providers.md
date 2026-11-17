@@ -14,21 +14,41 @@ dictionary before assigning voices. If the user asks to replace one cast voice,
 design and assign that character without discarding accepted narrator or cast
 assignments. Keep voice IDs and settings in the session, not only in chat.
 
-An adopted speaker plan belongs to one speech-plan revision, and a block edit
-makes it stale. After an edit, list performance plans for the active
-revision. Copy its stale adopted plan, or, when it has none,
-the plan `ancestor_adopted_plan` names: create a plan with that
-`copy_from_id`, the source plan's `purpose` and `annotation_format` (a copy
-does not inherit them, and the defaults are `delivery` and `pssml`), and
-`keep_unchanged=true`. That keeps each entry whose block and planning context
-are unchanged (a locked entry needs only its own block). The edited blocks
-need new entries, and so may unlocked neighbours whose planning context the
-edit changed; the plan's `total` minus `analysed_count` counts them. In
-`passive` mode, claim and submit the plan's batches for them; `llm` mode
-queues the analysis itself. Review those blocks before adopting the copy.
-Until then a cast run is refused; a revision with no plan can also run if the
-user accepts `allow_without_speaker_plan`, which voices dialogue from each
-block's markup.
+An adopted speaker plan belongs to one speech-plan revision. After a block
+edit it is judged block by block: unchanged blocks keep their entries, and so
+does an edited block whose change stays inside one stretch of its markup. Read
+the plan for the active revision: `review_segment_count` and `review_segments`
+name the blocks that need a new entry (a change that does not fit, or a
+changed speaker, language, node kind or section); each `ordinal` there is
+0-based, while the refusal counts blocks from 1. A change does not fit when it
+reaches a spoken line's edge (any boundary inside a line, such as an event or
+control, is an edge too), adds text or words right beside an event or control
+(rewording the word there counts, as "Hello" to "Hi, hello"), or adds, removes
+or replaces a quotation mark in a block with a spoken line (a single quote
+counts unless it sits inside a word, so an edit that moves it into or out of a
+word counts too). An edited attribution ("said John" to "said Mary") fits and
+keeps the old speaker, so copy the plan when the speaker should change. A run
+that includes a block needing review is refused naming it; a run without it can
+start. Recast, workflow checks and voiceover regroup or repair are refused while
+any block of the revision needs review.
+Phrase editing, the starting markup of a split, merge or re-segmentation, and
+the plan's own segment preview still need a plan that fits the whole revision.
+Restores and edit copies carry
+the adopted plan, stale or not, with the same judgement. When blocks need
+review, or unlocked neighbours of an edited block should be reviewed again,
+copy the plan: list performance plans for the active revision and copy its
+adopted plan, or, when it has none, the plan `ancestor_adopted_plan` names:
+create a plan with that `copy_from_id`, the source plan's `purpose` and
+`annotation_format` (a copy does not inherit them, and the defaults are
+`delivery` and `pssml`), and `keep_unchanged=true`. That keeps each entry whose
+block and planning context are unchanged (a locked entry needs only its own
+block). The edited blocks need new entries, and so may unlocked neighbours
+whose planning context the edit changed; the plan's `total` minus
+`analysed_count` counts them. In `passive` mode, claim and submit the plan's
+batches for them; `llm` mode queues the analysis itself. Review those blocks
+before adopting the copy. A revision with no plan can also run if the user
+accepts `allow_without_speaker_plan`, which voices dialogue from each block's
+markup.
 
 New plain-text sources also need deterministic `clean_source` before
 `prepare_text`. Follow the ready stage or orchestration plan; leave agentic

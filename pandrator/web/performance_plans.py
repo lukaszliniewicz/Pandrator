@@ -39,6 +39,8 @@ from .performance_read_projections import (
     summary_settings,
 )
 from .performance_schemas import PerformancePlanCreateRequest, PerformanceResult
+from .performance_validity import plan_characters as _characters
+from .performance_validity import plan_validity
 from .settings_policy import RevisionConflict
 from .speech_analysis_policy import assert_pass_result
 from .speech_annotation_records import (
@@ -182,11 +184,6 @@ def _assert_current(
 
 def _unit_map(plan: m.PerformancePlan) -> dict[str, dict[str, Any]]:
     return {str(unit["id"]): unit for unit in plan.units_json}
-
-
-def _characters(plan: m.PerformancePlan) -> list[dict[str, Any]]:
-    value = plan.settings_json.get("character_dictionary") or []
-    return deepcopy(value) if isinstance(value, list) else []
 
 
 def _annotation_format(plan: m.PerformancePlan) -> str:
@@ -535,24 +532,49 @@ def create_plan(
             m.PerformancePlan.status == "adopted",
         )
     )
-    adopted_xml = {}
+    # The adopted plan's entries that still hold: all of them while it fits
+    # the revision; otherwise, for a new draft that copies nothing, those its
+    # per-block judgement keeps (unchanged and fitted blocks). ``copy_from_id``
+    # has its own rule below, so a copy starts from a stale plan's block
+    # markup as before.
+    candidates: dict[str, Any] = {}
     if adopted and adopted.base_signature == signature:
-        adopted_xml = {
-            key: xml
-            for key, value in _annotations(session, adopted).items()
-            if (xml := record_markup(value)) is not None
+        candidates = _annotations(session, adopted)
+    elif adopted and not request.copy_from_id:
+        candidates = {
+            key: entry["annotation"]
+            for key, entry in plan_validity(
+                session, adopted, selected.active_revision_id
+            ).entries.items()
         }
+    # An entry whose markup no longer parses against the current characters
+    # (one was removed or renamed since adoption) is left out on either path,
+    # so its block starts from its own markup and the entry is not seeded.
+    spoken_by_id = {segment.id: segment.optimized_text or segment.text for segment in segments}
+    adopted_entries: dict[str, Any] = {}
+    adopted_records: dict[str, Any] = {}
+    for key, value in candidates.items():
+        xml = record_markup(value)
+        if xml is not None and key in spoken_by_id:
+            try:
+                adopted_records[key] = normalized_record(
+                    spoken_by_id[key], key, {"speech_xml": xml}, characters
+                )
+            except ValueError:
+                continue
+        adopted_entries[key] = value
     units = []
     for segment, unit in _block_units(session, selected.active_revision_id, segments, block_hashes):
         spoken = unit["spoken_text"]
         if annotation_format == "xml":
-            source_xml = adopted_xml.get(segment.id) or _source_markup(segment, segment.id, spoken)
-            source_record = normalized_record(
-                spoken,
-                segment.id,
-                {"speech_xml": source_xml},
-                characters,
-            )
+            source_record = adopted_records.get(segment.id)
+            if source_record is None:
+                source_record = normalized_record(
+                    spoken,
+                    segment.id,
+                    {"speech_xml": _source_markup(segment, segment.id, spoken)},
+                    characters,
+                )
             unit["speech_xml"] = record_markup(source_record)
         units.append(unit)
     if not units:
@@ -606,13 +628,12 @@ def create_plan(
             "skipped_count": len(source_annotations) - len(seed),
         }
     elif request.mode != "manual":
-        previous = adopted
-        if previous and previous.base_signature == signature:
-            seed = {
-                key: value
-                for key, value in _annotations(session, previous).items()
-                if value.get("locked")
-            }
+        # Reanalysis keeps the adopted plan's locked choices that still hold.
+        seed = {
+            key: value
+            for key, value in adopted_entries.items()
+            if value.get("locked")
+        }
     for unit in units:
         if unit["id"] in seed and not record_markup(seed[unit["id"]]):
             # Protected legacy choices remain inspectable/editable in their
@@ -722,11 +743,40 @@ def describe_plan(
         if batch.status == "completed":
             annotations.update(deepcopy(batch.annotations_json or {}))
     annotations.update(deepcopy(plan.manual_annotations_json or {}))
+    selected_plan = session.scalar(
+        select(m.GenerationPlan).where(m.GenerationPlan.session_id == plan.session_id)
+    )
+    on_revision = (
+        selected_plan is not None
+        and selected_plan.active_revision_id == plan.plan_revision_id
+    )
+    signature = plan_signature(session, plan.plan_revision_id) if on_revision else None
     try:
-        _assert_current(session, plan)
+        _assert_current(
+            session, plan, selected_plan=selected_plan, base_signature=signature
+        )
         stale = False
     except RevisionConflict:
         stale = True
+    # Per-segment state, judged only for an adopted plan on the active
+    # revision. A matching signature means nothing changed; null means "not
+    # judged" (a draft or superseded plan, or another revision).
+    changed_count: int | None = None
+    review_count: int | None = None
+    review_segments: list[dict[str, Any]] | None = None
+    if on_revision and plan.status == "adopted":
+        changed_count, review_count, review_segments = 0, 0, []
+        if signature != plan.base_signature:
+            validity = plan_validity(
+                session, plan, plan.plan_revision_id, annotations=annotations,
+                counts_only=True,
+            )
+            changed_count = len(validity.changed_ids)
+            review_count = len(validity.review)
+            review_segments = [
+                {"ordinal": ordinal, "id": segment_id}
+                for ordinal, segment_id in validity.review[:20]
+            ]
     job = session.get(m.Job, plan.job_id) if plan.job_id else None
     candidate_units = [
         unit
@@ -789,6 +839,9 @@ def describe_plan(
         "job_status": job.status if job else None,
         "settings": deepcopy(plan.settings_json) if is_full else summary_settings(plan.settings_json),
         "stale": stale,
+        "changed_segment_count": changed_count,
+        "review_segment_count": review_count,
+        "review_segments": review_segments,
         "created_at": plan.created_at.isoformat(),
         "adopted_at": plan.adopted_at.isoformat() if plan.adopted_at else None,
         "total": len(plan.units_json),
@@ -1243,13 +1296,21 @@ def carry_adopted_plan(
 
     A restore copies its target's blocks exactly, so the target's adopted plan
     fits them as it is; only the block IDs change. Nothing is remapped onto
-    different words or structure: a plan stale on its own revision, or a
-    block that no longer matches its entry, carries nothing, and the restored
-    revision then needs a plan of its own as before.
+    different words or structure: a block that no longer matches its entry
+    carries nothing, and the restored revision then needs a plan of its own
+    as before.
+
+    A plan stale on its own revision (an edit made after adoption) carries
+    stale in the same way: each entry stays on the text it was made for, the
+    carried plan keeps the source's ``base_signature``, and ``plan_validity``
+    judges it per block on the new revision, so it reports the same changed
+    and review blocks as the source.
     """
     source = _adopted_plan(session, source_revision_id)
-    if source is None or source.base_signature != plan_signature(session, source_revision_id):
+    if source is None:
         return None
+    source_signature, source_hashes = plan_signature_parts(session, source_revision_id)
+    stale = source.base_signature != source_signature
     signature, block_hashes = plan_signature_parts(session, revision_id)
     segments = {
         row.id: row
@@ -1265,16 +1326,29 @@ def carry_adopted_plan(
         children = lineage.get(str(unit["id"])) or []
         target = segments.get(children[0]) if len(children) == 1 else None
         spoken = str(unit["spoken_text"])
-        if target is None or target.removed or (target.optimized_text or target.text) != spoken:
+        if target is None:
             return None
-        # The source is current, so the restored blocks are exactly what its
-        # entries were made for: a plan made before block hashes gains them.
-        moved = {
-            **deepcopy(unit),
-            "id": target.id,
-            "ordinal": target.ordinal,
-            "source_hash": block_hashes[target.id],
-        }
+        if stale:
+            # The unit keeps the text, hash and fields it was planned with, so
+            # the new revision is judged exactly as the source was. Its block
+            # hash moves only while its source block is unchanged; an edited
+            # block keeps the old hash, so ``copy_from_id`` still sees the edit.
+            moved = {**deepcopy(unit), "id": target.id, "ordinal": target.ordinal}
+            source_hash = unit.get("source_hash")
+            if source_hash and source_hash == source_hashes.get(str(unit["id"])):
+                moved["source_hash"] = block_hashes[target.id]
+        elif target.removed or (target.optimized_text or target.text) != spoken:
+            return None
+        else:
+            # The source is current, so the restored blocks are exactly what
+            # its entries were made for: a plan made before block hashes gains
+            # them.
+            moved = {
+                **deepcopy(unit),
+                "id": target.id,
+                "ordinal": target.ordinal,
+                "source_hash": block_hashes[target.id],
+            }
         record = deepcopy(annotations.get(str(unit["id"])))
         try:
             if isinstance(unit.get("speech_xml"), str):
@@ -1295,7 +1369,8 @@ def carry_adopted_plan(
     plan = m.PerformancePlan(
         session_id=source.session_id,
         plan_revision_id=revision_id,
-        base_signature=signature,
+        # A stale source stays stale in the same way on the new revision.
+        base_signature=source.base_signature if stale else signature,
         settings_json={
             **deepcopy(source.settings_json),
             "carried_from_plan_id": source.id,
@@ -1310,6 +1385,15 @@ def carry_adopted_plan(
     session.add(plan)
     session.flush()
     return plan
+
+
+def has_review_blocks(session, plan: m.PerformancePlan) -> bool:
+    """Whether a block of the plan's own revision needs a new review.
+
+    A plan that fits its revision as a whole has none, so this needs no
+    signature: every block is unchanged and nothing is fitted.
+    """
+    return bool(plan_validity(session, plan, plan.plan_revision_id, counts_only=True).review)
 
 
 def _lineage_ancestors(session, revision_id: str) -> Iterator[str]:
@@ -1428,7 +1512,10 @@ def freeze_performance_snapshot(
     """Freeze adopted performance, reusing guarded reads from the same snapshot.
 
     Optional arguments may only be supplied by callers that read them in the
-    same transaction.  Staleness is still checked against ``base_signature``.
+    same transaction.  When ``base_signature`` differs from the plan's, the
+    plan is judged per segment: unchanged and fitted entries are frozen, and
+    the segments that need a new review are listed in ``review_segment_ids``.
+    Refusing a run that includes one is the run-start freeze's job.
     """
     if plan is not None and (
         plan.plan_revision_id != revision_id or plan.status != "adopted"
@@ -1450,15 +1537,22 @@ def freeze_performance_snapshot(
         if base_signature is not None
         else plan_signature(session, revision_id)
     )
-    if plan.base_signature != signature:
-        raise ValueError(
-            "The adopted performance plan is stale after a speech edit. Copy it to keep every entry the edit "
-            "did not affect (Copy unchanged blocks in Speakers & delivery, or copy_from_id), "
-            "then review and adopt the copy before synthesis."
-        )
     if annotations is None:
         annotations = _annotations(session, plan)
-    snapshot["performance_snapshot"] = {
+    review_ids: list[str] | None = None
+    if plan.base_signature != signature:
+        validity = plan_validity(session, plan, revision_id, annotations=annotations)
+        frozen_annotations = validity.entries
+        review_ids = list(validity.review_ids)
+    else:
+        frozen_annotations = {
+            unit["id"]: {
+                "text_hash": unit["text_hash"],
+                "annotation": deepcopy(annotations[unit["id"]]),
+            }
+            for unit in plan.units_json
+        }
+    frozen: dict[str, Any] = {
         "schema_version": 1,
         "id": plan.id,
         "version": plan.version,
@@ -1471,14 +1565,13 @@ def freeze_performance_snapshot(
         "character_dictionary_revision": plan.settings_json.get(
             "character_dictionary_revision", 0
         ),
-        "annotations": {
-            unit["id"]: {
-                "text_hash": unit["text_hash"],
-                "annotation": deepcopy(annotations[unit["id"]]),
-            }
-            for unit in plan.units_json
-        },
+        "annotations": frozen_annotations,
     }
+    if review_ids is not None:
+        # Only a changed plan carries the key, so an unchanged plan freezes
+        # exactly as before.
+        frozen["review_segment_ids"] = review_ids
+    snapshot["performance_snapshot"] = frozen
 
 
 def performance_for_segment(

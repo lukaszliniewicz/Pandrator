@@ -134,8 +134,26 @@ option remains independent.
 General direction and Gemini before/after text context also work without this
 pass. Generation freezes the adopted annotations and context. Vocalizations are
 off by default; no previous generated audio is used as an implicit voice prompt.
-Explicit block changes require fresh performance review. Automatic split/regroup
-passes are disabled while performance or semantic context is enabled.
+After a text edit, an adopted plan is judged block by block: unchanged blocks
+keep their directions, and so does an edited block whose change stays inside one
+stretch of its markup, away from a spoken line's edges (any boundary inside a
+line, such as an event or control, is an edge too), adds no text or words right
+beside an event or control (not even by rewording the word there, as "Hello" to
+"Hi, hello"), and adds, removes or replaces no quotation mark in a block with a spoken line (a
+single quote counts unless it sits inside a word, so an edit that moves it into
+or out of a word counts too).
+Only a block whose markup no longer fits needs a fresh performance review; a run
+that includes it is refused naming it, and a run without it can start. Recast,
+workflow checks and voiceover regroup or repair are refused while any block of
+the revision needs review. An edited attribution keeps the speaker the plan
+chose. `pandrator_get_performance_plan` reports `changed_segment_count`,
+`review_segment_count` and `review_segments` (first 20, with 0-based `ordinal`;
+the refusal counts blocks from 1) for an adopted plan on the selected revision.
+Phrase editing, the starting markup of a split, merge or re-segmentation, and
+the plan's own segment preview still need a plan that fits the whole revision,
+so copy and adopt it first; the blocks a split or merge makes then need fresh
+performance review. Automatic split/regroup passes are disabled while
+performance or semantic context is enabled.
 
 ## Multiple voices and audio drama
 

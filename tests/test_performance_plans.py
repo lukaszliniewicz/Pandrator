@@ -812,16 +812,152 @@ def test_restore_carries_the_adopted_plan_without_a_new_review(case, annotation_
         assert (markup is not None) == (annotation_format == "xml")
 
 
-def test_restore_of_a_stale_plan_carries_nothing(case):
-    _adopted(case)
+@pytest.mark.parametrize("change", ["fits", "structure", "removed"])
+def test_restore_of_a_stale_plan_carries_it_judged_per_block(case, change):
+    # Upstream carried nothing from a plan made stale by an edit, so from the
+    # second edit copy on the plan was lost. Each entry now moves with its
+    # block and is judged on the new revision as it was on the source.
+    adopted = _adopted(case)
+    _change(case, 0, text="The request was rejected outright.")
+    if change == "structure":
+        _change(case, 2, speaker="B")
+    elif change == "removed":
+        _change(case, 2, removed=True)
+    source = get(case, adopted)
+    assert source["stale"]
+    result = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "restore", "target_revision_id": case["revision_id"]},
+    )
+    lineage = {key: children[0] for key, children in result["lineage"].items()}
+    assert result["review_required"]["performance"] is (change == "structure")
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["status"] == "adopted" and carried["stale"]
+    assert carried["carried_from_id"] == adopted["id"]
+    # Every entry is mapped, a removed block's included.
+    assert [item["id"] for item in carried["items"]] == result["segment_ids"]
+    assert (carried["changed_segment_count"], carried["review_segment_count"]) == (
+        source["changed_segment_count"],
+        source["review_segment_count"],
+    )
+    assert carried["review_segments"] == [
+        {"ordinal": item["ordinal"], "id": lineage[item["id"]]}
+        for item in source["review_segments"]
+    ]
+    snapshot: dict = {}
+    with case["services"]["database"].session() as session:
+        plans.freeze_performance_snapshot(session, result["plan_revision_id"], snapshot)
+    frozen = snapshot["performance_snapshot"]
+    first, middle, last = (lineage[key] for key in case["segment_ids"])
+    assert frozen["id"] == carried["id"]
+    # The unchanged middle entry freezes as it was; the edited block fits.
+    assert (
+        frozen["annotations"][middle]["annotation"]["delivery"]["instruction"]
+        == "Mark a restrained contrast"
+    )
+    assert first in frozen["annotations"]
+    assert (last in frozen["annotations"]) is (change == "fits")
+    assert frozen["review_segment_ids"] == ([last] if change == "structure" else [])
+
+
+@pytest.mark.parametrize("locked", [True, False])
+def test_a_copy_of_a_plan_carried_stale_keeps_what_a_copy_of_its_source_keeps(case, locked):
+    # The carried plan keeps the edited block's old hash and moves the others,
+    # so copying it judges the restored blocks exactly as copying the source.
+    adopted = _adopted(case, locked=locked)
     _change(case, 0, text="The request was rejected outright.")
     result = case["services"]["generation"].revise_topology(
         case["session_id"],
         case["revision_id"],
         {"action": "restore", "target_revision_id": case["revision_id"]},
     )
-    assert result["review_required"]["performance"] is True
-    assert result["carried_performance_plan_id"] is None
+    carried_id = result["carried_performance_plan_id"]
+    carried = get(case, {"id": carried_id})
+    assert carried["stale"] and carried["carried_from_id"] == adopted["id"]
+    copied = create(
+        {**case, "revision_id": result["plan_revision_id"]},
+        copy_from_id=carried_id,
+        keep_unchanged=True,
+    )
+    first, middle, last = result["segment_ids"]
+    items = _items(copied)
+    assert items[first]["annotation"] is None
+    if locked:
+        assert items[middle]["annotation"]["delivery"]["instruction"] == "Mark a restrained contrast"
+    else:
+        assert items[middle]["annotation"] is None
+    assert items[last]["annotation"] is not None
+    expected = (2, 1) if locked else (1, 2)
+    assert (copied["copied_count"], copied["skipped_count"]) == expected
+    assert copied["copied_from_id"] == carried_id
+
+
+def _adopted_xml(case):
+    """An adopted XML plan: a locked delivery on the first block, an event in
+    the second, and an unlocked delivery on the last."""
+    plan = create(case, annotation_format="xml")
+    first, middle, last = case["segment_ids"]
+    items = [
+        {
+            "segment_id": first,
+            "speech_xml": f'<segment id="{first}"><em>cross</em>The request was rejected.</segment>',
+            "locked": True,
+        },
+        {
+            "segment_id": middle,
+            "speech_xml": (
+                f'<segment id="{middle}">Yet this defeat<event kind="laugh"/>'
+                " would be temporary.</segment>"
+            ),
+            "locked": True,
+        },
+        {
+            "segment_id": last,
+            "speech_xml": f'<segment id="{last}"><em>calm</em>Membership doubled soon afterwards.</segment>',
+        },
+    ]
+    edited = case["post"](
+        "/" + plan["id"],
+        {"expected_version": plan["version"], "items": items},
+        method="patch",
+    )
+    assert edited.status_code == 200, edited.get_json()
+    return adopt(case, get(case, plan))
+
+
+@pytest.mark.parametrize("mode", ["manual", "passive", "llm"])
+def test_a_new_draft_starts_from_a_stale_adopted_plans_valid_entries(case, mode):
+    adopted = _adopted_xml(case)
+    first, middle, last = case["segment_ids"]
+    # A fitted edit inside the first block's text, and one that crosses the
+    # event in the second.
+    _change(case, 0, text="The request was firmly rejected.")
+    _change(case, 1, text="Temporary.")
+    read = get(case, adopted)
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (2, 1)
+    options = {"model_name": "local/test"} if mode == "llm" else {}
+    # An llm draft only queues its analysis job, which is never run here.
+    with patch("pandrator.logic.llm_handler.chat_completion_with_metadata") as completion:
+        draft = create(case, annotation_format="xml", mode=mode, **options)
+    completion.assert_not_called()
+    assert bool(draft.get("job_id")) is (mode == "llm")
+    assert "copied_from_id" not in draft
+    items = _items(draft)
+    # The fitted entry is rebased onto the new text, the review block starts
+    # from its own markup, and the unchanged block keeps its entry.
+    assert items[first]["speech_xml"] == (
+        f'<segment id="{first}"><em>cross</em>The request was firmly rejected.</segment>'
+    )
+    assert "<event" not in items[middle]["speech_xml"]
+    assert "<em>calm</em>" in items[last]["speech_xml"]
+    if mode == "manual":
+        # A manual draft starts from those entries but records no choice.
+        assert all(item["annotation"] is None for item in items.values())
+    else:
+        # Reanalysis (passive or llm) keeps only the locked entry that still holds.
+        assert [key for key, item in items.items() if item["annotation"]] == [first]
+        assert sum(batch["unit_count"] for batch in draft["batches"]) == 2
 
 
 def _cast_override():
