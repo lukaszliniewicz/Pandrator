@@ -14,6 +14,7 @@ from pandrator_mcp.schemas import (
     RenewDispatchBatchInput,
     SubmitDispatchBatchInput,
 )
+from pandrator_mcp.schemas.common import WarningMessage
 from pandrator_mcp.tools.dispatch import (
     claim_dispatch_batch,
     create_dispatch_run,
@@ -146,6 +147,46 @@ class DispatchHandlerTests(unittest.TestCase):
     def setUp(self):
         self.application = _Application()
         self.runtime = SimpleNamespace(require_application=lambda: self.application)
+
+    def test_create_run_surfaces_pre_edit_timeline_warnings_in_the_envelope(self):
+        message = (
+            "This session has a reviewed media edit, but the selected source is on the "
+            "pre-edit timeline."
+        )
+        self.application.create_dispatch_run = lambda session_id, **kwargs: {
+            "id": "run-1",
+            "status": "ready",
+            "warnings": [message],
+        }
+        outcome = create_dispatch_run(
+            self.runtime,
+            CreateDispatchRunInput(
+                session_id="session-1",
+                kind="correction",
+                idempotency_key="create:warning",
+            ),
+        )
+        self.assertEqual("run-1", outcome.result["id"])
+        self.assertNotIn("warnings", outcome.result)
+        self.assertEqual(
+            [WarningMessage(code="source_on_pre_edit_timeline", message=message)],
+            outcome.warnings,
+        )
+
+        self.application.create_dispatch_run = lambda session_id, **kwargs: {
+            "id": "run-2",
+            "status": "ready",
+            "warnings": [],
+        }
+        quiet = create_dispatch_run(
+            self.runtime,
+            CreateDispatchRunInput(
+                session_id="session-1",
+                kind="correction",
+                idempotency_key="create:quiet",
+            ),
+        )
+        self.assertEqual([], quiet.warnings)
 
     def test_split_anchor_inspection_preserves_lease_and_pagination(self):
         arguments = InspectDispatchSplitBoundariesInput(

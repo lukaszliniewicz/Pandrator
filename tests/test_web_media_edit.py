@@ -296,6 +296,63 @@ class MediaEditServiceTests(unittest.TestCase):
         )
         return media, captions, timing
 
+    def test_state_reports_ancestor_revision_ids_nearest_first_within_the_plan(self):
+        media = self._register("ancestry.mp4", "upload", b"ancestry", "video")
+        captions = self._register(
+            "ancestry.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:01,000\nEdited.\n",
+            "srt",
+            parent_ids=[media.id],
+        )
+        other_session_id = "33333333-3333-4333-8333-333333333333"
+        with self.database.session() as session:
+            other = SessionRecord(
+                id=other_session_id,
+                name="Other media edit",
+                storage_key="44444444-4444-4444-8444-444444444444",
+                workflow_kind="media_edit",
+            )
+            create_session_project(session, other)
+            plan = MediaEditPlan(session_id=self.session_id)
+            other_plan = MediaEditPlan(session_id=other_session_id)
+            session.add_all([plan, other_plan])
+            session.flush()
+
+            def revision(plan_id, number, parent=None):
+                item = MediaEditPlanRevision(
+                    plan_id=plan_id,
+                    parent_revision_id=parent,
+                    revision_number=number,
+                    source_media_artifact_id=media.id,
+                    editorial_transcript_artifact_id=captions.id,
+                    duration_ms=5000,
+                    content_hash=f"hash-{number}",
+                )
+                session.add(item)
+                session.flush()
+                return item
+
+            foreign = revision(other_plan.id, 1)
+            first = revision(plan.id, 1, foreign.id)
+            second = revision(plan.id, 2, first.id)
+            third = revision(plan.id, 3, second.id)
+            plan.active_revision_id = third.id
+            session.flush()
+
+            state = self._service()._state_in_session(session, self.session_id)
+            self.assertEqual(
+                [second.id, first.id], state["plan"]["ancestor_revision_ids"]
+            )
+
+            # A cycle stops the walk instead of repeating revisions.
+            first.parent_revision_id = third.id
+            session.flush()
+            state = self._service()._state_in_session(session, self.session_id)
+            self.assertEqual(
+                [second.id, first.id], state["plan"]["ancestor_revision_ids"]
+            )
+
     def test_schema_head_and_media_edit_foreign_keys(self):
         with closing(sqlite3.connect(self.paths.database)) as connection:
             self.assertEqual(

@@ -20,6 +20,7 @@ from ..schemas import (
     RenewDispatchBatchInput,
     SubmitDispatchBatchInput,
 )
+from ..schemas.common import WarningMessage
 
 _RUN_METADATA_KEYS = (
     "id",
@@ -576,8 +577,14 @@ def create_dispatch_run(
     )
     run_id = _run_id(result)
     next_actions = [_claim_next_action(run_id, sequence="first")] if run_id else []
+    warnings = [
+        WarningMessage(code="source_on_pre_edit_timeline", message=str(item))
+        for item in result.get("warnings") or []
+        if str(item).strip()
+    ]
     return ToolOutcome(
         result=_metadata(result),
+        warnings=warnings,
         next_actions=next_actions,
     )
 

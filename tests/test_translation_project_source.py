@@ -388,24 +388,31 @@ def test_internal_transcription_fork_preserves_media_ancestry_guard(source_case)
             "content_hash": revision.content_hash,
         }
     directory = services.paths.sessions / source.storage_key
+    rendered_ids = {}
     for role in ("media_edit_media", "media_edit_subtitles", "media_edit_word_timestamps"):
         path = directory / f"{role}.txt"
         path.write_text(role)
-        services.artifacts.register(
+        rendered_ids[role] = services.artifacts.register(
             path,
             kind="txt",
             role=role,
             session_id=source.id,
             metadata=metadata,
-        )
+        ).id
     with services.database.immediate_session() as db:
-        with pytest.raises(ValueError, match="not derived from the active edited timeline"):
+        with pytest.raises(ValueError) as rejected:
             services.session_forks.fork_in_session(
                 db,
                 source.id,
                 checkpoint.id,
                 allow_source_checkpoint=True,
             )
+    message = str(rejected.value)
+    assert "not derived from the active edited timeline" in message
+    assert (
+        f"artifact {rendered_ids['media_edit_subtitles']}, role media_edit_subtitles"
+        in message
+    )
 
 
 def _refresh(services, source, project, checkpoint, **changes):

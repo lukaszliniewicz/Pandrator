@@ -17,6 +17,8 @@ from pandrator.web.models import (
     DispatchRun,
     Document,
     DocumentRevision,
+    MediaEditPlan,
+    MediaEditPlanRevision,
     Segment,
     SegmentLineage,
     SessionStageSelection,
@@ -341,6 +343,125 @@ class DispatchWebTests(unittest.TestCase):
         )
         self.assertEqual(201, response.status_code, response.get_json())
         return response.get_json()
+
+    def _reviewed_media_edit(self, session_id: str, *, reviewed: bool = True) -> None:
+        with self.extension["database"].session() as session:
+            transcription = session.scalar(
+                select(Artifact)
+                .where(
+                    Artifact.session_id == session_id,
+                    Artifact.role == "transcription",
+                )
+                .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            )
+            plan = MediaEditPlan(session_id=session_id)
+            session.add(plan)
+            session.flush()
+            revision = MediaEditPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                content_hash="reviewed-edit-hash",
+                source_media_artifact_id=transcription.id,
+                editorial_transcript_artifact_id=transcription.id,
+                duration_ms=2000,
+                reviewed=reviewed,
+            )
+            session.add(revision)
+            session.flush()
+            plan.active_revision_id = revision.id
+
+    def test_correction_on_the_pre_edit_timeline_warns_and_names_the_edited_subtitles(self):
+        session_id, transcription_id = self._source()
+        media_edit_id = self._stage_artifact(
+            session_id,
+            name="reviewed-edit.srt",
+            role="media_edit_subtitles",
+            text="Edited source.",
+            parent_id=transcription_id,
+        )
+        self._reviewed_media_edit(session_id)
+
+        run = self._create(session_id, source_artifact_id=transcription_id)
+
+        self.assertEqual(1, len(run["warnings"]))
+        self.assertIn("pre-edit timeline", run["warnings"][0])
+        self.assertIn(
+            f"source_artifact_id={media_edit_id} (media_edit_subtitles)",
+            run["warnings"][0],
+        )
+
+    def test_correction_on_the_pre_edit_timeline_warns_to_render_first(self):
+        session_id, transcription_id = self._source()
+        self._reviewed_media_edit(session_id)
+
+        run = self._create(session_id, source_artifact_id=transcription_id)
+
+        self.assertEqual(1, len(run["warnings"]))
+        self.assertIn("Render the reviewed edit first", run["warnings"][0])
+        self.assertIn("media_edit_subtitles", run["warnings"][0])
+
+    def test_correction_on_the_edited_timeline_has_no_warning(self):
+        session_id, transcription_id = self._source()
+        media_edit_id = self._stage_artifact(
+            session_id,
+            name="edited.srt",
+            role="media_edit_subtitles",
+            text="Edited source.",
+            parent_id=transcription_id,
+        )
+        self._reviewed_media_edit(session_id)
+
+        on_edit = self._create(session_id, source_artifact_id=media_edit_id)
+        self.assertEqual([], on_edit["warnings"])
+        derived_id = self._stage_artifact(
+            session_id,
+            name="edited-correction.srt",
+            role="correction",
+            text="Corrected edit.",
+            parent_id=media_edit_id,
+        )
+        derived = self._create(session_id, source_artifact_id=derived_id)
+        self.assertEqual([], derived["warnings"])
+
+    def test_unreviewed_or_missing_media_edit_has_no_warning(self):
+        session_id, transcription_id = self._source()
+        self._reviewed_media_edit(session_id, reviewed=False)
+        unreviewed = self._create(session_id, source_artifact_id=transcription_id)
+        self.assertEqual([], unreviewed["warnings"])
+
+        plain_session_id, plain_transcription_id = self._source()
+        plain = self._create(plain_session_id, source_artifact_id=plain_transcription_id)
+        self.assertEqual([], plain["warnings"])
+
+    def test_translation_on_the_pre_edit_timeline_warns_and_on_the_edit_does_not(self):
+        session_id, transcription_id = self._source(target_language="pl")
+        media_edit_id = self._stage_artifact(
+            session_id,
+            name="translation-edit.srt",
+            role="media_edit_subtitles",
+            text="Edited source.",
+            parent_id=transcription_id,
+        )
+        self._reviewed_media_edit(session_id)
+
+        pre_edit = self._create(
+            session_id,
+            kind="translation",
+            target_language="pl",
+            source_artifact_id=transcription_id,
+        )
+        self.assertEqual(1, len(pre_edit["warnings"]))
+        self.assertIn(
+            f"source_artifact_id={media_edit_id} (media_edit_subtitles)",
+            pre_edit["warnings"][0],
+        )
+        on_edit = self._create(
+            session_id,
+            kind="translation",
+            target_language="pl",
+            source_artifact_id=media_edit_id,
+        )
+        self.assertEqual([], on_edit["warnings"])
 
     def test_default_correction_prefers_media_edit_subtitles_over_transcription(self):
         session_id, transcription_id = self._source()

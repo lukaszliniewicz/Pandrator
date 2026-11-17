@@ -46,6 +46,7 @@ from pandrator.logic.dubbing.subtitle_projection import project_subtitle_display
 
 from .access.contracts import ProjectAction
 from .access.current_session_policy import require_current_session_access
+from .artifact_lineage import artifact_ancestor_ids
 from .artifact_selection import ROLE_TO_STAGE
 from .artifacts import ArtifactService, PreparedArtifactRegistration, sha256_file
 from .database import Database, is_sqlite_busy
@@ -73,6 +74,8 @@ from .models import (
     DispatchRun,
     Document,
     DocumentRevision,
+    MediaEditPlan,
+    MediaEditPlanRevision,
     Provider,
     ProviderModel,
     Segment,
@@ -723,6 +726,43 @@ class DispatchRunService:
             for segment in segments
         }
 
+    @staticmethod
+    def _pre_edit_timeline_warnings(
+        session: Session, session_id: str, source: Artifact
+    ) -> list[str]:
+        """Warn when dispatch starts on text the reviewed edit no longer carries."""
+        plan = session.scalar(
+            select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+        )
+        if plan is None or not plan.active_revision_id:
+            return []
+        revision = session.get(MediaEditPlanRevision, plan.active_revision_id)
+        if revision is None or not revision.reviewed:
+            return []
+        edited = session.scalar(
+            select(Artifact)
+            .where(
+                Artifact.session_id == session_id,
+                Artifact.role == "media_edit_subtitles",
+                Artifact.state == "current",
+            )
+            .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        )
+        if edited is None:
+            return [
+                "This session has a reviewed media edit, but the selected source is on "
+                "the pre-edit timeline. Render the reviewed edit first, then correct or "
+                "translate its media_edit_subtitles artifact."
+            ]
+        if edited.id in artifact_ancestor_ids(session, source.id):
+            return []
+        return [
+            "This session has a reviewed media edit, but the selected source is on the "
+            "pre-edit timeline. The result will not carry onto the edited video, and a "
+            "translation project needs text derived from the edited subtitles. Use "
+            f"source_artifact_id={edited.id} (media_edit_subtitles) instead."
+        ]
+
     def create_in_session(
         self,
         session: Session,
@@ -757,6 +797,7 @@ class DispatchRunService:
             source_artifact_id=source_artifact_id,
         )
         document = session.get(Document, revision.document_id)
+        warnings = self._pre_edit_timeline_warnings(session, session_id, source)
         output_role = (
             "translation"
             if kind == "correction" and source.role == "translation"
@@ -1030,7 +1071,9 @@ class DispatchRunService:
                 )
             )
         session.flush()
-        return self._run_payload(run)
+        payload = self._run_payload(run)
+        payload["warnings"] = warnings
+        return payload
 
     @staticmethod
     def _known_speakers(run: DispatchRun) -> set[str]:
