@@ -186,9 +186,10 @@ def test_narration_that_gains_or_loses_a_quotation_mark_needs_review():
     assert [span.speaker_id for span in parsed(renamed, "She said, “Bah!” Then left.").spans] == [
         None, "c-scrooge", None,
     ]
-    # A block without a spoken line is not judged by quotation marks.
+    # A block without a spoken line is held to the same rule: narration that
+    # gains a quotation mark may now hold dialogue the narrator would read.
     plain = xml_record("He said hi.", '<segment id="s">He said hi.</segment>')
-    assert fit("He said hi.", plain, "He said “hi.”") is not None
+    assert fit("He said hi.", plain, "He said “hi.”") is None
 
 
 def test_a_spoken_line_that_gains_or_loses_a_quotation_mark_needs_review():
@@ -267,10 +268,33 @@ def test_an_edit_that_turns_an_apostrophe_into_a_quotation_mark_or_back_does_not
     )
     assert fit(contraction, contraction_record, "He said, “Bah!” Then I'll go.") is not None
     assert fit(contraction, contraction_record, "He said, “Bah!” Then you'd go.") is not None
-    # A block without a spoken line is not judged by quotation marks.
+    # So is a block without a spoken line.
     plain = "Then didn't leave."
     plain_record = xml_record(plain, "<segment id=\"s\">Then didn't leave.</segment>")
-    assert fit(plain, plain_record, "Then didn 't leave.") is not None
+    assert fit(plain, plain_record, "Then didn 't leave.") is None
+    assert fit(plain, plain_record, "Then couldn't leave.") is not None
+
+
+def test_a_block_without_a_spoken_line_that_gains_or_loses_a_quotation_mark_needs_review():
+    # The maintainer's example (#167): narration gains its first quote.
+    old = "Hello world, she began"
+    narrated = xml_record(old, '<segment id="s"><narrator>Hello world, she began</narrator></segment>')
+    assert fit(old, narrated, "Hello world, she said “go”") is None
+    plain_text = "He said hi, then left."
+    plain = xml_record(plain_text, '<segment id="s">He said hi, then left.</segment>')
+    assert fit(plain_text, plain, "He said “hi,” then left.") is None
+    assert fit(plain_text, plain, "He said 'hi,' then left.") is None
+    quoted_text = "He said “hi,” then left."
+    quoted = xml_record(quoted_text, '<segment id="s">He said “hi,” then left.</segment>')
+    # Lost, or swapped for another mark.
+    assert fit(quoted_text, quoted, "He said hi,” then left.") is None
+    assert fit(quoted_text, quoted, 'He said "hi,” then left.') is None
+    # Other edits, an apostrophe that stays one included, still fit.
+    assert fit(plain_text, plain, "He said hello, then left.") is not None
+    contraction = "Then I'd go."
+    contraction_record = xml_record(contraction, "<segment id=\"s\">Then I'd go.</segment>")
+    assert fit(contraction, contraction_record, "Then I'll go.") is not None
+    assert fit(quoted_text, quoted, "He said “hi,” then went.") is not None
 
 
 def test_an_insertion_beside_an_event_or_control_at_a_block_edge_does_not_fit():
@@ -407,6 +431,83 @@ def test_legacy_anchor_moved_by_an_earlier_copy_of_its_quote_does_not_fit():
     # them; placed before, the anchor moves, so the entry does not fit.
     beside = "Then the defeat stayed."
     assert fit(beside, legacy_record(beside, "defeat", 1), "Then the defeat defeat stayed.") is None
+
+
+def test_legacy_entry_that_gains_loses_or_swaps_a_quotation_mark_does_not_fit():
+    old = "He said “Go now.” Then the defeat came."
+    record = legacy_record(old, "defeat")
+    # The anchor still resolves to the same words in every case below; the
+    # quotation mark alone sends the entry to review, as for markup.
+    assert fit(old, record, "He said “Go now.” Then “the defeat came.") is None
+    assert fit(old, record, "He said Go now.” Then the defeat came.") is None
+    assert fit(old, record, 'He said "Go now.” Then the defeat came.') is None
+    assert fit(old, record, "He said “Go now.” Then 'the defeat came.") is None
+    plain = "Then the defeat came."
+    plain_record = legacy_record(plain, "defeat")
+    assert fit(plain, plain_record, "Then the defeat came, she said “go”.") is None
+    # An apostrophe moved into or out of a word.
+    apostrophe = "Then didn't the defeat come?"
+    apostrophe_record = legacy_record(apostrophe, "defeat")
+    assert fit(apostrophe, apostrophe_record, "Then didn 't the defeat come?") is None
+    assert fit(apostrophe, apostrophe_record, "Then didn' the defeat come?") is None
+    # One that stays inside a word, and other edits, still fit.
+    assert fit(apostrophe, apostrophe_record, "Then couldn't the defeat come?") is not None
+    contraction = "Then I'd see the defeat."
+    contraction_record = legacy_record(contraction, "defeat")
+    assert fit(contraction, contraction_record, "Then I'll see the defeat.") is not None
+    assert fit(old, record, "He said “Go on now.” Then the defeat came.") is not None
+
+
+def plain_fit(old: str, new: str) -> bool:
+    return fit(old, xml_record(old, f'<segment id="s">{old}</segment>'), new) is not None
+
+
+def test_a_dash_that_opens_a_line_of_dialogue_counts_as_a_quotation_mark():
+    # Polish, Spanish, Russian and French open a line of dialogue with a dash.
+    assert not plain_fit("Poszła do domu.", "— Idę do domu — powiedziała.")
+    assert not plain_fit("Ella se fue.", "—Me voy —dijo ella.")
+    assert not plain_fit("Она ушла.", "– Я ухожу, – сказала она.")
+    assert not plain_fit("Poszła.\nI tyle.", "Poszła.\n― I tyle.")
+    # Removed, or turned into one or back by the text before it on its line.
+    assert not plain_fit("— Idę do domu.", "Idę do domu.")
+    assert not plain_fit("Ona: — Idę.", "— Idę.")
+    assert not plain_fit("— Idę.", "Ona: — Idę.")
+    assert not plain_fit("Poszła.\n— Idę.", "Poszła. — Idę.")
+    legacy = "Then the defeat came."
+    assert fit(legacy, legacy_record(legacy, "defeat"), "— Then the defeat came.") is None
+    attributed = "Then: — the defeat came."
+    assert fit(attributed, legacy_record(attributed, "defeat"), "— the defeat came.") is None
+    # A dash inside narration, or one that keeps opening its line, still fits.
+    assert plain_fit("He paused, then left.", "He paused — then left.")
+    assert plain_fit("He paused — then left.", "He paused, then left.")
+    assert plain_fit("— Idę do domu.", "— Idę do sklepu.")
+    assert fit(legacy, legacy_record(legacy, "defeat"), "Then – the defeat came.") is not None
+
+
+def test_a_single_quote_between_letters_of_an_unspaced_script_is_a_quotation_mark():
+    # Chinese and Japanese put no spaces between words, so a letter on each
+    # side does not make the mark an apostrophe inside a word.
+    assert not plain_fit("他说你好就走了。", "他说'你好'就走了。")
+    assert not plain_fit("他说你好就走了。", "他说’你好’就走了。")
+    assert not plain_fit("彼はこんにちはと言った。", "彼は'こんにちは'と言った。")
+    assert not plain_fit("タロウはハイと言った。", "タロウは'ハイ'と言った。")
+    # Space-separated scripts keep their apostrophes inside words.
+    assert plain_fit("Then didn't leave.", "Then couldn't leave.")
+    assert plain_fit("Он сказал д'Артаньян.", "Он позвал д'Артаньян.")
+
+
+@pytest.mark.parametrize("mark", ["⹂", "＇", "`", "❛", "❜", "❝", "❞"])
+def test_other_quotation_marks_count(mark):
+    assert not plain_fit("He said hi, then left.", f"He said {mark}hi, then left.")
+    legacy = "He said hi, then the defeat came."
+    assert fit(legacy, legacy_record(legacy, "defeat"), f"He said {mark}hi, then the defeat came.") is None
+
+
+@pytest.mark.parametrize("mark", ["″", "´", "״"])
+def test_primes_acute_and_gershayim_are_not_quotation_marks(mark):
+    # Each has common uses that are not quotation (inches, an accent, Hebrew
+    # acronyms), so adding one is an ordinary edit.
+    assert plain_fit("It was six feet tall.", f"It was 6{mark} tall.")
 
 
 def test_legacy_anchor_fits_an_edit_before_or_after_it_without_a_new_copy():
@@ -1034,22 +1135,63 @@ def test_block_preview_judges_the_adopted_plan_per_block(cast_case):
     assert preview(case, last)["text"] == "Membership doubled soon afterwards."
 
 
-def test_units_made_before_structure_fields_are_judged_by_their_text(cast_case):
+def test_units_made_before_structure_fields_need_review_after_an_edit(cast_case):
     case, plan, _before, _work = cast_case
+    ids = case["segment_ids"]
     with case["services"]["database"].session() as session:
         stored = session.get_one(m.PerformancePlan, plan["id"])
         stored.units_json = [
             {key: value for key, value in unit.items() if key not in validity.STRUCTURE_FIELDS}
             for unit in stored.units_json
         ]
+    # While the plan fits its revision as a whole it is not judged per block.
+    assert get(case, plan)["review_segment_count"] == 0
+    assert set(freeze(case)["annotations"]) == set(ids)
+    # One edit that fits: such a unit cannot show its block's speaker,
+    # language, node kind or section is unchanged, so every block needs review.
     edit_segment(case, 1, "Yet this defeat would be brief.")
-    # A field the unit never recorded is not judged.
-    change_block(case, 2, speaker="B")
     read = get(case, plan)
-    assert (read["changed_segment_count"], read["review_segment_count"]) == (1, 0)
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (3, 3)
+    assert read["review_segments"] == [
+        {"ordinal": index, "id": segment_id} for index, segment_id in enumerate(ids)
+    ]
     frozen = freeze(case)
-    assert set(frozen["annotations"]) == set(case["segment_ids"])
-    assert frozen["review_segment_ids"] == []
+    assert frozen["annotations"] == {}
+    assert frozen["review_segment_ids"] == ids
+    refused = start_run(case)
+    assert refused.status_code == 409, refused.get_json()
+    message = refused.get_json()["error"]["message"]
+    assert all(
+        f"block {index + 1} ({segment_id})" in message for index, segment_id in enumerate(ids)
+    )
+
+
+@pytest.mark.parametrize("performance", [True, False], ids=["performance", "casting-only"])
+def test_a_frozen_run_preview_of_a_review_block_gives_the_review_message(case, performance):
+    from pandrator.web.speech_plan_preview import preview_speech_segment
+
+    # Casting alone also freezes the adopted plan, review blocks included.
+    seed_cast(case)
+    cast_settings(case, performance_enabled=performance)
+    complete_every_segment(case)
+    flagged, _middle, last = case["segment_ids"]
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    started = start_run(case, [last])
+    assert started.status_code == 202, started.get_json()
+    run_id = started.get_json()["id"]
+
+    def frozen_preview(segment_id: str) -> dict:
+        return preview_speech_segment(
+            case["services"], case["session_id"], revision_id=case["revision_id"],
+            segment_id=segment_id, generation_run_id=run_id,
+        )
+
+    # The run's frozen plan lists the block for review and holds no entry for
+    # it, so the preview says why, not that it is absent from the snapshot.
+    with pytest.raises(ValueError) as refused:
+        frozen_preview(flagged)
+    assert str(refused.value) == REVIEW_MESSAGE
+    assert frozen_preview(last)["text"] == "Membership doubled soon afterwards."
 
 
 @pytest.mark.parametrize("mode", ["manual", "passive"])

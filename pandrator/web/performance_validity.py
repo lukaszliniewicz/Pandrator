@@ -14,6 +14,7 @@ snapshot is frozen or a plan is read.
 from __future__ import annotations
 
 import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Set
 from copy import deepcopy
@@ -38,14 +39,39 @@ from .speech_annotation_records import normalized_record, record_annotation, rec
 # contribute their tail, exactly as ``speech_markup._extract`` reads them.
 _SPOKEN_TEXT_TAGS = frozenset({"segment", "dialogue", "speaker", "narrator", "span"})
 _DIALOGUE_TAGS = frozenset({"dialogue", "speaker"})
-# Quotation marks that open or close a spoken line.
+# Quotation marks that open or close a spoken line: Unicode's quotation marks,
+# the backtick of older e-texts (`like this') and the heavy quotation mark
+# ornaments.
 _QUOTE_MARKS = frozenset(
     '"\u201c\u201d\u201e\u201f\u2018\u201a\u201b\u00ab\u00bb\u2039\u203a'
     "\u300c\u300d\u300e\u300f\u301d\u301e\u301f\uff02\uff62\uff63\ufe41\ufe42\ufe43\ufe44"
+    "\u2e42\uff07`\u275b\u275c\u275d\u275e"
 )
 # Single quotation marks that are also the apostrophe of ordinary words: one
-# counts as a quotation mark unless letters stand on both sides of it.
+# counts as a quotation mark unless letters of a script that separates its
+# words with spaces stand on both sides of it.
 _APOSTROPHES = frozenset("'\u2019")
+# Scripts written without spaces between words, where a letter on each side of
+# a single quote does not make it an apostrophe inside a word ("\u4ed6\u8bf4'\u4f60\u597d'").
+_UNSPACED_SCRIPTS = (
+    "CJK ",
+    "HIRAGANA",
+    "KATAKANA",
+    "HALFWIDTH KATAKANA",
+    "BOPOMOFO",
+    "YI ",
+    "THAI",
+    "LAO",
+    "KHMER",
+    "MYANMAR",
+    "TIBETAN",
+)
+# Dashes that open a line of dialogue in Polish, Spanish, Russian or French
+# ("\u2014 Id\u0119 do domu \u2014 powiedzia\u0142a."): one counts as a quotation mark when only
+# whitespace stands before it on its line. A dash inside narration does not.
+_DIALOGUE_DASHES = frozenset("\u2014\u2013\u2015")
+# What ``str.splitlines`` breaks a line at.
+_LINE_BREAKS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
 # A word, for telling whether an edit adds words beside an event or control.
 _WORD = re.compile(r"\S+")
 
@@ -62,10 +88,13 @@ class PlanValidity:
     ``entries`` holds the frozen snapshot entry (``text_hash`` and ``annotation``)
     of every block that keeps one: unchanged blocks and fitted edits.
     ``changed_ids`` lists blocks whose spoken text or structure differs from
-    the plan's (fitted, review, removed, blanked, or spoken now with no unit).
+    the plan's (fitted, review, removed, blanked, or spoken now with no unit),
+    and spoken blocks whose unit never recorded a structure field, edited or
+    not, since they cannot show their structure is unchanged.
     ``review`` lists ``(ordinal, id)`` of spoken blocks that have no usable
     entry, in ordinal order: an edit that does not fit, a changed speaker,
-    language, node kind or section, or a block the plan never planned.
+    language, node kind or section (or a unit that never recorded one), or a
+    block the plan never planned.
     """
 
     entries: dict[str, dict[str, Any]]
@@ -108,11 +137,29 @@ def _change_placements(old: str, new: str) -> tuple[tuple[int, int, str], ...]:
     return _changed_range(old, new, from_end=True), _changed_range(old, new)
 
 
+def _spaced_letter(char: str) -> bool:
+    """Whether ``char`` is a letter of a script that puts spaces between words."""
+
+    return char.isalpha() and not unicodedata.name(char, "").startswith(_UNSPACED_SCRIPTS)
+
+
+def _line_start(text: str, index: int) -> bool:
+    """Whether only whitespace stands before ``text[index]`` on its line."""
+
+    for char in reversed(text[:index]):
+        if char in _LINE_BREAKS:
+            return True
+        if not char.isspace():
+            return False
+    return True
+
+
 def _quotation_marks(text: str, start: int, end: int) -> bool:
     """Whether ``text[start:end]`` holds a quotation mark.
 
-    ``'`` and ``’`` count unless letters stand on both sides of them, where
-    they are an apostrophe inside a word ("didn’t").
+    ``'`` and ``’`` count unless letters of a space-separated script stand on
+    both sides of them, where they are an apostrophe inside a word ("didn’t").
+    A dash counts at the start of a line, where it opens a line of dialogue.
     """
 
     for index in range(start, end):
@@ -121,20 +168,25 @@ def _quotation_marks(text: str, start: int, end: int) -> bool:
             return True
         if char in _APOSTROPHES and not (
             0 < index < len(text) - 1
-            and text[index - 1].isalpha()
-            and text[index + 1].isalpha()
+            and _spaced_letter(text[index - 1])
+            and _spaced_letter(text[index + 1])
         ):
+            return True
+        if char in _DIALOGUE_DASHES and _line_start(text, index):
             return True
     return False
 
 
 def _quote_role_changes(old: str, new: str, start: int, end: int, length: int) -> bool:
-    """Whether a single quote right beside ``old[start:end]`` changes role.
+    """Whether a single quote or dash beside ``old[start:end]`` changes role.
 
     ``length`` characters replace the change in ``new``. Only the characters on
     either side of it gain or lose a neighbouring letter, so only an apostrophe
     there can turn into a quotation mark ("didn't" to "didn 't") or back
-    ("'tis" to "x'tis").
+    ("'tis" to "x'tis"). A dash opens a line of dialogue by what stands before
+    it on its line, so only the first one after the change, with nothing but
+    whitespace between them, can turn into a quotation mark ("Then: — Go." to
+    "— Go.") or back.
     """
 
     for old_index, new_index in ((start - 1, start - 1), (end, start + length)):
@@ -146,7 +198,33 @@ def _quote_role_changes(old: str, new: str, start: int, end: int, length: int) -
             != _quotation_marks(new, new_index, new_index + 1)
         ):
             return True
+    dash = end
+    while dash < len(old) and old[dash] not in _LINE_BREAKS and old[dash].isspace():
+        dash += 1
+    if dash < len(old) and old[dash] in _DIALOGUE_DASHES:
+        # The text after the change is the same in both, shifted.
+        moved = dash - end + start + length
+        if _quotation_marks(old, dash, dash + 1) != _quotation_marks(new, moved, moved + 1):
+            return True
     return False
+
+
+def _quote_changed(old: str, new: str, start: int, end: int, replacement: str) -> bool:
+    """Whether replacing ``old[start:end]`` with ``replacement`` touches a quote.
+
+    A quotation mark added, removed or replaced, or an apostrophe or dash beside
+    the change turned into one or back, moves where speech starts or ends: in
+    any block, narration may now hold dialogue, or a spoken line an attribution
+    ("“Go,” he said, “now.”"). A dash that opens a line counts as a quotation
+    mark ("— Go — she said."). An apostrophe that stays inside a word ("didn't"
+    to "couldn't") and a dash inside narration are not one.
+    """
+
+    return (
+        _quotation_marks(old, start, end)
+        or _quotation_marks(new, start, start + len(replacement))
+        or _quote_role_changes(old, new, start, end, len(replacement))
+    )
 
 
 def _words_added_beside(old: str, new: str, offsets: Set[int]) -> bool:
@@ -248,7 +326,6 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
     transcript, slots, markers = _text_slots(root)
     if transcript != old:
         return None
-    has_dialogue = any(element.tag in _DIALOGUE_TAGS for element in root.iter())
     if _words_added_beside(old, new, markers):
         return None
     chosen: int | None = None
@@ -275,14 +352,9 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
         # needs review.
         if voiced and (start == slot_start or end == slot_end):
             return None
-        # In a block with a spoken line, a quotation mark added, removed or
-        # replaced moves where speech starts or ends: narration may now hold
-        # dialogue, or a spoken line an attribution ("“Go,” he said, “now.”").
-        if has_dialogue and (
-            _quotation_marks(old, start, end)
-            or _quotation_marks(new, start, start + len(replacement))
-            or _quote_role_changes(old, new, start, end, len(replacement))
-        ):
+        # A quotation mark added, removed or replaced moves where speech
+        # starts or ends, with or without a spoken line in the block.
+        if _quote_changed(old, new, start, end, replacement):
             return None
     if chosen is None:
         return None
@@ -359,13 +431,15 @@ def fit_entry(
 
     The entry fits when the change lies inside one spoken string of its markup,
     wherever repeated characters let it sit; adds no text right beside an
-    event or control, nor words to the words beside one; does not reach the edge of a voiced string (an event or
-    control inside one is an edge too); adds, removes or replaces no quotation
-    mark, nor turns an apostrophe into one or back, in a block with a spoken
-    line; and the rebased markup parses against the new text. A legacy
-    (non-XML) annotation fits when it still validates against the new text,
-    every anchor still resolves to the same words, and no text or words are
-    added right beside an event.
+    event or control, nor words to the words beside one; does not reach the
+    edge of a voiced string (an event or control inside one is an edge too);
+    adds, removes or replaces no quotation mark (a dash that opens a line is
+    one), nor turns an apostrophe or dash into one or back, whether or not the
+    block has a spoken line; and the rebased
+    markup parses against the new text. A legacy (non-XML) annotation fits
+    when it still validates against the new text, every anchor still resolves
+    to the same words, no text or words are added right beside an event, and
+    no quotation mark changes, by the same rule as markup.
     """
 
     if record is None:
@@ -377,6 +451,12 @@ def fit_entry(
         try:
             fitted = validate_annotation(spoken_text, annotation)
             if not _legacy_anchors_hold(annotation, old, spoken_text):
+                return None
+            # Wherever repeated characters let the change sit.
+            if any(
+                _quote_changed(old, spoken_text, start, end, replacement)
+                for start, end, replacement in _change_placements(old, spoken_text)
+            ):
                 return None
         except ValueError:
             return None
@@ -452,8 +532,11 @@ def judge_block(
 
     Returns the state and the entry to freeze: ``unchanged`` with the stored
     record (not copied), ``fitted`` with a rebased record, ``review`` or
-    ``silent`` (removed or blank, nothing to speak) with ``None``. A unit made
-    before units recorded a structure field is not judged on that field.
+    ``silent`` (removed or blank, nothing to speak) with ``None``.
+
+    A unit made before units recorded a structure field cannot show that its
+    block's speaker, language, node kind or section is unchanged, so it needs
+    review, on every path a plan is judged, a project copy included.
     """
 
     if removed or not spoken_text.strip():
@@ -462,7 +545,7 @@ def judge_block(
         # Blank when the plan was made, spoken now.
         return REVIEW, None
     if any(
-        field in unit and unit[field] != structure[field] for field in STRUCTURE_FIELDS
+        field not in unit or unit[field] != structure[field] for field in STRUCTURE_FIELDS
     ):
         return REVIEW, None
     if unit.get("text_hash") == content_hash(spoken_text):

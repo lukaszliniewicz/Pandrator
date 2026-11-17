@@ -1244,6 +1244,11 @@
               Block settings such as voice or pauses changed since adoption.
               Every entry still holds, so this plan is still used for
               generation.
+            </p>{:else if selected.status === 'adopted'}<p>
+              This plan was adopted for another version of the speech, not the
+              one now in use, so generation does not use it. Copying it keeps
+              every block whose text and neighbours are unchanged, so only the
+              rest need review.
             </p>{:else}<p>
               The speech changed after this draft was made, so it can no longer
               be adopted. Copying it keeps every block whose text and neighbours

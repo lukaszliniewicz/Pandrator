@@ -300,9 +300,12 @@ def _record(value: Any, unit: dict[str, Any], characters: list[dict[str, Any]]) 
 def _source_unit(raw: Any, *, judged: bool = False) -> bool:
     """A raw source unit's shape; its block's ``source_hash`` is read past.
 
-    A judged unit may lack the structure fields ``judge_block`` skips, as units
-    made before those fields were recorded do. Its copy is built from the
-    current segment, so nothing missing reaches the destination.
+    A judged unit may lack structure fields, as units made before those fields
+    were recorded do, so the copy does not fail on it. ``judge_block`` then
+    sends its block to review, as a plan read in the app does: the copy's unit
+    is rebuilt from the current block and records its current speaker, so an
+    entry kept there would hide a speaker or language change the old unit
+    cannot show.
     """
     required = _UNIT_FIELDS - set(STRUCTURE_FIELDS) if judged else _UNIT_FIELDS
     return (

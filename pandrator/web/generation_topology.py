@@ -1759,6 +1759,11 @@ class TopologyBatch:
             activate=True,
         )
         affected = [saved[row.id] for row in self.rows if row.id in self.created]
+        # Only a restore carries the adopted speaker plan to the new revision
+        # (``carry_adopted_plan``); a batch holds only splits and merges, which
+        # carry none, as a single split or merge does not. The new revision has
+        # no adopted plan, so it needs one: ``performance`` is true for the same
+        # reason as a restore that carries nothing (``carried is None``).
         return {
             "id": self.plan.id,
             "plan_revision_id": revision.id,

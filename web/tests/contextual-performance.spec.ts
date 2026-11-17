@@ -610,10 +610,13 @@ test('an adopted speaker plan shows the blocks changed since adoption', async ({
     review_segment_count: null,
     review_segments: null
   };
+  // Null counts: the adopted plan is not judged, as it is not on the
+  // revision in use. It is still an adopted plan, not a draft.
   await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(status).toContainText(
-    'The speech changed after this draft was made, so it can no longer be adopted.'
+    'This plan was adopted for another version of the speech, not the one now in use, so generation does not use it.'
   );
+  await expect(status).not.toContainText('can no longer be adopted');
   await expect(status).not.toContainText('changed since adoption');
   await expect(
     status.getByRole('button', { name: 'Copy unchanged blocks', exact: true })
