@@ -332,7 +332,7 @@ def test_copy_keeps_an_adopted_plan_with_a_fitted_and_a_review_segment(performan
         signature = plan_signature(unit, revision_id)
         plan_id = plan.id
         assert plan.base_signature != signature
-    assert [unit["id"] for unit in plan.units_json] == target_ids[1:]
+        assert [unit["id"] for unit in plan.units_json] == target_ids[1:]
     read = body(u.alice.get(f"/api/v1/sessions/{target}/performance-plans/{plan_id}"))
     assert read["status"] == "adopted" and read["stale"] is True
     assert read["review_segment_count"] == 1 and read["changed_segment_count"] == 1
@@ -353,6 +353,64 @@ def test_copy_keeps_an_adopted_plan_with_a_fitted_and_a_review_segment(performan
     for ordinal in (1, 2):
         assert "performance_error" not in target_identities[ordinal]
         assert target_identities[ordinal] == source_identities[ordinal]
+
+
+def edit_segment(f, client, segment_id, text):
+    actor = actor_from_principal(current_browser_principal(replace(f.case, client=client)))
+    assert actor is not None
+    with f.case.database.immediate_session() as unit:
+        revision = unit.get_one(m.GenerationSegment, segment_id).revision
+    with execution_actor_scope(actor):
+        f.services.generation.update_segment(segment_id, revision, {"text": text})
+
+
+def plan_copy(client, csrf, session_id, revision_id, source_id):
+    return command(client, csrf, f"/api/v1/sessions/{session_id}/performance-plans", "", {
+        "expected_plan_revision_id": revision_id, "mode": "manual", "purpose": "combined",
+        "annotation_format": "xml", "copy_from_id": source_id}, status=201)
+
+
+def test_a_speaker_plan_copy_in_the_copied_project_sees_a_fitted_block_as_unchanged(performance):
+    p, f, u = performance, performance.f, performance.u
+    # Segment 1 changes inside its plain entry: the source plan is stale with
+    # nothing to review, and the copy carries it fresh on the current text.
+    edit_in_place(p, 1, "The second, better line.")
+    copied, _preview = _copy(f, p.source, u.alice, u.ah, u.workspace_id, "copy-fitted-only")
+    target = copied["source_session_id"]
+    with f.case.database.snapshot_session() as unit:
+        (plan,) = unit.scalars(select(m.PerformancePlan)
+            .where(m.PerformancePlan.session_id == target))
+        revision_id, plan_id = plan.plan_revision_id, plan.id
+        assert plan.base_signature == plan_signature(unit, revision_id)
+        assert all("source_hash" not in item for item in plan.units_json)
+        target_ids = [row.id for row in unit.scalars(select(m.GenerationSegment)
+            .where(m.GenerationSegment.plan_revision_id == revision_id)
+            .order_by(m.GenerationSegment.ordinal))]
+    read = body(u.alice.get(f"/api/v1/sessions/{target}/performance-plans/{plan_id}"))
+    assert read["stale"] is False and read["changed_segment_count"] == 0
+    source_read = body(u.alice.get(p.root + "/" + p.adopted["id"]))
+    assert source_read["stale"] is True and source_read["changed_segment_count"] == 1
+
+    # A speaker plan copy in the source still sees the edit: the edited block
+    # and its unlocked neighbour are left to review; the locked one is kept.
+    source_copy = plan_copy(u.alice, u.ah, p.source["id"], p.speech["active_revision_id"],
+        p.adopted["id"])
+    assert (source_copy["copied_count"], source_copy["skipped_count"]) == (1, 2)
+    # In the copied project the fitted block counts as unchanged, so every
+    # entry is kept, its neighbours' included.
+    target_copy = plan_copy(u.alice, u.ah, target, revision_id, plan_id)
+    assert (target_copy["copied_count"], target_copy["skipped_count"]) == (3, 0)
+
+    # After an edit in the copied project, the copied units (no block hash) are
+    # compared field by field: the unchanged locked block keeps its entry.
+    edit_segment(f, u.alice, target_ids[2], "The final, closing line.")
+    assert body(u.alice.get(f"/api/v1/sessions/{target}/performance-plans/{plan_id}"))[
+        "stale"] is True
+    edited_copy = plan_copy(u.alice, u.ah, target, revision_id, plan_id)
+    assert (edited_copy["copied_count"], edited_copy["skipped_count"]) == (1, 2)
+    with f.case.database.snapshot_session() as unit:
+        seeded = unit.get_one(m.PerformancePlan, edited_copy["id"]).manual_annotations_json
+    assert set(seeded) == {target_ids[0]}
 
 
 def test_copy_after_a_restore_of_a_stale_plan_judges_the_restored_blocks(performance):
@@ -460,6 +518,47 @@ def test_an_adopted_plan_on_a_fully_removed_revision_is_copied_without_units(per
         (plan,) = unit.scalars(select(m.PerformancePlan)
             .where(m.PerformancePlan.session_id == copied["source_session_id"]))
         assert plan.status == "adopted" and plan.units_json == []
+
+
+def adopt(p, plan):
+    command(p.u.alice, p.u.ah, p.root, "/" + plan["id"] + "/adopt",
+        {"expected_version": plan["version"], "enable": True})
+
+
+@pytest.mark.parametrize("mode", ["manual", "passive"])
+def test_a_pssml_plan_seeded_from_another_plan_is_copied(performance, mode):
+    # A pSSML plan made from another plan's entries marks its seeded units as
+    # legacy choices, a flag only an XML plan reads; the copy reads past it.
+    p, f, u = performance, performance.f, performance.u
+    source = command(u.alice, u.ah, p.root, "", {
+        "expected_plan_revision_id": p.speech["active_revision_id"], "mode": "manual",
+        "annotation_format": "pssml"}, status=201)
+    source = command(u.alice, u.ah, p.root, "/" + source["id"], {
+        "expected_version": source["version"], "items": [
+            {"segment_id": key, "annotation": {**annotation(f"direction {index}"),
+                "locked": True}} for index, key in enumerate(p.ids)]}, method="patch")
+    adopt(p, source)
+    seeded = command(u.alice, u.ah, p.root, "", {
+        "expected_plan_revision_id": p.speech["active_revision_id"], "mode": mode,
+        "annotation_format": "pssml", "copy_from_id": source["id"]}, status=201)
+    with f.case.database.snapshot_session() as unit:
+        units = unit.get_one(m.PerformancePlan, seeded["id"]).units_json
+    assert [item.get("legacy_annotation") for item in units] == [True] * 3
+    adopt(p, body(u.alice.get(p.root + "/" + seeded["id"])))
+
+    snapshot = capture_source(f, p.source)
+    assert snapshot.ready, snapshot.blockers
+    (frozen,) = adopted_rows(snapshot)
+    assert frozen["id"] == seeded["id"]
+    assert all("legacy_annotation" not in item for item in frozen["units_json"])
+    copied, _preview = _copy(f, p.source, u.alice, u.ah, u.workspace_id, f"copy-pssml-{mode}")
+    with f.case.database.snapshot_session() as unit:
+        (plan,) = unit.scalars(select(m.PerformancePlan)
+            .where(m.PerformancePlan.session_id == copied["source_session_id"]))
+        assert plan.status == "adopted"
+        assert plan.base_signature == plan_signature(unit, plan.plan_revision_id)
+        assert [record["delivery"]["instruction"] for record in
+            plan.manual_annotations_json.values()] == [f"direction {index}" for index in range(3)]
 
 
 def test_stale_draft_and_historical_body_are_not_loaded_or_copied(performance):

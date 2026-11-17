@@ -241,10 +241,14 @@ needs review. A plan read reports `changed_segment_count`,
 for an adopted plan on the selected revision; `stale` keeps its meaning.
 Copying the project carries such a plan into the new project, where the blocks
 that need review still need it. An edited block whose markup still fits arrives
-there on its new text and counts as unchanged, so a speaker plan copy in the new
-project keeps its entry and its neighbours' entries; to have such a block
-reviewed again, copy the speaker plan in the original project before copying
-the project. Phrase editing, the starting markup of a split, merge or
+there on its new text and counts as unchanged, and a plan with no block left to
+review arrives up to date (`stale` is false there, while the original's stays
+true). So a speaker plan copy in the new project keeps that block's entry and
+its neighbours' entries. To have the block reviewed again, copy the speaker plan
+in the original project, then review and adopt that copy, before copying the
+project or in the new project afterwards: the copy travels as a draft beside the
+adopted plan, whose entry is used until the copy is adopted. Phrase editing, the
+starting markup of a split, merge or
 re-segmentation, and the plan's own segment preview still need a plan that fits
 the whole revision: for those, copy the stale speaker plan and adopt that copy.
 

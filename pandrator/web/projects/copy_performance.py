@@ -298,7 +298,7 @@ def _record(value: Any, unit: dict[str, Any], characters: list[dict[str, Any]]) 
 
 
 def _source_unit(raw: Any) -> bool:
-    """A raw source unit's shape; upstream's ``source_hash`` is read past."""
+    """A raw source unit's shape; its block's ``source_hash`` is read past."""
     return (
         type(raw) is dict
         and _UNIT_FIELDS <= set(raw)
@@ -308,7 +308,13 @@ def _source_unit(raw: Any) -> bool:
 
 
 def _review_signature(signature: str) -> str:
-    """Derived stand-in for a signature that cannot match: some block needs review."""
+    """Derived stand-in for a signature that cannot match: some block needs review.
+
+    A row carrying it is judged again on every read, and a block with no unit
+    there is simply one more block to review. So a row with this signature
+    that lacks a kept entry still survives its own round trip: the check
+    proves the row is consistent, not that no entry was dropped.
+    """
     return stable_hash({"performance_review": signature})
 
 
@@ -458,14 +464,15 @@ def _freeze(
                 ).xml
         if record is not None:
             records[unit["id"]] = record
+        # A plan made from another plan's entries marks each seeded unit without
+        # markup as a legacy choice, whatever its format. Only an XML plan reads
+        # the flag, so a pSSML plan's is read past and never emitted. A fitted
+        # record keeps its entry's kind, so it is checked like any other.
         legacy = raw.get("legacy_annotation", False)
-        if (
-            type(legacy) is not bool
-            or legacy
-            and not fitted
-            and (
-                settings["annotation_format"] != "xml" or record is None or SPEECH_XML_KEY in record
-            )
+        if type(legacy) is not bool or (
+            legacy
+            and settings["annotation_format"] == "xml"
+            and (record is None or SPEECH_XML_KEY in record)
         ):
             raise _invalid()
         if (

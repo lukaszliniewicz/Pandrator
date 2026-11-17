@@ -1283,3 +1283,51 @@ def test_a_plan_carried_stale_by_a_restore_is_judged_as_its_source():
     dumped = json.dumps(frozen)
     assert "block-hash" not in dumped and "Second line here." not in dumped
     round_trip(rows, frozen)
+
+
+@pytest.mark.parametrize("path", ["fresh", "unchanged", "fitted", "draft"])
+def test_a_pssml_unit_marked_as_a_legacy_choice_is_read_past(path):
+    # A pSSML plan made from another plan's entries marks its seeded units as
+    # legacy choices; only an XML plan reads that flag.
+    rows = judged_rows()
+    raw, annotations = legacy_adopted(rows, xml=False)
+    if path == "fresh":
+        raw["base_signature"] = current_signature(rows)
+    elif path == "fitted":
+        edit(rows, s1="Second line there.")
+    elif path == "draft":
+        raw.update(status="draft", id="draft")
+    plain = deepcopy(raw)
+    for unit in raw["units_json"]:
+        unit["legacy_annotation"] = True
+    frozen = freeze(rows, raw, annotations)
+    assert frozen == freeze(rows, plain, annotations)
+    assert "legacy_annotation" not in json.dumps(frozen)
+    round_trip(rows, frozen)
+    raw["units_json"][1]["legacy_annotation"] = "yes"
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+@pytest.mark.parametrize("path", ["unchanged", "fitted"])
+def test_an_xml_unit_marked_as_a_legacy_choice_needs_a_legacy_entry(path):
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    # Segment 1's entry is markup, not a legacy choice.
+    raw["units_json"][1]["legacy_annotation"] = True
+    if path == "fitted":
+        edit(rows, s1="Second line there.")
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+def test_a_review_row_without_one_of_its_kept_entries_still_round_trips():
+    # The limit ``_review_signature`` states: under the review signature a block
+    # with no unit is one more block to review, so dropping a kept entry leaves
+    # a consistent row rather than a forged one.
+    rows = judged_rows()
+    frozen = judged(rows, s0="Go on now!", s1="Second line there.")
+    assert unit_ids(frozen) == ["segment-1", "segment-4"]
+    frozen["units_json"].pop()
+    frozen["manual_annotations_json"].pop("segment-4")
+    round_trip(rows, frozen)
