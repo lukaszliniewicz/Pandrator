@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
@@ -53,6 +54,8 @@ from .workflows import (
     WorkflowService,
     _workflow_primary_source,
 )
+
+logger = logging.getLogger(__name__)
 
 PLAN_SCHEMA_VERSION = "1"
 LOCAL_PROVIDER_IDS = frozenset(
@@ -686,8 +689,11 @@ class WorkflowExecutionPlanService:
         target_stage: str,
         resolved: ResolvedWorkflowStage,
         reuse_stages: set[str],
+        rerun_stages: set[str] | None = None,
         mismatched_stages: dict[str, Any] | None = None,
+        stage_freshness: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
+        rerun_stages = set(rerun_stages or ())
         snapshot = self.workflows.snapshot(session_id)
         stages = list(snapshot.get("stages") or [])
         target_index = next(
@@ -742,6 +748,20 @@ class WorkflowExecutionPlanService:
                 transformations,
             )
             allowed_keys = set(record.included_stages_json or []) | required
+        includable_stages: set[str] = set()
+        for item in stages[:target_index]:
+            key = str(item.get("key") or "")
+            if key == canonical_stage_key(target_stage):
+                key = target_stage
+            if key in allowed_keys and item.get("executable"):
+                includable_stages.add(key)
+        unavailable = sorted(rerun_stages - includable_stages - {target_stage})
+        if unavailable:
+            raise WorkflowPlanError(
+                "validation_error",
+                f"Stage '{unavailable[0]}' cannot run in this plan.",
+                422,
+            )
         steps: list[dict[str, Any]] = []
         for item in stages[: target_index + 1]:
             key = str(item.get("key") or "")
@@ -753,6 +773,8 @@ class WorkflowExecutionPlanService:
             selected_id = item.get("selected_artifact_id")
             if key == target_stage:
                 decision = "run"
+            elif key in rerun_stages:
+                decision = "rerun_explicit"
             elif key in reuse_stages and selected_id:
                 decision = "reuse_explicit"
             elif status == "completed" and selected_id:
@@ -768,16 +790,25 @@ class WorkflowExecutionPlanService:
                 decision = "run"
             else:
                 continue
-            steps.append(
-                {
-                    "order": len(steps) + 1,
-                    "stage": key,
-                    "title": str(item.get("title") or key),
-                    "decision": decision,
-                    "current_status": status,
-                    "artifact_id": selected_id,
-                }
-            )
+            step = {
+                "order": len(steps) + 1,
+                "stage": key,
+                "title": str(item.get("title") or key),
+                "decision": decision,
+                "current_status": status,
+                "artifact_id": selected_id,
+            }
+            if decision.startswith("reuse"):
+                if decision == "reuse_explicit":
+                    step["reuse_basis"] = "explicit"
+                else:
+                    evaluated = (stage_freshness or {}).get(key)
+                    step["reuse_basis"] = (
+                        evaluated.get("settings_evidence")
+                        if evaluated is not None
+                        else "no_prior_check"
+                    )
+            steps.append(step)
         if not steps or steps[-1]["stage"] != target_stage:
             steps.append(
                 {
@@ -950,6 +981,8 @@ class WorkflowExecutionPlanService:
         overrides: dict[str, Any] | None = None,
         continuation: bool = True,
         expires_in_minutes: int = 30,
+        reuse_stages: list[str] | None = None,
+        rerun_stages: list[str] | None = None,
     ) -> dict[str, Any]:
         context = self._context(principal)
         supplied = dict(overrides or {})
@@ -965,6 +998,59 @@ class WorkflowExecutionPlanService:
                 db_session,
                 session_id,
             )
+        requested_reuse_stages = {
+            str(value) for value in (reuse_stages or []) if str(value)
+        }
+        requested_rerun_stages = {
+            str(value) for value in (rerun_stages or []) if str(value)
+        }
+        if not continuation and (requested_reuse_stages or requested_rerun_stages):
+            raise WorkflowPlanError(
+                "validation_error",
+                "reuse_stages and rerun_stages apply only to continuation plans.",
+                422,
+            )
+        if requested_reuse_stages & requested_rerun_stages:
+            conflict = sorted(requested_reuse_stages & requested_rerun_stages)[0]
+            raise WorkflowPlanError(
+                "validation_error",
+                f"Stage '{conflict}' cannot be both reused and re-run.",
+                422,
+            )
+        if target_stage in requested_reuse_stages:
+            raise WorkflowPlanError(
+                "validation_error",
+                f"The target stage '{target_stage}' always runs; "
+                "remove it from reuse_stages.",
+                422,
+            )
+        planned_reuse_stages = (
+            requested_reuse_stages
+            | {
+                str(value)
+                for value in supplied.get("reuse_stages", []) or []
+                if str(value)
+            }
+        ) - requested_rerun_stages
+        planned_rerun_stages = requested_rerun_stages - {target_stage}
+        if planned_reuse_stages or planned_rerun_stages:
+            snapshot = self.workflows.snapshot(session_id)
+            workflow_stages = {
+                str(item.get("key") or "")
+                for item in snapshot.get("stages") or []
+                if item.get("key")
+            }
+            unknown = sorted(
+                (planned_reuse_stages | planned_rerun_stages) - workflow_stages
+            )
+            if unknown:
+                raise WorkflowPlanError(
+                    "validation_error",
+                    f"Unknown workflow stage '{unknown[0]}'. Valid stages: "
+                    + ", ".join(sorted(workflow_stages))
+                    + ".",
+                    422,
+                )
         try:
             resolved = self.workflows.resolve_stage(
                 session_id,
@@ -991,9 +1077,6 @@ class WorkflowExecutionPlanService:
                 "The selected source has no content hash and cannot be bound to an exact execution plan.",
                 409,
             )
-        reuse_stages = {
-            str(value) for value in supplied.get("reuse_stages", []) or [] if str(value)
-        }
         effective_export: dict[str, dict[str, Any]] | None = None
         export_context: dict[str, Any] = {}
         if target_stage == "export":
@@ -1039,16 +1122,30 @@ class WorkflowExecutionPlanService:
         plan_id = str(uuid.uuid4())
         now = utcnow()
         expires_at = now + timedelta(minutes=max(1, min(int(expires_in_minutes), 60)))
-        mismatches: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        freshness: list[dict[str, Any]] = []
         if continuation and self.handlers is not None:
             try:
-                mismatches = self.handlers.settings_mismatches(session_id, target_stage)
+                freshness = self.handlers.prerequisite_freshness(session_id, target_stage)
             except Exception:
-                mismatches = []
-        mismatched_stages = {
+                logger.exception(
+                    "Workflow prerequisite freshness could not be checked for session %s",
+                    session_id,
+                )
+                freshness = []
+                warnings.append(
+                    "Prerequisite freshness could not be checked; existing "
+                    "prerequisite results are reused without verification."
+                )
+        stage_freshness = {
             item["stage"]: item
-            for item in mismatches
+            for item in freshness
             if isinstance(item, dict) and "stage" in item
+        }
+        mismatched_stages = {
+            stage: item
+            for stage, item in stage_freshness.items()
+            if not (item["settings_match"] and item["source_match"])
         }
         if continuation:
             with execution_actor_scope(context.actor):
@@ -1056,8 +1153,10 @@ class WorkflowExecutionPlanService:
                     session_id=session_id,
                     target_stage=target_stage,
                     resolved=resolved,
-                    reuse_stages=reuse_stages,
+                    reuse_stages=planned_reuse_stages,
+                    rerun_stages=planned_rerun_stages,
                     mismatched_stages=mismatched_stages,
+                    stage_freshness=stage_freshness,
                 )
             execution_job_kind = resolved.job_kind
         else:
@@ -1066,7 +1165,6 @@ class WorkflowExecutionPlanService:
                 target_stage=target_stage,
                 resolved=resolved,
             )
-        warnings: list[str] = []
         for step in steps:
             if (
                 step["stage"] in mismatched_stages
@@ -1082,6 +1180,15 @@ class WorkflowExecutionPlanService:
                 warnings.append(
                     f"Prerequisite stage '{step['stage']}' will be re-run ({reasons}). "
                     f"To preserve the existing artifact instead, include '{step['stage']}' in reuse_stages."
+                )
+            elif (
+                str(step.get("decision") or "").startswith("reuse")
+                and step.get("reuse_basis") == "current_settings_unavailable"
+            ):
+                warnings.append(
+                    f"Prerequisite stage '{step['stage']}' is reused, but its settings "
+                    "could not be compared with the current configuration. Include "
+                    f"'{step['stage']}' in rerun_stages to run it again."
                 )
         if effective_export is not None:
             warnings.extend(
@@ -1173,14 +1280,25 @@ class WorkflowExecutionPlanService:
             )
         execution_payload = dict(resolved.payload)
         if continuation:
-            planned_reuse_stages = {
+            reused = {
                 str(item["stage"])
                 for item in steps
                 if str(item.get("decision") or "").startswith("reuse")
                 and item.get("artifact_id")
             }
-            if planned_reuse_stages:
-                execution_payload["reuse_stages"] = sorted(planned_reuse_stages)
+            if reused:
+                execution_payload["reuse_stages"] = sorted(reused)
+            else:
+                # A legacy overrides.reuse_stages entry must not survive a plan
+                # that decided to re-run the stage.
+                execution_payload.pop("reuse_stages", None)
+            rerun = {
+                str(item["stage"])
+                for item in steps
+                if item.get("decision") == "rerun_explicit"
+            }
+            if rerun:
+                execution_payload["rerun_stages"] = sorted(rerun)
         stored_plan = {
             **public_plan,
             "_execution": {

@@ -9,6 +9,7 @@ from mcp import Client
 from pydantic import ValidationError
 
 from pandrator_mcp.catalog import ACTION_CATALOG, RiskClass
+from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.context import build_runtime
 from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.schemas import (
@@ -67,6 +68,64 @@ def test_workflow_direct_mode_and_canonical_execution_action():
         "accepted_confirmations": ["provider"],
         "idempotency_key": "workflow-plan:p",
     }
+
+
+def test_workflow_plan_passes_reuse_and_rerun_stages():
+    app = Mock()
+    app.get_workflow.return_value = {"stages": []}
+    app.create_workflow_plan.return_value = {
+        "plan_id": "p",
+        "plan_digest": "digest",
+        "required_confirmations": [],
+    }
+    runtime = SimpleNamespace(require_application=lambda: app)
+
+    plan_workflow(
+        runtime,
+        PlanWorkflowInput(
+            session_id="s",
+            reuse_stages=["translate"],
+            rerun_stages=["correct"],
+        ),
+    )
+    forwarded = app.create_workflow_plan.call_args.kwargs
+    assert forwarded["reuse_stages"] == ["translate"]
+    assert forwarded["rerun_stages"] == ["correct"]
+
+    plan_workflow(runtime, PlanWorkflowInput(session_id="s"))
+    forwarded = app.create_workflow_plan.call_args.kwargs
+    assert forwarded["reuse_stages"] == []
+    assert forwarded["rerun_stages"] == []
+
+    with pytest.raises(ValidationError):
+        PlanWorkflowInput(session_id="s", reuse_stages=[f"stage_{index}" for index in range(21)])
+
+
+def test_workflow_plan_client_omits_empty_stage_arguments():
+    client = object.__new__(ApplicationClient)
+    client._request_json = Mock(return_value={})
+
+    client.create_workflow_plan(
+        "s",
+        target_stage="generate_audio",
+        overrides={},
+        expires_in_minutes=30,
+    )
+    body = client._request_json.call_args.kwargs["body"]
+    assert "reuse_stages" not in body
+    assert "rerun_stages" not in body
+
+    client.create_workflow_plan(
+        "s",
+        target_stage="generate_audio",
+        overrides={},
+        expires_in_minutes=30,
+        reuse_stages=["translate"],
+        rerun_stages=["correct"],
+    )
+    body = client._request_json.call_args.kwargs["body"]
+    assert body["reuse_stages"] == ["translate"]
+    assert body["rerun_stages"] == ["correct"]
 
 
 def test_regeneration_timeout_keeps_operation_and_exact_retry_inputs():

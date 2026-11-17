@@ -1015,6 +1015,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         reuse_stages = {
             str(value) for value in (payload.get("reuse_stages") or []) if str(value)
         }
+        rerun_stages = {
+            str(value) for value in (payload.get("rerun_stages") or []) if str(value)
+        }
         required = self._continuation_required_stages(
             record.workflow_kind,
             target_key,
@@ -1125,7 +1128,11 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 raise ValueError(
                     f"Stage '{definition.key}' is missing a required input artifact."
                 )
-            if existing is not None and definition.key != target_key:
+            if (
+                existing is not None
+                and definition.key != target_key
+                and definition.key not in rerun_stages
+            ):
                 if definition.key in reuse_stages:
                     # The caller explicitly chose to keep the current artifact
                     # even though settings or source lineage changed. This is

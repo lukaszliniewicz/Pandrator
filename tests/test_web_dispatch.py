@@ -475,6 +475,42 @@ class DispatchWebTests(unittest.TestCase):
         self.assertNotIn("normalized_output_json", serialized)
         self.assertNotIn("lease_token", serialized)
 
+    def test_completed_translation_registers_dispatch_settings_fingerprint(self):
+        session_id, source_id = self._source(target_language="pl")
+        run = self._create(
+            session_id,
+            kind="translation",
+            source_artifact_id=source_id,
+        )
+        claim = self._claim(run["id"], "translation-fingerprint-claim")
+        response = self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json={
+                "lease_token": claim["lease_token"],
+                "result": {
+                    "kind": "translation",
+                    "translations": [
+                        {"cue_id": cue["cue_id"], "text": f"PL {cue['cue_id']}"}
+                        for cue in claim["batch"]["cues"]
+                    ],
+                },
+            },
+            headers=self._headers("translation-fingerprint-submit"),
+        )
+        self.assertEqual(200, response.status_code, response.get_json())
+        payload = response.get_json()
+        self.assertTrue(payload["finalized"])
+        with self.extension["database"].session() as session:
+            artifact = session.get(Artifact, payload["result_artifact_id"])
+            self.assertEqual(
+                {
+                    "executor": "dispatch",
+                    "dispatch_kind": "translation",
+                    "target_language": "pl",
+                },
+                artifact.metadata_json["settings_fingerprint"],
+            )
+
     def test_correction_can_escalate_and_materialize_a_reviewable_uncertainty(self):
         session_id, source_id = self._source(
             texts=("Culture. Yes.", "We elected two co-chairs."),

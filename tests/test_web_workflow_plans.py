@@ -33,6 +33,7 @@ from pandrator.web.workflow_plans import (
     WorkflowExecutionPlanService,
     canonical_digest,
 )
+from pandrator.web.workflow_prerequisites import WorkflowPrerequisiteService
 from pandrator.web.workflows import ResolvedWorkflowStage, WorkflowService
 from pandrator.web.workspace import (
     WorkspaceSettingsService,
@@ -126,6 +127,8 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         target_stage="generate_audio",
         overrides=None,
         continuation=None,
+        reuse_stages=None,
+        rerun_stages=None,
     ):
         payload = {
             "target_stage": target_stage,
@@ -133,6 +136,10 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         }
         if continuation is not None:
             payload["continuation"] = continuation
+        if reuse_stages is not None:
+            payload["reuse_stages"] = list(reuse_stages)
+        if rerun_stages is not None:
+            payload["rerun_stages"] = list(rerun_stages)
         response = self.client.post(
             f"/api/v1/sessions/{session_id}/workflow-plans",
             json=payload,
@@ -140,6 +147,97 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         )
         self.assertEqual(201, response.status_code, response.get_json())
         return response.get_json()
+
+    def _voiceover_session_with_translation(
+        self,
+        *,
+        dispatch_kind=None,
+        fingerprint=None,
+        language="en",
+    ):
+        """Create a voiceover session with a selected translation artifact."""
+        session_id, source_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover", suffix="srt"
+        )
+        with self.extension["database"].session() as db_session:
+            record = db_session.get(SessionRecord, session_id)
+            record.target_language = "en"
+            imported = db_session.scalar(
+                select(Artifact).where(
+                    Artifact.session_id == session_id,
+                    Artifact.role == "transcription",
+                    Artifact.state == "current",
+                )
+            )
+            if imported is not None:
+                source_id = imported.id
+        translation_path = (
+            Path(self.temporary.name) / f"plan-translation-{self.source_counter}.srt"
+        )
+        self.source_counter += 1
+        translation_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nCześć\n",
+            encoding="utf-8",
+        )
+        metadata = {"source_artifact_id": source_id}
+        if dispatch_kind is not None:
+            metadata.update(
+                {
+                    "dispatch_run_id": f"dispatch-{dispatch_kind}",
+                    "dispatch_kind": dispatch_kind,
+                    "language": language,
+                }
+            )
+        if fingerprint is not None:
+            metadata["settings_fingerprint"] = fingerprint
+        translation = ArtifactService(
+            self.extension["database"],
+            self.extension["paths"],
+        ).register(
+            translation_path,
+            kind="srt",
+            role="translation",
+            session_id=session_id,
+            parent_ids=[source_id],
+            metadata=metadata,
+        )
+        with self.extension["database"].session() as db_session:
+            outcome = db_session.get(OutcomePlan, session_id)
+            value = dict(outcome.value_json or {}) if outcome is not None else {}
+            value["inputs"] = {"translation": "source", "generation": "translation"}
+            value["transformations"] = {
+                **dict(value.get("transformations") or {}),
+                "translation": True,
+                "generate_audio": True,
+            }
+            if outcome is None:
+                db_session.add(OutcomePlan(session_id=session_id, value_json=value))
+            else:
+                outcome.value_json = value
+                outcome.revision += 1
+            selection = db_session.get(
+                SessionStageSelection, (session_id, "translate")
+            )
+            if selection is None:
+                db_session.add(
+                    SessionStageSelection(
+                        session_id=session_id,
+                        stage_key="translate",
+                        artifact_id=translation.id,
+                    )
+                )
+            else:
+                selection.artifact_id = translation.id
+        return session_id, translation.id
+
+    def _plan_error(self, session_id, **payload):
+        response = self.client.post(
+            f"/api/v1/sessions/{session_id}/workflow-plans",
+            json={"target_stage": "generate_audio", "overrides": {}, **payload},
+            headers=self.headers,
+        )
+        self.assertEqual(422, response.status_code, response.get_json())
+        return response.get_json()["error"]
 
     def _execute(
         self,
@@ -429,6 +527,267 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         self.assertNotIn(
             "payload",
             first.get_data(as_text=True).lower(),
+        )
+
+    def test_dispatch_translation_is_reused_with_its_evidence(self):
+        session_id, _translation_id = self._voiceover_session_with_translation(
+            dispatch_kind="translation",
+            fingerprint={
+                "executor": "dispatch",
+                "dispatch_kind": "translation",
+                "target_language": "en",
+            },
+        )
+
+        plan = self._plan(session_id)
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("reuse_if_unchanged", by_stage["translate"]["decision"])
+        self.assertEqual("dispatch_result", by_stage["translate"]["reuse_basis"])
+        self.assertEqual([], plan["warnings"])
+        with self.extension["database"].session() as db_session:
+            stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            execution_payload = stored.plan_json["_execution"]["payload"]
+            self.assertEqual(["translate"], execution_payload["reuse_stages"])
+            self.assertNotIn("rerun_stages", execution_payload)
+
+    def test_dispatch_correction_is_reused_with_its_evidence(self):
+        session_id, translation_id = self._voiceover_session_with_translation(
+            dispatch_kind="translation",
+            fingerprint={
+                "executor": "dispatch",
+                "dispatch_kind": "translation",
+                "target_language": "en",
+            },
+        )
+        with self.extension["database"].session() as db_session:
+            translation = db_session.get(Artifact, translation_id)
+            assert translation is not None
+            source_id = str(translation.metadata_json["source_artifact_id"])
+        correction_path = (
+            Path(self.temporary.name) / f"plan-correction-{self.source_counter}.srt"
+        )
+        self.source_counter += 1
+        correction_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nHello!\n",
+            encoding="utf-8",
+        )
+        correction = ArtifactService(
+            self.extension["database"],
+            self.extension["paths"],
+        ).register(
+            correction_path,
+            kind="srt",
+            role="correction",
+            session_id=session_id,
+            parent_ids=[source_id],
+            metadata={
+                "source_artifact_id": source_id,
+                "dispatch_run_id": "dispatch-correction",
+                "dispatch_kind": "correction",
+                "language": "en",
+                "settings_fingerprint": {
+                    "executor": "dispatch",
+                    "dispatch_kind": "correction",
+                },
+            },
+        )
+        with self.extension["database"].session() as db_session:
+            outcome = db_session.get(OutcomePlan, session_id)
+            assert outcome is not None
+            value = dict(outcome.value_json)
+            value["inputs"] = {
+                "translation": "correction",
+                "generation": "translation",
+            }
+            value["transformations"] = {
+                **dict(value.get("transformations") or {}),
+                "correction": True,
+            }
+            outcome.value_json = value
+            selection = db_session.get(
+                SessionStageSelection, (session_id, "correct")
+            )
+            if selection is None:
+                db_session.add(
+                    SessionStageSelection(
+                        session_id=session_id,
+                        stage_key="correct",
+                        artifact_id=correction.id,
+                    )
+                )
+            else:
+                selection.artifact_id = correction.id
+            translation = db_session.get(Artifact, translation_id)
+            assert translation is not None
+            translation.metadata_json = {
+                **translation.metadata_json,
+                "source_artifact_id": correction.id,
+            }
+
+        plan = self._plan(session_id)
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("reuse_if_unchanged", by_stage["correct"]["decision"])
+        self.assertEqual("dispatch_result", by_stage["correct"]["reuse_basis"])
+
+    def test_explicit_reuse_argument_names_the_reuse(self):
+        session_id, _translation_id = self._voiceover_session_with_translation(
+            fingerprint={
+                "backend": "llm",
+                "target_language": "de",
+                "model": "fixture-model",
+                "instructions": "",
+            },
+        )
+
+        plan = self._plan(session_id, reuse_stages=["translate"])
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("reuse_explicit", by_stage["translate"]["decision"])
+        self.assertEqual("explicit", by_stage["translate"]["reuse_basis"])
+
+    def test_rerun_argument_runs_a_current_translation(self):
+        session_id, _translation_id = self._voiceover_session_with_translation(
+            dispatch_kind="translation",
+            fingerprint={
+                "executor": "dispatch",
+                "dispatch_kind": "translation",
+                "target_language": "en",
+            },
+        )
+
+        plan = self._plan(session_id, rerun_stages=["translate"])
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("rerun_explicit", by_stage["translate"]["decision"])
+        self.assertNotIn("reuse_basis", by_stage["translate"])
+        with self.extension["database"].session() as db_session:
+            stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            execution_payload = stored.plan_json["_execution"]["payload"]
+            self.assertEqual(["translate"], execution_payload["rerun_stages"])
+            self.assertNotIn("reuse_stages", execution_payload)
+
+    def test_rerun_argument_beats_a_legacy_reuse_override(self):
+        session_id, _translation_id = self._voiceover_session_with_translation(
+            dispatch_kind="translation",
+            fingerprint={
+                "executor": "dispatch",
+                "dispatch_kind": "translation",
+                "target_language": "en",
+            },
+        )
+
+        plan = self._plan(
+            session_id,
+            overrides={"reuse_stages": ["translate"]},
+            rerun_stages=["translate"],
+        )
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("rerun_explicit", by_stage["translate"]["decision"])
+        with self.extension["database"].session() as db_session:
+            stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            execution_payload = stored.plan_json["_execution"]["payload"]
+            self.assertEqual(["translate"], execution_payload["rerun_stages"])
+            self.assertNotIn("reuse_stages", execution_payload)
+
+    def test_stage_argument_validation_errors(self):
+        session_id, _translation_id = self._voiceover_session_with_translation(
+            dispatch_kind="translation",
+            fingerprint={
+                "executor": "dispatch",
+                "dispatch_kind": "translation",
+                "target_language": "en",
+            },
+        )
+
+        conflict = self._plan_error(
+            session_id,
+            reuse_stages=["translate"],
+            rerun_stages=["translate"],
+        )
+        self.assertEqual("validation_error", conflict["code"])
+        self.assertIn("cannot be both reused and re-run", conflict["message"])
+
+        target = self._plan_error(session_id, reuse_stages=["generate_audio"])
+        self.assertEqual("validation_error", target["code"])
+        self.assertIn("always runs", target["message"])
+
+        unknown = self._plan_error(session_id, rerun_stages=["not_a_stage"])
+        self.assertEqual("validation_error", unknown["code"])
+        self.assertIn("not_a_stage", unknown["message"])
+        self.assertIn("translate", unknown["message"])
+
+        direct = self._plan_error(
+            session_id,
+            continuation=False,
+            reuse_stages=["translate"],
+        )
+        self.assertEqual("validation_error", direct["code"])
+        self.assertIn("only to continuation plans", direct["message"])
+
+        unavailable = self._plan_error(
+            session_id,
+            target_stage="translate",
+            rerun_stages=["generate_audio"],
+        )
+        self.assertEqual("validation_error", unavailable["code"])
+        self.assertIn("cannot run in this plan", unavailable["message"])
+
+    def test_freshness_failure_is_reported_in_the_plan(self):
+        session_id, _translation_id = self._voiceover_session_with_translation(
+            dispatch_kind="translation",
+            fingerprint={
+                "executor": "dispatch",
+                "dispatch_kind": "translation",
+                "target_language": "en",
+            },
+        )
+
+        with patch.object(
+            WorkflowPrerequisiteService,
+            "prerequisite_freshness",
+            side_effect=RuntimeError("freshness exploded"),
+        ):
+            plan = self._plan(session_id)
+
+        self.assertIn(
+            "Prerequisite freshness could not be checked; existing prerequisite "
+            "results are reused without verification.",
+            plan["warnings"],
+        )
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("reuse_if_unchanged", by_stage["translate"]["decision"])
+        self.assertEqual("no_prior_check", by_stage["translate"]["reuse_basis"])
+
+    def test_unverifiable_current_settings_are_reported(self):
+        session_id, _translation_id = self._voiceover_session_with_translation(
+            fingerprint={
+                "backend": "llm",
+                "target_language": "en",
+                "model": "fixture-model",
+                "instructions": "",
+            },
+        )
+
+        with patch.object(
+            WorkflowPrerequisiteService,
+            "_with_database_llm_settings",
+            side_effect=ValueError("provider unavailable"),
+        ):
+            plan = self._plan(session_id)
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("reuse_if_unchanged", by_stage["translate"]["decision"])
+        self.assertEqual(
+            "current_settings_unavailable", by_stage["translate"]["reuse_basis"]
+        )
+        self.assertIn(
+            "Prerequisite stage 'translate' is reused, but its settings could not be "
+            "compared with the current configuration. Include 'translate' in "
+            "rerun_stages to run it again.",
+            plan["warnings"],
         )
 
     def test_export_plan_reports_effective_audio_mode_and_its_origin(self):

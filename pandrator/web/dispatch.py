@@ -86,6 +86,7 @@ from .provider_identity import provider_namespace
 from .settings_policy import adapt_runtime_settings
 from .subtitle_evidence import evidence_route_catalog, evidence_stt_routes
 from .temporal_overlap import overlap_indexes
+from .workflow_fingerprints import dispatch_settings_fingerprint
 from .workspace_settings import WorkspaceSettingsService
 
 TERMINAL_DISPATCH_RUN_STATUSES = frozenset(
@@ -2648,6 +2649,15 @@ class DispatchRunService:
                 "revision_id": output_revision.id,
                 "stage": run.output_role,
                 "dispatch_kind": run.kind,
+                **(
+                    {
+                        "settings_fingerprint": dispatch_settings_fingerprint(
+                            run.kind, run.target_language
+                        )
+                    }
+                    if run.kind in {"correction", "translation"}
+                    else {}
+                ),
                 "language": document.language,
                 **prepared.metadata,
                 **(

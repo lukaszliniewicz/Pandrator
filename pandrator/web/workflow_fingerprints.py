@@ -124,6 +124,24 @@ def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dic
     return {}
 
 
+def dispatch_settings_fingerprint(
+    dispatch_kind: str, target_language: str | None
+) -> dict[str, Any]:
+    """Settings identity of a passive dispatch run.
+
+    A dispatch run takes its settings from its create arguments and has no
+    model of its own, so the managed stage fingerprint would differ on every
+    field that the run does not own.  The run's own immutable inputs are the
+    dispatch kind and, for a translation, its target language.
+    """
+
+    kind = str(dispatch_kind or "")
+    fingerprint: dict[str, Any] = {"executor": "dispatch", "dispatch_kind": kind}
+    if kind == "translation":
+        fingerprint["target_language"] = str(target_language or "").strip().casefold()
+    return fingerprint
+
+
 def _research_fingerprint(settings: dict[str, Any]) -> dict[str, Any]:
     if not bool(settings.get("web_research_enabled", False)):
         # Keep pre-feature artifact fingerprints reusable when research is off.

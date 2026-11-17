@@ -254,6 +254,49 @@ def raw_translation_settings(graph: Graph) -> dict[str, Any]:
     return settings
 
 
+def dispatch_metadata(
+    *,
+    dispatch_kind: str = "translation",
+    language: str | None = "pl",
+    fingerprint: bool = True,
+    source_artifact_id: str = "source",
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "source_artifact_id": source_artifact_id,
+        "source_content_hash": "same-content",
+        "dispatch_run_id": f"dispatch-{dispatch_kind}",
+        "dispatch_kind": dispatch_kind,
+    }
+    if language is not None:
+        metadata["language"] = language
+    if fingerprint:
+        metadata["settings_fingerprint"] = (
+            {"executor": "dispatch", "dispatch_kind": dispatch_kind}
+            if dispatch_kind == "correction"
+            else {
+                "executor": "dispatch",
+                "dispatch_kind": dispatch_kind,
+                "target_language": language,
+            }
+        )
+    return metadata
+
+
+def freshness_entry(owner: Any, stage: str) -> dict[str, Any]:
+    entries = {
+        entry["stage"]: entry
+        for entry in owner.prerequisite_freshness("voice")
+    }
+    return entries[stage]
+
+
+def set_metadata(graph: Graph, artifact_id: str, metadata: dict[str, Any]) -> None:
+    with graph.database.session() as session:
+        row = session.get(Artifact, artifact_id)
+        assert row is not None
+        row.metadata_json = metadata
+
+
 def test_semantic_reuse_and_changed_language(owner: Any, graph: Graph) -> None:
     with graph.unmodified():
         assert owner.settings_mismatches("voice") == []
@@ -376,6 +419,145 @@ def test_real_stored_llm_hydration_and_instance_override(owner: Any, graph: Grap
     ):
         with graph.unmodified():
             assert owner.settings_mismatches("voice") == []
+
+
+def test_dispatch_translation_result_is_reused(owner: Any, graph: Graph) -> None:
+    set_metadata(graph, "translated", dispatch_metadata())
+    with graph.unmodified():
+        assert owner.settings_mismatches("voice") == []
+        entry = freshness_entry(owner, "translate")
+    assert entry["settings_match"] is True
+    assert entry["settings_evidence"] == "dispatch_result"
+    assert entry["reasons"] == []
+
+
+def test_legacy_dispatch_translation_is_reused_from_metadata(owner: Any, graph: Graph) -> None:
+    set_metadata(graph, "translated", dispatch_metadata(fingerprint=False))
+    with graph.unmodified():
+        assert owner.settings_mismatches("voice") == []
+        entry = freshness_entry(owner, "translate")
+    assert entry["settings_evidence"] == "dispatch_result"
+
+
+def test_dispatch_translation_target_language_change_reruns(
+    owner: Any, graph: Graph
+) -> None:
+    set_metadata(graph, "translated", dispatch_metadata(language="de"))
+    with graph.unmodified():
+        assert owner.settings_mismatches("voice") == mismatch(
+            stored={"target_language": "de"},
+            current={"target_language": "pl"},
+            reasons=["settings_changed"],
+            fields=["target_language"],
+        )
+        entry = freshness_entry(owner, "translate")
+    assert entry["settings_evidence"] is None
+
+
+def test_dispatch_correction_result_is_reused(owner: Any, graph: Graph) -> None:
+    with graph.database.session() as session:
+        session.add(
+            artifact(
+                session,
+                "corrected",
+                "correction",
+                metadata=dispatch_metadata(dispatch_kind="correction"),
+            )
+        )
+        outcome = session.get(OutcomePlan, "voice")
+        assert outcome is not None
+        outcome.value_json = {
+            "inputs": {"translation": "correction", "generation": "translation"},
+            "transformations": {
+                "correction": True,
+                "translation": True,
+                "generate_audio": True,
+            },
+        }
+        session.add(
+            SessionStageSelection(
+                session_id="voice", stage_key="correct", artifact_id="corrected"
+            )
+        )
+        session.flush()
+        translated = session.get(Artifact, "translated")
+        assert translated is not None
+        translated.metadata_json = {
+            **(translated.metadata_json or {}),
+            "source_artifact_id": "corrected",
+        }
+    with graph.unmodified():
+        assert owner.settings_mismatches("voice") == []
+        entry = freshness_entry(owner, "correct")
+    assert entry["settings_evidence"] == "dispatch_result"
+
+
+def test_dispatch_evidence_for_another_stage_is_ignored(owner: Any, graph: Graph) -> None:
+    set_metadata(
+        graph,
+        "translated",
+        dispatch_metadata(dispatch_kind="correction"),
+    )
+    with graph.unmodified():
+        assert owner.settings_mismatches("voice") == [
+            {
+                "stage": "translate",
+                "changed_fields": [],
+                "reasons": ["settings_unverifiable"],
+                "stored": {"executor": "dispatch", "dispatch_kind": "correction"},
+                "current": None,
+            }
+        ]
+        entry = freshness_entry(owner, "translate")
+    assert entry["settings_evidence"] is None
+
+
+def test_dispatch_translation_result_still_requires_source_lineage(
+    owner: Any, graph: Graph
+) -> None:
+    set_metadata(graph, "translated", dispatch_metadata())
+    with graph.database.session() as session:
+        session.add(
+            artifact(
+                session,
+                "replacement",
+                "upload",
+                metadata={"original_filename": "source.srt"},
+            )
+        )
+        session.flush()
+        session.add(
+            SessionSetting(
+                session_id="voice",
+                section="translation",
+                value_json={"source_artifact_id": "replacement"},
+            )
+        )
+    with graph.unmodified():
+        assert owner.settings_mismatches("voice") == mismatch(
+            stored={
+                "executor": "dispatch",
+                "dispatch_kind": "translation",
+                "target_language": "pl",
+            },
+            current=None,
+            reasons=["source_lineage_changed"],
+        )
+        entry = freshness_entry(owner, "translate")
+    assert entry["settings_evidence"] == "dispatch_result"
+
+
+def test_uncomputable_current_settings_reports_its_evidence(
+    owner: Any, graph: Graph
+) -> None:
+    with patch.object(
+        owner, "_with_database_llm_settings", side_effect=ValueError("provider unavailable")
+    ):
+        with graph.unmodified():
+            assert owner.settings_mismatches("voice") == []
+            entry = freshness_entry(owner, "translate")
+    assert entry["settings_match"] is True
+    assert entry["settings_evidence"] == "current_settings_unavailable"
 
 
 def test_unknown_session_and_stage_keep_original_errors(owner: Any, graph: Graph) -> None:

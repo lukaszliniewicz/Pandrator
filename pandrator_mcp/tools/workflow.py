@@ -672,6 +672,8 @@ def plan_workflow(
         overrides=arguments.overrides,
         expires_in_minutes=arguments.expires_in_minutes,
         continuation=arguments.continuation,
+        reuse_stages=arguments.reuse_stages,
+        rerun_stages=arguments.rerun_stages,
     )
     return workflow_plan_outcome(plan)
 

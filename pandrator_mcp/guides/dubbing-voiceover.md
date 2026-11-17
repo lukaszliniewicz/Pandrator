@@ -91,11 +91,12 @@ responses such as “Amen” in separate included blocks. Use `optimized_text` f
 display text. Keep utterance boundaries intact, then review the new speech-plan
 content signature and preview representative provider requests.
 
-When a continuation plan proposes re-running accepted passive correction or
-translation because their settings cannot be verified, create a fresh plan with
-`overrides.reuse_stages` naming those stages. Inspect the resulting artifact
-IDs and reuse decisions before executing; never replace accepted host work
-with an unintended provider pass.
+Accepted passive correction and translation are reused by default: their
+dispatch evidence stands in for the managed settings fingerprint. A plan reports
+`reuse_basis` for each reused stage. Use the top-level `reuse_stages` argument
+to keep another changed prerequisite result anyway, and `rerun_stages` to run a
+current one again. Inspect the resulting artifact IDs and reuse decisions before
+executing; never replace accepted host work with an unintended provider pass.
 
 Do not infer a provider, model, or voice ID from a user's example. Call
 `pandrator_get_tts_catalog` with the project's `session_id`. If observations are

@@ -1452,7 +1452,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         outcome.update(self.session.id, current["revision"], value)
         return source, translation
 
-    def _continue_generation(self, translate_settings, *, reuse_stages=()):
+    def _continue_generation(self, translate_settings, *, reuse_stages=(), rerun_stages=()):
         with mock.patch.object(self.handlers, "translate") as translate, mock.patch.object(
             self.handlers,
             "_run_reviewable_generation",
@@ -1464,6 +1464,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                     "target_stage": "generate_audio",
                     "stage_settings": {"translate": translate_settings},
                     "reuse_stages": list(reuse_stages),
+                    "rerun_stages": list(rerun_stages),
                 },
                 self.progress,
                 threading.Event(),
@@ -1530,6 +1531,16 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         )
         translate = self._continue_generation({"target_language": "de"}, reuse_stages=("translate",))
         translate.assert_not_called()
+
+    def test_rerun_stages_runs_a_fresh_translation(self):
+        self._voiceover_session_with_translation(
+            {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
+        )
+        translate = self._continue_generation(
+            {"translation_backend": "llm", "target_language": "pl", "translate_model": "default", "instructions": ""},
+            rerun_stages=("translate",),
+        )
+        translate.assert_called_once()
 
     def test_reuse_translation_bypasses_selected_parent_lineage_change(self):
         with self.database.session() as session:

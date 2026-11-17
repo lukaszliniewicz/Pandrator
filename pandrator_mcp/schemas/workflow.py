@@ -103,6 +103,19 @@ class PlanWorkflowInput(ToolInput):
     overrides: dict[str, Any] = Field(default_factory=dict)
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
     continuation: bool = Field(default=True, description="Include prerequisite workflow stages. Use false for export-only planning from existing inputs/audio.")
+    reuse_stages: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "Prerequisite stages to keep even if their settings or source "
+            "changed, such as an accepted passive correction or translation."
+        ),
+    )
+    rerun_stages: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Prerequisite stages to run again even if their results are current.",
+    )
 
     @field_validator("overrides")
     @classmethod
