@@ -66,7 +66,26 @@ class CreatePerformancePlanInput(PerformanceSessionInput):
     context_max_chars: int = Field(default=4000, ge=0, le=16000)
     batch_size: int = Field(default=12, ge=1, le=32)
     allow_vocalizations: bool = False
-    copy_from_id: str | None = Field(default=None, min_length=1, max_length=80)
+    copy_from_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        description=(
+            "Copy entries from another plan. Pass that plan's purpose and "
+            "annotation_format too; a copy does not inherit them. Only entries whose "
+            "block and planning context are unchanged can be copied (a locked entry "
+            "needs only its own block). Manual mode copies all of them; passive and "
+            "llm modes copy only locked ones unless keep_unchanged is true. The "
+            "response reports copied_count and skipped_count."
+        ),
+    )
+    keep_unchanged: bool = Field(
+        default=False,
+        description=(
+            "With copy_from_id in passive or llm mode, keep every unchanged entry, not "
+            "only locked ones, so analysis covers only the changed blocks."
+        ),
+    )
     idempotency_key: str = Field(
         min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
     )
@@ -75,6 +94,8 @@ class CreatePerformancePlanInput(PerformanceSessionInput):
     def structured_purpose_requires_xml(self):
         if self.purpose != "delivery" and self.annotation_format != "xml":
             raise ValueError("Speaker analysis purposes require XML annotations.")
+        if self.keep_unchanged and not self.copy_from_id:
+            raise ValueError("keep_unchanged requires copy_from_id.")
         return self
 
 

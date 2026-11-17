@@ -75,6 +75,9 @@
     steered_count: number;
     locked_count: number;
     stale: boolean;
+    copied_count?: number;
+    skipped_count?: number;
+    carried_from_id?: string;
     job_id?: string;
     job_status?: string;
     items?: Unit[];
@@ -89,6 +92,19 @@
       context_before?: number;
       context_after?: number;
     };
+  };
+  /** A plan to copy from: the selected one, or the plan an earlier revision
+   * adopted when this revision has none. */
+  type CopySource = {
+    id: string;
+    purpose: AnalysisPurpose;
+    annotation_format: string;
+  };
+  type AncestorPlan = {
+    plan_id: string;
+    revision_number: number | null;
+    purpose: AnalysisPurpose;
+    annotation_format: string;
   };
   type Capability = {
     model: string;
@@ -151,6 +167,7 @@
   let pending = $state(false),
     error = $state(''),
     message = $state('');
+  let ancestorPlan = $state<AncestorPlan | null>(null);
   let history = $state<Plan[]>([]),
     selected = $state<Plan | null>(null),
     capability = $state<Capability | null>(null);
@@ -437,7 +454,11 @@
       keepSettings = settingsDirty;
     try {
       const [listing, settings, dictionary] = await Promise.all([
-        apiJson<{ items: Plan[]; capabilities: Capability }>(
+        apiJson<{
+          items: Plan[];
+          capabilities: Capability;
+          ancestor_adopted_plan?: AncestorPlan | null;
+        }>(
           `${base}?limit=100&plan_revision_id=${encodeURIComponent(revisionId)}`
         ),
         sessionApi.settings(sessionId, 'tts'),
@@ -447,6 +468,7 @@
       ]);
       if (!alive || request !== serial) return;
       history = listing.items;
+      ancestorPlan = listing.ancestor_adopted_plan ?? null;
       capability = listing.capabilities;
       characters = dictionary.characters;
       if (!keepSettings) applySettings(settings);
@@ -605,40 +627,58 @@
       pending = false;
     }
   }
-  async function create(mode: 'manual' | 'passive' | 'llm', copy = false) {
+  function selectedSource(): CopySource | null {
+    return selected
+      ? {
+          id: selected.id,
+          purpose: selected.settings.purpose ?? 'delivery',
+          annotation_format: selected.settings.annotation_format ?? 'pssml'
+        }
+      : null;
+  }
+  function copySummary(result: Plan): string {
+    const review = result.total - result.analysed_count;
+    return `Copied ${result.copied_count ?? 0} of ${result.total} block${result.total === 1 ? '' : 's'}; ${review} need${review === 1 ? 's' : ''} review.`;
+  }
+  async function create(
+    mode: 'manual' | 'passive' | 'llm',
+    source: CopySource | null = null,
+    keepUnchanged = false
+  ) {
     if (!validWindows || !validAnalysis) return;
     if (settingsDirty && !(await saveSettings())) return;
     pending = true;
     error = '';
     message = '';
+    const purpose = source
+      ? source.purpose
+      : mode === 'manual'
+        ? 'combined'
+        : analysisPurpose;
     try {
       const result = await action<Plan>('', {
         expected_plan_revision_id: revisionId,
         mode,
-        purpose: copy
-          ? (selected?.settings.purpose ?? 'delivery')
-          : mode === 'manual'
-            ? 'combined'
-            : analysisPurpose,
-        annotation_format: copy
-          ? (selected?.settings.annotation_format ?? 'pssml')
-          : 'xml',
+        purpose,
+        annotation_format: source ? source.annotation_format : 'xml',
         ...$state.snapshot(
-          analysisPreferences[
-            copy ? (selected?.settings.purpose ?? 'delivery') : analysisPurpose
-          ]
+          analysisPreferences[source ? source.purpose : analysisPurpose]
         ),
         allow_vocalizations: vocalizations,
-        ...(copy && selected ? { copy_from_id: selected.id } : {})
+        ...(source ? { copy_from_id: source.id } : {}),
+        ...(source && keepUnchanged ? { keep_unchanged: true } : {})
       });
       filter = 'all';
       await load(result.id, 0, false);
+      const copied = source ? `${copySummary(result)} ` : '';
       message =
         mode === 'llm'
-          ? `${purposeLabel(analysisPurpose)} analysis queued. Review the result before adopting it.`
+          ? `${copied}${purposeLabel(purpose)} analysis queued. Review the result before adopting it.`
           : mode === 'passive'
-            ? 'Passive analysis is ready for an MCP worker to claim. No model or speech service was started.'
-            : 'Editable speech-direction draft created.';
+            ? `${copied}Passive analysis is ready for an MCP worker to claim. No model or speech service was started.`
+            : source
+              ? `${copied}Review the remaining blocks, then adopt the draft.`
+              : 'Editable speech-direction draft created.';
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -1101,7 +1141,7 @@
         >{/if}{#if selected && !selected.stale}<button
           class="btn btn-secondary"
           disabled={blocked}
-          onclick={() => navigate(() => create('manual', true))}
+          onclick={() => navigate(() => create('manual', selectedSource()))}
           >Copy for editing</button
         >{/if}<button
         class="btn btn-secondary"
@@ -1109,6 +1149,33 @@
         onclick={() => void load()}>Refresh</button
       >
     </div>
+    {#if ancestorPlan && !history.some((plan) => plan.status === 'adopted')}<div
+        role="status"
+        class="space-y-2 rounded-xl border border-[var(--line)] p-3 text-sm"
+        data-testid="performance-ancestor-plan"
+      >
+        <p>
+          This speech plan has no adopted speaker or delivery plan, but {ancestorPlan.revision_number
+            ? `revision ${ancestorPlan.revision_number}`
+            : 'an earlier revision'} had one. Copy it to keep every block that still
+          matches. Blocks that were split, merged or rewritten need review.
+        </p>
+        <button
+          class="btn btn-secondary"
+          disabled={blocked}
+          onclick={() => {
+            const source = ancestorPlan;
+            if (source)
+              navigate(() =>
+                create('manual', {
+                  id: source.plan_id,
+                  purpose: source.purpose,
+                  annotation_format: source.annotation_format
+                })
+              );
+          }}>Copy earlier plan</button
+        >
+      </div>{/if}
     {#if history.length}<label class="block text-sm"
         >{workspace ? 'Annotation draft' : 'Analysis version'}<select
           class="input mt-1 w-full"
@@ -1137,10 +1204,34 @@
       {#if selected.job_id}<a class="text-sm underline" href="/activity"
           >Open analysis job</a
         >{/if}
-      {#if selected.stale}<p role="status" class="text-sm text-amber-700">
-          Accepted speech changed. Create a new matching draft before adopting
-          directions.
-        </p>{/if}
+      {#if selected.stale}<div
+          role="status"
+          class="space-y-2 text-sm text-amber-700"
+          data-testid="performance-stale-plan"
+        >
+          <p>
+            The speech changed after this draft was made, so it can no longer be
+            adopted. Copying it keeps every block whose text and neighbours are
+            unchanged, so only the rest need review.
+          </p>
+          {#if selected.plan_revision_id === revisionId}<div
+              class="flex flex-wrap gap-2"
+            >
+              <button
+                class="btn btn-secondary"
+                disabled={blocked}
+                onclick={() =>
+                  navigate(() => create('manual', selectedSource()))}
+                >Copy unchanged blocks</button
+              ><button
+                class="btn btn-secondary"
+                disabled={blocked || !validAnalysis}
+                onclick={() =>
+                  navigate(() => create('llm', selectedSource(), true))}
+                >Copy and analyse the rest</button
+              >
+            </div>{/if}
+        </div>{/if}
       {#snippet blockNavigation()}
         <label class="block text-sm"
           >Show blocks<select

@@ -1573,6 +1573,13 @@ class GenerationTopologyService:
             boundary_mapping=boundary_mapping,
             activate=activate,
         )
+        carried = None
+        if action == "restore" and activate:
+            # A restore is an exact copy of its target, so the target's adopted
+            # speaker and delivery plan still fits and needs no new review.
+            from .performance_plans import carry_adopted_plan
+
+            carried = carry_adopted_plan(session, revision_source.id, revision.id, lineage)
         return {
             "id": plan.id,
             "lineage": lineage,
@@ -1585,7 +1592,8 @@ class GenerationTopologyService:
             "is_draft": not activate,
             "active_plan_revision_id": plan.active_revision_id,
             "preview": mappings[0] if action == "resegment" else None,
-            "review_required": {"performance": True, "changed_audio": len(affected_ids)},
+            "review_required": {"performance": carried is None, "changed_audio": len(affected_ids)},
+            "carried_performance_plan_id": carried.id if carried is not None else None,
         }
 
 

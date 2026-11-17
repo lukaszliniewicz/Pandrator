@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import secrets
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -41,12 +42,14 @@ from .performance_schemas import PerformancePlanCreateRequest, PerformanceResult
 from .settings_policy import RevisionConflict
 from .speech_analysis_policy import assert_pass_result
 from .speech_annotation_records import (
+    SPEECH_XML_KEY,
     normalized_record,
     record_annotation,
     record_markup,
 )
 from .speech_plan_context import (
     plan_signature,
+    plan_signature_parts,
     semantic_context_units,
     semantic_context_window,
 )
@@ -375,6 +378,117 @@ def _normalize_item(
     return record
 
 
+_TIMING_KEYS = (
+    "start_ms",
+    "end_ms",
+    "target_duration_ms",
+    "anchor_start_ms",
+    "anchor_end_ms",
+    "duration_ms",
+    "start",
+    "end",
+    "budget_ms",
+)
+
+
+def _block_units(
+    session,
+    revision_id: str,
+    segments: list[m.GenerationSegment] | None,
+    block_hashes: dict[str, str],
+    *,
+    check_size: bool = True,
+) -> Iterator[tuple[m.GenerationSegment, dict[str, Any]]]:
+    """A plan unit for each spoken block, without its speech markup.
+
+    ``check_size=False`` builds units only to compare with an older plan: an
+    oversized block there is a changed block to drop, not a plan to refuse.
+    """
+    if segments is None:
+        segments = list(
+            session.scalars(
+                select(m.GenerationSegment)
+                .where(
+                    m.GenerationSegment.plan_revision_id == revision_id,
+                    m.GenerationSegment.removed.is_(False),
+                )
+                .order_by(m.GenerationSegment.ordinal)
+            )
+        )
+    context_units = {item["id"]: item for item in semantic_context_units(session, revision_id)}
+    for segment in segments:
+        spoken = segment.optimized_text or segment.text
+        if not spoken.strip():
+            continue
+        if check_size and len(spoken) > 24000:
+            raise ValueError(
+                f"Block {segment.ordinal} exceeds the bounded performance-planning input size; review its speech segmentation first."
+            )
+        provenance = segment.speech_block_provenance_json or {}
+        yield segment, {
+            **context_units[segment.id],
+            "ordinal": segment.ordinal,
+            "spoken_text": spoken,
+            "text_hash": content_hash(spoken),
+            "source_hash": block_hashes[segment.id],
+            "voice": segment.voice or "",
+            "paragraph_break_after": segment.paragraph_break_after,
+            "timing": {key: provenance[key] for key in _TIMING_KEYS if key in provenance},
+        }
+
+
+# What a plan unit records about its block, for plans made before units kept
+# their block's ``source_hash``. Those plans cannot see a changed pause, voice
+# id, reference or the block's own markup; none of these changes who speaks
+# which words, which the plan's entries record.
+_BLOCK_FIELDS = (
+    "spoken_text",
+    "text",
+    "speaker",
+    "language",
+    "node_kind",
+    "section_id",
+    "voice",
+    "paragraph_break_after",
+    "timing",
+)
+
+
+def _same_block(old: dict[str, Any], new: dict[str, Any]) -> bool:
+    if old.get("source_hash") and new.get("source_hash"):
+        return old["source_hash"] == new["source_hash"]
+    return all(old.get(field) == new.get(field) for field in _BLOCK_FIELDS)
+
+
+def _unchanged_entries(
+    previous: m.PerformancePlan,
+    units: list[dict[str, Any]],
+    annotations: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Entries of a plan made stale by an edit on its own revision that still fit.
+
+    An entry is kept when its block is unchanged and, unless the user locked
+    it, when the neighbouring blocks it was planned with are unchanged too:
+    the planner reads that context, so an edited "said John" can change who
+    speaks the next line without touching the line itself. The context is
+    rebuilt with the source plan's own settings on both sides.
+    """
+    old_units = _unit_map(previous)
+    settings = _context_settings(previous)
+    old_contexts = semantic_context_window(previous.units_json, settings)
+    new_contexts = semantic_context_window(units, settings)
+    kept: dict[str, dict[str, Any]] = {}
+    for unit in units:
+        key = str(unit["id"])
+        old, record = old_units.get(key), annotations.get(key)
+        if old is None or record is None or not _same_block(old, unit):
+            continue
+        if not record.get("locked") and old_contexts.get(key) != new_contexts.get(key):
+            continue
+        kept[key] = deepcopy(record)
+    return kept
+
+
 def create_plan(
     session,
     session_id: str,
@@ -414,7 +528,7 @@ def create_plan(
     )
     if not segments:
         raise ValueError("Prepare a non-empty speech plan first.")
-    signature = plan_signature(session, selected.active_revision_id)
+    signature, block_hashes = plan_signature_parts(session, selected.active_revision_id)
     adopted = session.scalar(
         select(m.PerformancePlan).where(
             m.PerformancePlan.plan_revision_id == selected.active_revision_id,
@@ -428,43 +542,9 @@ def create_plan(
             for key, value in _annotations(session, adopted).items()
             if (xml := record_markup(value)) is not None
         }
-    context_units = {
-        item["id"]: item
-        for item in semantic_context_units(session, selected.active_revision_id)
-    }
     units = []
-    for segment in segments:
-        spoken = segment.optimized_text or segment.text
-        if not spoken.strip():
-            continue
-        if len(spoken) > 24000:
-            raise ValueError(
-                f"Block {segment.ordinal} exceeds the bounded performance-planning input size; review its speech segmentation first."
-            )
-        provenance = segment.speech_block_provenance_json or {}
-        unit = {
-                **context_units[segment.id],
-                "ordinal": segment.ordinal,
-                "spoken_text": spoken,
-                "text_hash": content_hash(spoken),
-                "voice": segment.voice or "",
-                "paragraph_break_after": segment.paragraph_break_after,
-                "timing": {
-                    key: provenance[key]
-                    for key in (
-                        "start_ms",
-                        "end_ms",
-                        "target_duration_ms",
-                        "anchor_start_ms",
-                        "anchor_end_ms",
-                        "duration_ms",
-                        "start",
-                        "end",
-                        "budget_ms",
-                    )
-                    if key in provenance
-                },
-            }
+    for segment, unit in _block_units(session, selected.active_revision_id, segments, block_hashes):
+        spoken = unit["spoken_text"]
         if annotation_format == "xml":
             source_xml = adopted_xml.get(segment.id) or _source_markup(segment, segment.id, spoken)
             source_record = normalized_record(
@@ -478,23 +558,52 @@ def create_plan(
     if not units:
         raise ValueError("The selected plan has no spoken blocks.")
     seed = {}
+    copied_from: dict[str, Any] | None = None
     if request.copy_from_id:
         previous = get_plan(session, session_id, request.copy_from_id)
-        if previous.base_signature != plan_signature(session, previous.plan_revision_id):
-            raise RevisionConflict(
-                "The source performance plan no longer matches its saved speech revision."
+        source_annotations = _annotations(session, previous)
+        if previous.plan_revision_id == selected.active_revision_id:
+            # A stale plan on this same revision was edited in place: keep
+            # the entries that still fit their block and its context.
+            all_previous = (
+                source_annotations
+                if previous.base_signature == signature
+                else _unchanged_entries(previous, units, source_annotations)
             )
-        if previous.plan_revision_id != selected.active_revision_id:
-            from .audiobook_resegmentation import copy_unchanged_annotations
-            all_previous = copy_unchanged_annotations(session, previous, selected.active_revision_id, units, characters)
         else:
-            all_previous = _annotations(session, previous)
+            source_signature, source_hashes = plan_signature_parts(session, previous.plan_revision_id)
+            current_annotations = source_annotations
+            if previous.base_signature != source_signature:
+                # Its own revision was edited after the plan was made: first
+                # keep only the entries that still fit there, then map those.
+                source_units = [
+                    unit
+                    for _segment, unit in _block_units(
+                        session, previous.plan_revision_id, None, source_hashes,
+                        check_size=False,
+                    )
+                ]
+                current_annotations = _unchanged_entries(
+                    previous, source_units, source_annotations
+                )
+            from .audiobook_resegmentation import copy_unchanged_annotations
+            all_previous = copy_unchanged_annotations(
+                session, previous, selected.active_revision_id, units, characters,
+                annotations=current_annotations,
+                context_settings=_context_settings(previous),
+            )
         # A manual copy retains every choice; reanalysis preserves only locked
-        # choices and allows the remaining decisions to be reconsidered.
+        # choices and allows the remaining decisions to be reconsidered, unless
+        # the caller asks to keep every unchanged entry.
         seed = {
             key: value
             for key, value in all_previous.items()
-            if request.mode == "manual" or value.get("locked")
+            if request.mode == "manual" or request.keep_unchanged or value.get("locked")
+        }
+        copied_from = {
+            "plan_id": previous.id,
+            "copied_count": len(seed),
+            "skipped_count": len(source_annotations) - len(seed),
         }
     elif request.mode != "manual":
         previous = adopted
@@ -521,6 +630,8 @@ def create_plan(
             "base_adopted_plan_version": adopted.version if adopted else None,
         }
     )
+    if copied_from is not None:
+        settings["copied_from"] = copied_from
     if annotation_format == "xml" or any(record_markup(value) for value in seed.values()):
         settings["character_dictionary"] = deepcopy(characters)
         settings["character_dictionary_revision"] = int(controls.get("revision") or 0)
@@ -690,6 +801,20 @@ def describe_plan(
         "locked_count": sum(
             bool((record_annotation(a) or {}).get("locked"))
             for a in annotations.values()
+        ),
+        **(
+            {
+                "copied_from_id": copied["plan_id"],
+                "copied_count": copied["copied_count"],
+                "skipped_count": copied["skipped_count"],
+            }
+            if isinstance(copied := plan.settings_json.get("copied_from"), dict)
+            else {}
+        ),
+        **(
+            {"carried_from_id": carried}
+            if (carried := plan.settings_json.get("carried_from_plan_id"))
+            else {}
         ),
         "batches": [
             {
@@ -1086,6 +1211,211 @@ def adopt_plan(
     }
 
 
+def _adopted_plan(session, revision_id: str) -> m.PerformancePlan | None:
+    return session.scalar(
+        select(m.PerformancePlan).where(
+            m.PerformancePlan.plan_revision_id == revision_id,
+            m.PerformancePlan.status == "adopted",
+        )
+    )
+
+
+def _moved_markup(
+    xml: str, old_id: str, new_id: str, text: str, characters: list[dict[str, Any]]
+) -> str:
+    """Give markup validated for ``text`` its block's new id.
+
+    Canonical markup only needs its root id changed; anything else is parsed
+    and remapped in full.
+    """
+    from .generation_cast_runtime import remap_markup
+
+    prefix = f'<segment id="{old_id}"'
+    if xml.startswith(prefix):
+        return f'<segment id="{new_id}"' + xml[len(prefix) :]
+    return remap_markup(xml, new_id, text, characters)
+
+
+def carry_adopted_plan(
+    session, source_revision_id: str, revision_id: str, lineage: dict[str, list[str]]
+) -> m.PerformancePlan | None:
+    """Adopt the restore target's plan on the revision a restore just wrote.
+
+    A restore copies its target's blocks exactly, so the target's adopted plan
+    fits them as it is; only the block IDs change. Nothing is remapped onto
+    different words or structure: a plan stale on its own revision, or a
+    block that no longer matches its entry, carries nothing, and the restored
+    revision then needs a plan of its own as before.
+    """
+    source = _adopted_plan(session, source_revision_id)
+    if source is None or source.base_signature != plan_signature(session, source_revision_id):
+        return None
+    signature, block_hashes = plan_signature_parts(session, revision_id)
+    segments = {
+        row.id: row
+        for row in session.scalars(
+            select(m.GenerationSegment).where(m.GenerationSegment.plan_revision_id == revision_id)
+        )
+    }
+    characters = _characters(source)
+    annotations = _annotations(session, source)
+    units: list[dict[str, Any]] = []
+    records: dict[str, dict[str, Any]] = {}
+    for unit in source.units_json:
+        children = lineage.get(str(unit["id"])) or []
+        target = segments.get(children[0]) if len(children) == 1 else None
+        spoken = str(unit["spoken_text"])
+        if target is None or target.removed or (target.optimized_text or target.text) != spoken:
+            return None
+        # The source is current, so the restored blocks are exactly what its
+        # entries were made for: a plan made before block hashes gains them.
+        moved = {
+            **deepcopy(unit),
+            "id": target.id,
+            "ordinal": target.ordinal,
+            "source_hash": block_hashes[target.id],
+        }
+        record = deepcopy(annotations.get(str(unit["id"])))
+        try:
+            if isinstance(unit.get("speech_xml"), str):
+                moved["speech_xml"] = _moved_markup(
+                    unit["speech_xml"], str(unit["id"]), target.id, spoken, characters
+                )
+            if record is not None and (xml := record_markup(record)):
+                record[SPEECH_XML_KEY] = _moved_markup(
+                    xml, str(unit["id"]), target.id, spoken, characters
+                )
+        except ValueError:
+            # Markup that no longer validates is not carried; the restore
+            # itself must still succeed.
+            return None
+        if record is not None:
+            records[target.id] = record
+        units.append(moved)
+    plan = m.PerformancePlan(
+        session_id=source.session_id,
+        plan_revision_id=revision_id,
+        base_signature=signature,
+        settings_json={
+            **deepcopy(source.settings_json),
+            "carried_from_plan_id": source.id,
+            "base_adopted_plan_id": None,
+            "base_adopted_plan_version": None,
+        },
+        units_json=units,
+        manual_annotations_json=records,
+        status="adopted",
+        adopted_at=m.utcnow(),
+    )
+    session.add(plan)
+    session.flush()
+    return plan
+
+
+def _lineage_ancestors(session, revision_id: str) -> Iterator[str]:
+    """Revisions ``copy_from_id`` can reach from ``revision_id``, nearest first.
+
+    The same walk as ``copy_unchanged_annotations``: a restore continues at its
+    target, any other revision at its parent. One revision is read per step,
+    and only its two operation keys, so a caller that stops at the first match
+    never parses the long lineage maps that revisions of a big book store.
+    """
+    table = m.GenerationPlanRevision
+    seen = {revision_id}
+    cursor = revision_id
+    while True:
+        row = session.execute(
+            select(
+                table.parent_revision_id,
+                table.operation_json["action"].as_string().label("action"),
+                table.operation_json["target_revision_id"].as_string().label("target"),
+            ).where(table.id == cursor)
+        ).one_or_none()
+        if row is None:
+            return
+        cursor = row.target if row.action == "restore" else row.parent_revision_id
+        if not cursor or cursor in seen:
+            return
+        seen.add(cursor)
+        yield cursor
+
+
+def missing_speaker_plan(
+    session, revision_id: str, settings: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The adopted plan an ancestor had, when casting would run without one.
+
+    With casting on and no adopted plan, every block is voiced from its own
+    markup, so a revision that lost its plan voices its dialogue as narration.
+    ``None`` when casting is off, performance is on (which refuses on its
+    own), this revision has an adopted plan, or no ancestor adopted one.
+    """
+    if not settings.get("casting_enabled") or settings.get("performance_enabled"):
+        return None
+    return ancestor_adopted_plan(session, revision_id)
+
+
+def ancestor_adopted_plan(
+    session, revision_id: str, *, session_id: str | None = None
+) -> dict[str, Any] | None:
+    """The nearest ancestor's adopted plan, when this revision adopted none.
+
+    ``session_id``, when given, must own the revision; otherwise nothing is
+    returned, so a caller cannot learn about another project's plans.
+    """
+    revisions = m.GenerationPlanRevision
+    owner = session.execute(
+        select(revisions.plan_id, m.GenerationPlan.session_id)
+        .join(m.GenerationPlan, m.GenerationPlan.id == revisions.plan_id)
+        .where(revisions.id == revision_id)
+    ).one_or_none()
+    if owner is None or (session_id is not None and owner.session_id != session_id):
+        return None
+    plan_id = owner.plan_id
+    # Every adopted plan of this speech plan; most projects have none or a few,
+    # and with none there is nothing to walk.
+    adopted = dict(
+        session.execute(
+            select(m.PerformancePlan.plan_revision_id, m.PerformancePlan.id)
+            .join(revisions, revisions.id == m.PerformancePlan.plan_revision_id)
+            .where(revisions.plan_id == plan_id, m.PerformancePlan.status == "adopted")
+        ).tuples().all()
+    )
+    if not adopted or revision_id in adopted:
+        return None
+    source_revision_id = next(
+        (item for item in _lineage_ancestors(session, revision_id) if item in adopted), None
+    )
+    if source_revision_id is None:
+        return None
+    number = session.scalar(
+        select(revisions.revision_number).where(revisions.id == source_revision_id)
+    )
+    plan = session.get(m.PerformancePlan, adopted[source_revision_id])
+    assert plan is not None
+    return {
+        "plan_id": plan.id,
+        "plan_revision_id": source_revision_id,
+        "revision_number": number,
+        "purpose": _purpose(plan),
+        "annotation_format": _annotation_format(plan),
+    }
+
+
+def refuse_missing_speaker_plan(session, revision_id: str, settings: dict[str, Any]) -> None:
+    """Refuse a cast run that would silently drop an earlier speaker plan."""
+    notice = missing_speaker_plan(session, revision_id, settings)
+    if notice is None:
+        return
+    raise ValueError(
+        "Casting is on, but this speech plan has no adopted speaker plan, so its "
+        f"dialogue would be voiced as narration. Speech plan revision "
+        f"{notice['revision_number']} adopted one (performance plan {notice['plan_id']}). "
+        "Copy it to this revision and adopt it, or start again with "
+        "allow_without_speaker_plan to voice each block from its own markup."
+    )
+
+
 def freeze_performance_snapshot(
     session,
     revision_id: str,
@@ -1122,7 +1452,9 @@ def freeze_performance_snapshot(
     )
     if plan.base_signature != signature:
         raise ValueError(
-            "The adopted performance plan is stale after a speech edit. Review a new performance plan before synthesis."
+            "The adopted performance plan is stale after a speech edit. Copy it to keep every entry the edit "
+            "did not affect (Copy unchanged blocks in Speakers & delivery, or copy_from_id), "
+            "then review and adopt the copy before synthesis."
         )
     if annotations is None:
         annotations = _annotations(session, plan)

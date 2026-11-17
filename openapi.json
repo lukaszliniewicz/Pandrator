@@ -289,7 +289,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.14.4",
+            "default": "0.14.5",
             "title": "Application Version",
             "type": "string"
           },
@@ -3634,6 +3634,11 @@
       "GenerationStartRequest": {
         "additionalProperties": false,
         "properties": {
+          "allow_without_speaker_plan": {
+            "default": false,
+            "title": "Allow Without Speaker Plan",
+            "type": "boolean"
+          },
           "expected_selection_hash": {
             "anyOf": [
               {
@@ -6583,6 +6588,11 @@
             "maxLength": 6000,
             "title": "Instructions",
             "type": "string"
+          },
+          "keep_unchanged": {
+            "default": false,
+            "title": "Keep Unchanged",
+            "type": "boolean"
           },
           "mode": {
             "default": "manual",

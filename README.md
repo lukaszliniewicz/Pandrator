@@ -29,23 +29,23 @@ opens Pandrator in your browser. Older workspace data can still be imported.
 For the retired Qt desktop interface, use an
 [older release](https://github.com/lukaszliniewicz/Pandrator/releases).
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.4/PandratorManager-0.9.31-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.4/PandratorManager-0.9.31-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.5/PandratorManager-0.9.32-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.14.5/PandratorManager-0.9.32-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.4 / Manager 0.9.31
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.14.5 / Manager 0.9.32
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-## New in 0.14.4
+## New in 0.14.5
 
-- **Faster long cast plans.** Segment listings, plan status and generation start no longer rebuild the voice catalogue for every cast span; a listing on a 5,167-segment book answers in seconds instead of minutes.
-- **A responsive server under load.** Abandoned reads stop early, routine requests and polls stay out of SQLite's writer, and WAL checkpoints run in the background.
-- **MCP plan tools within their timeout.** Plan status and revision history read summaries and check audio reuse for the active revision only.
-- **Interface fixes.** Quick Transcribe keeps options you change while defaults load, voice settings panels can retry a failed load, reading-view actions stay open on the way up, and buttons no longer shift under a click while a page loads.
+- **Speaker plans survive edits.** Restoring a cast book's revision keeps its adopted speaker plan, a plan an edit made stale can be copied with only the changed blocks left to review, and a cast run no longer starts silently without one.
+- **Long cast books stay responsive.** Abandoned recast previews stop, a preview takes seconds instead of minutes, and missing-only starts, Prepare text and stage selections hold the database writer far less.
+- **Generation carries on past declined lines.** A line Gemini or Vertex AI refuses is marked failed and the rest of the run continues.
+- **Manager updates restart the new version.** Restarting through the Manager after an update runs the newly activated version.
 
-See the [0.14.4 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.14.4) and [detailed changes](docs/release-changes-0.14.4.md).
+See the [0.14.5 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.14.5) and [detailed changes](docs/release-changes-0.14.5.md).
 
 ## Try your first workflow
 

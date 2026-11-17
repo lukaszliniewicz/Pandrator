@@ -671,6 +671,7 @@ def register_generation_routes(
                     stale_only=payload.stale_only,
                     missing_only=payload.missing_only,
                     expected_selection_hash=payload.expected_selection_hash,
+                    allow_without_speaker_plan=payload.allow_without_speaker_plan,
                 )
             except KeyError:
                 abandon_generation_reservation()
@@ -725,6 +726,7 @@ def register_generation_routes(
                 stale_only=payload.stale_only,
                 missing_only=payload.missing_only,
                 expected_selection_hash=payload.expected_selection_hash,
+                allow_without_speaker_plan=payload.allow_without_speaker_plan,
             )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)

@@ -46,6 +46,7 @@
   let previewLoading = $state(false);
   let previewError = $state('');
   let acknowledged = $state(false);
+  let speakerPlanAcknowledged = $state(false);
   let startBusy = $state(false);
   let admissionProgress = $state<AdmissionProgress | null>(null);
   let generationController: AbortController | null = null;
@@ -108,6 +109,9 @@
   const needsAck = $derived(
     mode !== 'continue' && (preview?.replace_count ?? 0) > 0
   );
+  // An earlier revision adopted a speaker plan this one lacks; the server
+  // refuses the start unless the user explicitly accepts losing it.
+  const missingSpeakerPlan = $derived(preview?.missing_speaker_plan ?? null);
   const noWork = $derived(
     preview !== null && !previewLoading && preview.generate_count === 0
   );
@@ -124,7 +128,8 @@
       !preview.provider_preflight?.configuration_warning &&
       preview.speech_plan_revision_id === activePlanRevisionId &&
       preview.mode === previewModeForStartMode(mode) &&
-      (!needsAck || acknowledged)
+      (!needsAck || acknowledged) &&
+      (!missingSpeakerPlan || speakerPlanAcknowledged)
   );
   const submitLabel = $derived(
     startSucceeded
@@ -227,7 +232,10 @@
   // invalidates the previous acknowledgment: the user must re-confirm.
   $effect(() => {
     void preview?.selection_hash;
+    void preview?.speech_plan_revision_id;
+    void preview?.missing_speaker_plan?.plan_id;
     acknowledged = false;
+    speakerPlanAcknowledged = false;
   });
 
   // Switching choice clears the stale preview and its acknowledgment
@@ -237,6 +245,7 @@
     if (next === mode || startBusy) return;
     preview = null;
     acknowledged = false;
+    speakerPlanAcknowledged = false;
     mode = next;
   }
 
@@ -329,7 +338,10 @@
           speech_plan_revision_id: activePlanRevisionId,
           settings_source_run_id: settingsSourceRunId || null,
           ...flags,
-          expected_selection_hash: preview.selection_hash
+          expected_selection_hash: preview.selection_hash,
+          ...(missingSpeakerPlan && speakerPlanAcknowledged
+            ? { allow_without_speaker_plan: true }
+            : {})
         },
         (value) => {
           if (mounted) admissionProgress = value;
@@ -354,6 +366,7 @@
       refreshedAfterConflict =
         caught instanceof ApiError && caught.status === 409;
       acknowledged = false;
+      speakerPlanAcknowledged = false;
       await retryPreview();
     } finally {
       if (mounted) startBusy = false;
@@ -592,6 +605,23 @@
               : 's'}. Previous takes stay in history.
           </p>
         {/if}
+        {#if missingSpeakerPlan}
+          <p
+            role="alert"
+            class="replace-warning mt-3 text-sm"
+            data-testid="generation-start-speaker-plan-warning"
+          >
+            This speech plan has no adopted speaker plan, but {missingSpeakerPlan.revision_number
+              ? `revision ${missingSpeakerPlan.revision_number}`
+              : 'an earlier revision'} had one. Without it, dialogue is read from
+            each block's own markup, usually by the narrator. Copy it in
+            <a
+              class="underline"
+              href={`/sessions/${encodeURIComponent(sessionId)}/speech`}
+              >Speakers &amp; delivery</a
+            > and adopt it before generating.
+          </p>
+        {/if}
       </section>
     {/if}
 
@@ -648,6 +678,25 @@
           data-testid="generation-start-ack"
         />
         <span>{ackLabel}</span>
+      </label>
+    {/if}
+
+    {#if missingSpeakerPlan && !noWork}
+      <label class="ack-row mt-3 flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          class="mt-1"
+          checked={speakerPlanAcknowledged}
+          disabled={previewLoading || startBusy}
+          onchange={(event) =>
+            (speakerPlanAcknowledged = (event.currentTarget as HTMLInputElement)
+              .checked)}
+          data-testid="generation-start-speaker-plan-ack"
+        />
+        <span
+          >Generate without the speaker plan. Characters it assigned will not
+          get their own voices.</span
+        >
       </label>
     {/if}
 

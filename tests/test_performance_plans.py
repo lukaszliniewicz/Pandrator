@@ -700,3 +700,351 @@ def test_progress_failure_releases_only_its_owned_analysis_lease(case, replaceme
             assert first.lease_expires_at is not None
         else:
             assert first.lease_token is None and first.lease_expires_at is None
+
+
+def _adopted(case, *, locked=True, **options):
+    """An adopted plan whose middle block holds the one explicit choice."""
+    plan = create(case, context_before=1, context_after=0, **options)
+    return adopt(case, edit(case, plan, index=1, locked=locked))
+
+
+def _change(case, index, **values):
+    with case["services"]["database"].session() as session:
+        segment = session.get(m.GenerationSegment, case["segment_ids"][index])
+        for key, value in values.items():
+            setattr(segment, key, value)
+
+
+def _items(plan):
+    return {item["id"]: item for item in plan["items"]}
+
+
+@pytest.mark.parametrize("locked", [True, False])
+def test_copy_of_stale_plan_keeps_entries_whose_block_and_context_are_unchanged(case, locked):
+    adopted = _adopted(case, locked=locked)
+    _change(case, 0, text="The request was rejected outright.")
+    assert get(case, adopted)["stale"]
+    copied = create(case, copy_from_id=adopted["id"])
+    first, middle, last = case["segment_ids"]
+    items = _items(copied)
+    # The edited block is unreviewed again.
+    assert items[first]["annotation"] is None
+    # Its neighbour was planned with it as context: only a locked choice stays.
+    if locked:
+        assert items[middle]["annotation"]["delivery"]["instruction"] == "Mark a restrained contrast"
+    else:
+        assert items[middle]["annotation"] is None
+    # The last block and its context are unchanged.
+    assert items[last]["annotation"] is not None
+    expected = (2, 1) if locked else (1, 2)
+    assert (copied["copied_count"], copied["skipped_count"]) == expected
+    assert copied["copied_from_id"] == adopted["id"]
+
+
+def test_copy_of_stale_plan_notices_a_block_change_beyond_its_text(case):
+    adopted = _adopted(case)
+    _change(case, 2, silence_after_ms=900)
+    copied = create(case, copy_from_id=adopted["id"])
+    assert _items(copied)[case["segment_ids"][2]]["annotation"] is None
+    assert (copied["copied_count"], copied["skipped_count"]) == (2, 1)
+
+
+def test_copy_of_stale_plan_made_before_block_hashes_compares_recorded_fields(case):
+    adopted = _adopted(case)
+    with case["services"]["database"].session() as session:
+        plan = session.get(m.PerformancePlan, adopted["id"])
+        plan.units_json = [
+            {key: value for key, value in unit.items() if key != "source_hash"}
+            for unit in plan.units_json
+        ]
+    _change(case, 0, text="The request was rejected outright.")
+    copied = create(case, copy_from_id=adopted["id"])
+    assert (copied["copied_count"], copied["skipped_count"]) == (2, 1)
+
+
+def test_reanalysis_copy_can_keep_unchanged_entries(case):
+    adopted = _adopted(case, locked=False)
+    _change(case, 0, text="The request was rejected outright.")
+    reconsidered = create(case, mode="passive", copy_from_id=adopted["id"])
+    assert reconsidered["copied_count"] == 0
+    assert sum(batch["unit_count"] for batch in reconsidered["batches"]) == 3
+    kept = create(case, mode="passive", copy_from_id=adopted["id"], keep_unchanged=True)
+    assert kept["copied_count"] == 1
+    assert sum(batch["unit_count"] for batch in kept["batches"]) == 2
+    refused = case["post"](
+        "", {"expected_plan_revision_id": case["revision_id"], "keep_unchanged": True}
+    )
+    assert refused.status_code == 422
+
+
+@pytest.mark.parametrize("annotation_format", ["pssml", "xml"])
+def test_restore_carries_the_adopted_plan_without_a_new_review(case, annotation_format):
+    if annotation_format == "xml":
+        adopted = adopt(case, create(case, annotation_format="xml"))
+    else:
+        adopted = _adopted(case)
+    result = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "restore", "target_revision_id": case["revision_id"], "reason": "edit_copy"},
+    )
+    assert result["review_required"]["performance"] is False
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["status"] == "adopted" and not carried["stale"]
+    assert carried["carried_from_id"] == adopted["id"]
+    assert carried["plan_revision_id"] == result["plan_revision_id"]
+    assert [item["id"] for item in carried["items"]] == result["segment_ids"]
+    if annotation_format == "xml":
+        for item in carried["items"]:
+            assert f'id="{item["id"]}"' in item["speech_xml"]
+    else:
+        assert (
+            carried["items"][1]["annotation"]["delivery"]["instruction"]
+            == "Mark a restrained contrast"
+        )
+    snapshot = {"tts": {"performance_enabled": True}}
+    with case["services"]["database"].session() as session:
+        plans.freeze_performance_snapshot(session, result["plan_revision_id"], snapshot)
+    assert snapshot["performance_snapshot"]["id"] == carried["id"]
+    for item in carried["items"]:
+        # The carried markup validates against its new block at synthesis.
+        markup = plans.speech_markup_for_segment(snapshot, item["id"], item["spoken_text"])
+        assert (markup is not None) == (annotation_format == "xml")
+
+
+def test_restore_of_a_stale_plan_carries_nothing(case):
+    _adopted(case)
+    _change(case, 0, text="The request was rejected outright.")
+    result = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "restore", "target_revision_id": case["revision_id"]},
+    )
+    assert result["review_required"]["performance"] is True
+    assert result["carried_performance_plan_id"] is None
+
+
+def _cast_override():
+    return {
+        "tts": {
+            "service": "openai",
+            "model": "model-a",
+            "voice": "voice-a",
+            "language": "en",
+            "casting_enabled": True,
+            "performance_enabled": False,
+        }
+    }
+
+
+def test_cast_start_is_refused_when_the_revision_lost_its_speaker_plan(case):
+    adopted = _adopted(case)
+    generation = case["services"]["generation"]
+    split = generation.revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
+    )
+    revision_id = split["plan_revision_id"]
+    settings = {"casting_enabled": True}
+    with case["services"]["database"].session() as session:
+        notice = plans.missing_speaker_plan(session, revision_id, settings)
+        assert notice is not None
+        assert (notice["plan_id"], notice["plan_revision_id"], notice["purpose"]) == (
+            adopted["id"],
+            case["revision_id"],
+            "delivery",
+        )
+        assert plans.missing_speaker_plan(session, revision_id, {}) is None
+        assert plans.missing_speaker_plan(
+            session, revision_id, {"casting_enabled": True, "performance_enabled": True}
+        ) is None
+        assert plans.missing_speaker_plan(session, case["revision_id"], settings) is None
+    preview = generation.preview_selection(case["session_id"], run_override=_cast_override())
+    assert preview["missing_speaker_plan"]["plan_id"] == adopted["id"]
+    with pytest.raises(ValueError, match="no adopted speaker plan"):
+        generation.start(case["session_id"], run_override=_cast_override())
+    started = generation.start(
+        case["session_id"], run_override=_cast_override(), allow_without_speaker_plan=True
+    )
+    assert started["id"]
+
+
+def test_copying_the_named_plan_onto_the_split_revision_clears_the_notice(case):
+    adopted = _adopted(case)
+    generation = case["services"]["generation"]
+    split = generation.revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
+    )
+    listing = case["client"].get(
+        case["base"] + "?plan_revision_id=" + split["plan_revision_id"]
+    ).get_json()
+    assert listing["items"] == []
+    assert listing["ancestor_adopted_plan"]["plan_id"] == adopted["id"]
+    response = case["post"](
+        "",
+        {
+            "expected_plan_revision_id": split["plan_revision_id"],
+            "copy_from_id": adopted["id"],
+        },
+    )
+    assert response.status_code == 201, response.get_json()
+    copied = response.get_json()
+    # The first block maps one to one with its context. The split halves need
+    # review, and so does the last block: it was planned with the whole line
+    # before it as context and now follows only its second half.
+    assert (copied["copied_count"], copied["skipped_count"]) == (1, 2)
+    adopt(case, copied)
+    preview = generation.preview_selection(case["session_id"], run_override=_cast_override())
+    assert preview["missing_speaker_plan"] is None
+    listing = case["client"].get(
+        case["base"] + "?plan_revision_id=" + split["plan_revision_id"]
+    ).get_json()
+    assert listing["ancestor_adopted_plan"] is None
+
+
+def test_start_route_names_the_lost_speaker_plan_and_accepts_the_acknowledgement(case):
+    adopted = _adopted(case)
+    case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
+    )
+    path = f"/api/v1/sessions/{case['session_id']}/generation-runs"
+    refused = case["client"].post(
+        path, json={"run_override": _cast_override()}, headers=case["headers"]
+    )
+    assert refused.status_code == 409
+    assert adopted["id"] in refused.get_json()["error"]["message"]
+    started = case["client"].post(
+        path,
+        json={"run_override": _cast_override(), "allow_without_speaker_plan": True},
+        headers=case["headers"],
+    )
+    assert started.status_code == 202, started.get_json()
+
+
+def test_a_stale_ancestor_plan_can_still_be_copied_across_a_split(case):
+    adopted = _adopted(case)
+    _change(case, 0, text="The request was rejected outright.")
+    split = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][0], "cursor": 3, "text_layer": "display"},
+    )
+    with case["services"]["database"].session() as session:
+        notice = plans.ancestor_adopted_plan(
+            session, split["plan_revision_id"], session_id=case["session_id"]
+        )
+        assert notice is not None and notice["plan_id"] == adopted["id"]
+        # Another project cannot read it through this revision.
+        assert plans.ancestor_adopted_plan(
+            session, split["plan_revision_id"], session_id="another-session"
+        ) is None
+    response = case["post"](
+        "",
+        {"expected_plan_revision_id": split["plan_revision_id"], "copy_from_id": adopted["id"]},
+    )
+    assert response.status_code == 201, response.get_json()
+    copied = response.get_json()
+    # The edited block is gone; the locked middle entry and the last block,
+    # whose neighbour did not change, map one to one onto the split revision.
+    assert (copied["copied_count"], copied["skipped_count"]) == (2, 1)
+    items = _items(copied)
+    assert items[split["lineage"][case["segment_ids"][1]][0]]["annotation"] is not None
+    assert items[split["lineage"][case["segment_ids"][2]][0]]["annotation"] is not None
+
+
+def _split_first_block(case):
+    return case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][0], "cursor": 3, "text_layer": "display"},
+    )
+
+
+@pytest.mark.parametrize("neighbour_changed", [False, True])
+def test_copy_across_revisions_compares_the_target_context(case, neighbour_changed):
+    adopted = _adopted(case, locked=False)
+    split = _split_first_block(case)
+    first, middle, last = (split["lineage"][key] for key in case["segment_ids"])
+    if neighbour_changed:
+        # Only the target revision changes: the plan's own revision still
+        # matches it, so the source looks current.
+        with case["services"]["database"].session() as session:
+            session.get(m.GenerationSegment, middle[0]).text = "Mary said nothing at all."
+    response = case["post"](
+        "",
+        {"expected_plan_revision_id": split["plan_revision_id"], "copy_from_id": adopted["id"]},
+    )
+    assert response.status_code == 201, response.get_json()
+    copied = response.get_json()
+    items = _items(copied)
+    # The last block was planned with the middle line as context.
+    assert (items[last[0]]["annotation"] is None) is neighbour_changed
+    # The middle block follows half of the split line now, so it needs review
+    # either way; the split halves are new blocks.
+    assert items[middle[0]]["annotation"] is None
+    expected = (0, 3) if neighbour_changed else (1, 2)
+    assert (copied["copied_count"], copied["skipped_count"]) == expected
+
+
+def test_copy_of_stale_plan_ignores_an_oversized_source_block_it_drops(case):
+    adopted = _adopted(case)
+    long_text = "word " * 4801
+    _change(case, 0, text=long_text)
+    split = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][0], "cursor": 12000, "text_layer": "display"},
+    )
+    response = case["post"](
+        "",
+        {"expected_plan_revision_id": split["plan_revision_id"], "copy_from_id": adopted["id"]},
+    )
+    assert response.status_code == 201, response.get_json()
+    copied = response.get_json()
+    # The oversized block is a changed block; the locked middle entry and the
+    # last block, whose neighbour did not change, still map.
+    assert (copied["copied_count"], copied["skipped_count"]) == (2, 1)
+
+
+def test_an_ancestor_plan_far_back_in_the_history_can_be_named_and_copied(case):
+    adopted = _adopted(case)
+    split = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
+    )
+    # Put 120 revisions that change nothing between the plan's revision and
+    # the split, more than the copy's old walk allowed.
+    with case["services"]["database"].session() as session:
+        origin = session.get(m.GenerationPlanRevision, case["revision_id"])
+        parent = origin.id
+        for step in range(120):
+            revision = m.GenerationPlanRevision(
+                plan_id=origin.plan_id,
+                parent_revision_id=parent,
+                revision_number=10_000 + step,
+                settings_json={},
+                operation_json={
+                    "action": "edit",
+                    "lineage": {key: [key] for key in case["segment_ids"]},
+                },
+                content_hash=f"history-{step}",
+            )
+            session.add(revision)
+            session.flush()
+            parent = revision.id
+        session.get(m.GenerationPlanRevision, split["plan_revision_id"]).parent_revision_id = parent
+    with case["services"]["database"].session() as session:
+        notice = plans.ancestor_adopted_plan(session, split["plan_revision_id"])
+        assert notice is not None and notice["plan_id"] == adopted["id"]
+    response = case["post"](
+        "",
+        {"expected_plan_revision_id": split["plan_revision_id"], "copy_from_id": adopted["id"]},
+    )
+    assert response.status_code == 201, response.get_json()
+    assert (response.get_json()["copied_count"], response.get_json()["skipped_count"]) == (1, 2)

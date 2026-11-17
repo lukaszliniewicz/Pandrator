@@ -5789,7 +5789,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.14.4
+             * @default 0.14.5
              */
             application_version?: string;
             /** Canonical Origin */
@@ -7107,6 +7107,11 @@ export interface components {
         /** GenerationStartRequest */
         GenerationStartRequest: {
             /**
+             * Allow Without Speaker Plan
+             * @default false
+             */
+            allow_without_speaker_plan?: boolean;
+            /**
              * Expected Selection Hash
              * @default null
              */
@@ -8305,6 +8310,11 @@ export interface components {
              * @default
              */
             instructions?: string;
+            /**
+             * Keep Unchanged
+             * @default false
+             */
+            keep_unchanged?: boolean;
             /**
              * Mode
              * @default manual

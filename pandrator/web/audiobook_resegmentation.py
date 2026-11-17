@@ -25,21 +25,38 @@ from .project_speech_references import (
 
 
 def copy_unchanged_annotations(
-    session, previous, revision_id: str, units: list[dict], characters: list[dict]
+    session,
+    previous,
+    revision_id: str,
+    units: list[dict],
+    characters: list[dict],
+    *,
+    annotations: dict | None = None,
+    context_settings: dict | None = None,
 ) -> dict:
-    """Follow immutable lineage, retaining only exact one-to-one annotation targets."""
+    """Follow immutable lineage, retaining only exact one-to-one annotation targets.
+
+    ``annotations`` limits the copy to these entries of ``previous`` (by
+    default all of them). With ``context_settings``, an unlocked entry is
+    kept only when its block's planning context, built with those settings,
+    reads the same at the target as when ``previous`` was planned.
+
+    The walk has no step limit, so it reaches every ancestor that
+    ``ancestor_adopted_plan`` can name; a revisited revision ends it.
+    """
     from .performance_annotations import plan_annotations as _annotations
     from .speech_annotation_records import normalized_record, record_markup
+    from .speech_plan_context import semantic_context_window
 
     chain, visited = [], set()
     cursor = revision_id
     while cursor != previous.plan_revision_id:
-        if cursor in visited or len(chain) >= 100:
+        if cursor in visited:
             raise ValueError(
                 "The performance source is not an ancestor of this speech plan."
             )
         visited.add(cursor)
-        revision = session.get(m.GenerationPlanRevision, cursor)
+        revision = session.get(m.GenerationPlanRevision, cursor) if cursor else None
         if revision is None:
             raise ValueError(
                 "The performance source is not an ancestor of this speech plan."
@@ -63,7 +80,8 @@ def copy_unchanged_annotations(
         }
     source_units = {unit["id"]: unit for unit in previous.units_json}
     targets = {unit["id"]: unit for unit in units}
-    annotations = _annotations(session, previous)
+    if annotations is None:
+        annotations = _annotations(session, previous)
     segment_rows = {
         row.id: row
         for row in session.scalars(
@@ -88,6 +106,10 @@ def copy_unchanged_annotations(
         )
 
     target_counts = Counter(child for ids in mapping.values() for child in ids)
+    old_contexts, new_contexts = {}, {}
+    if context_settings is not None:
+        old_contexts = semantic_context_window(previous.units_json, context_settings)
+        new_contexts = semantic_context_window(units, context_settings)
     seed = {}
     for old, ids in mapping.items():
         if len(ids) != 1 or target_counts[ids[0]] != 1:
@@ -102,6 +124,12 @@ def copy_unchanged_annotations(
             continue
         record = deepcopy(annotations.get(old))
         if record is None:
+            continue
+        if (
+            context_settings is not None
+            and not record.get("locked")
+            and old_contexts.get(old) != new_contexts.get(target["id"])
+        ):
             continue
         xml = record_markup(record)
         if xml:

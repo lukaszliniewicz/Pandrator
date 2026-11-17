@@ -22,11 +22,16 @@ class PerformancePlanCreateRequest(StrictModel):
     batch_size: int = Field(default=12, ge=1, le=32)
     allow_vocalizations: bool = False
     copy_from_id: str | None = Field(default=None, min_length=1, max_length=80)
+    # With copy_from_id in passive or llm mode, keep every entry whose block and
+    # context are unchanged (not only locked ones) and analyse only the rest.
+    keep_unchanged: bool = False
 
     @model_validator(mode="after")
     def speaker_pass_requires_xml(self):
         if self.purpose != "delivery" and self.annotation_format != "xml":
             raise ValueError("Speaker analysis requires XML annotation format.")
+        if self.keep_unchanged and not self.copy_from_id:
+            raise ValueError("keep_unchanged requires copy_from_id.")
         return self
 
 
