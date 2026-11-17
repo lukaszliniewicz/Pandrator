@@ -21,11 +21,13 @@ the plan `ancestor_adopted_plan` names: create a plan with that
 `copy_from_id`, the source plan's `purpose` and `annotation_format` (a copy
 does not inherit them, and the defaults are `delivery` and `pssml`), and
 `keep_unchanged=true`. That keeps each entry whose block and planning context
-are unchanged and analyses only the rest: the edited blocks and the
-neighbours planned with them as context (`skipped_count` says how many).
-Review those before adopting the copy. Until then a cast
-run is refused; a revision with no plan can also run if the user accepts
-`allow_without_speaker_plan`, which voices dialogue from each block's markup.
+are unchanged; the edited blocks and the neighbours planned with them as
+context still need entries (the plan's `total` minus `analysed_count`). In
+`passive` mode, claim and submit the plan's batches for them; `llm` mode
+queues the analysis itself. Review those blocks before adopting the copy.
+Until then a cast run is refused; a revision with no plan can also run if the
+user accepts `allow_without_speaker_plan`, which voices dialogue from each
+block's markup.
 
 New plain-text sources also need deterministic `clean_source` before
 `prepare_text`. Follow the ready stage or orchestration plan; leave agentic
