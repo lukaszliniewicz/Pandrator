@@ -124,6 +124,27 @@ def _quotation_marks(text: str, start: int, end: int) -> bool:
     return False
 
 
+def _quote_role_changes(old: str, new: str, start: int, end: int, length: int) -> bool:
+    """Whether a single quote right beside ``old[start:end]`` changes role.
+
+    ``length`` characters replace the change in ``new``. Only the characters on
+    either side of it gain or lose a neighbouring letter, so only an apostrophe
+    there can turn into a quotation mark ("didn't" to "didn 't") or back
+    ("'tis" to "x'tis").
+    """
+
+    for old_index, new_index in ((start - 1, start - 1), (end, start + length)):
+        if (
+            0 <= old_index < len(old)
+            and 0 <= new_index < len(new)
+            and old[old_index] in _APOSTROPHES
+            and _quotation_marks(old, old_index, old_index + 1)
+            != _quotation_marks(new, new_index, new_index + 1)
+        ):
+            return True
+    return False
+
+
 def _text_slots(
     root: ET.Element,
 ) -> tuple[str, list[tuple[ET.Element, str, int, int, bool]], set[int]]:
@@ -188,10 +209,12 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
     # Both extreme placements of the change must fit the same string, so text
     # that repeats the characters beside an edge cannot slip across it.
     for start, end, replacement in _change_placements(old, new):
-        # A pure insertion where two strings meet, or beside an event or
-        # control, is ambiguous: it could belong to either side. A change
-        # across two strings crosses a span or event boundary.
-        if start == end and start in markers:
+        # Text added beside an event or control, by an insertion or by a
+        # replacement that lengthens the words there, is ambiguous: it could
+        # fall on either side of it. A pure insertion where two strings meet
+        # matches both of them below, and a change across two strings crosses
+        # a span or event boundary.
+        if (start in markers or end in markers) and len(replacement) > end - start:
             return None
         matches = [
             index for index, slot in enumerate(slots) if slot[2] <= start and end <= slot[3]
@@ -212,6 +235,7 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
         if has_dialogue and (
             _quotation_marks(old, start, end)
             or _quotation_marks(new, start, start + len(replacement))
+            or _quote_role_changes(old, new, start, end, len(replacement))
         ):
             return None
     if chosen is None:
@@ -239,13 +263,27 @@ def _legacy_anchors_hold(annotation: Mapping[str, Any], old: str, new: str) -> b
     anchor must lie wholly before or after the change, wherever repeated
     characters let the change sit, and resolve in the new text exactly where it
     was, shifted by the change's length when after it.
+
+    An event sits before or after its anchored words, or at the start or end of
+    the block without an anchor. As for an event in markup, text added right
+    beside it, by an insertion or a lengthening replacement, could fall on
+    either side of it, so the entry does not fit.
     """
 
     parsed = PerformanceAnnotation.model_validate(dict(annotation))
     anchors = [span.anchor for span in parsed.spans]
     anchors.extend(event.anchor for event in parsed.events if event.anchor)
+    event_offsets = set()
+    for event in parsed.events:
+        if event.anchor is None:
+            event_offsets.add(0 if event.position == "before" else len(old))
+        else:
+            anchor_start, anchor_end = anchor_range(old, event.anchor)
+            event_offsets.add(anchor_start if event.position == "before" else anchor_end)
     for start, end, replacement in _change_placements(old, new):
         delta = len(replacement) - (end - start)
+        if delta > 0 and (start in event_offsets or end in event_offsets):
+            return False
         for anchor in anchors:
             old_start, old_end = anchor_range(old, anchor)
             new_start, _new_end = anchor_range(new, anchor)
@@ -271,12 +309,14 @@ def fit_entry(
     """Rebase one plan entry onto a segment's new spoken text, or return None.
 
     The entry fits when the change lies inside one spoken string of its markup,
-    wherever repeated characters let it sit; is not a pure insertion beside an
-    event or control; does not reach the edge of a voiced string; adds,
-    removes or replaces no quotation mark in a block with a spoken line; and
-    the rebased markup parses against the new text. A legacy (non-XML)
-    annotation fits when it still validates against the new text and every
-    anchor still resolves to the same words.
+    wherever repeated characters let it sit; adds no text right beside an
+    event or control; does not reach the edge of a voiced string (an event or
+    control inside one is an edge too); adds, removes or replaces no quotation
+    mark, nor turns an apostrophe into one or back, in a block with a spoken
+    line; and the rebased markup parses against the new text. A legacy
+    (non-XML) annotation fits when it still validates against the new text,
+    every anchor still resolves to the same words, and no text is added right
+    beside an event.
     """
 
     if record is None:

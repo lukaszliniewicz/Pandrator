@@ -223,12 +223,14 @@ directions, and so does an edited block whose markup still fits its new text
 (the change lies inside one stretch of it). A block whose markup no longer fits
 needs a new speaker plan review, and so does a block whose speaker, language,
 node kind or section changed. An edit does not fit when it reaches the start or
-end of a spoken line or of a stretch with its own voice, where it could be the
-narration around it; when it inserts text right beside an event or delivery
-control, where it could fall on either side; or when it adds, removes or
-replaces a quotation mark anywhere in a block that has a spoken line. A straight
-or curly single quote counts unless letters stand on both sides of it, as in
-"didn't". An edited attribution ("said John" to "said Mary"), or an attribution
+end of a spoken line or of a stretch with its own voice, or an event or delivery
+control inside one, where it could be the narration around it; when it adds
+text right beside an event or delivery control, by inserting it or by
+lengthening the words there, where it could fall on either side; or when it
+adds, removes or replaces a quotation mark anywhere in a block that has a spoken
+line. A straight or curly single quote counts unless letters stand on both sides
+of it, as in "didn't", so an edit beside one that adds or removes such a letter
+counts too. An edited attribution ("said John" to "said Mary"), or an attribution
 written into a spoken line without quotation marks, still fits and keeps the
 speaker the plan chose; copy the plan to have that block reviewed again. A
 generation run that includes a block needing review is refused with that block

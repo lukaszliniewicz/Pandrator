@@ -228,6 +228,29 @@ def test_single_quotation_marks_count_unless_inside_a_word():
     assert fit(framed_text, framed, "‘Bah!’ he hadn’t said.") is not None
 
 
+def test_an_edit_that_turns_an_apostrophe_into_a_quotation_mark_or_back_does_not_fit():
+    text = "He said, “Bah!” Then didn't leave."
+    record = xml_record(
+        text,
+        '<segment id="s">He said, <dialogue><speaker ref="c-scrooge">“Bah!”</speaker>'
+        "</dialogue> Then didn't leave.</segment>",
+    )
+    # The mark itself is untouched, but a letter beside it comes or goes.
+    assert fit(text, record, "He said, “Bah!” Then didn 't leave.") is None
+    assert fit(text, record, "He said, “Bah!” Then didn' leave.") is None
+    quoted = "He said, “Bah!” Then 'tis done."
+    quoted_record = xml_record(
+        quoted,
+        '<segment id="s">He said, <dialogue><speaker ref="c-scrooge">“Bah!”</speaker>'
+        "</dialogue> Then 'tis done.</segment>",
+    )
+    assert fit(quoted, quoted_record, "He said, “Bah!” Then x'tis done.") is None
+    # A change beside an apostrophe that keeps its role still fits.
+    assert fit(text, record, "He said, “Bah!” Then didn't go.") is not None
+    assert fit(text, record, "He said, “Bah!” Then couldn't leave.") is not None
+    assert fit(text, record, "He said, “Bah!” Then didn’t leave.") is not None
+
+
 def test_an_insertion_beside_an_event_or_control_at_a_block_edge_does_not_fit():
     old = "Hello there."
     trailing = xml_record(old, '<segment id="s">Hello there.<event kind="laugh"/></segment>')
@@ -242,6 +265,30 @@ def test_an_insertion_beside_an_event_or_control_at_a_block_edge_does_not_fit():
     assert fitted is not None
     assert record_markup(fitted) == '<segment id="s">Hello here.<event kind="laugh"/></segment>'
     assert fit(old, leading, "Hello here.") is not None
+
+
+def test_a_replacement_that_lengthens_the_words_beside_an_event_or_control_does_not_fit():
+    old = "Hello there."
+    leading = xml_record(old, '<segment id="s"><event kind="laugh"/>Hello there.</segment>')
+    # "H" becomes "Oh, h": the new words could come before or after the laugh,
+    # as for the insertion "Oh, Hello there.".
+    assert fit(old, leading, "Oh, hello there.") is None
+    trailing = xml_record(old, '<segment id="s">Hello there.<event kind="laugh"/></segment>')
+    # "." becomes "?!" right before the laugh.
+    assert fit(old, trailing, "Hello there?!") is None
+    middle_text = "He paused.Then left."
+    middle = xml_record(
+        middle_text, '<segment id="s">He paused.<event kind="laugh"/>Then left.</segment>'
+    )
+    assert fit(middle_text, middle, "He paused.So then left.") is None
+    control = xml_record(old, '<segment id="s"><em>calm</em>Hello there.</segment>')
+    assert fit(old, control, "Oh, hello there.") is None
+    # A replacement there that does not lengthen the words keeps the event.
+    fitted = fit(old, leading, "Jello there.")
+    assert fitted is not None
+    assert record_markup(fitted) == '<segment id="s"><event kind="laugh"/>Jello there.</segment>'
+    assert fit(middle_text, middle, "He paused.then left.") is not None
+    assert fit(old, trailing, "Hello here.") is not None
 
 
 def test_a_carriage_return_survives_the_rebase():
@@ -307,6 +354,37 @@ def test_legacy_anchor_fits_an_edit_before_or_after_it_without_a_new_copy():
     second = legacy_record(repeated, "defeat", 2)
     assert fit(repeated, second, "The defeat came, and the defeat stayed long.") is not None
     assert fit(repeated, second, "The first defeat came, and the defeat stayed.") is not None
+
+
+def legacy_event(text: str, position: str, anchor: dict | None = None) -> dict:
+    event = {"kind": "laugh", "position": position}
+    if anchor is not None:
+        event["anchor"] = anchor
+    return validate_annotation(text, {"decision": "steer", "events": [event]})
+
+
+def test_legacy_event_does_not_fit_text_added_right_beside_it():
+    old = "Hello there."
+    before = legacy_event(old, "before")
+    after = legacy_event(old, "after")
+    # Without an anchor an event sits at the block's start or end, so text
+    # added there could fall on either side of it, as for an event in markup.
+    assert fit(old, before, "Oh, Hello there.") is None
+    assert fit(old, before, "Oh, hello there.") is None
+    assert fit(old, after, "Hello there. Bye.") is None
+    # An anchored event sits before or after its words.
+    text = "He paused. Then the defeat came."
+    anchored = legacy_event(text, "before", {"quote": "defeat"})
+    assert fit(text, anchored, "He paused. Then the sudden defeat came.") is None
+    trailing = legacy_event(text, "after", {"quote": "defeat"})
+    assert fit(text, trailing, "He paused. Then the defeat, at last, came.") is None
+    # Text added elsewhere, or a change at the event that does not lengthen
+    # the words, still fits.
+    assert fit(old, before, "Hello there. Bye.") is not None
+    assert fit(old, after, "Oh, Hello there.") is not None
+    assert fit(old, before, "Jello there.") is not None
+    assert fit(text, anchored, "He waited. Then the defeat came.") is not None
+    assert fit(text, trailing, "He paused. Then the defeat came at last.") is not None
 
 
 # Plan reads and freezes -------------------------------------------------------
@@ -557,10 +635,11 @@ LISTING_FREEZES = 1
 FLAGGED_REASON = "not_completed"
 
 
-@pytest.fixture
-def cast_case(case):
+@pytest.fixture(params=[True, False], ids=["performance", "casting-only"])
+def cast_case(case, request):
+    # Casting alone also freezes the adopted plan, for its speaker markup.
     plan, _xml = seed_cast(case)
-    cast_settings(case)
+    cast_settings(case, performance_enabled=request.param)
     complete_every_segment(case)
     before, work = reasons(case)
     assert set(before.values()) == {"reusable"}, before

@@ -21,9 +21,11 @@ the plan for the active revision: `review_segment_count` and `review_segments`
 name the blocks that need a new entry (a change that does not fit, or a
 changed speaker, language, node kind or section); each `ordinal` there is
 0-based, while the refusal counts blocks from 1. A change does not fit when it
-reaches a spoken line's edge, is inserted right beside an event or control, or
-adds, removes or replaces a quotation mark in a block with a spoken line (a
-single quote counts unless it sits inside a word). An edited attribution ("said
+reaches a spoken line's edge (an event or control inside a line is an edge
+too), adds text right beside an event or control, or adds, removes or replaces
+a quotation mark in a block with a spoken line (a single quote counts unless it
+sits inside a word, so an edit that moves it into or out of a word counts too).
+An edited attribution ("said
 John" to "said Mary") fits and keeps the old speaker, so copy the plan when the
 speaker should change. A run that includes a block needing review is refused
 naming it; a run without it can start. Recast, workflow checks and voiceover

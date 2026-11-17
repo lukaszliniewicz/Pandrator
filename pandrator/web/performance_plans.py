@@ -39,6 +39,7 @@ from .performance_read_projections import (
     summary_settings,
 )
 from .performance_schemas import PerformancePlanCreateRequest, PerformanceResult
+from .performance_validity import plan_characters as _characters
 from .performance_validity import plan_validity
 from .settings_policy import RevisionConflict
 from .speech_analysis_policy import assert_pass_result
@@ -183,11 +184,6 @@ def _assert_current(
 
 def _unit_map(plan: m.PerformancePlan) -> dict[str, dict[str, Any]]:
     return {str(unit["id"]): unit for unit in plan.units_json}
-
-
-def _characters(plan: m.PerformancePlan) -> list[dict[str, Any]]:
-    value = plan.settings_json.get("character_dictionary") or []
-    return deepcopy(value) if isinstance(value, list) else []
 
 
 def _annotation_format(plan: m.PerformancePlan) -> str:
