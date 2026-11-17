@@ -260,11 +260,13 @@ needs review. A plan read reports `changed_segment_count`,
 0-based `ordinal`; the refusal and the speaker plan panel number blocks from 1)
 for an adopted plan on the selected revision; `stale` keeps its meaning. Copying
 the project carries such a plan into the new project, where the blocks that need
-review still need it. Every block of a plan made before Pandrator recorded each
-block's speaker, language, node kind and section needs review there, as in the
-original: the copy rebuilds each block's plan entry from the current block, so
-an old entry kept there would hide a change to a field the plan never recorded
-(a block whose speaker changed would keep its old markup and look current). An
+review still need it. Once an edit has made it stale, every block of a plan made
+before Pandrator recorded each block's speaker, language, node kind and section
+needs review there, as in the original: the copy rebuilds each block's plan entry
+from the current block, so an old entry kept there would hide a change to a field
+the plan never recorded (a block whose speaker changed would keep its old markup
+and look current). Such a plan that is still up to date cannot be copied, as
+before. An
 edited block whose markup
 still fits arrives there on its new text and counts as unchanged, and a plan
 with no block left to review arrives up to date (`stale` is false there, while
