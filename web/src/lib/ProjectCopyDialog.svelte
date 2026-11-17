@@ -141,7 +141,8 @@
       media_edit_plans: 'This saved video edit plan cannot be copied yet.',
       project_sound_plans:
         'Update the sound cues to match the current speech plan before copying.',
-      performance_plans: 'Finish active annotation analysis before copying.',
+      performance_plans:
+        'Finish active annotation analysis, and have any MCP client submit or release its claimed annotation batch, before copying.',
       pronunciation_entries:
         'Copying saved pronunciations is not available yet.',
       subtitle_evidence:
