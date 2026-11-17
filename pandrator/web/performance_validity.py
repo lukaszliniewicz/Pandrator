@@ -36,6 +36,9 @@ from .speech_annotation_records import normalized_record, record_annotation, rec
 # contribute their tail, exactly as ``speech_markup._extract`` reads them.
 _SPOKEN_TEXT_TAGS = frozenset({"segment", "dialogue", "speaker", "narrator", "span"})
 _DIALOGUE_TAGS = frozenset({"dialogue", "speaker"})
+# Quotation marks that open or close a spoken line. The right single quotation
+# mark is left out because it is also the apostrophe of ordinary words.
+_QUOTE_MARKS = frozenset('"\u201c\u201d\u201e\u201f\u2018\u201a\u00ab\u00bb\u2039\u203a\u300c\u300d\u300e\u300f')
 
 REVIEW_MESSAGE = (
     "This block changed after its speaker plan was adopted and its speaker markup "
@@ -65,18 +68,35 @@ class PlanValidity:
         return tuple(segment_id for _ordinal, segment_id in self.review)
 
 
-def _changed_range(old: str, new: str) -> tuple[int, int, str]:
-    """Return the old range ``[start, end)`` and the text that replaces it."""
+def _changed_range(old: str, new: str, *, from_end: bool = False) -> tuple[int, int, str]:
+    """Return the old range ``[start, end)`` and the text that replaces it.
+
+    Where the change repeats the characters beside it, several ranges describe
+    it equally well: matching from the start places it as far right as it can
+    go, and ``from_end`` as far left.
+    """
 
     limit = min(len(old), len(new))
-    prefix = 0
-    while prefix < limit and old[prefix] == new[prefix]:
-        prefix += 1
-    suffix = 0
-    limit -= prefix
-    while suffix < limit and old[-1 - suffix] == new[-1 - suffix]:
-        suffix += 1
+    prefix = suffix = 0
+    if from_end:
+        while suffix < limit and old[-1 - suffix] == new[-1 - suffix]:
+            suffix += 1
+        limit -= suffix
+        while prefix < limit and old[prefix] == new[prefix]:
+            prefix += 1
+    else:
+        while prefix < limit and old[prefix] == new[prefix]:
+            prefix += 1
+        limit -= prefix
+        while suffix < limit and old[-1 - suffix] == new[-1 - suffix]:
+            suffix += 1
     return prefix, len(old) - suffix, new[prefix : len(new) - suffix]
+
+
+def _change_placements(old: str, new: str) -> tuple[tuple[int, int, str], ...]:
+    """The leftmost and rightmost ranges of one change; any other lies between."""
+
+    return _changed_range(old, new, from_end=True), _changed_range(old, new)
 
 
 def _text_slots(
@@ -86,8 +106,8 @@ def _text_slots(
 
     ``voiced`` is true when ``speech_markup._scope_for`` gives the string a
     voice other than the narration's: inside a ``dialogue`` or ``speaker``
-    element, or a ``span`` with its own ``voice``, unless a nearer
-    ``narrator`` resets it.
+    element, or a ``span`` or ``narrator`` with its own ``voice``, unless a
+    nearer ``narrator`` without one resets it.
     """
 
     slots: list[tuple[ET.Element, str, int, int, bool]] = []
@@ -104,7 +124,7 @@ def _text_slots(
         if element.tag not in _SPOKEN_TEXT_TAGS:
             return
         if element.tag == "narrator":
-            voiced = False
+            voiced = "voice" in element.attrib
         elif element.tag in _DIALOGUE_TAGS or (
             element.tag == "span" and "voice" in element.attrib
         ):
@@ -131,19 +151,39 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
     transcript, slots = _text_slots(root)
     if transcript != old:
         return None
+    has_dialogue = any(element.tag in _DIALOGUE_TAGS for element in root.iter())
+    chosen: int | None = None
+    # Both extreme placements of the change must fit the same string, so text
+    # that repeats the characters beside an edge cannot slip across it.
+    for start, end, replacement in _change_placements(old, new):
+        # A pure insertion where two strings meet is ambiguous: it could belong
+        # to either scope. A change across two strings crosses a span or event
+        # boundary.
+        matches = [
+            index for index, slot in enumerate(slots) if slot[2] <= start and end <= slot[3]
+        ]
+        if len(matches) != 1 or chosen not in (None, matches[0]):
+            return None
+        chosen = matches[0]
+        _owner, _attribute, slot_start, slot_end, voiced = slots[chosen]
+        # Text added or removed at the edge of a spoken line, or of a span with
+        # its own voice, could be the narration around it (an attribution after
+        # a closing quote, say), so a change that reaches such a string's edge
+        # needs review.
+        if voiced and (start == slot_start or end == slot_end):
+            return None
+        # In a block with a spoken line, narration that gains or loses a
+        # quotation mark may now hold dialogue, or no longer frame it.
+        if (
+            has_dialogue
+            and not voiced
+            and _QUOTE_MARKS.intersection(old[start:end] + replacement)
+        ):
+            return None
+    if chosen is None:
+        return None
     start, end, replacement = _changed_range(old, new)
-    # A pure insertion where two strings meet is ambiguous: it could belong to
-    # either scope. A change across two strings crosses a span or event boundary.
-    matches = [slot for slot in slots if slot[2] <= start and end <= slot[3]]
-    if len(matches) != 1:
-        return None
-    owner, attribute, slot_start, slot_end, voiced = matches[0]
-    # Text added or removed at the edge of a spoken line, or of a span with
-    # its own voice, could be the narration around it (an attribution after a
-    # closing quote, say), so a change that reaches such a string's edge needs
-    # review.
-    if voiced and (start == slot_start or end == slot_end):
-        return None
+    owner, attribute, slot_start, _slot_end, _voiced = slots[chosen]
     value = str(getattr(owner, attribute))
     setattr(
         owner,
@@ -162,27 +202,28 @@ def _legacy_anchors_hold(annotation: Mapping[str, Any], old: str, new: str) -> b
 
     An anchor resolves by its quote and occurrence, so an edit before it that
     adds or removes an earlier copy of the quote would move it elsewhere. Each
-    anchor must lie wholly before or after the change and resolve in the new
-    text exactly where it was, shifted by the change's length when after it.
+    anchor must lie wholly before or after the change, wherever repeated
+    characters let the change sit, and resolve in the new text exactly where it
+    was, shifted by the change's length when after it.
     """
 
     parsed = PerformanceAnnotation.model_validate(dict(annotation))
     anchors = [span.anchor for span in parsed.spans]
     anchors.extend(event.anchor for event in parsed.events if event.anchor)
-    start, end, replacement = _changed_range(old, new)
-    delta = len(replacement) - (end - start)
-    for anchor in anchors:
-        old_start, old_end = anchor_range(old, anchor)
-        new_start, _new_end = anchor_range(new, anchor)
-        if old_end <= start:
-            expected = old_start
-        elif old_start >= end:
-            expected = old_start + delta
-        else:
-            # The change overlaps the anchored words, or inserts inside them.
-            return False
-        if new_start != expected:
-            return False
+    for start, end, replacement in _change_placements(old, new):
+        delta = len(replacement) - (end - start)
+        for anchor in anchors:
+            old_start, old_end = anchor_range(old, anchor)
+            new_start, _new_end = anchor_range(new, anchor)
+            if old_end <= start:
+                expected = old_start
+            elif old_start >= end:
+                expected = old_start + delta
+            else:
+                # The change overlaps the anchored words, or inserts inside them.
+                return False
+            if new_start != expected:
+                return False
     return True
 
 
@@ -195,8 +236,11 @@ def fit_entry(
 ) -> dict[str, Any] | None:
     """Rebase one plan entry onto a segment's new spoken text, or return None.
 
-    The entry fits when the change lies inside one spoken string of its markup
-    and the rebased markup parses against the new text. A legacy (non-XML)
+    The entry fits when the change lies inside one spoken string of its markup,
+    wherever repeated characters let it sit, does not reach the edge of a
+    voiced string, adds or removes no quotation mark in the narration of a
+    block with a spoken line, and the rebased markup parses against the new
+    text. A legacy (non-XML)
     annotation fits when it still validates against the new text and every
     anchor still resolves to the same words.
     """

@@ -861,6 +861,38 @@ def test_restore_of_a_stale_plan_carries_it_judged_per_block(case, change):
     assert frozen["review_segment_ids"] == ([last] if change == "structure" else [])
 
 
+@pytest.mark.parametrize("locked", [True, False])
+def test_a_copy_of_a_plan_carried_stale_keeps_what_a_copy_of_its_source_keeps(case, locked):
+    # The carried plan keeps the edited block's old hash and moves the others,
+    # so copying it judges the restored blocks exactly as copying the source.
+    adopted = _adopted(case, locked=locked)
+    _change(case, 0, text="The request was rejected outright.")
+    result = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "restore", "target_revision_id": case["revision_id"]},
+    )
+    carried_id = result["carried_performance_plan_id"]
+    carried = get(case, {"id": carried_id})
+    assert carried["stale"] and carried["carried_from_id"] == adopted["id"]
+    copied = create(
+        {**case, "revision_id": result["plan_revision_id"]},
+        copy_from_id=carried_id,
+        keep_unchanged=True,
+    )
+    first, middle, last = result["segment_ids"]
+    items = _items(copied)
+    assert items[first]["annotation"] is None
+    if locked:
+        assert items[middle]["annotation"]["delivery"]["instruction"] == "Mark a restrained contrast"
+    else:
+        assert items[middle]["annotation"] is None
+    assert items[last]["annotation"] is not None
+    expected = (2, 1) if locked else (1, 2)
+    assert (copied["copied_count"], copied["skipped_count"]) == expected
+    assert copied["copied_from_id"] == carried_id
+
+
 def _adopted_xml(case):
     """An adopted XML plan: a locked delivery on the first block, an event in
     the second, and an unlocked delivery on the last."""

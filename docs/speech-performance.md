@@ -222,11 +222,22 @@ plan is judged block by block after an edit: unchanged blocks keep their
 directions, and so does an edited block whose markup still fits its new text
 (the change lies inside one stretch of it). A block whose markup no longer fits
 needs a new speaker plan review, and so does a block whose speaker, language,
-node kind or section changed. A generation run that includes such a block is
-refused with that block named; a run without it can still start, and the block
-preview shows the review message for it. A plan read reports
-`changed_segment_count`, `review_segment_count` and `review_segments` (the first
-20) for an adopted plan on the selected revision; `stale` keeps its meaning.
+node kind or section changed. An edit does not fit when it reaches the start or
+end of a spoken line or of a stretch with its own voice, where it could be the
+narration around it, or when it adds or removes a quotation mark in the
+narration of a block that has a spoken line. An edited attribution ("said John"
+to "said Mary") with no quotation mark changed still fits and keeps the speaker
+the plan chose; copy the plan to have that block reviewed again. A generation
+run that includes a block needing review is refused with that block named; a
+run without it can still start, and the block preview shows the review message
+for it. Recasting, workflow checks and voiceover regrouping or repair refuse in
+the same way. A plan read reports `changed_segment_count`,
+`review_segment_count` and `review_segments` (the first 20, each with its
+0-based `ordinal`; the refusal and the speaker plan panel number blocks from 1)
+for an adopted plan on the selected revision; `stale` keeps its meaning. Phrase
+editing, the starting markup of a split, merge or re-segmentation, and the
+plan's own segment preview still need a plan that fits the whole revision: for
+those, copy the stale plan and adopt the copy.
 
 With casting on and performance off, a revision without an adopted plan voices
 each block from its own markup, which usually means the narrator reads the

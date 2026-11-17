@@ -427,18 +427,23 @@ test('a lost or stale speaker plan can be copied, keeping unchanged blocks', asy
   expect(posted[0]).not.toHaveProperty('keep_unchanged');
   await expect(notice).toBeHidden();
 
-  // The copy is adopted, then an edit on this revision makes it stale.
+  // The copy is adopted, then an edit on this revision makes it stale. A plan
+  // read judges an adopted plan on the selected revision block by block.
   plans = [
     plan('adopted-stale', {
       status: 'adopted',
       stale: true,
-      analysed_count: 3
+      analysed_count: 3,
+      changed_segment_count: 1,
+      review_segment_count: 0,
+      review_segments: []
     })
   ];
   await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
   await panel.getByLabel('Annotation draft').selectOption('adopted-stale');
   const stale = panel.getByTestId('performance-stale-plan');
-  await expect(stale).toContainText('only the rest need review');
+  await expect(stale).toContainText('1 block changed since adoption.');
+  await expect(stale).toContainText('copy the plan to review it again');
   await page.screenshot({
     path: testInfo.outputPath('stale-plan.png'),
     fullPage: true

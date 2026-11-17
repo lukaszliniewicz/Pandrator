@@ -60,10 +60,11 @@ def refuse_review_segments(
         f"block {ordinal + 1} ({segment_id})" for ordinal, segment_id in named[:5]
     )
     more = f" and {len(named) - 5} more" if len(named) > 5 else ""
+    blocks = "1 block" if len(named) == 1 else f"{len(named)} blocks"
     raise ValueError(
-        f"{len(named)} block(s) changed after the speaker plan was adopted and their "
-        f"speaker markup no longer fits: {listed}{more}. Review a new speaker plan, "
-        "or start a run without these blocks."
+        f"{blocks} changed after the speaker plan was adopted and no longer "
+        f"fit their speaker markup: {listed}{more}. Review a new speaker plan, "
+        "or leave these blocks out of the run."
     )
 
 
@@ -90,9 +91,11 @@ def freeze_generation_performance_snapshot(
     semantic context are always frozen for the whole revision.
     ``_parsed_markup`` is passed to the cast freeze (see ``build_render_parts``).
 
-    ``refuse_review`` is for a run start: it refuses, before the cast freeze,
-    when a segment that needs a new speaker plan review is in ``review_scope``
-    (``None`` meaning every segment). Inspection freezes leave it off.
+    ``refuse_review`` refuses, before the cast freeze, when a segment that
+    needs a new speaker plan review is in ``review_scope`` (``None`` meaning
+    every segment). ``freeze_speech_snapshot`` always sets it, so a run start,
+    a recast, workflow preflight and voiceover regroup or repair all refuse;
+    the audio identity pass freezes without it.
     """
     if _service_config_cache is None:
         _service_config_cache = {}

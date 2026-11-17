@@ -541,49 +541,37 @@ def create_plan(
     # per-block judgement keeps (unchanged and fitted blocks). ``copy_from_id``
     # has its own rule below, so a copy starts from a stale plan's block
     # markup as before.
-    adopted_entries: dict[str, Any] = {}
+    candidates: dict[str, Any] = {}
     if adopted and adopted.base_signature == signature:
-        adopted_entries = _annotations(session, adopted)
+        candidates = _annotations(session, adopted)
     elif adopted and not request.copy_from_id:
-        spoken_by_id = {segment.id: segment.optimized_text or segment.text for segment in segments}
-        for key, entry in plan_validity(
-            session, adopted, selected.active_revision_id
-        ).entries.items():
-            kept = entry["annotation"]
-            xml = record_markup(kept)
-            if xml is not None:
-                # Judged with the plan's characters: an entry that no longer
-                # parses against the current ones is left out, so its block
-                # starts from its own markup and is not seeded.
-                try:
-                    normalized_record(
-                        spoken_by_id.get(key, ""), key, {"speech_xml": xml}, characters
-                    )
-                except ValueError:
-                    continue
-            adopted_entries[key] = kept
-    adopted_xml = {
-        key: xml
-        for key, value in adopted_entries.items()
-        if (xml := record_markup(value)) is not None
-    }
+        candidates = {
+            key: entry["annotation"]
+            for key, entry in plan_validity(
+                session, adopted, selected.active_revision_id
+            ).entries.items()
+        }
+    # An entry whose markup no longer parses against the current characters
+    # (one was removed or renamed since adoption) is left out on either path,
+    # so its block starts from its own markup and the entry is not seeded.
+    spoken_by_id = {segment.id: segment.optimized_text or segment.text for segment in segments}
+    adopted_entries: dict[str, Any] = {}
+    adopted_records: dict[str, Any] = {}
+    for key, value in candidates.items():
+        xml = record_markup(value)
+        if xml is not None and key in spoken_by_id:
+            try:
+                adopted_records[key] = normalized_record(
+                    spoken_by_id[key], key, {"speech_xml": xml}, characters
+                )
+            except ValueError:
+                continue
+        adopted_entries[key] = value
     units = []
     for segment, unit in _block_units(session, selected.active_revision_id, segments, block_hashes):
         spoken = unit["spoken_text"]
         if annotation_format == "xml":
-            source_record = None
-            if segment.id in adopted_xml:
-                try:
-                    source_record = normalized_record(
-                        spoken,
-                        segment.id,
-                        {"speech_xml": adopted_xml[segment.id]},
-                        characters,
-                    )
-                except ValueError:
-                    # An entry that no longer parses against the current
-                    # characters starts from the block's own markup.
-                    source_record = None
+            source_record = adopted_records.get(segment.id)
             if source_record is None:
                 source_record = normalized_record(
                     spoken,
