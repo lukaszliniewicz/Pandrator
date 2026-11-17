@@ -107,7 +107,9 @@ change. Manual copies keep every such entry; passive and LLM copies keep only
 locked ones unless `keep_unchanged` is set, in which case only the changed
 blocks are analysed. A stale plan copied onto a later revision (after a split,
 say) first keeps the entries that still fit on its own revision, then maps
-those across. The response reports `copied_count` (entries copied) and
+those across. Any copy onto a later revision maps only blocks that stay whole,
+one block to one block, and an unlocked entry also needs its planning context
+to read there as it did when the plan was made. The response reports `copied_count` (entries copied) and
 `skipped_count` (source entries left behind); the plan's `total` minus its
 `analysed_count` is what still needs review. Plans made before 0.14.5 do not
 record a hash of each block, so for them a block counts as unchanged when its

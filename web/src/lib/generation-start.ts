@@ -57,7 +57,7 @@ export type GenerationPreview = {
   missing_speaker_plan?: MissingSpeakerPlan | null;
 };
 
-export type MissingSpeakerPlan = {
+type MissingSpeakerPlan = {
   plan_id: string;
   plan_revision_id: string;
   revision_number: number | null;

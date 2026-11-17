@@ -396,8 +396,14 @@ def _block_units(
     revision_id: str,
     segments: list[m.GenerationSegment] | None,
     block_hashes: dict[str, str],
+    *,
+    check_size: bool = True,
 ) -> Iterator[tuple[m.GenerationSegment, dict[str, Any]]]:
-    """A plan unit for each spoken block, without its speech markup."""
+    """A plan unit for each spoken block, without its speech markup.
+
+    ``check_size=False`` builds units only to compare with an older plan: an
+    oversized block there is a changed block to drop, not a plan to refuse.
+    """
     if segments is None:
         segments = list(
             session.scalars(
@@ -414,7 +420,7 @@ def _block_units(
         spoken = segment.optimized_text or segment.text
         if not spoken.strip():
             continue
-        if len(spoken) > 24000:
+        if check_size and len(spoken) > 24000:
             raise ValueError(
                 f"Block {segment.ordinal} exceeds the bounded performance-planning input size; review its speech segmentation first."
             )
@@ -573,7 +579,8 @@ def create_plan(
                 source_units = [
                     unit
                     for _segment, unit in _block_units(
-                        session, previous.plan_revision_id, None, source_hashes
+                        session, previous.plan_revision_id, None, source_hashes,
+                        check_size=False,
                     )
                 ]
                 current_annotations = _unchanged_entries(
@@ -583,6 +590,7 @@ def create_plan(
             all_previous = copy_unchanged_annotations(
                 session, previous, selected.active_revision_id, units, characters,
                 annotations=current_annotations,
+                context_settings=_context_settings(previous),
             )
         # A manual copy retains every choice; reanalysis preserves only locked
         # choices and allows the remaining decisions to be reconsidered, unless

@@ -892,8 +892,10 @@ def test_copying_the_named_plan_onto_the_split_revision_clears_the_notice(case):
     )
     assert response.status_code == 201, response.get_json()
     copied = response.get_json()
-    # The two untouched blocks map one to one; the split halves need review.
-    assert (copied["copied_count"], copied["skipped_count"]) == (2, 1)
+    # The first block maps one to one with its context. The split halves need
+    # review, and so does the last block: it was planned with the whole line
+    # before it as context and now follows only its second half.
+    assert (copied["copied_count"], copied["skipped_count"]) == (1, 2)
     adopt(case, copied)
     preview = generation.preview_selection(case["session_id"], run_override=_cast_override())
     assert preview["missing_speaker_plan"] is None
@@ -953,3 +955,96 @@ def test_a_stale_ancestor_plan_can_still_be_copied_across_a_split(case):
     items = _items(copied)
     assert items[split["lineage"][case["segment_ids"][1]][0]]["annotation"] is not None
     assert items[split["lineage"][case["segment_ids"][2]][0]]["annotation"] is not None
+
+
+def _split_first_block(case):
+    return case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][0], "cursor": 3, "text_layer": "display"},
+    )
+
+
+@pytest.mark.parametrize("neighbour_changed", [False, True])
+def test_copy_across_revisions_compares_the_target_context(case, neighbour_changed):
+    adopted = _adopted(case, locked=False)
+    split = _split_first_block(case)
+    first, middle, last = (split["lineage"][key] for key in case["segment_ids"])
+    if neighbour_changed:
+        # Only the target revision changes: the plan's own revision still
+        # matches it, so the source looks current.
+        with case["services"]["database"].session() as session:
+            session.get(m.GenerationSegment, middle[0]).text = "Mary said nothing at all."
+    response = case["post"](
+        "",
+        {"expected_plan_revision_id": split["plan_revision_id"], "copy_from_id": adopted["id"]},
+    )
+    assert response.status_code == 201, response.get_json()
+    copied = response.get_json()
+    items = _items(copied)
+    # The last block was planned with the middle line as context.
+    assert (items[last[0]]["annotation"] is None) is neighbour_changed
+    # The middle block follows half of the split line now, so it needs review
+    # either way; the split halves are new blocks.
+    assert items[middle[0]]["annotation"] is None
+    expected = (0, 3) if neighbour_changed else (1, 2)
+    assert (copied["copied_count"], copied["skipped_count"]) == expected
+
+
+def test_copy_of_stale_plan_ignores_an_oversized_source_block_it_drops(case):
+    adopted = _adopted(case)
+    long_text = "word " * 4801
+    _change(case, 0, text=long_text)
+    split = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][0], "cursor": 12000, "text_layer": "display"},
+    )
+    response = case["post"](
+        "",
+        {"expected_plan_revision_id": split["plan_revision_id"], "copy_from_id": adopted["id"]},
+    )
+    assert response.status_code == 201, response.get_json()
+    copied = response.get_json()
+    # The oversized block is a changed block; the locked middle entry and the
+    # last block, whose neighbour did not change, still map.
+    assert (copied["copied_count"], copied["skipped_count"]) == (2, 1)
+
+
+def test_an_ancestor_plan_far_back_in_the_history_can_be_named_and_copied(case):
+    adopted = _adopted(case)
+    split = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
+    )
+    # Put 120 revisions that change nothing between the plan's revision and
+    # the split, more than the copy's old walk allowed.
+    with case["services"]["database"].session() as session:
+        origin = session.get(m.GenerationPlanRevision, case["revision_id"])
+        parent = origin.id
+        for step in range(120):
+            revision = m.GenerationPlanRevision(
+                plan_id=origin.plan_id,
+                parent_revision_id=parent,
+                revision_number=10_000 + step,
+                settings_json={},
+                operation_json={
+                    "action": "edit",
+                    "lineage": {key: [key] for key in case["segment_ids"]},
+                },
+                content_hash=f"history-{step}",
+            )
+            session.add(revision)
+            session.flush()
+            parent = revision.id
+        session.get(m.GenerationPlanRevision, split["plan_revision_id"]).parent_revision_id = parent
+    with case["services"]["database"].session() as session:
+        notice = plans.ancestor_adopted_plan(session, split["plan_revision_id"])
+        assert notice is not None and notice["plan_id"] == adopted["id"]
+    response = case["post"](
+        "",
+        {"expected_plan_revision_id": split["plan_revision_id"], "copy_from_id": adopted["id"]},
+    )
+    assert response.status_code == 201, response.get_json()
+    assert (response.get_json()["copied_count"], response.get_json()["skipped_count"]) == (1, 2)
