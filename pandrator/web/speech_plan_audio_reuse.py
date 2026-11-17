@@ -43,10 +43,16 @@ def _chunks(values: list[str]) -> Iterable[list[str]]:
         yield values[offset : offset + _BATCH_SIZE]
 
 
-def _receipt(target_count: int, reused_count: int, reasons: Counter[str]) -> dict[str, Any]:
+def _receipt(
+    target_count: int,
+    reused_count: int,
+    reasons: Counter[str],
+    matching: str = "exact_bounds",
+) -> dict[str, Any]:
     return {
         "reused_audio_count": reused_count,
         "new_audio_needed_count": max(0, target_count - reused_count),
+        "matching": matching,
         "reason_counts": {
             code: int(reasons[code])
             for code in sorted(_REASON_CODES)
@@ -76,11 +82,13 @@ def _document_provenance_key(
     document_id: str,
     cues_by_id: dict[str, m.Segment],
     cues_by_ordinal: dict[int, m.Segment],
+    *,
+    timing_tolerant: bool = False,
 ) -> tuple[Any, ...] | None:
     refs = segment.source_segment_ids_json
     if not isinstance(refs, list) or not refs:
         return None
-    cue_keys: list[tuple[int, int | float | None, int | float | None]] = []
+    cue_keys: list[tuple[Any, ...]] = []
     seen_cues: set[str] = set()
     for reference in refs:
         if isinstance(reference, bool) or not isinstance(reference, (str, int)):
@@ -115,7 +123,11 @@ def _document_provenance_key(
         else:
             start = cue.start_ms
             end = cue.end_ms
-        cue_keys.append((cue.ordinal, start, end))
+        # A timing-only source keeps the same cues in the same order; only the
+        # display document and the exact windows move.
+        cue_keys.append((cue.ordinal,) if timing_tolerant else (cue.ordinal, start, end))
+    if timing_tolerant:
+        return (tuple(cue_keys), segment.node_kind, segment.alignment_group)
     return (
         document_id,
         tuple(cue_keys),
@@ -140,6 +152,7 @@ def _provenance_keys(
     cues: dict[
         str, tuple[dict[str, m.Segment], dict[int, m.Segment]]
     ] | None,
+    timing_tolerant: bool = False,
 ) -> dict[str, tuple[Any, ...] | None]:
     result: dict[str, tuple[Any, ...] | None] = {}
     for segment in segments:
@@ -152,7 +165,11 @@ def _provenance_keys(
             continue
         cues_by_id, cues_by_ordinal = revision_cues
         result[segment.id] = _document_provenance_key(
-            segment, document_id, cues_by_id, cues_by_ordinal
+            segment,
+            document_id,
+            cues_by_id,
+            cues_by_ordinal,
+            timing_tolerant=timing_tolerant,
         )
     return result
 
@@ -186,7 +203,10 @@ def inherit_rebuilt_plan_audio(
     """Copy only completed, identity-compatible audio from the immediate parent plan.
 
     ``source_revision_id`` is the previously active GenerationPlanRevision ID
-    supplied by the caller's revision guard.
+    supplied by the caller's revision guard. When the parent's stored source
+    signatures differ from the target's only in cue timing, the same cues in the
+    same order keep their takes and only their windows move; the receipt records
+    ``matching="timing_tolerant"`` for that case and ``"exact_bounds"`` otherwise.
     """
     target_revision = session.get(m.GenerationPlanRevision, target_revision_id)
     if target_revision is None:
@@ -221,6 +241,23 @@ def inherit_rebuilt_plan_audio(
     ):
         reasons["source_revision_unavailable"] += target_count
         return _receipt(target_count, 0, reasons)
+
+    from .speech_plan_source import plan_source_compatibility, stored_signatures
+
+    # A rebuild from a timing-only edit keeps the same cues and spoken text; only
+    # their windows moved, so the takes still fit and the display document may be
+    # the retimed revision's own.
+    target_settings = target_revision.settings_json or {}
+    compatibility = plan_source_compatibility(
+        source_revision.settings_json or {},
+        {
+            "id": target_settings.get("_source_artifact_id"),
+            "content_hash": target_settings.get("_source_content_hash"),
+        },
+        stored_signatures(target_settings),
+    )
+    timing_tolerant = compatibility == "timing_only"
+    matching = "timing_tolerant" if timing_tolerant else "exact_bounds"
 
     source_segments = list(
         session.scalars(
@@ -264,10 +301,10 @@ def inherit_rebuilt_plan_audio(
             or target_document is None
             or source_document.session_id != plan.session_id
             or target_document.session_id != plan.session_id
-            or source_document.id != target_document.id
+            or (source_document.id != target_document.id and not timing_tolerant)
         ):
             reasons["source_document_changed"] += target_count
-            return _receipt(target_count, 0, reasons)
+            return _receipt(target_count, 0, reasons, matching)
         document_id = source_document.id
         cue_rows = {
             source_revision.id: _document_cues(session, source_document_revision_id),
@@ -275,7 +312,7 @@ def inherit_rebuilt_plan_audio(
         }
     elif source_document_revision_id or target_document_revision_id:
         reasons["source_document_changed"] += target_count
-        return _receipt(target_count, 0, reasons)
+        return _receipt(target_count, 0, reasons, matching)
     else:
         source_artifact_id = (source_revision.settings_json or {}).get("_source_artifact_id")
         target_artifact_id = (target_revision.settings_json or {}).get("_source_artifact_id")
@@ -285,12 +322,20 @@ def inherit_rebuilt_plan_audio(
             or source_artifact_id != target_artifact_id
         ):
             reasons["source_document_changed"] += target_count
-            return _receipt(target_count, 0, reasons)
+            return _receipt(target_count, 0, reasons, matching)
 
     source_keys = _provenance_keys(
-        source_segments, document_id=document_id, cues=cue_rows
+        source_segments,
+        document_id=document_id,
+        cues=cue_rows,
+        timing_tolerant=timing_tolerant,
     )
-    target_keys = _provenance_keys(targets, document_id=document_id, cues=cue_rows)
+    target_keys = _provenance_keys(
+        targets,
+        document_id=document_id,
+        cues=cue_rows,
+        timing_tolerant=timing_tolerant,
+    )
     source_by_key: dict[tuple[Any, ...], list[m.GenerationSegment]] = defaultdict(list)
     target_key_counts: Counter[tuple[Any, ...]] = Counter()
     for segment in source_segments:
@@ -349,7 +394,7 @@ def inherit_rebuilt_plan_audio(
     selected_rvc = selected.get("rvc") or {} if isinstance(selected, dict) else {}
     if bool(global_rvc.get("enabled")) or bool(selected_rvc.get("enabled")):
         reasons["rvc_enabled"] += target_count
-        return _receipt(target_count, 0, reasons)
+        return _receipt(target_count, 0, reasons, matching)
 
     try:
         from .generation_audio_identity import AudioIdentityContext, take_reuse_reason
@@ -357,7 +402,7 @@ def inherit_rebuilt_plan_audio(
         identity_context = AudioIdentityContext(session, snapshot)
     except Exception:
         reasons["audio_identity_unknown"] += target_count
-        return _receipt(target_count, 0, reasons)
+        return _receipt(target_count, 0, reasons, matching)
 
     reused_count = 0
     for target in targets:
@@ -432,4 +477,4 @@ def inherit_rebuilt_plan_audio(
         target.status = "completed"
         reused_count += 1
 
-    return _receipt(target_count, reused_count, reasons)
+    return _receipt(target_count, reused_count, reasons, matching)

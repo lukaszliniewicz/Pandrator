@@ -363,20 +363,34 @@ def speech_plan_status(services, session_id: str, *, summary: bool = False) -> d
         source_artifact = (
             session.get(m.Artifact, source["artifact_id"]) if source else None
         )
+        item_ids = [row["id"] for row in history["items"]]
+        settings_by_revision = (
+            {
+                revision_id: settings_json or {}
+                for revision_id, settings_json in session.execute(
+                    select(
+                        m.GenerationPlanRevision.id,
+                        m.GenerationPlanRevision.settings_json,
+                    ).where(m.GenerationPlanRevision.id.in_(item_ids))
+                ).tuples()
+            }
+            if item_ids
+            else {}
+        )
+        from .speech_plan_source import (
+            TIMING_ONLY_WARNING,
+            plan_source_compatibility,
+            signature_reader,
+        )
+
+        # Reading the source's signatures costs a passage build, so it happens
+        # only when a revision's exact identity does not already decide.
+        current_signatures = signature_reader(session, source_artifact)
+        compatibility = plan_source_compatibility(
+            active.settings_json if active else {}, source_artifact, current_signatures
+        )
         selected_matches = bool(
-            active
-            and source_artifact
-            and (
-                not active.settings_json.get("_source_artifact_id")
-                or (
-                    active.settings_json.get("_source_artifact_id")
-                    == source_artifact.id
-                    and active.settings_json.get(
-                        "_source_content_hash", source_artifact.content_hash
-                    )
-                    == source_artifact.content_hash
-                )
-            )
+            active and source_artifact and compatibility != "incompatible"
         )
         items = []
         for item in history["items"]:
@@ -388,18 +402,20 @@ def speech_plan_status(services, session_id: str, *, summary: bool = False) -> d
                     or review.content_hash == signature
                 )
             )
+            item_compatibility = plan_source_compatibility(
+                settings_by_revision.get(item["id"], {}),
+                source_artifact,
+                current_signatures,
+            )
             items.append(
                 {
                     **item,
                     "reviewed": reviewed,
                     "reviewed_at": review.reviewed_at.isoformat() if reviewed and review is not None else None,
                     "compatible": bool(
-                        source
-                        and (
-                            not item["source_artifact_id"]
-                            or item["source_artifact_id"] == source["artifact_id"]
-                        )
+                        source_artifact and item_compatibility != "incompatible"
                     ),
+                    "source_compatibility": item_compatibility,
                 }
             )
         blocked = None
@@ -433,10 +449,15 @@ def speech_plan_status(services, session_id: str, *, summary: bool = False) -> d
             else 0
         )
         warning = None
-        if active and not selected_matches:
+        blocking = False
+        if active and compatibility == "incompatible":
             warning = "This plan was prepared from a different text version. Select matching text or prepare a new plan."
+            blocking = True
         elif limit and longest > limit:
             warning = f"A speech block has {longest} characters, exceeding the configured {limit}-character limit. Review or rebuild the plan."
+            blocking = True
+        elif active and compatibility == "timing_only":
+            warning = TIMING_ONLY_WARNING
         return {
             **history,
             "items": items,
@@ -446,10 +467,14 @@ def speech_plan_status(services, session_id: str, *, summary: bool = False) -> d
             "selected_revision_id": history["active_revision_id"],
             "latest_revision_id": items[0]["id"] if items else None,
             "content_signature": signature,
+            "source_compatibility": compatibility,
             "can_prepare": bool(
                 source_artifact and source_artifact.kind in {"srt", "json"}
             ),
-            "can_generate": bool(selected_matches and not warning and not generation_blocked),
+            # A timing-only change keeps its audio; only its fit is stale.
+            "can_generate": bool(
+                selected_matches and not generation_blocked and not blocking
+            ),
             "generation_blocked_reason": generation_blocked,
             "blocked_reason": blocked,
             "warning": warning,

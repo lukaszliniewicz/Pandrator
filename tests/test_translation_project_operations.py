@@ -34,10 +34,21 @@ from pandrator.web.project_operations import (
     ProjectOperationError,
     TranslationProjectOperationService,
 )
+from pandrator.web.project_readiness import enrich_project_payload
 from pandrator.web.route_context import RouteContext
 from pandrator.web.settings_policy import RevisionConflict
-from pandrator.web.speech_plan_workspace import plan_signature, review_speech_plan
-from pandrator.web.translation_projects import create_branches_in_session, create_project_in_session
+from pandrator.web.speech_plan_source import TIMING_ONLY_WARNING, source_signatures
+from pandrator.web.speech_plan_workspace import (
+    plan_signature,
+    review_speech_plan,
+    speech_plan_status,
+)
+from pandrator.web.translation_projects import (
+    create_branches_in_session,
+    create_project_in_session,
+    get_project,
+)
+from pandrator.web.workflow_generation_binding import _subtitle_plan_state
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -197,7 +208,7 @@ def finish_job(case, job_id, result):
     case.services.jobs.complete(job_id, "fixture-worker", result, lease_generation=1)
 
 
-def reviewed_plan(case, branch, *, reviewed=True):
+def _voiceover_branch(case, branch):
     with case.database.session() as db:
         session_record = db.get(m.SessionRecord, branch["session_id"])
         session_record.workflow_kind = "voiceover"
@@ -207,7 +218,6 @@ def reviewed_plan(case, branch, *, reviewed=True):
         value["transformations"]["generate_audio"] = True
         value["deliverables"]["voiceover"] = True
         outcome.value_json = value
-    translated = artifact(case, branch)
     set_settings(
         case,
         branch["session_id"],
@@ -222,6 +232,11 @@ def reviewed_plan(case, branch, *, reviewed=True):
             "language": branch["target_language"],
         },
     )
+
+
+def reviewed_plan(case, branch, *, reviewed=True):
+    _voiceover_branch(case, branch)
+    translated = artifact(case, branch)
     plan = case.services.generation.create_plan(
         branch["session_id"],
         source_revision_id=None,
@@ -242,6 +257,173 @@ def reviewed_plan(case, branch, *, reviewed=True):
                 content_signature=plan_signature(db, revision_id),
             )
     return revision_id, translated
+
+
+def _srt_time(milliseconds: int) -> str:
+    hours, rest = divmod(milliseconds, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    seconds, millis = divmod(rest, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def _timed_translation(case, branch, *, name, cues):
+    """A translation artifact whose document revision holds exactly ``cues``."""
+    with case.database.session() as db:
+        record = db.get(m.SessionRecord, branch["session_id"])
+    directory = case.services.paths.sessions / record.storage_key
+    path = case.services.artifacts.next_available_path(directory / name)
+    path.write_text(
+        "".join(
+            f"{index + 1}\n{_srt_time(start)} --> {_srt_time(end)}\n{text}\n\n"
+            for index, (start, end, text) in enumerate(cues)
+        ),
+        encoding="utf-8",
+    )
+    registered = case.services.artifacts.register(
+        path,
+        kind="srt",
+        role="translation",
+        session_id=branch["session_id"],
+        parent_ids=[branch["source_checkpoint_artifact_id"]],
+        metadata={"language": branch["target_language"]},
+    )
+    with case.database.immediate_session() as db:
+        document = m.Document(
+            session_id=branch["session_id"],
+            stage="translation",
+            language=branch["target_language"],
+        )
+        db.add(document)
+        db.flush()
+        revision = m.DocumentRevision(
+            document_id=document.id,
+            revision_number=1,
+            content_hash=registered.content_hash,
+        )
+        db.add(revision)
+        db.flush()
+        document.active_revision_id = revision.id
+        for ordinal, (start, end, text) in enumerate(cues):
+            db.add(
+                m.Segment(
+                    revision_id=revision.id,
+                    ordinal=ordinal,
+                    node_kind="subtitle_cue",
+                    start_ms=start,
+                    end_ms=end,
+                    text=text,
+                )
+            )
+        db.get(m.Artifact, registered.id).metadata_json = {
+            "language": branch["target_language"],
+            "revision_id": revision.id,
+        }
+    with case.database.session() as db:
+        signatures = source_signatures(db, db.get(m.Artifact, registered.id))
+    return registered, revision.id, signatures
+
+
+def test_plan_source_compatibility_agrees_across_status_readiness_start_and_run(case):
+    branch = case.branches[0]
+    _voiceover_branch(case, branch)
+    original, source_revision_id, original_signatures = _timed_translation(
+        case, branch, name="translation.srt", cues=[(1000, 3000, "Translated.")]
+    )
+    retimed, _, retimed_signatures = _timed_translation(
+        case, branch, name="retimed.srt", cues=[(1000, 2920, "Translated.")]
+    )
+    assert original_signatures["text"] == retimed_signatures["text"]
+    assert original_signatures["timing"] != retimed_signatures["timing"]
+    plan = case.services.generation.create_plan(
+        branch["session_id"],
+        source_revision_id=source_revision_id,
+        settings={
+            "_source_artifact_id": original.id,
+            "_source_content_hash": original.content_hash,
+            "_source_text_signature": original_signatures["text"],
+            "_source_timing_signature": original_signatures["timing"],
+            "_prepared_for_review": True,
+        },
+        segments=[{"text": "Translated.", "language": branch["target_language"]}],
+    )
+    revision_id = plan["active_revision_id"]
+    with case.database.immediate_session() as db:
+        review_speech_plan(
+            db,
+            branch["session_id"],
+            revision_id=revision_id,
+            content_signature=plan_signature(db, revision_id),
+        )
+    expectations = {
+        "exact": {
+            "_source_artifact_id": retimed.id,
+            "_source_content_hash": retimed.content_hash,
+        },
+        "timing_only": {
+            "_source_artifact_id": original.id,
+            "_source_content_hash": original.content_hash,
+            "_source_text_signature": original_signatures["text"],
+            "_source_timing_signature": original_signatures["timing"],
+        },
+        "incompatible": {
+            "_source_artifact_id": original.id,
+            "_source_content_hash": original.content_hash,
+            "_source_text_signature": "different-spoken-text",
+            "_source_timing_signature": original_signatures["timing"],
+        },
+    }
+    for compatibility, settings in expectations.items():
+        with case.database.immediate_session() as db:
+            db.get(m.GenerationPlanRevision, revision_id).settings_json = {
+                **settings,
+                "_prepared_for_review": True,
+            }
+        status = speech_plan_status(case.services, branch["session_id"], summary=True)
+        assert status["current_input"]["artifact_id"] == retimed.id
+        assert status["source_compatibility"] == compatibility
+        with case.database.session() as db:
+            project = enrich_project_payload(
+                case.services, get_project(db, case.project["id"]), session=db
+            )
+        readiness = next(
+            item for item in project["project"]["branches"] if item["id"] == branch["id"]
+        )["readiness"]["speech_plan"]
+        assert readiness["source_compatibility"] == compatibility
+        assert readiness["status"] == (
+            "stale" if compatibility == "incompatible" else "completed"
+        ), (compatibility, readiness)
+        with case.database.session() as db:
+            if compatibility == "incompatible":
+                with pytest.raises(ValueError, match="different subtitle source"):
+                    _subtitle_plan_state(db, branch["session_id"], retimed.id, "")
+            else:
+                assert (
+                    _subtitle_plan_state(db, branch["session_id"], retimed.id, "")[1]
+                    == revision_id
+                )
+        operation = preview(
+            case,
+            "generate",
+            branches=[branch],
+            key=f"source-compatibility-{compatibility}",
+        )
+        child = operation["children"][0]
+        if compatibility == "incompatible":
+            assert operation["eligible_count"] == 0
+            assert child["state"] == "skipped" and child["reason"]
+            assert status["can_generate"] is False
+        else:
+            assert operation["eligible_count"] == 1, child
+            assert child["preview"]["source_compatibility"] == compatibility
+            assert status["can_generate"] is True
+        if compatibility == "timing_only":
+            assert status["warning"] == TIMING_ONLY_WARNING
+            assert child["preview"]["warnings"] == [TIMING_ONLY_WARNING]
+        elif compatibility == "exact":
+            assert status["warning"] is None
+            assert child["preview"]["warnings"] == []
+        else:
+            assert "different text version" in status["warning"]
 
 
 def test_preview_skips_blocked_language_and_replays_without_jobs(case):

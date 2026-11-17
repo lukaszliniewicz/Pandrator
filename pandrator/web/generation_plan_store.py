@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 from .credentials import redact_inline_secrets
 from .database import Database
 from .model_base import new_id
-from .models import GenerationPlan, GenerationPlanRevision, GenerationSegment, utcnow
+from .models import (
+    Artifact,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationSegment,
+    utcnow,
+)
 
 
 class DefaultSilenceProtocol(Protocol):
@@ -297,6 +303,13 @@ def store_generation_plan(
         stored_settings = redact_inline_secrets(context._secret_free_tts_settings(settings))
         if source_artifact_id:
             stored_settings["_source_artifact_id"] = source_artifact_id
+            # Text and timing signatures keep a plan usable across a timing-only
+            # edit; narration sources have none and fall back to the exact match.
+            from .speech_plan_source import source_plan_settings
+
+            stored_settings.update(
+                source_plan_settings(session, session.get(Artifact, source_artifact_id))
+            )
         revision = GenerationPlanRevision(
             plan_id=plan.id,
             parent_revision_id=plan.active_revision_id,

@@ -75,6 +75,7 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
         narration=False,
         target_refs=None,
         changed_text_indexes=(),
+        timing_only=False,
     ):
         session_id = self._new_session()
         case = {"session_id": session_id, "artifact_ids": [], "paths": []}
@@ -136,6 +137,19 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
 
             source_settings = {"_source_artifact_id": "narration-source"} if narration else {}
             target_settings = copy.deepcopy(source_settings)
+            if timing_only:
+                source_settings.update(
+                    _source_artifact_id="old-subtitle-source",
+                    _source_content_hash="old-hash",
+                    _source_text_signature="same-spoken-text",
+                    _source_timing_signature="old-timing",
+                )
+                target_settings.update(
+                    _source_artifact_id="new-subtitle-source",
+                    _source_content_hash="new-hash",
+                    _source_text_signature="same-spoken-text",
+                    _source_timing_signature="retimed",
+                )
             source_revision = m.GenerationPlanRevision(
                 plan_id=plan.id,
                 revision_number=1,
@@ -397,6 +411,66 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
                     )
                 ),
             )
+
+    def test_timing_only_change_reuses_every_take_across_documents(self):
+        case = self._make_case(
+            count=3,
+            timing_change=True,
+            different_document=True,
+            timing_only=True,
+        )
+        receipt = self._inherit(case)
+        self.assertEqual("timing_tolerant", receipt["matching"])
+        self.assertEqual(3, receipt["reused_audio_count"])
+        self.assertEqual(0, receipt["new_audio_needed_count"])
+        self.assertEqual({}, receipt["reason_counts"])
+        with self.database.session() as session:
+            for segment_id in case["target_segment_ids"]:
+                self.assertIsNotNone(
+                    session.scalar(
+                        select(m.AudioTake.id).where(
+                            m.AudioTake.generation_segment_id == segment_id
+                        )
+                    )
+                )
+
+    def test_timing_only_change_keeps_takes_except_an_edited_passage(self):
+        case = self._make_case(
+            count=2,
+            timing_change=True,
+            different_document=True,
+            timing_only=True,
+            changed_text_indexes=(1,),
+        )
+        receipt = self._inherit(case)
+        self.assertEqual("timing_tolerant", receipt["matching"])
+        self.assertEqual(1, receipt["reused_audio_count"])
+        self.assertEqual({"synthesized_text_changed": 1}, receipt["reason_counts"])
+
+    def test_timing_only_change_still_refuses_rvc(self):
+        case = self._make_case(
+            count=2,
+            timing_change=True,
+            different_document=True,
+            timing_only=True,
+        )
+        with self.database.session() as session:
+            snapshot = {**self._snapshot(session, case["session_id"]), "rvc": {"enabled": True}}
+            receipt = inherit_rebuilt_plan_audio(
+                session,
+                case["source_revision_id"],
+                case["target_revision_id"],
+                snapshot,
+            )
+            self.assertEqual("timing_tolerant", receipt["matching"])
+            self.assertEqual(0, receipt["reused_audio_count"])
+            self.assertEqual({"rvc_enabled": 2}, receipt["reason_counts"])
+
+    def test_unchanged_source_reports_exact_bounds(self):
+        case = self._make_case()
+        receipt = self._inherit(case)
+        self.assertEqual("exact_bounds", receipt["matching"])
+        self.assertEqual(1, receipt["reused_audio_count"])
 
     def test_identity_context_and_unknown_identity_mismatches_are_rejected(self):
         case = self._make_case()
@@ -820,7 +894,12 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
                 Event(),
             )
         self.assertEqual(
-            {"reused_audio_count": 1, "new_audio_needed_count": 1, "reason_counts": {"synthesized_text_changed": 1}},
+            {
+                "reused_audio_count": 1,
+                "new_audio_needed_count": 1,
+                "matching": "exact_bounds",
+                "reason_counts": {"synthesized_text_changed": 1},
+            },
             prepared["audio_reuse"],
         )
         target_revision_id = prepared["selected_revision_id"]

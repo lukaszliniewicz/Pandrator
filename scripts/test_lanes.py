@@ -580,6 +580,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     "web-16-serial": (
         "tests/test_generation_operations.py",
         "tests/test_speech_plan_audio_reuse.py",
+        "tests/test_speech_plan_source.py",
         "tests/test_generation_provider_preflight.py",
     ),
     # Former 304-file web-07 suite exceeded both 35/45-minute CI job budgets.

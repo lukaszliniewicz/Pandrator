@@ -547,26 +547,24 @@ def enrich_project_payload(
                     ),
                     None,
                 )
-                stale_plan = bool(
-                    selected
-                    and (
-                        not selected.get("compatible", True)
-                        or plan_source.get("_source_artifact_id")
-                        and (
-                            current_input is None
-                            or plan_source["_source_artifact_id"] != current_input.id
-                            or plan_source.get("_source_content_hash", current_input.content_hash)
-                            != current_input.content_hash
-                        )
-                    )
+                from .speech_plan_source import (
+                    TIMING_ONLY_WARNING,
+                    revision_source_compatibility,
                 )
+
+                compatibility = revision_source_compatibility(
+                    db, plan_source or {}, current_input
+                )
+                # A timing-only change keeps every take; only the fit is stale.
+                stale_plan = bool(selected and compatibility == "incompatible")
                 speech = _state(
                     "missing"
                     if not selected
                     else "stale"
                     if stale_plan
                     else "blocked"
-                    if plan["warning"]
+                    # The timing-only warning is advice; every other warning blocks.
+                    if plan["warning"] and plan["warning"] != TIMING_ONLY_WARNING
                     else "completed"
                     if selected["reviewed"]
                     else "needs_review",
@@ -576,6 +574,7 @@ def enrich_project_payload(
                     reviewed_at=selected.get("reviewed_at") if selected else None,
                     reasons=[plan["warning"]] if plan["warning"] else [],
                     can_generate=plan["can_generate"],
+                    source_compatibility=compatibility,
                 )
                 voice_setup = get_voice_setup(services, db, sid)
                 voice = _state(
