@@ -273,3 +273,185 @@ test('contextual performance opens lazily, saves a draft and previews without sy
   });
   expect(synthesized).toBe(false);
 });
+
+test('a lost or stale speaker plan can be copied, keeping unchanged blocks', async ({
+  page
+}, testInfo) => {
+  await page.goto('/');
+  await page.getByLabel('Owner password').fill('pandrator-e2e');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+  const tour = page.getByRole('button', { name: 'Close tour' });
+  if (await tour.isVisible()) await tour.click();
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json())
+    .csrf_token;
+  const created = await page.request.post('/api/v1/sessions', {
+    headers: { 'X-CSRF-Token': csrf },
+    data: {
+      interface_mode: 'advanced',
+      name: `Speaker plan continuity ${crypto.randomUUID()}`,
+      workflow_kind: 'audiobook'
+    }
+  });
+  expect(created.ok()).toBeTruthy();
+  const sessionId = (await created.json()).id as string;
+  const revisionId = 'split-speech-revision';
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-plan/status*`,
+    (route) =>
+      route.fulfill({
+        json: {
+          session_id: sessionId,
+          session_revision: 1,
+          items: [
+            {
+              id: revisionId,
+              revision_number: 9,
+              summary: 'Split block',
+              origin: 'manual',
+              reviewed: true,
+              compatible: true,
+              segment_count: 3,
+              active_segment_count: 3,
+              reusable_segment_count: 0,
+              stale_segment_count: 3,
+              source_artifact_id: null
+            }
+          ],
+          selected_revision_id: revisionId,
+          latest_revision_id: revisionId,
+          content_signature: 'split-hash',
+          can_prepare: false,
+          can_generate: false,
+          current_input: null,
+          blocked_reason: null,
+          warning: null
+        }
+      })
+  );
+  const units = ['First line.', '"Second line," said Mary.', 'Third line.'].map(
+    (text, ordinal) => ({
+      id: `block-${ordinal}`,
+      ordinal,
+      text,
+      spoken_text: text,
+      annotation: null
+    })
+  );
+  const plan = (id: string, values: Record<string, unknown>) => ({
+    id,
+    plan_revision_id: revisionId,
+    status: 'draft',
+    version: 1,
+    total: 3,
+    analysed_count: 0,
+    steered_count: 0,
+    locked_count: 0,
+    stale: false,
+    settings: { purpose: 'speakers', annotation_format: 'xml', mode: 'manual' },
+    ...values
+  });
+  let plans: Record<string, unknown>[] = [];
+  let ancestor: Record<string, unknown> | null = {
+    plan_id: 'plan-revision-7',
+    plan_revision_id: 'revision-7',
+    revision_number: 7,
+    purpose: 'speakers',
+    annotation_format: 'xml'
+  };
+  const posted: Record<string, unknown>[] = [];
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/performance-plans**`,
+    async (route) => {
+      const request = route.request();
+      const suffix = new URL(request.url()).pathname.split(
+        '/performance-plans'
+      )[1];
+      if (request.method() === 'GET') {
+        if (suffix) {
+          const id = decodeURIComponent(suffix.slice(1));
+          const found = plans.find((item) => item.id === id);
+          await route.fulfill({ json: { ...found, items: units } });
+        } else
+          await route.fulfill({
+            json: {
+              items: plans,
+              capabilities: {
+                model: 'fish_audio_s2_pro_q8_0',
+                instructions: 'inline',
+                status: 'documented',
+                semantic_context: 'none'
+              },
+              ancestor_adopted_plan: ancestor
+            }
+          });
+        return;
+      }
+      const body = request.postDataJSON() as Record<string, unknown>;
+      posted.push(body);
+      const copy = plan(`copy-${posted.length}`, {
+        analysed_count: 2,
+        copied_from_id: body.copy_from_id,
+        copied_count: 2,
+        skipped_count: 1
+      });
+      plans = [copy, ...plans];
+      ancestor = null;
+      await route.fulfill({ status: 201, json: copy });
+    }
+  );
+  await page.goto(`/sessions/${sessionId}/speech`);
+  const panel = page.getByRole('region', {
+    name: 'Annotation workspace',
+    exact: true
+  });
+  const notice = panel.getByTestId('performance-ancestor-plan');
+  await expect(notice).toContainText('revision 7 had one');
+  await page.screenshot({
+    path: testInfo.outputPath('ancestor-plan.png'),
+    fullPage: true
+  });
+  await notice
+    .getByRole('button', { name: 'Copy earlier plan', exact: true })
+    .click();
+  await expect(
+    panel.getByText('Copied 2 of 3 blocks; 1 needs review.', { exact: false })
+  ).toBeVisible();
+  expect(posted[0]).toMatchObject({
+    expected_plan_revision_id: revisionId,
+    mode: 'manual',
+    purpose: 'speakers',
+    annotation_format: 'xml',
+    copy_from_id: 'plan-revision-7'
+  });
+  expect(posted[0]).not.toHaveProperty('keep_unchanged');
+  await expect(notice).toBeHidden();
+
+  // The copy is adopted, then an edit on this revision makes it stale.
+  plans = [
+    plan('adopted-stale', {
+      status: 'adopted',
+      stale: true,
+      analysed_count: 3
+    })
+  ];
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await panel.getByLabel('Annotation draft').selectOption('adopted-stale');
+  const stale = panel.getByTestId('performance-stale-plan');
+  await expect(stale).toContainText('only the rest need review');
+  await page.screenshot({
+    path: testInfo.outputPath('stale-plan.png'),
+    fullPage: true
+  });
+  await stale
+    .getByRole('button', { name: 'Copy and analyse the rest', exact: true })
+    .click();
+  await expect.poll(() => posted.length).toBe(2);
+  expect(posted[1]).toMatchObject({
+    mode: 'llm',
+    purpose: 'speakers',
+    annotation_format: 'xml',
+    copy_from_id: 'adopted-stale',
+    keep_unchanged: true
+  });
+});

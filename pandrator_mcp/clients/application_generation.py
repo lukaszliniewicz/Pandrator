@@ -447,6 +447,7 @@ class ApplicationGenerationMethods(ApplicationRequests):
         missing_only: bool = False,
         view: str = "full",
         admission: bool = False,
+        allow_without_speaker_plan: bool = False,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"operation": operation}
         if segment_ids:
@@ -463,6 +464,8 @@ class ApplicationGenerationMethods(ApplicationRequests):
             body["stale_only"] = True
         if missing_only:
             body["missing_only"] = True
+        if allow_without_speaker_plan:
+            body["allow_without_speaker_plan"] = True
         if admission:
             return self._request_json(
                 f"/api/v1/sessions/{quote(session_id, safe='')}/generation-admissions",

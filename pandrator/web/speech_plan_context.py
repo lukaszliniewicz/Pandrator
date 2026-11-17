@@ -29,6 +29,15 @@ SIGNATURE_FIELDS = (
 
 
 def plan_signature(session, revision_id: str) -> str:
+    return plan_signature_parts(session, revision_id)[0]
+
+
+def plan_signature_parts(session, revision_id: str) -> tuple[str, dict[str, str]]:
+    """The revision's signature and each block's own share of it.
+
+    A block's hash covers the same fields without its ordinal, so it changes
+    when that block is edited and not when a neighbour is.
+    """
     from .project_speech_references import (
         StoredProjectSpeechReference,
         segment_speech_reference_identity,
@@ -51,7 +60,7 @@ def plan_signature(session, revision_id: str) -> str:
         .where(m.GenerationSegment.plan_revision_id == revision_id)
         .order_by(m.GenerationSegment.ordinal)
     )
-    values, owners = [], {}
+    values, owners, blocks = [], {}, {}
     for row in rows:
         payload: dict[str, Any] = dict(zip(SIGNATURE_FIELDS, row[:len(SIGNATURE_FIELDS)], strict=True))
         identifier, session_id, selector, selector_hash, binding, artifact_id, digest, version = row[len(SIGNATURE_FIELDS):]
@@ -71,7 +80,10 @@ def plan_signature(session, revision_id: str) -> str:
             payload["voice_id"] = stored.selector.get("voice_id")
             payload["voice"] = stored.selector.get("voice") or None
         values.append(payload)
-    return stable_hash(values)
+        blocks[str(identifier)] = stable_hash(
+            {key: value for key, value in payload.items() if key != "ordinal"}
+        )
+    return stable_hash(values), blocks
 
 
 def semantic_context_units(session, revision_id: str) -> list[dict[str, Any]]:

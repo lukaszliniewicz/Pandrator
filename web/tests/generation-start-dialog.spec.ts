@@ -792,3 +792,45 @@ test('regenerate everything requires deliberate acknowledgment', async ({
     expected_selection_hash: 'hash-all'
   });
 });
+
+test('a lost speaker plan is named and needs its own acknowledgment', async ({
+  page
+}) => {
+  const { sessionId, revisionId } = await setupSession(page);
+  const canned = previewsFor(revisionId);
+  const missingSpeakerPlan = {
+    plan_id: 'plan-earlier',
+    plan_revision_id: 'revision-earlier',
+    revision_number: 7,
+    purpose: 'speakers',
+    annotation_format: 'xml'
+  };
+  await mockPreview(page, sessionId, () => ({
+    ...canned.missing,
+    replace_count: 0,
+    missing_speaker_plan: missingSpeakerPlan
+  }));
+  const started = await mockStart(page, sessionId, () => ({
+    status: 202,
+    json: startedRun(sessionId, revisionId)
+  }));
+  await page.goto(`/sessions/${sessionId}`);
+  const dialog = await openDialog(page, 'continue');
+  const warning = dialog.getByTestId('generation-start-speaker-plan-warning');
+  await expect(warning).toContainText('revision 7 had one');
+  await expect(warning.getByRole('link')).toHaveAttribute(
+    'href',
+    `/sessions/${encodeURIComponent(sessionId)}/speech`
+  );
+  const submit = dialog.getByTestId('generation-start-submit');
+  await expect(submit).toBeDisabled();
+  await dialog.getByTestId('generation-start-speaker-plan-ack').check();
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  expect(started).toHaveLength(1);
+  expect(started[0]).toMatchObject({
+    missing_only: true,
+    allow_without_speaker_plan: true
+  });
+  await expect(dialog).toBeHidden();
+});

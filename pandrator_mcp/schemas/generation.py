@@ -158,6 +158,14 @@ class RegenerateSegmentsInput(ToolInput):
     settings_source: Literal["current", "matching_run", "run"] = "current"
     settings_source_run_id: str | None = Field(default=None, min_length=1, max_length=80)
     admission: bool = True
+    allow_without_speaker_plan: bool = Field(
+        default=False,
+        description=(
+            "Start a cast run although an earlier speech-plan revision adopted a speaker "
+            "plan this revision lacks; dialogue is then voiced from each block's own markup. "
+            "Prefer copying that plan (pandrator_create_performance_plan with copy_from_id)."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_settings_source(self) -> "RegenerateSegmentsInput":
@@ -337,6 +345,14 @@ class GenerateSpeechPlanInput(ToolInput):
     admission: bool = True
     settings_source: Literal["current", "matching_run", "run"] = "current"
     settings_source_run_id: str | None = Field(default=None, min_length=1, max_length=80)
+    allow_without_speaker_plan: bool = Field(
+        default=False,
+        description=(
+            "Start a cast run although an earlier speech-plan revision adopted a speaker "
+            "plan this revision lacks; dialogue is then voiced from each block's own markup. "
+            "Prefer copying that plan (pandrator_create_performance_plan with copy_from_id)."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_settings_source(self) -> "GenerateSpeechPlanInput":

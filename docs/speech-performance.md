@@ -98,6 +98,25 @@ Japanese and other scripts without relying on spaces or word indices. Later
 pronunciation/text/topology changes make an adopted sidecar stale rather than
 silently remapping its anchors.
 
+A stale plan is not lost work. Copying it (`copy_from_id`) onto its own
+revision keeps every entry whose block is unchanged and whose planning context
+(the neighbouring blocks the planner saw) is unchanged too; a locked entry needs
+only its own block unchanged. An edited "said John" can change who speaks the
+next line, so that line is reviewed again even though its own text did not
+change. Manual copies keep every such entry; passive and LLM copies keep only
+locked ones unless `keep_unchanged` is set, in which case only the changed
+blocks are analysed. A stale plan copied onto a later revision (after a split,
+say) first keeps the entries that still fit on its own revision, then maps
+those across. The response reports `copied_count` (entries copied) and
+`skipped_count` (source entries left behind); the plan's `total` minus its
+`analysed_count` is what still needs review. Plans made before 0.14.5 do not
+record a hash of each block, so for them a block counts as unchanged when its
+recorded words, speaker, voice, language, structure and timing match.
+Restoring a speech-plan revision, including the copy an edit makes of a
+reviewed or used revision, carries that revision's adopted plan over unchanged,
+because the restored blocks are exact copies; a plan already stale on its own
+revision is not carried.
+
 Non-pause vocalizations are disabled by default. Enabling them permits explicit
 requested events; it does not authorize the planner to invent emotional sounds.
 A requested pause duration is only a synthesis hint, not a guaranteed assembly
@@ -182,6 +201,15 @@ requests contribute to audio identity. Changing a reason/confidence/lock alone
 does not stale audio, while changed applied delivery or supplied context does.
 History remains inspectable when a performance plan becomes stale; generation
 requires a new valid adoption or disabling performance.
+
+With casting on and performance off, a revision without an adopted plan voices
+each block from its own markup, which usually means the narrator reads the
+dialogue. When an earlier revision on the same lineage adopted a plan (for
+example before a split, merge, re-segmentation or batch edit), generation is
+refused and names that plan, so it can be copied and adopted first. The start
+preview reports it as `missing_speaker_plan`, the plan list as
+`ancestor_adopted_plan`, and a caller that really wants the block markup passes
+`allow_without_speaker_plan`.
 
 Automatic post-generation split repair can use read-only semantic context,
 including configurable preceding and following blocks (for example one of

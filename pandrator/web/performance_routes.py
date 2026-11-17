@@ -226,6 +226,17 @@ def register_performance_routes(app, context) -> None:
                         ),
                         "performance_enabled": bool(runtime.get("performance_enabled")),
                         "tts_context_mode": runtime.get("tts_context_mode", "off"),
+                        **(
+                            # The plan an earlier revision adopted, when this
+                            # one has none: copy_from_id can bring it over.
+                            {
+                                "ancestor_adopted_plan": plans.ancestor_adopted_plan(
+                                    session, revision, session_id=session_id
+                                )
+                            }
+                            if revision
+                            else {}
+                        ),
                     }
                 )
         except (ValueError, KeyError, RevisionConflict) as error:

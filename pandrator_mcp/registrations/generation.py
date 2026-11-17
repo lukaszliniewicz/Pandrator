@@ -46,6 +46,11 @@ from ..tools import (
     update_generation_segments,
 )
 
+_ALLOW_WITHOUT_SPEAKER_PLAN = (
+    "Start a cast run although an earlier speech-plan revision adopted a speaker plan "
+    "this revision lacks. Prefer copying that plan with pandrator_create_performance_plan."
+)
+
 
 def register_generation_plan_tools(
     server: Any,
@@ -287,6 +292,10 @@ def register_generation_plan_tools(
         admission: bool = True,
         settings_source: Literal["current", "matching_run", "run"] = "current",
         settings_source_run_id: Annotated[str | None, Field(min_length=1, max_length=80)] = None,
+        allow_without_speaker_plan: Annotated[
+            bool,
+            Field(description=_ALLOW_WITHOUT_SPEAKER_PLAN),
+        ] = False,
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Generate the selected speech-plan revision using current project settings by default.
@@ -484,6 +493,10 @@ def register_generation_execution_tools(
         settings_source: Literal["current", "matching_run", "run"] = "current",
         settings_source_run_id: Annotated[str | None, Field(max_length=80)] = None,
         admission: bool = True,
+        allow_without_speaker_plan: Annotated[
+            bool,
+            Field(description=_ALLOW_WITHOUT_SPEAKER_PLAN),
+        ] = False,
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Regenerate selected segments with current project settings by default.
@@ -504,6 +517,7 @@ def register_generation_execution_tools(
                 settings_source=settings_source,
                 settings_source_run_id=settings_source_run_id,
                 admission=admission,
+                allow_without_speaker_plan=allow_without_speaker_plan,
             ),
         ), response_mode)
 

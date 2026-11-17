@@ -25,9 +25,19 @@ from .project_speech_references import (
 
 
 def copy_unchanged_annotations(
-    session, previous, revision_id: str, units: list[dict], characters: list[dict]
+    session,
+    previous,
+    revision_id: str,
+    units: list[dict],
+    characters: list[dict],
+    *,
+    annotations: dict | None = None,
 ) -> dict:
-    """Follow immutable lineage, retaining only exact one-to-one annotation targets."""
+    """Follow immutable lineage, retaining only exact one-to-one annotation targets.
+
+    ``annotations`` limits the copy to these entries of ``previous`` (by
+    default all of them).
+    """
     from .performance_annotations import plan_annotations as _annotations
     from .speech_annotation_records import normalized_record, record_markup
 
@@ -39,7 +49,7 @@ def copy_unchanged_annotations(
                 "The performance source is not an ancestor of this speech plan."
             )
         visited.add(cursor)
-        revision = session.get(m.GenerationPlanRevision, cursor)
+        revision = session.get(m.GenerationPlanRevision, cursor) if cursor else None
         if revision is None:
             raise ValueError(
                 "The performance source is not an ancestor of this speech plan."
@@ -63,7 +73,8 @@ def copy_unchanged_annotations(
         }
     source_units = {unit["id"]: unit for unit in previous.units_json}
     targets = {unit["id"]: unit for unit in units}
-    annotations = _annotations(session, previous)
+    if annotations is None:
+        annotations = _annotations(session, previous)
     segment_rows = {
         row.id: row
         for row in session.scalars(

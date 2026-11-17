@@ -246,6 +246,39 @@ CASES = [
         (SESSION,),
         {"generation_run_id": None, "idempotency_key": KEY, "audio_version_side": "after"},
     ),
+    Case(
+        "pandrator_generate_speech_plan",
+        {**GUARD, "speech_plan_revision_id": "revision-1", "allow_without_speaker_plan": True},
+        "start_generation_run",
+        (SESSION,),
+        {
+            "speech_plan_revision_id": "revision-1",
+            "stale_only": False,
+            "missing_only": False,
+            "idempotency_key": KEY,
+            "view": "compact",
+            "settings_source": "current",
+            "settings_source_run_id": None,
+            "admission": True,
+            "allow_without_speaker_plan": True,
+        },
+    ),
+    Case(
+        "pandrator_regenerate_segments",
+        {**GUARD, "segment_ids": ["segment-1"], "allow_without_speaker_plan": True},
+        "start_generation_run",
+        (SESSION,),
+        {
+            "segment_ids": ["segment-1"],
+            "generation_run_id": None,
+            "operation": "regenerate",
+            "idempotency_key": KEY,
+            "settings_source": "current",
+            "settings_source_run_id": None,
+            "admission": True,
+            "allow_without_speaker_plan": True,
+        },
+    ),
 ]
 
 PAYLOADS = {
@@ -382,6 +415,7 @@ async def invoke_case(
             expected_replay.setdefault("stale_only", False)
             expected_replay.setdefault("view", "compact")
             expected_replay.setdefault("admission", True)
+            expected_replay.setdefault("allow_without_speaker_plan", False)
         assert value["next_actions"][-1]["arguments"] == expected_replay
     else:
         value = envelope(result)

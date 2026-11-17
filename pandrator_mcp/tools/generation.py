@@ -456,6 +456,8 @@ def generate_speech_plan(runtime: McpRuntime, arguments: GenerateSpeechPlanInput
     }
     if arguments.admission:
         start_arguments["admission"] = True
+    if arguments.allow_without_speaker_plan:
+        start_arguments["allow_without_speaker_plan"] = True
     try:
         result = application.start_generation_run(arguments.session_id, **start_arguments)
     except PandratorMcpError as error:
@@ -606,6 +608,8 @@ def regenerate_segments(
     }
     if arguments.admission:
         start_arguments["admission"] = True
+    if arguments.allow_without_speaker_plan:
+        start_arguments["allow_without_speaker_plan"] = True
     try:
         result = application.start_generation_run(arguments.session_id, **start_arguments)
     except PandratorMcpError as error:

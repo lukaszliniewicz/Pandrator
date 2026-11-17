@@ -52,6 +52,9 @@ _UNIT_FIELDS = frozenset(
     }
 )
 _UNIT_OPTIONAL = frozenset({"speech_xml", "legacy_annotation"})
+# A block hash is tied to the source project's identities, so a copy reads
+# past it and the copied plan compares blocks field by field instead.
+_SOURCE_UNIT_OPTIONAL = frozenset({"source_hash"})
 _CONTEXT_FIELDS = (
     "context_before",
     "context_after",
@@ -339,7 +342,8 @@ def _freeze(
         if (
             type(raw) is not dict
             or not _UNIT_FIELDS <= set(raw)
-            or set(raw) - _UNIT_FIELDS - _UNIT_OPTIONAL
+            or set(raw) - _UNIT_FIELDS - _UNIT_OPTIONAL - _SOURCE_UNIT_OPTIONAL
+            or type(raw.get("source_hash", "")) is not str
             or any(raw[key] != unit[key] for key in ("id", "text", "spoken_text", "text_hash"))
         ):
             raise _invalid()

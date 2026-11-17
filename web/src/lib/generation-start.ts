@@ -52,6 +52,17 @@ export type GenerationPreview = {
     model: string;
     voice: string;
   } | null;
+  /** Casting is on, this revision has no adopted speaker plan, and an earlier
+   * revision adopted one. A start is refused unless it is acknowledged. */
+  missing_speaker_plan?: MissingSpeakerPlan | null;
+};
+
+export type MissingSpeakerPlan = {
+  plan_id: string;
+  plan_revision_id: string;
+  revision_number: number | null;
+  purpose: string;
+  annotation_format: string;
 };
 
 export type GenerationPreviewRequest = {
@@ -64,6 +75,8 @@ export type GenerationPreviewRequest = {
 export type GenerationConfirmRequest = GenerationPreviewRequest & {
   /** Preview is mandatory: starts always bind to a previewed selection. */
   expected_selection_hash: string;
+  /** Start although an earlier revision's speaker plan is missing here. */
+  allow_without_speaker_plan?: boolean;
 };
 
 export type NarrationPreparation = {

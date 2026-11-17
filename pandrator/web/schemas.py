@@ -883,6 +883,10 @@ class GenerationStartRequest(StrictModel):
     settings_source: Literal["current", "matching_run", "run"] | None = None
     settings_source_run_id: str | None = Field(default=None, min_length=1, max_length=80)
     operation: Literal["generate", "regenerate", "rvc"] = "generate"
+    # Casting with no adopted speaker plan voices dialogue from each block's own
+    # markup. A start is refused when an earlier revision adopted one, unless
+    # the caller acknowledges that here.
+    allow_without_speaker_plan: bool = False
 
     @model_validator(mode="after")
     def validate_settings_source(self) -> "GenerationStartRequest":
