@@ -297,11 +297,17 @@ def _record(value: Any, unit: dict[str, Any], characters: list[dict[str, Any]]) 
     return result
 
 
-def _source_unit(raw: Any) -> bool:
-    """A raw source unit's shape; its block's ``source_hash`` is read past."""
+def _source_unit(raw: Any, *, judged: bool = False) -> bool:
+    """A raw source unit's shape; its block's ``source_hash`` is read past.
+
+    A judged unit may lack the structure fields ``judge_block`` skips, as units
+    made before those fields were recorded do. Its copy is built from the
+    current segment, so nothing missing reaches the destination.
+    """
+    required = _UNIT_FIELDS - set(STRUCTURE_FIELDS) if judged else _UNIT_FIELDS
     return (
         type(raw) is dict
-        and _UNIT_FIELDS <= set(raw)
+        and required <= set(raw)
         and not set(raw) - _UNIT_FIELDS - _UNIT_OPTIONAL - _SOURCE_UNIT_OPTIONAL
         and type(raw.get("source_hash", "")) is str
     )
@@ -335,7 +341,7 @@ def _judged_entries(
     by_id: dict[str, dict[str, Any]] = {}
     for raw in raw_units:
         if (
-            not _source_unit(raw)
+            not _source_unit(raw, judged=True)
             or type(raw["id"]) is not str
             or raw["id"] in by_id
             or raw["id"] not in segment_ids

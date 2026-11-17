@@ -14,6 +14,7 @@ from pandrator.logic.speech_markup import parse_speech_markup
 from pandrator.logic.speech_performance import content_hash, validate_annotation
 from pandrator.web.generation_cast_runtime import remap_markup
 from pandrator.web.generation_control_schemas import VoiceBinding
+from pandrator.web.performance_validity import STRUCTURE_FIELDS
 from pandrator.web.project_speech_references import speech_reference_selector_hash
 from pandrator.web.projects import copy_performance as codec
 from pandrator.web.projects.copy_performance import (
@@ -949,6 +950,41 @@ def test_judged_units_are_matched_by_id_not_position():
     frozen = freeze(rows, raw, annotations)
     assert unit_ids(frozen) == ["segment-0", "segment-1", "segment-4"]
     assert frozen == freeze(rows, *stale_adopted(rows))
+
+
+@pytest.mark.parametrize("missing", [("section_id",), STRUCTURE_FIELDS])
+def test_judged_units_made_before_structure_fields_were_recorded_are_judged(missing):
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    expected = judged(deepcopy(judged_rows()), s0="Go on right now.", s1="Second line there.")
+    for unit in raw["units_json"]:
+        for field in missing:
+            del unit[field]
+    edit(rows, s0="Go on right now.", s1="Second line there.")
+    frozen = freeze(rows, raw, annotations)
+    assert frozen == expected
+    assert all(field in unit for unit in frozen["units_json"] for field in STRUCTURE_FIELDS)
+    round_trip(rows, frozen)
+
+
+@pytest.mark.parametrize("missing", ["voice", "text_hash", "spoken_text"])
+def test_judged_units_still_need_their_other_fields(missing):
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    del raw["units_json"][1][missing]
+    edit(rows, s0="Go on right now.")
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+def test_a_fresh_adopted_unit_still_needs_every_field():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    raw["base_signature"] = current_signature(rows)
+    freeze(rows, deepcopy(raw), deepcopy(annotations))
+    del raw["units_json"][1]["section_id"]
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
 
 
 @pytest.mark.parametrize("edited", [{"s0": "Go on right now."}, {"s0": "Go on now!"}])
