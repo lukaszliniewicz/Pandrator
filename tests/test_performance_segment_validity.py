@@ -245,10 +245,32 @@ def test_an_edit_that_turns_an_apostrophe_into_a_quotation_mark_or_back_does_not
         "</dialogue> Then 'tis done.</segment>",
     )
     assert fit(quoted, quoted_record, "He said, “Bah!” Then x'tis done.") is None
-    # A change beside an apostrophe that keeps its role still fits.
+    # A curly apostrophe is held to the same rule.
+    curly = "He said, “Bah!” Then didn’t leave."
+    curly_record = xml_record(
+        curly,
+        '<segment id="s">He said, <dialogue><speaker ref="c-scrooge">“Bah!”</speaker>'
+        "</dialogue> Then didn’t leave.</segment>",
+    )
+    assert fit(curly, curly_record, "He said, “Bah!” Then didn ’t leave.") is None
+    # A change elsewhere in the word, or of the mark itself, still fits.
     assert fit(text, record, "He said, “Bah!” Then didn't go.") is not None
     assert fit(text, record, "He said, “Bah!” Then couldn't leave.") is not None
     assert fit(text, record, "He said, “Bah!” Then didn’t leave.") is not None
+    # So does a change right beside an apostrophe that keeps letters on both
+    # sides of it.
+    contraction = "He said, “Bah!” Then I'd go."
+    contraction_record = xml_record(
+        contraction,
+        '<segment id="s">He said, <dialogue><speaker ref="c-scrooge">“Bah!”</speaker>'
+        "</dialogue> Then I'd go.</segment>",
+    )
+    assert fit(contraction, contraction_record, "He said, “Bah!” Then I'll go.") is not None
+    assert fit(contraction, contraction_record, "He said, “Bah!” Then you'd go.") is not None
+    # A block without a spoken line is not judged by quotation marks.
+    plain = "Then didn't leave."
+    plain_record = xml_record(plain, "<segment id=\"s\">Then didn't leave.</segment>")
+    assert fit(plain, plain_record, "Then didn 't leave.") is not None
 
 
 def test_an_insertion_beside_an_event_or_control_at_a_block_edge_does_not_fit():
@@ -289,6 +311,48 @@ def test_a_replacement_that_lengthens_the_words_beside_an_event_or_control_does_
     assert record_markup(fitted) == '<segment id="s"><event kind="laugh"/>Jello there.</segment>'
     assert fit(middle_text, middle, "He paused.then left.") is not None
     assert fit(old, trailing, "Hello here.") is not None
+    # A shorter edit right beside an event keeps it where it was.
+    assert fit(old, trailing, "Hello there") is not None
+    longer = "Oh, hello there."
+    shortened = xml_record(longer, '<segment id="s"><event kind="laugh"/>Oh, hello there.</segment>')
+    fitted = fit(longer, shortened, "Hello there.")
+    assert fitted is not None
+    assert record_markup(fitted) == '<segment id="s"><event kind="laugh"/>Hello there.</segment>'
+
+
+def test_words_added_to_the_words_beside_an_event_or_control_do_not_fit():
+    old = "Hello there."
+    leading = xml_record(old, '<segment id="s"><event kind="laugh"/>Hello there.</segment>')
+    # The new words share letters with the old ones, so the character change
+    # starts past the laugh ("H" stays, "ello" becomes "i, hello"); the words
+    # "Hi," could still come before or after it.
+    assert fit(old, leading, "Hi, hello there.") is None
+    assert fit(old, leading, "Hey, hello there.") is None
+    # A swap of the same length.
+    assert fit(old, leading, "Oh hi there.") is None
+    control = xml_record(old, '<segment id="s"><em>calm</em>Hello there.</segment>')
+    assert fit(old, control, "Hi, hello there.") is None
+    middle_text = "He paused.Then left."
+    middle = xml_record(
+        middle_text, '<segment id="s">He paused.<event kind="laugh"/>Then left.</segment>'
+    )
+    assert fit(middle_text, middle, "He paused.The man then left.") is None
+    # A second edit elsewhere that removes more than the first adds.
+    friend = "Hello there, my old friend."
+    friend_record = xml_record(
+        friend, '<segment id="s"><event kind="laugh"/>Hello there, my old friend.</segment>'
+    )
+    assert fit(friend, friend_record, "Oh, hello there, friend.") is None
+    # Words added away from the event, or a typo in the word beside it, fit.
+    assert fit(old, leading, "Helllo there.") is not None
+    assert fit(friend, friend_record, "Hello there, my dear old frend.") is not None
+    assert fit(middle_text, middle, "He paused.Then he left.") is not None
+    spaced_text = "He paused. Then left."
+    spaced = xml_record(
+        spaced_text, '<segment id="s">He paused. <event kind="laugh"/>Then left.</segment>'
+    )
+    assert fit(spaced_text, spaced, "He paused a bit. Then left.") is not None
+    assert fit(spaced_text, spaced, "He paused. So then left.") is None
 
 
 def test_a_carriage_return_survives_the_rebase():
@@ -372,6 +436,12 @@ def test_legacy_event_does_not_fit_text_added_right_beside_it():
     assert fit(old, before, "Oh, Hello there.") is None
     assert fit(old, before, "Oh, hello there.") is None
     assert fit(old, after, "Hello there. Bye.") is None
+    # The words before an event at the end grow into it.
+    assert fit(old, after, "Hello there?!") is None
+    # Words added to the words beside it, as for an event in markup.
+    assert fit(old, before, "Hi, hello there.") is None
+    friend = "Hello there, my old friend."
+    assert fit(friend, legacy_event(friend, "before"), "Oh, hello there, friend.") is None
     # An anchored event sits before or after its words.
     text = "He paused. Then the defeat came."
     anchored = legacy_event(text, "before", {"quote": "defeat"})
@@ -385,6 +455,14 @@ def test_legacy_event_does_not_fit_text_added_right_beside_it():
     assert fit(old, before, "Jello there.") is not None
     assert fit(text, anchored, "He waited. Then the defeat came.") is not None
     assert fit(text, trailing, "He paused. Then the defeat came at last.") is not None
+    # A shorter edit right beside an event keeps it.
+    assert fit("Oh, hello there.", legacy_event("Oh, hello there.", "before"), "Hello there.") is not None
+    assert fit(old, after, "Hello there") is not None
+    # An anchored event on a repeated quote sits at the copy it names.
+    repeated = "The defeat came, and the defeat stayed."
+    second = legacy_event(repeated, "before", {"quote": "defeat", "occurrence": 2})
+    assert fit(repeated, second, "The defeat came, and the sudden defeat stayed.") is None
+    assert fit(repeated, second, "The sudden defeat came, and the defeat stayed.") is not None
 
 
 # Plan reads and freezes -------------------------------------------------------

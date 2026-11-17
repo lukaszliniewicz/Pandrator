@@ -13,10 +13,12 @@ snapshot is frozen or a plan is read.
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping
+from collections.abc import Mapping, Set
 from copy import deepcopy
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any
 
 from sqlalchemy import select
@@ -44,6 +46,8 @@ _QUOTE_MARKS = frozenset(
 # Single quotation marks that are also the apostrophe of ordinary words: one
 # counts as a quotation mark unless letters stand on both sides of it.
 _APOSTROPHES = frozenset("'\u2019")
+# A word, for telling whether an edit adds words beside an event or control.
+_WORD = re.compile(r"\S+")
 
 REVIEW_MESSAGE = (
     "This block changed after its speaker plan was adopted and its speaker markup "
@@ -145,6 +149,46 @@ def _quote_role_changes(old: str, new: str, start: int, end: int, length: int) -
     return False
 
 
+def _words_added_beside(old: str, new: str, offsets: Set[int]) -> bool:
+    """Whether the edit adds words at an event or control's offset.
+
+    The character change alone can miss this: new words that share letters
+    with the old ones start it past the event ("Hello" to "Hi, hello"), a swap
+    can keep its length ("Hello" to "Oh hi"), and a second edit elsewhere can
+    shrink the whole change. Compared word by word, a change that brings in more
+    words than it replaces, over words that reach an offset or in the gap that
+    holds one, could put the new words on either side of it. Both alignments of
+    repeated words are tried, as for the character change.
+    """
+
+    if not offsets:
+        return False
+    old_words = [(match.start(), match.end()) for match in _WORD.finditer(old)]
+    old_tokens = [old[start:end] for start, end in old_words]
+    new_tokens = _WORD.findall(new)
+    old_count, new_count = len(old_tokens), len(new_tokens)
+    alignments = [SequenceMatcher(None, old_tokens, new_tokens, autojunk=False).get_opcodes()]
+    reverse = SequenceMatcher(None, old_tokens[::-1], new_tokens[::-1], autojunk=False)
+    alignments.append(
+        [
+            (tag, old_count - i2, old_count - i1, new_count - j2, new_count - j1)
+            for tag, i1, i2, j1, j2 in reverse.get_opcodes()
+        ]
+    )
+    for opcodes in alignments:
+        for tag, i1, i2, j1, j2 in opcodes:
+            if tag == "equal" or j2 - j1 <= i2 - i1:
+                continue
+            if i2 > i1:
+                left, right = old_words[i1][0], old_words[i2 - 1][1]
+            else:
+                left = old_words[i1 - 1][1] if i1 else 0
+                right = old_words[i1][0] if i1 < old_count else len(old)
+            if any(left <= offset <= right for offset in offsets):
+                return True
+    return False
+
+
 def _text_slots(
     root: ET.Element,
 ) -> tuple[str, list[tuple[ET.Element, str, int, int, bool]], set[int]]:
@@ -205,6 +249,8 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
     if transcript != old:
         return None
     has_dialogue = any(element.tag in _DIALOGUE_TAGS for element in root.iter())
+    if _words_added_beside(old, new, markers):
+        return None
     chosen: int | None = None
     # Both extreme placements of the change must fit the same string, so text
     # that repeats the characters beside an edge cannot slip across it.
@@ -266,8 +312,9 @@ def _legacy_anchors_hold(annotation: Mapping[str, Any], old: str, new: str) -> b
 
     An event sits before or after its anchored words, or at the start or end of
     the block without an anchor. As for an event in markup, text added right
-    beside it, by an insertion or a lengthening replacement, could fall on
-    either side of it, so the entry does not fit.
+    beside it, by an insertion or a lengthening replacement, or words added to
+    the words beside it, could fall on either side of it, so the entry does not
+    fit.
     """
 
     parsed = PerformanceAnnotation.model_validate(dict(annotation))
@@ -280,6 +327,8 @@ def _legacy_anchors_hold(annotation: Mapping[str, Any], old: str, new: str) -> b
         else:
             anchor_start, anchor_end = anchor_range(old, event.anchor)
             event_offsets.add(anchor_start if event.position == "before" else anchor_end)
+    if _words_added_beside(old, new, event_offsets):
+        return False
     for start, end, replacement in _change_placements(old, new):
         delta = len(replacement) - (end - start)
         if delta > 0 and (start in event_offsets or end in event_offsets):
@@ -310,13 +359,13 @@ def fit_entry(
 
     The entry fits when the change lies inside one spoken string of its markup,
     wherever repeated characters let it sit; adds no text right beside an
-    event or control; does not reach the edge of a voiced string (an event or
+    event or control, nor words to the words beside one; does not reach the edge of a voiced string (an event or
     control inside one is an edge too); adds, removes or replaces no quotation
     mark, nor turns an apostrophe into one or back, in a block with a spoken
     line; and the rebased markup parses against the new text. A legacy
     (non-XML) annotation fits when it still validates against the new text,
-    every anchor still resolves to the same words, and no text is added right
-    beside an event.
+    every anchor still resolves to the same words, and no text or words are
+    added right beside an event.
     """
 
     if record is None:

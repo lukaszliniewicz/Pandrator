@@ -136,9 +136,10 @@ pass. Generation freezes the adopted annotations and context. Vocalizations are
 off by default; no previous generated audio is used as an implicit voice prompt.
 After a text edit, an adopted plan is judged block by block: unchanged blocks
 keep their directions, and so does an edited block whose change stays inside one
-stretch of its markup, away from a spoken line's edges (an event or control
-inside a line is an edge too), adds no text right beside an event or control,
-and adds, removes or replaces no quotation mark in a block with a spoken line (a
+stretch of its markup, away from a spoken line's edges (any boundary inside a
+line, such as an event or control, is an edge too), adds no text or words right
+beside an event or control (not even by rewording the word there, as "Hello" to
+"Hi, hello"), and adds, removes or replaces no quotation mark in a block with a spoken line (a
 single quote counts unless it sits inside a word, so an edit that moves it into
 or out of a word counts too).
 Only a block whose markup no longer fits needs a fresh performance review; a run
