@@ -1155,11 +1155,12 @@ def plan_export_variant(
     output: dict[str, Any] = {
         "audio_version_side": arguments.audio_version_side,
         "export_mode": arguments.export_mode,
-        "audio_mode": arguments.audio_mode,
         "subtitle_mode": arguments.subtitle_mode,
         "subtitle_text_source": arguments.subtitle_text_source,
         "subtitle_format": arguments.subtitle_format,
     }
+    if arguments.audio_mode is not None:
+        output["audio_mode"] = arguments.audio_mode
     if arguments.subtitle_selection is not None:
         output["subtitle_selection"] = arguments.subtitle_selection
     if arguments.generation_run_id:

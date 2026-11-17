@@ -213,33 +213,46 @@ def test_portable_inputs_reject_bad_guards_and_preserve_null_defaults():
 
 
 @pytest.mark.parametrize("side", ["before", "after", None])
-def test_export_variant_forwards_explicit_and_default_version_side(side):
+@pytest.mark.parametrize("audio_mode", [None, "dubbing_only"])
+def test_export_variant_forwards_explicit_and_default_version_side(side, audio_mode):
     arguments = {"session_id": "session-1", "generation_run_id": "run-1"}
     if side is not None:
         arguments["audio_version_side"] = side
+    if audio_mode is not None:
+        arguments["audio_mode"] = audio_mode
     application = Mock()
     application.create_workflow_plan.return_value = {"id": "plan-1"}
     runtime = SimpleNamespace(require_application=lambda: application)
     assert plan_export_variant(runtime, PlanExportVariantInput(**arguments)).result == {
         "id": "plan-1"
     }
+    expected_output = {
+        "generation_run_id": "run-1",
+        "audio_version_side": side or "after",
+        "export_mode": "media",
+        "subtitle_mode": "none",
+        "subtitle_text_source": "current",
+        "subtitle_format": "srt",
+    }
+    if audio_mode is not None:
+        expected_output["audio_mode"] = audio_mode
     application.create_workflow_plan.assert_called_once_with(
         "session-1",
         target_stage="export",
-        overrides={
-            "output": {
-                "generation_run_id": "run-1",
-                "audio_version_side": side or "after",
-                "export_mode": "media",
-                "audio_mode": "mixed",
-                "subtitle_mode": "none",
-                "subtitle_text_source": "current",
-                "subtitle_format": "srt",
-            }
-        },
+        overrides={"output": expected_output},
         expires_in_minutes=30,
         continuation=False,
     )
+
+
+def test_export_variant_audio_mode_is_optional_and_defaults_to_none():
+    assert PlanExportVariantInput(session_id="session-1").audio_mode is None
+    for value in ("preserve", "mixed", "dubbing_only"):
+        assert PlanExportVariantInput(
+            session_id="session-1", audio_mode=value
+        ).audio_mode == value
+    with pytest.raises(ValidationError):
+        PlanExportVariantInput(session_id="session-1", audio_mode="dubbed")
 
 
 @pytest.mark.parametrize("source", ["generation_run", "selected_artifact"])

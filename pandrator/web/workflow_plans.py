@@ -156,6 +156,44 @@ def _contains_url_credentials(value: Any) -> bool:
     )
 
 
+_EXPORT_OUTPUT_KEYS = (
+    "audio_mode",
+    "export_mode",
+    "subtitle_mode",
+    "subtitle_selection",
+    "video_tail_extension_policy",
+)
+_EXPORT_AUDIO_KEYS = ("synchronization_speed",)
+
+
+def _resolved_section(
+    snapshot: dict[str, Any], section: str, keys: tuple[str, ...]
+) -> dict[str, Any] | None:
+    """Return the resolved section, or its flat equivalent when there is none.
+
+    A section that supplies nothing is not authoritative, so it reports nothing
+    and the caller falls back to the layered session snapshot.
+    """
+
+    value = snapshot.get(section)
+    if isinstance(value, dict) and value:
+        return value
+    selected = {key: snapshot[key] for key in keys if key in snapshot}
+    return selected or None
+
+
+def _synchronization_multiplier(value: Any) -> float | None:
+    """Interpret a stored speed the way alignment does: multiplier or percent."""
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number if number <= 10 else number / 100
+
+
 def _reviewable_settings(value: Any) -> Any:
     """Project resolved settings without secrets or bulky runtime catalogues."""
 
@@ -823,6 +861,85 @@ class WorkflowExecutionPlanService:
         )
         return steps, execution_job_kind
 
+    def _export_effective_settings(
+        self,
+        session_id: str,
+        overrides: dict[str, Any],
+        resolved: ResolvedWorkflowStage,
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+        """Report the export settings this plan resolved, and where each came from."""
+
+        from .workspace_settings import WorkspaceSettingsService, settings_provenance
+
+        output_override = overrides.get("output")
+        audio_override = overrides.get("audio")
+        service = WorkspaceSettingsService(self.database)
+        with self.database.snapshot_session() as db_session:
+            output = service.get_in_session(db_session, session_id, "output")
+            audio = service.get_in_session(db_session, session_id, "audio")
+            record = db_session.get(SessionRecord, session_id)
+            context = (
+                service._output_context(db_session, record)
+                if record is not None
+                else {}
+            )
+        resolved_snapshot = resolved.payload.get("resolved_settings_snapshot")
+        resolved_snapshot = (
+            resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        )
+        effective = {
+            **settings_provenance(
+                output,
+                _EXPORT_OUTPUT_KEYS,
+                output_override if isinstance(output_override, dict) else None,
+                _resolved_section(resolved_snapshot, "output", _EXPORT_OUTPUT_KEYS),
+            ),
+            **settings_provenance(
+                audio,
+                _EXPORT_AUDIO_KEYS,
+                audio_override if isinstance(audio_override, dict) else None,
+                _resolved_section(resolved_snapshot, "audio", _EXPORT_AUDIO_KEYS),
+            ),
+        }
+        return effective, context
+
+    @staticmethod
+    def _effective_export_warnings(
+        *,
+        workflow_kind: str,
+        effective: dict[str, dict[str, Any]],
+        context: dict[str, Any],
+    ) -> list[str]:
+        """Warn about export choices that are valid but easy to misread."""
+
+        warnings: list[str] = []
+        audio_mode = effective.get("audio_mode") or {}
+        export_mode = str(
+            (effective.get("export_mode") or {}).get("effective") or ""
+        ).lower()
+        generates_speech = workflow_kind == "voiceover" or (
+            workflow_kind == "media_edit" and bool(context.get("has_generated_voiceover"))
+        )
+        if (
+            generates_speech
+            and export_mode in {"media", "audio"}
+            and context.get("has_source_audio")
+            and str(audio_mode.get("effective") or "").lower() == "dubbing_only"
+        ):
+            warnings.append(
+                "This export replaces the original soundtrack with the voiceover only "
+                f"(audio_mode=dubbing_only, from {audio_mode.get('origin')}). "
+                "Set audio_mode=mixed to keep the original under the voice."
+            )
+        speed = effective.get("synchronization_speed") or {}
+        multiplier = _synchronization_multiplier(speed.get("effective"))
+        if multiplier is not None and multiplier > 1.2:
+            warnings.append(
+                f"Synchronization speed {speed.get('effective')} may sound rushed; "
+                "above 1.2× is not recommended."
+            )
+        return warnings
+
     def create(
         self,
         *,
@@ -877,6 +994,12 @@ class WorkflowExecutionPlanService:
         reuse_stages = {
             str(value) for value in supplied.get("reuse_stages", []) or [] if str(value)
         }
+        effective_export: dict[str, dict[str, Any]] | None = None
+        export_context: dict[str, Any] = {}
+        if target_stage == "export":
+            effective_export, export_context = self._export_effective_settings(
+                session_id, supplied, resolved
+            )
         disclosures = self._provider_disclosures(resolved)
         external = [item for item in disclosures if self._is_external(item)]
         resource_services = [
@@ -960,6 +1083,14 @@ class WorkflowExecutionPlanService:
                     f"Prerequisite stage '{step['stage']}' will be re-run ({reasons}). "
                     f"To preserve the existing artifact instead, include '{step['stage']}' in reuse_stages."
                 )
+        if effective_export is not None:
+            warnings.extend(
+                self._effective_export_warnings(
+                    workflow_kind=resolved.workflow_kind,
+                    effective=effective_export,
+                    context=export_context,
+                )
+            )
         public_plan = {
             "schema_version": PLAN_SCHEMA_VERSION,
             "plan_id": plan_id,
@@ -987,6 +1118,11 @@ class WorkflowExecutionPlanService:
                 "hash": str(resolved.payload.get("settings_hash") or ""),
                 "resolved_snapshot": _reviewable_settings(
                     resolved.payload.get("resolved_settings_snapshot") or {}
+                ),
+                **(
+                    {"effective": effective_export}
+                    if effective_export is not None
+                    else {}
                 ),
             },
             **({"subtitle_review": {

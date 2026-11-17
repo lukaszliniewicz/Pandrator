@@ -718,7 +718,9 @@ def create_branches_in_session(
                 if setup.generate_voiceover:
                     context = WorkspaceSettingsService._output_context(db, record)
                     child_value["export_mode"] = "media"
-                    child_value["audio_mode"] = "dubbing_only"
+                    child_value["audio_mode"] = (
+                        "mixed" if context["has_source_audio"] else "dubbing_only"
+                    )
                     if source.workflow_kind == "subtitles" or child_value.get("subtitle_mode") not in {
                         "none", "soft", "burned",
                     }:

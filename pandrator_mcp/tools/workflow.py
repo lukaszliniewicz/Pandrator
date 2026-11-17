@@ -502,12 +502,13 @@ def plan_orchestrated_workflow(
         merged_output.update(
             {
                 "export_mode": arguments.export_mode,
-                "audio_mode": arguments.audio_mode,
                 "subtitle_mode": arguments.subtitle_mode,
                 "subtitle_text_source": arguments.subtitle_text_source,
                 "subtitle_format": arguments.subtitle_format,
             }
         )
+        if arguments.audio_mode is not None:
+            merged_output["audio_mode"] = arguments.audio_mode
         if arguments.subtitle_selection is not None:
             merged_output["subtitle_selection"] = arguments.subtitle_selection
         if arguments.generation_run_id:

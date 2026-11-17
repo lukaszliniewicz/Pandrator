@@ -130,9 +130,11 @@ inside the operator-approved output root.
 
 Output settings identify the effective soundtrack and caption sources. Choose
 `mixed` for source audio plus voiceover, `preserve` for source audio, or
-`dubbing_only` for generated speech. Source gain, voice loudness and ducking apply
-to a mixed soundtrack. Additional project sounds are a separate inclusion choice.
-An export reuses recorded takes and prepares an assembly when required.
+`dubbing_only` for generated speech. Omitting `audio_mode` keeps the session's
+effective value; the export plan reports that value and where it came from.
+Source gain, voice loudness and ducking apply to a mixed soundtrack. Additional
+project sounds are a separate inclusion choice. An export reuses recorded takes
+and prepares an assembly when required.
 
 New exports freeze their selected subtitle artifact identities and display
 revision when submitted. Later correction, translation or selection changes do

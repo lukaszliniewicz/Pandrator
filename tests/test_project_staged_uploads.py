@@ -410,7 +410,7 @@ def test_fresh_history_and_staged_flag_downgrade_guard(case):
     with case.database.engine.connect() as connection:
         assert (
             connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            == "0087_public_project_links"
+            == "0088_translation_branch_audio_mode"
         )
         column = next(
             item

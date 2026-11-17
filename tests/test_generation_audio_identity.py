@@ -17,6 +17,7 @@ from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.generation_audio_identity import (
     IDENTITY_KEY,
     AudioIdentityContext,
+    identity_for_storage,
     plan_audio_identities,
 )
 from pandrator.web.models import (
@@ -676,7 +677,15 @@ class GenerationAudioIdentityTests(unittest.TestCase):
             self.assertEqual(set(segment_ids), {take.generation_segment_id for take in takes})
             for take in takes:
                 artifact = session.get(Artifact, take.artifact_id)
-                self.assertEqual(expected[take.generation_segment_id], artifact.metadata_json[IDENTITY_KEY])
+                # The frozen run keeps the legacy hashes; stamped takes do not.
+                self.assertIn(
+                    "legacy_settings_hashes",
+                    expected[take.generation_segment_id],
+                )
+                self.assertEqual(
+                    identity_for_storage(expected[take.generation_segment_id]),
+                    artifact.metadata_json[IDENTITY_KEY],
+                )
 
         with self.assertRaisesRegex(ValueError, "no missing or stale"):
             self.generation.prepare_start(session_id, run_override=self._override(), stale_only=True)
@@ -721,7 +730,10 @@ class GenerationAudioIdentityTests(unittest.TestCase):
             )
             for take in takes:
                 artifact = session.get(Artifact, take.artifact_id)
-                self.assertEqual(expected[take.generation_segment_id], artifact.metadata_json[IDENTITY_KEY])
+                self.assertEqual(
+                    identity_for_storage(expected[take.generation_segment_id]),
+                    artifact.metadata_json[IDENTITY_KEY],
+                )
                 if take.generation_segment_id == segment_ids[0]:
                     artifact.metadata_json = {
                         key: value

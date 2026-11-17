@@ -209,6 +209,9 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
             "tts_context_mode",
             "secret_ref",
             "api_key_env",
+            # Derived for correction and translation by adapt_runtime_settings;
+            # it never changes synthesized audio.
+            "timing_context_enabled",
         }
     )
     selected = str(values.get("service") or values.get("tts_service") or "")
@@ -638,11 +641,13 @@ class AudioIdentityContext:
                     })
                 # Base narrator settings/references are not audible when every
                 # part has a cast binding. Hash the actual resolved requests.
-                return {
+                part_settings = [part["settings"] for part in requests]
+                rvc_material = self.selected_rvc if self.selected_rvc.get("enabled") else {}
+                identity = {
                     "schema_version": IDENTITY_VERSION,
                     "settings_hash": _hash({
-                        "parts": [part["settings"] for part in requests],
-                        "rvc": self.selected_rvc if self.selected_rvc.get("enabled") else {},
+                        "parts": part_settings,
+                        "rvc": rvc_material,
                     }),
                     "voice_reference_hash": _hash([part["references"] for part in requests]),
                     **({"source_voice_reference_hash": _hash([
@@ -656,6 +661,19 @@ class AudioIdentityContext:
                         "parts": [{"range": part["range"], "request": part["request"]} for part in requests],
                     }),
                 }
+                if not any("timing_context_enabled" in part for part in part_settings):
+                    # Takes stamped before the key was excluded still hash it.
+                    identity["legacy_settings_hashes"] = [
+                        _hash({
+                            "parts": [
+                                {**part, "timing_context_enabled": value}
+                                for part in part_settings
+                            ],
+                            "rvc": rvc_material,
+                        })
+                        for value in (True, False)
+                    ]
+                return identity
             compiled = compile_performance(text, prepared, None, self._service_config_cache)
             baseline_settings = dict(settings)
             for key in ("_performance", "_semantic_context", "generation_prompt", "openai_audio_instructions"):
@@ -868,18 +886,22 @@ class AudioIdentityContext:
                             )]
                     self._voice_reference_cache[settings_hash_key] = cached
                 references = cached
+        material = self._memoized_material_settings(settings)
+        rvc_material = self.selected_rvc if self.selected_rvc.get("enabled") else {}
         identity = {
             "schema_version": IDENTITY_VERSION,
-            "settings_hash": _hash(
-                {
-                    "tts": self._memoized_material_settings(settings),
-                    "rvc": self.selected_rvc
-                    if self.selected_rvc.get("enabled")
-                    else {},
-                }
-            ),
+            "settings_hash": _hash({"tts": material, "rvc": rvc_material}),
             "voice_reference_hash": voice_reference_hash(references),
         }
+        if "timing_context_enabled" not in material:
+            # Takes stamped before the key was excluded still hash it.
+            identity["legacy_settings_hashes"] = [
+                _hash({
+                    "tts": {**material, "timing_context_enabled": value},
+                    "rvc": rvc_material,
+                })
+                for value in (True, False)
+            ]
         source_hash = source_voice_reference_hash(settings)
         if source_hash is not None:
             identity["source_voice_reference_hash"] = source_hash
@@ -903,6 +925,44 @@ def take_reuse_reason(
     )
 
 
+def settings_hash_matches(expected: dict[str, Any], stored_hash: Any) -> bool:
+    """Accept the pre-fix hash that still covered ``timing_context_enabled``."""
+    if type(stored_hash) is not str:
+        return False
+    if stored_hash == expected.get("settings_hash"):
+        return True
+    return stored_hash in (expected.get("legacy_settings_hashes") or ())
+
+
+def identity_matches(stored: Any, expected: dict[str, Any]) -> bool:
+    """Compare two identities, accepting a pre-fix settings hash on either side."""
+    if not isinstance(stored, dict):
+        return False
+    stored_hash = stored.get("settings_hash")
+    expected_hash = expected.get("settings_hash")
+    if type(stored_hash) is not str or type(expected_hash) is not str:
+        return False
+    hashes_match = (
+        stored_hash == expected_hash
+        or stored_hash in (expected.get("legacy_settings_hashes") or ())
+        or expected_hash in (stored.get("legacy_settings_hashes") or ())
+    )
+    if not hashes_match:
+        return False
+    ignored = {"settings_hash", "legacy_settings_hashes"}
+    return {key: value for key, value in stored.items() if key not in ignored} == {
+        key: value for key, value in expected.items() if key not in ignored
+    }
+
+
+def identity_for_storage(identity: dict[str, Any]) -> dict[str, Any]:
+    """Strip the comparison-only legacy hashes before an identity is persisted."""
+    return {
+        key: value for key, value in identity.items()
+        if key != "legacy_settings_hashes"
+    }
+
+
 def stored_take_reuse_reason(
     segment_status: str | None,
     take_status: str | None,
@@ -920,7 +980,7 @@ def stored_take_reuse_reason(
     actual = (artifact_metadata or {}).get(IDENTITY_KEY)
     if not isinstance(actual, dict) or actual.get("schema_version") != IDENTITY_VERSION:
         return "audio_identity_unknown"
-    if actual.get("settings_hash") != expected["settings_hash"]:
+    if not settings_hash_matches(expected, actual.get("settings_hash")):
         return "generation_settings_changed"
     candidates = ("voice_reference_hash", "source_voice_reference_hash", "legacy_voice_reference_hash")
     actual_hashes = {value for name in candidates

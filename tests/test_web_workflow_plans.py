@@ -431,6 +431,215 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             first.get_data(as_text=True).lower(),
         )
 
+    def test_export_plan_reports_effective_audio_mode_and_its_origin(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        plan = self._plan(session_id, target_stage="export", continuation=False)
+        effective = plan["settings"]["effective"]
+        self.assertEqual(
+            {"effective": "mixed", "origin": "session_context"},
+            effective["audio_mode"],
+        )
+        self.assertEqual("builtin", effective["video_tail_extension_policy"]["origin"])
+        self.assertEqual("builtin", effective["synchronization_speed"]["origin"])
+        self.assertEqual(1.15, effective["synchronization_speed"]["effective"])
+        self.assertFalse(
+            [item for item in plan["warnings"] if "soundtrack" in item]
+        )
+
+        with self.extension["database"].session() as db_session:
+            db_session.add(
+                SessionSetting(
+                    session_id=session_id,
+                    section="output",
+                    value_json={"audio_mode": "dubbing_only"},
+                )
+            )
+        stored = self._plan(session_id, target_stage="export", continuation=False)
+        self.assertEqual(
+            {"effective": "dubbing_only", "origin": "session_override"},
+            stored["settings"]["effective"]["audio_mode"],
+        )
+        self.assertEqual(
+            [
+                "This export replaces the original soundtrack with the voiceover only "
+                "(audio_mode=dubbing_only, from session_override). Set audio_mode=mixed "
+                "to keep the original under the voice."
+            ],
+            [item for item in stored["warnings"] if "soundtrack" in item],
+        )
+
+        requested = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={"output": {"audio_mode": "mixed"}},
+            continuation=False,
+        )
+        self.assertEqual(
+            {"effective": "mixed", "origin": "run_override"},
+            requested["settings"]["effective"]["audio_mode"],
+        )
+        self.assertFalse(
+            [item for item in requested["warnings"] if "soundtrack" in item]
+        )
+
+    def test_export_plan_warns_about_rushed_synchronization_speed(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        for speed in (1.15, 1.2, 120):
+            with self.subTest(speed=speed):
+                plan = self._plan(
+                    session_id,
+                    target_stage="export",
+                    overrides={"audio": {"synchronization_speed": speed}},
+                    continuation=False,
+                )
+                warnings = [
+                    item for item in plan["warnings"] if "rushed" in item
+                ]
+                self.assertEqual([], warnings)
+        for speed, expected in ((1.21, "1.21"), (130, "130")):
+            with self.subTest(speed=speed):
+                plan = self._plan(
+                    session_id,
+                    target_stage="export",
+                    overrides={"audio": {"synchronization_speed": speed}},
+                    continuation=False,
+                )
+                self.assertEqual(
+                    {
+                        "effective": speed,
+                        "origin": "run_override",
+                    },
+                    plan["settings"]["effective"]["synchronization_speed"],
+                )
+                self.assertEqual(
+                    [
+                        f"Synchronization speed {expected} may sound rushed; "
+                        "above 1.2× is not recommended."
+                    ],
+                    [item for item in plan["warnings"] if "rushed" in item],
+                )
+
+    def test_export_plan_does_not_warn_about_dubbing_without_source_audio(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="txt",
+        )
+        with self.extension["database"].session() as db_session:
+            db_session.add(
+                SessionSetting(
+                    session_id=session_id,
+                    section="output",
+                    value_json={"audio_mode": "mixed"},
+                )
+            )
+
+        plan = self._plan(session_id, target_stage="export", continuation=False)
+
+        # The voiceover clamp replaces a stored mixed mode with no source audio.
+        self.assertEqual(
+            {"effective": "dubbing_only", "origin": "clamped"},
+            plan["settings"]["effective"]["audio_mode"],
+        )
+        self.assertFalse(
+            [item for item in plan["warnings"] if "soundtrack" in item]
+        )
+
+    def test_export_plan_reads_the_resolved_snapshot_of_the_planned_run(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        service = self.extension["services"].workflow_plans
+        stored = service._export_effective_settings(
+            session_id,
+            {},
+            ResolvedWorkflowStage(
+                job_kind="export.create",
+                payload={"resolved_settings_snapshot": {"output": {}}},
+                resource_keys=(),
+                session_revision=1,
+                workflow_kind="voiceover",
+                source_artifact_id=None,
+                source_content_hash=None,
+                outcome_revision=1,
+            ),
+        )[0]
+        # No resolved value: the stored session snapshot answers.
+        self.assertEqual(
+            {"effective": "mixed", "origin": "session_context"},
+            stored["audio_mode"],
+        )
+
+        resolved = service._export_effective_settings(
+            session_id,
+            {},
+            ResolvedWorkflowStage(
+                job_kind="export.create",
+                payload={
+                    "resolved_settings_snapshot": {"output": {"audio_mode": "preserve"}}
+                },
+                resource_keys=(),
+                session_revision=1,
+                workflow_kind="voiceover",
+                source_artifact_id=None,
+                source_content_hash=None,
+                outcome_revision=1,
+            ),
+        )[0]
+        # The plan's own resolution wins over a second read of the session.
+        self.assertEqual(
+            {"effective": "preserve", "origin": "clamped"},
+            resolved["audio_mode"],
+        )
+
+    def test_export_plan_refuses_mixed_audio_without_a_source_track(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="txt",
+        )
+
+        response = self.client.post(
+            f"/api/v1/sessions/{session_id}/workflow-plans",
+            json={
+                "target_stage": "export",
+                "overrides": {"output": {"audio_mode": "mixed"}},
+                "continuation": False,
+            },
+            headers=self.headers,
+        )
+
+        self.assertEqual(422, response.status_code, response.get_json())
+        self.assertEqual("validation_error", response.get_json()["error"]["code"])
+        self.assertIn(
+            "Mixing source audio requires an attached audio or video source",
+            response.get_json()["error"]["message"],
+        )
+
+    def test_export_plan_fingerprints_the_effective_settings_block(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+
+        first = self._plan(session_id, target_stage="export", continuation=False)
+        second = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={"output": {"audio_mode": "preserve"}},
+            continuation=False,
+        )
+
+        self.assertNotEqual(
+            first["settings"]["effective"], second["settings"]["effective"]
+        )
+        self.assertNotEqual(first["plan_digest"], second["plan_digest"])
+
     def test_direct_export_plan_does_not_wrap_in_workflow_continuation(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
             workflow_kind="voiceover",

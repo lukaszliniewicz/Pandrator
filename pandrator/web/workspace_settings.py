@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -184,6 +185,57 @@ def subtitle_settings_provenance(
                 "causes": causes,
             }
     return {"fields": fields}
+
+
+def settings_provenance(
+    snapshot: dict[str, Any],
+    keys: Iterable[str],
+    run_override: dict[str, Any] | None = None,
+    effective: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Report each key's effective value and the highest layer that supplied it.
+
+    ``snapshot`` is a layered section snapshot as returned by ``get_in_session``.
+    The origin is the last layer that supplies the key, from the built-in
+    defaults up to the run override. A value the resolver changed afterwards,
+    such as the voiceover clamps, reports ``clamped`` so a caller never mistakes
+    a rewritten value for the one somebody chose.
+
+    Pass ``effective`` when the caller already holds the resolved section, so the
+    reported value is the one the run really uses. Without it the helper merges
+    the run override over the snapshot itself, which is only right when the
+    resolver had nothing further to say about the value.
+    """
+
+    layers = (
+        ("builtin", snapshot.get("builtin")),
+        ("global", snapshot.get("global")),
+        ("session_context", snapshot.get("session_context")),
+        ("session_override", snapshot.get("override")),
+        ("run_override", run_override),
+    )
+    resolved_effective: dict[str, Any]
+    if effective is None:
+        # resolve_in_session merges the run override over the resolved section,
+        # so the effective value here must include it to describe the planned run.
+        resolved_effective = deepcopy(snapshot.get("effective") or {})
+        for key, value in (run_override or {}).items():
+            resolved_effective[key] = deepcopy(value)
+    else:
+        resolved_effective = dict(effective)
+    fields: dict[str, dict[str, Any]] = {}
+    for key in keys:
+        origin = "builtin"
+        supplied = resolved_effective.get(key)
+        for name, values in layers:
+            if isinstance(values, dict) and key in values:
+                origin, supplied = name, values[key]
+        value = resolved_effective.get(key)
+        fields[key] = {
+            "effective": value,
+            "origin": "clamped" if value != supplied else origin,
+        }
+    return fields
 
 
 @dataclass(slots=True)

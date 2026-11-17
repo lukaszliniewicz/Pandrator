@@ -283,7 +283,11 @@ def _run_generation(
         run_sequence_number = run.sequence_number
         job_id = run.job_id or str(payload.get("_job_id") or "") or None
 
-    from .generation_audio_identity import plan_audio_identities
+    from .generation_audio_identity import (
+        identity_for_storage,
+        identity_matches,
+        plan_audio_identities,
+    )
     from .speech_plan_workspace import plan_signature
 
     # This can take minutes on a long plan. Holding a writer here would stop this
@@ -295,7 +299,19 @@ def _run_generation(
             session, plan_revision_id, settings_snapshot,
             segment_ids=audio_version["target_segment_ids"] if audio_version is not None else None,
         )
-        audio_identity_changed = bool(settings_snapshot.get("generation_audio_identities") and settings_snapshot["generation_audio_identities"] != audio_identities)
+        frozen_identities = settings_snapshot.get("generation_audio_identities") or {}
+        # Runs frozen before the derived timing key was excluded still carry the
+        # pre-fix settings hash, so compare through the shared acceptance.
+        audio_identity_changed = bool(
+            frozen_identities
+            and (
+                set(frozen_identities) != set(audio_identities)
+                or any(
+                    not identity_matches(stored, audio_identities[segment_id])
+                    for segment_id, stored in frozen_identities.items()
+                )
+            )
+        )
 
     if plan_changed or audio_identity_changed:
         # An expired lease denies voice access and the identity check can omit
@@ -1226,7 +1242,9 @@ def _run_generation(
                             "generation_segment_id": segment_id,
                             "generation_run_id": output_run_id,
                             **(
-                                {"generation_audio_identity": audio_identities[segment_id]}
+                                {"generation_audio_identity": identity_for_storage(
+                                    audio_identities[segment_id]
+                                )}
                                 if operation != "rvc"
                                 else {}
                             ),

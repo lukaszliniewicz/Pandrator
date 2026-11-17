@@ -23,7 +23,7 @@ from .maintenance_threads import MaintenanceThread
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_HEAD = "0087_public_project_links"
+SCHEMA_HEAD = "0088_translation_branch_audio_mode"
 _WriteResult = TypeVar("_WriteResult")
 BACKGROUND_CHECKPOINT_SECONDS = 1.0
 # With background checkpoints a commit still checkpoints inline once the WAL

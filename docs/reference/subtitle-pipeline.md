@@ -430,7 +430,7 @@ before being fitted to the shared timing window. Relevant assembly defaults:
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `synchronization_delay_ms` | `800` | Maximum allowed start delay when fitting generated speech. |
-| `synchronization_speed` | `1.2` | Maximum speed-up factor used to fit a block. |
+| `synchronization_speed` | `1.15` | Maximum speed-up factor used to fit a block. |
 | `synchronization_slowdown_enabled` | `true` | Preserve start-delay priority, then apply proportionate pitch-preserving slowdown down to 0.9× within the remaining own-cue time. Account for incoming playback delay and the next block's start; slowdown must fit both boundaries. |
 | `synchronization_sentence_gap_ms` | `100` | Silence inserted between sentence files inside one speech block, before alignment. |
 | `synchronization_min_block_gap_ms` | `100` | Minimum inserted silence between independent speech blocks, including during catch-up. Reserved when fitting speech; longer pauses remain. Zero disables this minimum. No extra gap follows the final block. |
