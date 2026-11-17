@@ -191,6 +191,59 @@ def test_narration_that_gains_or_loses_a_quotation_mark_needs_review():
     assert fit("He said hi.", plain, "He said “hi.”") is not None
 
 
+def test_a_spoken_line_that_gains_or_loses_a_quotation_mark_needs_review():
+    old = "He said “Go now.”"
+    record = xml_record(
+        old,
+        '<segment id="s">He said <dialogue><speaker ref="c-scrooge">“Go now.”</speaker></dialogue></segment>',
+    )
+    # Split around an attribution, the line would make the speaker voice it.
+    assert fit(old, record, "He said “Go,” he said, “now.”") is None
+    # Without a quotation mark nothing tells an attribution from speech: the
+    # speaker keeps all of it, as the docs say.
+    bare = "He said Go now."
+    bare_record = xml_record(
+        bare,
+        '<segment id="s">He said <dialogue><speaker ref="c-scrooge">Go now.</speaker></dialogue></segment>',
+    )
+    assert fit(bare, bare_record, "He said Go, he said, now.") is not None
+    # An apostrophe inside a word still fits.
+    assert fit(old, record, "He said “Go now, it’s late.”") is not None
+
+
+def test_single_quotation_marks_count_unless_inside_a_word():
+    record = xml_record(DIALOGUE_TEXT, DIALOGUE_XML)
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then 'Go,' he left.") is None
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then ‘Go’ he left.") is None
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then ＂Go＂ he left.") is None
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then 「Go」 he left.") is None
+    framed_text = "‘Bah!’ he said."
+    framed = xml_record(
+        framed_text,
+        '<segment id="s">‘<dialogue><speaker ref="c-scrooge">Bah!</speaker></dialogue>’ he said.</segment>',
+    )
+    # The closing mark is the apostrophe character, but no letter follows it.
+    assert fit(framed_text, framed, "‘Bah! he said.") is None
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then didn't leave.") is not None
+    assert fit(framed_text, framed, "‘Bah!’ he hadn’t said.") is not None
+
+
+def test_an_insertion_beside_an_event_or_control_at_a_block_edge_does_not_fit():
+    old = "Hello there."
+    trailing = xml_record(old, '<segment id="s">Hello there.<event kind="laugh"/></segment>')
+    # Text added after the last words could come before or after the laugh.
+    assert fit(old, trailing, "Hello there. Again.") is None
+    leading = xml_record(old, '<segment id="s"><event kind="laugh"/>Hello there.</segment>')
+    assert fit(old, leading, "Oh. Hello there.") is None
+    control = xml_record(old, '<segment id="s"><em>calm</em>Hello there.</segment>')
+    assert fit(old, control, "Oh. Hello there.") is None
+    # A change inside the words beside it still fits, and keeps the event.
+    fitted = fit(old, trailing, "Hello here.")
+    assert fitted is not None
+    assert record_markup(fitted) == '<segment id="s">Hello here.<event kind="laugh"/></segment>'
+    assert fit(old, leading, "Hello here.") is not None
+
+
 def test_a_carriage_return_survives_the_rebase():
     record = xml_record("Helo\rthere.", '<segment id="s">Helo&#13;there.</segment>')
     fitted = fit("Helo\rthere.", record, "Hello\rthere.")
@@ -239,6 +292,10 @@ def test_legacy_anchor_moved_by_an_earlier_copy_of_its_quote_does_not_fit():
     })
     assert fit(old, event, "A defeat. He paused. Then the defeat came, and the defeat stayed.") is None
     assert fit(old, event, "He paused long. Then the defeat came, and the defeat stayed.") is not None
+    # A copy written right beside the anchored words can sit before or after
+    # them; placed before, the anchor moves, so the entry does not fit.
+    beside = "Then the defeat stayed."
+    assert fit(beside, legacy_record(beside, "defeat", 1), "Then the defeat defeat stayed.") is None
 
 
 def test_legacy_anchor_fits_an_edit_before_or_after_it_without_a_new_copy():
@@ -372,13 +429,25 @@ def test_run_refusal_names_five_blocks_from_one(case):
         # A scope without any review block starts.
         refuse_review_segments(session, snapshot, [])
     message = str(refused.value)
-    assert message.startswith("7 blocks changed")
+    assert message.startswith(
+        "7 blocks changed after the speaker plan was adopted and no longer fit their "
+        "speaker markup: "
+    )
+    assert message.endswith(
+        "Review a new speaker plan; until then, only a generation run that leaves "
+        "these blocks out can start."
+    )
     # A single block reads in the singular.
     with case["services"]["database"].session() as session:
-        with pytest.raises(ValueError, match=r"^1 block changed .*block 1 \("):
+        with pytest.raises(ValueError) as single:
             refuse_review_segments(
                 session, {"performance_snapshot": {"review_segment_ids": [ids[0]]}}, None
             )
+    assert str(single.value) == (
+        "1 block changed after the speaker plan was adopted and no longer fits its "
+        f"speaker markup: block 1 ({ids[0]}). Review a new speaker plan; until then, "
+        "only a generation run that leaves this block out can start."
+    )
     assert ", ".join(f"block {index + 1} ({ids[index]})" for index in range(5)) in message
     assert ids[5] not in message and " and 2 more." in message
 

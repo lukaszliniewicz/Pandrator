@@ -41,7 +41,10 @@ def frozen_semantic_contexts(snapshot: dict[str, Any]) -> dict[str, dict[str, st
 def refuse_review_segments(
     session, snapshot: dict[str, Any], scope: Collection[str] | None
 ) -> None:
-    """Refuse a run whose scope includes a segment its speaker plan no longer fits."""
+    """Refuse when ``scope`` includes a segment its speaker plan no longer fits.
+
+    ``scope=None`` means every segment, so any segment needing review refuses.
+    """
     review = (snapshot.get("performance_snapshot") or {}).get("review_segment_ids") or []
     if not review:
         return
@@ -60,11 +63,18 @@ def refuse_review_segments(
         f"block {ordinal + 1} ({segment_id})" for ordinal, segment_id in named[:5]
     )
     more = f" and {len(named) - 5} more" if len(named) > 5 else ""
-    blocks = "1 block" if len(named) == 1 else f"{len(named)} blocks"
+    if len(named) == 1:
+        changed, them = "1 block changed", "this block"
+        fit = "fits its"
+    else:
+        changed, them = f"{len(named)} blocks changed", "these blocks"
+        fit = "fit their"
+    # Recast, workflow checks and voiceover regroup or repair share this
+    # refusal but cannot leave a block out, so the advice names a run.
     raise ValueError(
-        f"{blocks} changed after the speaker plan was adopted and no longer "
-        f"fit their speaker markup: {listed}{more}. Review a new speaker plan, "
-        "or leave these blocks out of the run."
+        f"{changed} after the speaker plan was adopted and no longer {fit} "
+        f"speaker markup: {listed}{more}. Review a new speaker plan; until then, "
+        f"only a generation run that leaves {them} out can start."
     )
 
 

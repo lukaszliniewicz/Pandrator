@@ -136,18 +136,21 @@ pass. Generation freezes the adopted annotations and context. Vocalizations are
 off by default; no previous generated audio is used as an implicit voice prompt.
 After a text edit, an adopted plan is judged block by block: unchanged blocks
 keep their directions, and so does an edited block whose change stays inside one
-stretch of its markup, away from a spoken line's edges, and adds or removes no
-quotation mark in the narration around a spoken line. Only a block whose markup
-no longer fits needs a fresh performance review; a run that includes it is
-refused naming it, and a run without it can start. An edited attribution keeps
-the speaker the plan chose. `pandrator_get_performance_plan` reports
-`changed_segment_count`, `review_segment_count` and `review_segments` (first 20,
-with 0-based `ordinal`; the refusal counts blocks from 1) for an adopted plan on
-the selected revision. Phrase editing and split or merge starting markup still
-need a plan that fits the whole revision, so copy and adopt it first. Other
-explicit block changes, such as a split or merge, require fresh performance
-review. Automatic split/regroup
-passes are disabled while performance or semantic context is enabled.
+stretch of its markup, away from a spoken line's edges, is not inserted right
+beside an event or control, and adds, removes or replaces no quotation mark in a
+block with a spoken line (a single quote counts unless it sits inside a word).
+Only a block whose markup no longer fits needs a fresh performance review; a run
+that includes it is refused naming it, and a run without it can start. Recast,
+workflow checks and voiceover regroup or repair are refused while any block of
+the revision needs review. An edited attribution keeps the speaker the plan
+chose. `pandrator_get_performance_plan` reports `changed_segment_count`,
+`review_segment_count` and `review_segments` (first 20, with 0-based `ordinal`;
+the refusal counts blocks from 1) for an adopted plan on the selected revision.
+Phrase editing, the starting markup of a split, merge or re-segmentation, and
+the plan's own segment preview still need a plan that fits the whole revision,
+so copy and adopt it first; the blocks a split or merge makes then need fresh
+performance review. Automatic split/regroup passes are disabled while
+performance or semantic context is enabled.
 
 ## Multiple voices and audio drama
 

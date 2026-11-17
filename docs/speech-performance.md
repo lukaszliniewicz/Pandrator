@@ -224,14 +224,18 @@ directions, and so does an edited block whose markup still fits its new text
 needs a new speaker plan review, and so does a block whose speaker, language,
 node kind or section changed. An edit does not fit when it reaches the start or
 end of a spoken line or of a stretch with its own voice, where it could be the
-narration around it, or when it adds or removes a quotation mark in the
-narration of a block that has a spoken line. An edited attribution ("said John"
-to "said Mary") with no quotation mark changed still fits and keeps the speaker
-the plan chose; copy the plan to have that block reviewed again. A generation
-run that includes a block needing review is refused with that block named; a
-run without it can still start, and the block preview shows the review message
-for it. Recasting, workflow checks and voiceover regrouping or repair refuse in
-the same way. A plan read reports `changed_segment_count`,
+narration around it; when it inserts text right beside an event or delivery
+control, where it could fall on either side; or when it adds, removes or
+replaces a quotation mark anywhere in a block that has a spoken line. A straight
+or curly single quote counts unless letters stand on both sides of it, as in
+"didn't". An edited attribution ("said John" to "said Mary"), or an attribution
+written into a spoken line without quotation marks, still fits and keeps the
+speaker the plan chose; copy the plan to have that block reviewed again. A
+generation run that includes a block needing review is refused with that block
+named; a run without it can still start, and the block preview shows the review
+message for it. Recasting, workflow checks and voiceover regrouping or repair
+cannot leave a block out, so they are refused while any block of the revision
+needs review. A plan read reports `changed_segment_count`,
 `review_segment_count` and `review_segments` (the first 20, each with its
 0-based `ordinal`; the refusal and the speaker plan panel number blocks from 1)
 for an adopted plan on the selected revision; `stale` keeps its meaning. Phrase

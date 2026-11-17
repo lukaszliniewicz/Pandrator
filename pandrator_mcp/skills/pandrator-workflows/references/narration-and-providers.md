@@ -21,12 +21,16 @@ the plan for the active revision: `review_segment_count` and `review_segments`
 name the blocks that need a new entry (a change that does not fit, or a
 changed speaker, language, node kind or section); each `ordinal` there is
 0-based, while the refusal counts blocks from 1. A change does not fit when it
-reaches a spoken line's edge or adds or removes a quotation mark in the
-narration around one; an edited attribution ("said John" to "said Mary") fits
-and keeps the old speaker, so copy the plan when the speaker should change. A
-run that includes a block needing review is refused naming it; a run without it
-can start. Phrase editing and split or merge starting markup still need a plan
-that fits the whole revision. Restores and edit copies carry
+reaches a spoken line's edge, is inserted right beside an event or control, or
+adds, removes or replaces a quotation mark in a block with a spoken line (a
+single quote counts unless it sits inside a word). An edited attribution ("said
+John" to "said Mary") fits and keeps the old speaker, so copy the plan when the
+speaker should change. A run that includes a block needing review is refused
+naming it; a run without it can start. Recast, workflow checks and voiceover
+regroup or repair are refused while any block of the revision needs review.
+Phrase editing, the starting markup of a split, merge or re-segmentation, and
+the plan's own segment preview still need a plan that fits the whole revision.
+Restores and edit copies carry
 the adopted plan, stale or not, with the same judgement. When blocks need
 review, or unlocked neighbours of an edited block should be reviewed again,
 copy the plan: list performance plans for the active revision and copy its

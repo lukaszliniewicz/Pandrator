@@ -36,9 +36,14 @@ from .speech_annotation_records import normalized_record, record_annotation, rec
 # contribute their tail, exactly as ``speech_markup._extract`` reads them.
 _SPOKEN_TEXT_TAGS = frozenset({"segment", "dialogue", "speaker", "narrator", "span"})
 _DIALOGUE_TAGS = frozenset({"dialogue", "speaker"})
-# Quotation marks that open or close a spoken line. The right single quotation
-# mark is left out because it is also the apostrophe of ordinary words.
-_QUOTE_MARKS = frozenset('"\u201c\u201d\u201e\u201f\u2018\u201a\u00ab\u00bb\u2039\u203a\u300c\u300d\u300e\u300f')
+# Quotation marks that open or close a spoken line.
+_QUOTE_MARKS = frozenset(
+    '"\u201c\u201d\u201e\u201f\u2018\u201a\u201b\u00ab\u00bb\u2039\u203a'
+    "\u300c\u300d\u300e\u300f\u301d\u301e\u301f\uff02\uff62\uff63\ufe41\ufe42\ufe43\ufe44"
+)
+# Single quotation marks that are also the apostrophe of ordinary words: one
+# counts as a quotation mark unless letters stand on both sides of it.
+_APOSTROPHES = frozenset("'\u2019")
 
 REVIEW_MESSAGE = (
     "This block changed after its speaker plan was adopted and its speaker markup "
@@ -99,18 +104,43 @@ def _change_placements(old: str, new: str) -> tuple[tuple[int, int, str], ...]:
     return _changed_range(old, new, from_end=True), _changed_range(old, new)
 
 
+def _quotation_marks(text: str, start: int, end: int) -> bool:
+    """Whether ``text[start:end]`` holds a quotation mark.
+
+    ``'`` and ``’`` count unless letters stand on both sides of them, where
+    they are an apostrophe inside a word ("didn’t").
+    """
+
+    for index in range(start, end):
+        char = text[index]
+        if char in _QUOTE_MARKS:
+            return True
+        if char in _APOSTROPHES and not (
+            0 < index < len(text) - 1
+            and text[index - 1].isalpha()
+            and text[index + 1].isalpha()
+        ):
+            return True
+    return False
+
+
 def _text_slots(
     root: ET.Element,
-) -> tuple[str, list[tuple[ET.Element, str, int, int, bool]]]:
+) -> tuple[str, list[tuple[ET.Element, str, int, int, bool]], set[int]]:
     """List every non-empty spoken string as (owner, attribute, start, end, voiced).
 
     ``voiced`` is true when ``speech_markup._scope_for`` gives the string a
     voice other than the narration's: inside a ``dialogue`` or ``speaker``
     element, or a ``span`` or ``narrator`` with its own ``voice``, unless a
     nearer ``narrator`` without one resets it.
+
+    Also returns the offsets where an event or delivery control sits. One with
+    no text on a side (at the start or end of a block) leaves no boundary
+    between two strings, so it is listed on its own.
     """
 
     slots: list[tuple[ET.Element, str, int, int, bool]] = []
+    markers: set[int] = set()
     offset = 0
 
     def add(owner: ET.Element, attribute: str, value: str | None, voiced: bool) -> None:
@@ -133,6 +163,8 @@ def _text_slots(
             voiced = inherited
         add(element, "text", element.text, voiced)
         for child in element:
+            if child.tag not in _SPOKEN_TEXT_TAGS:
+                markers.add(offset)
             walk(child, voiced)
             add(child, "tail", child.tail, voiced)
 
@@ -140,7 +172,7 @@ def _text_slots(
     transcript = "".join(
         str(getattr(owner, attribute)) for owner, attribute, *_rest in slots
     )
-    return transcript, slots
+    return transcript, slots, markers
 
 
 def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
@@ -148,7 +180,7 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
         root = ET.fromstring(xml)
     except ET.ParseError:
         return None
-    transcript, slots = _text_slots(root)
+    transcript, slots, markers = _text_slots(root)
     if transcript != old:
         return None
     has_dialogue = any(element.tag in _DIALOGUE_TAGS for element in root.iter())
@@ -156,9 +188,11 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
     # Both extreme placements of the change must fit the same string, so text
     # that repeats the characters beside an edge cannot slip across it.
     for start, end, replacement in _change_placements(old, new):
-        # A pure insertion where two strings meet is ambiguous: it could belong
-        # to either scope. A change across two strings crosses a span or event
-        # boundary.
+        # A pure insertion where two strings meet, or beside an event or
+        # control, is ambiguous: it could belong to either side. A change
+        # across two strings crosses a span or event boundary.
+        if start == end and start in markers:
+            return None
         matches = [
             index for index, slot in enumerate(slots) if slot[2] <= start and end <= slot[3]
         ]
@@ -172,12 +206,12 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
         # needs review.
         if voiced and (start == slot_start or end == slot_end):
             return None
-        # In a block with a spoken line, narration that gains or loses a
-        # quotation mark may now hold dialogue, or no longer frame it.
-        if (
-            has_dialogue
-            and not voiced
-            and _QUOTE_MARKS.intersection(old[start:end] + replacement)
+        # In a block with a spoken line, a quotation mark added, removed or
+        # replaced moves where speech starts or ends: narration may now hold
+        # dialogue, or a spoken line an attribution ("“Go,” he said, “now.”").
+        if has_dialogue and (
+            _quotation_marks(old, start, end)
+            or _quotation_marks(new, start, start + len(replacement))
         ):
             return None
     if chosen is None:
@@ -237,10 +271,10 @@ def fit_entry(
     """Rebase one plan entry onto a segment's new spoken text, or return None.
 
     The entry fits when the change lies inside one spoken string of its markup,
-    wherever repeated characters let it sit, does not reach the edge of a
-    voiced string, adds or removes no quotation mark in the narration of a
-    block with a spoken line, and the rebased markup parses against the new
-    text. A legacy (non-XML)
+    wherever repeated characters let it sit; is not a pure insertion beside an
+    event or control; does not reach the edge of a voiced string; adds,
+    removes or replaces no quotation mark in a block with a spoken line; and
+    the rebased markup parses against the new text. A legacy (non-XML)
     annotation fits when it still validates against the new text and every
     anchor still resolves to the same words.
     """
