@@ -15,10 +15,13 @@ from sqlalchemy import event, func, select
 
 from pandrator.web import models as m
 from pandrator.web.accounts.execution_actor import actor_from_principal, execution_actor_scope
+from pandrator.web.generation_audio_identity import AudioIdentityContext
 from pandrator.web.jobs import Worker
 from pandrator.web.projects import copy_publication
 from pandrator.web.projects.copy_contracts import ProjectCopyError
 from pandrator.web.projects.copy_performance_capture import capture_current_performance
+from pandrator.web.projects.copy_speech import segment_copy_references
+from pandrator.web.projects.copy_speech_plan import speech_plan_signature
 from pandrator.web.speech_plan_context import plan_signature
 from tests.test_account_authentication_integration import current_browser_principal
 from tests.test_evidence_access_routes import body, headers
@@ -197,13 +200,11 @@ def test_registered_copy_member_edit_adopt_recopy_and_generation(performance, mo
     assert u.bob.get(f"/api/v1/artifacts/{audio}/content").status_code == 200
 
 
-@pytest.mark.parametrize("kind", ["stale_adopted", "leased", "limit"])
+@pytest.mark.parametrize("kind", ["leased", "limit"])
 def test_unavailable_current_performance_blocks_before_units_or_annotation_bodies(performance, kind):
     p, f = performance, performance.f
     with f.case.database.immediate_session() as unit:
-        if kind == "stale_adopted":
-            unit.get_one(m.PerformancePlan, p.adopted["id"]).base_signature = "stale"
-        elif kind == "leased":
+        if kind == "leased":
             batch = unit.scalar(select(m.PerformanceBatch).where(
                 m.PerformanceBatch.performance_plan_id == p.draft["id"],
                 m.PerformanceBatch.status == "pending"))
@@ -234,6 +235,231 @@ def test_unavailable_current_performance_blocks_before_units_or_annotation_bodie
         event.remove(f.case.database.engine, "before_cursor_execute", observe)
     assert not any("SELECT performance_plans.id, performance_plans.units_json" in sql
         or "performance_batches.annotations_json" in sql for sql in statements)
+
+
+def edit_in_place(p, index, text):
+    actor = actor_from_principal(current_browser_principal(replace(p.f.case, client=p.u.alice)))
+    assert actor is not None
+    with p.f.case.database.immediate_session() as unit:
+        revision = unit.get_one(m.GenerationSegment, p.ids[index]).revision
+    with execution_actor_scope(actor):
+        result = p.f.services.generation.update_segment(p.ids[index], revision, {"text": text})
+    assert result["id"] == p.ids[index]
+
+
+def adopted_rows(snapshot):
+    rows = json.loads(snapshot.state_json)["rows"]["performance_plans"]
+    return [row for row in rows if row["status"] == "adopted"]
+
+
+def test_signature_only_change_is_captured_with_every_entry(performance):
+    p, f = performance, performance.f
+    with f.case.database.immediate_session() as unit:
+        unit.get_one(m.PerformancePlan, p.adopted["id"]).base_signature = "stale"
+    snapshot = capture_source(f, p.source)
+    assert snapshot.ready, snapshot.blockers
+    (row,) = adopted_rows(snapshot)
+    rows = json.loads(snapshot.state_json)["rows"]
+    current = speech_plan_signature(rows["generation_segments"],
+        references=segment_copy_references(rows))
+    assert [unit["id"] for unit in row["units_json"]] == p.ids
+    assert set(row["manual_annotations_json"]) == set(p.ids)
+    assert row["base_signature"] == current
+    # The adopted plan plus both fresh drafts.
+    assert len(json.loads(snapshot.state_json)["rows"]["performance_plans"]) == 3
+
+
+def enable_performance(f, session_id):
+    service = f.services.workspace_settings
+    current = service.get(session_id, "tts")
+    service.patch(session_id, "tts", current["revision"], {"performance_enabled": True})
+
+
+def segment_identities(f, session_id, ids):
+    snapshot, _digest = f.services.workspace_settings.resolve(session_id, sections=["tts", "audio"])
+    with f.case.database.snapshot_session() as unit:
+        context = AudioIdentityContext(unit, snapshot)
+        return [context.for_segment(unit.get_one(m.GenerationSegment, key)) for key in ids]
+
+
+def entries_by_ordinal(f, session_id, revision_id, ids):
+    """The frozen speaker plan entries of a revision, keyed by ordinal, ids blanked."""
+    from pandrator.web.performance_plans import freeze_performance_snapshot
+
+    snapshot: dict = {}
+    with f.case.database.snapshot_session() as unit:
+        freeze_performance_snapshot(unit, revision_id, snapshot)
+        ordinals = dict(unit.execute(select(m.GenerationSegment.id, m.GenerationSegment.ordinal)
+            .where(m.GenerationSegment.plan_revision_id == revision_id)).all())
+    frozen = snapshot["performance_snapshot"]
+    return {ordinals[key]: json.loads(json.dumps(entry).replace(key, "<id>"))
+        for key, entry in frozen["annotations"].items()}, frozen.get("review_segment_ids", [])
+
+
+def test_copy_keeps_an_adopted_plan_with_a_fitted_and_a_review_segment(performance):
+    p, f, u = performance, performance.f, performance.u
+    # Segment 1 changes inside its plain entry (fits); segment 0's change reaches
+    # the edge of its dialogue (needs review).
+    enable_performance(f, p.source["id"])
+    edit_in_place(p, 1, "The second, better line.")
+    edit_in_place(p, 0, "The first line!")
+    source_plan = body(u.alice.get(p.root + "/" + p.adopted["id"]))
+    assert source_plan["stale"] is True and source_plan["review_segment_count"] == 1
+    assert [item["id"] for item in source_plan["review_segments"]] == [p.ids[0]]
+    source_entries, source_review = entries_by_ordinal(
+        f, p.source["id"], p.speech["active_revision_id"], p.ids)
+    assert source_review == [p.ids[0]] and set(source_entries) == {1, 2}
+
+    snapshot = capture_source(f, p.source)
+    assert snapshot.ready, snapshot.blockers
+    (frozen,) = adopted_rows(snapshot)
+    assert [unit["id"] for unit in frozen["units_json"]] == p.ids[1:]
+    assert set(frozen["manual_annotations_json"]) == set(p.ids[1:])
+    assert len(json.loads(snapshot.state_json)["rows"]["performance_plans"]) == 1
+    for old in ("The first line.", "The second line.", "fred\">The first"):
+        assert old not in snapshot.state_json, old
+
+    copied, _preview = _copy(f, p.source, u.alice, u.ah, u.workspace_id, "copy-judged-performance")
+    target = copied["source_session_id"]
+    with f.case.database.snapshot_session() as unit:
+        plans = list(unit.scalars(select(m.PerformancePlan)
+            .where(m.PerformancePlan.session_id == target)))
+        assert [plan.status for plan in plans] == ["adopted"]
+        plan, revision_id = plans[0], plans[0].plan_revision_id
+        target_ids = [row.id for row in unit.scalars(select(m.GenerationSegment)
+            .where(m.GenerationSegment.plan_revision_id == revision_id)
+            .order_by(m.GenerationSegment.ordinal))]
+        signature = plan_signature(unit, revision_id)
+        plan_id = plan.id
+        assert plan.base_signature != signature
+    assert [unit["id"] for unit in plan.units_json] == target_ids[1:]
+    read = body(u.alice.get(f"/api/v1/sessions/{target}/performance-plans/{plan_id}"))
+    assert read["status"] == "adopted" and read["stale"] is True
+    assert read["review_segment_count"] == 1 and read["changed_segment_count"] == 1
+    assert [item["id"] for item in read["review_segments"]] == [target_ids[0]]
+
+    entries, review = entries_by_ordinal(f, target, revision_id, target_ids)
+    assert review == [target_ids[0]]
+    assert entries == source_entries
+    assert 'id="' not in json.dumps(entries).replace('id=\\"<id>\\"', "")
+
+    # The same segments read the same way in both projects; the review block
+    # alone carries the per-segment error. The fixture holds no takes, so this
+    # identity equality is what governs reuse here.
+    source_identities = segment_identities(f, p.source["id"], p.ids)
+    target_identities = segment_identities(f, target, target_ids)
+    assert "performance_error" in target_identities[0]
+    assert "performance_error" in source_identities[0]
+    for ordinal in (1, 2):
+        assert "performance_error" not in target_identities[ordinal]
+        assert target_identities[ordinal] == source_identities[ordinal]
+
+
+def test_copy_after_a_restore_of_a_stale_plan_judges_the_restored_blocks(performance):
+    # A restore carries a stale adopted plan with its units still on their old
+    # text and block hashes; copying the project right after it is not refused
+    # and judges the same blocks as the restored revision's own plan read.
+    p, f, u = performance, performance.f, performance.u
+    enable_performance(f, p.source["id"])
+    edit_in_place(p, 1, "The second, better line.")
+    edit_in_place(p, 0, "The first line!")
+    actor = actor_from_principal(current_browser_principal(replace(f.case, client=u.alice)))
+    assert actor is not None
+    with execution_actor_scope(actor):
+        restored = f.services.generation.revise_topology(p.source["id"],
+            p.speech["active_revision_id"],
+            {"action": "restore", "target_revision_id": p.speech["active_revision_id"]})
+    carried_id, revision = restored["carried_performance_plan_id"], restored["plan_revision_id"]
+    restored_ids = restored["segment_ids"]
+    carried = body(u.alice.get(p.root + "/" + carried_id))
+    assert carried["status"] == "adopted" and carried["stale"] is True
+    assert carried["carried_from_id"] == p.adopted["id"]
+    assert [item["id"] for item in carried["review_segments"]] == [restored_ids[0]]
+    restored_entries, restored_review = entries_by_ordinal(f, p.source["id"], revision,
+        restored_ids)
+    assert restored_review == [restored_ids[0]] and set(restored_entries) == {1, 2}
+
+    snapshot = capture_source(f, p.source)
+    assert snapshot.ready, snapshot.blockers
+    (frozen,) = adopted_rows(snapshot)
+    assert frozen["id"] == carried_id
+    assert [unit["id"] for unit in frozen["units_json"]] == restored_ids[1:]
+    assert "source_hash" not in json.dumps(frozen)
+    for old in ("The first line.", "The second line.", "fred\">The first"):
+        assert old not in snapshot.state_json, old
+
+    copied, _preview = _copy(f, p.source, u.alice, u.ah, u.workspace_id, "copy-restored-performance")
+    target = copied["source_session_id"]
+    with f.case.database.snapshot_session() as unit:
+        (plan,) = unit.scalars(select(m.PerformancePlan)
+            .where(m.PerformancePlan.session_id == target))
+        assert plan.status == "adopted"
+        target_revision = plan.plan_revision_id
+        target_ids = [row.id for row in unit.scalars(select(m.GenerationSegment)
+            .where(m.GenerationSegment.plan_revision_id == target_revision)
+            .order_by(m.GenerationSegment.ordinal))]
+        plan_id = plan.id
+    read = body(u.alice.get(f"/api/v1/sessions/{target}/performance-plans/{plan_id}"))
+    assert read["status"] == "adopted" and read["stale"] is True
+    assert [item["ordinal"] for item in read["review_segments"]] == [
+        item["ordinal"] for item in carried["review_segments"]]
+    assert [item["id"] for item in read["review_segments"]] == [target_ids[0]]
+    entries, review = entries_by_ordinal(f, target, target_revision, target_ids)
+    assert review == [target_ids[0]]
+    assert entries == restored_entries
+    restored_identities = segment_identities(f, p.source["id"], restored_ids)
+    target_identities = segment_identities(f, target, target_ids)
+    assert "performance_error" in restored_identities[0]
+    assert "performance_error" in target_identities[0]
+    for ordinal in (1, 2):
+        assert "performance_error" not in target_identities[ordinal]
+        assert target_identities[ordinal] == restored_identities[ordinal]
+
+
+def test_a_new_draft_on_a_judged_adopted_plan_keeps_its_baseline_in_the_copy(performance):
+    p, f, u = performance, performance.f, performance.u
+    edit_in_place(p, 1, "The second, better line.")
+    edit_in_place(p, 0, "The first line!")
+    # The review asks for a new speaker plan: a draft on the same revision.
+    review = command(u.alice, u.ah, p.root, "", {
+        "expected_plan_revision_id": p.speech["active_revision_id"], "mode": "manual",
+        "purpose": "speakers", "annotation_format": "xml"}, status=201)
+    assert review["settings"]["base_adopted_plan_id"] == p.adopted["id"]
+
+    snapshot = capture_source(f, p.source)
+    assert snapshot.ready, snapshot.blockers
+    rows = json.loads(snapshot.state_json)["rows"]["performance_plans"]
+    assert sorted(row["id"] for row in rows) == sorted([p.adopted["id"], review["id"]])
+
+    copied, _preview = _copy(f, p.source, u.alice, u.ah, u.workspace_id, "copy-judged-draft")
+    target = copied["source_session_id"]
+    with f.case.database.snapshot_session() as unit:
+        plans = {plan.status: plan for plan in unit.scalars(select(m.PerformancePlan)
+            .where(m.PerformancePlan.session_id == target))}
+        assert set(plans) == {"adopted", "draft"}
+        draft = plans["draft"]
+        assert draft.settings_json["base_adopted_plan_id"] == plans["adopted"].id
+        assert draft.base_signature == plan_signature(unit, draft.plan_revision_id)
+        assert plans["adopted"].base_signature != draft.base_signature
+        assert len(draft.units_json) == 3
+
+
+def test_an_adopted_plan_on_a_fully_removed_revision_is_copied_without_units(performance):
+    p, f = performance, performance.f
+    with f.case.database.immediate_session() as unit:
+        for key in p.ids:
+            unit.get_one(m.GenerationSegment, key).removed = True
+    snapshot = capture_source(f, p.source)
+    assert snapshot.ready, snapshot.blockers
+    (row,) = adopted_rows(snapshot)
+    assert row["units_json"] == [] and row["manual_annotations_json"] == {}
+    assert len(json.loads(snapshot.state_json)["rows"]["performance_plans"]) == 1
+    copied, _preview = _copy(f, p.source, p.u.alice, p.u.ah, p.u.workspace_id,
+        "copy-removed-performance")
+    with f.case.database.snapshot_session() as unit:
+        (plan,) = unit.scalars(select(m.PerformancePlan)
+            .where(m.PerformancePlan.session_id == copied["source_session_id"]))
+        assert plan.status == "adopted" and plan.units_json == []
 
 
 def test_stale_draft_and_historical_body_are_not_loaded_or_copied(performance):

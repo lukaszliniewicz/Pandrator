@@ -14,6 +14,8 @@ from pandrator.logic.speech_performance import content_hash, validate_annotation
 from ..generation_cast_runtime import remap_markup
 from ..generation_control_schemas import CharacterEntry
 from ..performance_schemas import PerformancePlanCreateRequest
+from ..performance_validity import FITTED, STRUCTURE_FIELDS, UNCHANGED, judge_block
+from ..settings_policy import stable_hash
 from ..speech_annotation_records import SPEECH_XML_KEY, normalized_record
 from .copy_speech import segment_copy_references
 from .copy_speech_plan import speech_plan_signature
@@ -295,6 +297,78 @@ def _record(value: Any, unit: dict[str, Any], characters: list[dict[str, Any]]) 
     return result
 
 
+def _source_unit(raw: Any) -> bool:
+    """A raw source unit's shape; upstream's ``source_hash`` is read past."""
+    return (
+        type(raw) is dict
+        and _UNIT_FIELDS <= set(raw)
+        and not set(raw) - _UNIT_FIELDS - _UNIT_OPTIONAL - _SOURCE_UNIT_OPTIONAL
+        and type(raw.get("source_hash", "")) is str
+    )
+
+
+def _review_signature(signature: str) -> str:
+    """Derived stand-in for a signature that cannot match: some block needs review."""
+    return stable_hash({"performance_review": signature})
+
+
+def _judged_entries(
+    raw_units: list[Any],
+    canonical: list[dict[str, Any]],
+    segment_ids: set[str],
+    annotations: dict[str, Any],
+    characters: list[dict[str, Any]],
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, bool]], bool]:
+    """Judge a stale adopted plan per block with ``judge_block``, as the destination reads it.
+
+    Each canonical unit is kept as it is (unchanged), rebased onto its current
+    text (fitted), or left out because it needs review. Returns the kept
+    ``(unit, raw, record, fitted)`` entries in ordinal order and whether any
+    spoken block is left without one.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    for raw in raw_units:
+        if (
+            not _source_unit(raw)
+            or type(raw["id"]) is not str
+            or raw["id"] in by_id
+            or raw["id"] not in segment_ids
+            or type(raw["spoken_text"]) is not str
+            or raw["text_hash"] != content_hash(raw["spoken_text"])
+        ):
+            raise _invalid()
+        by_id[raw["id"]] = raw
+    if set(annotations) - segment_ids:
+        raise _invalid()
+    entries = []
+    review = False
+    for unit in canonical:
+        raw = by_id.get(unit["id"])
+        stored = annotations.get(unit["id"])
+        if stored is not None and type(stored) is not dict:
+            raise _invalid()
+        try:
+            state, entry = judge_block(
+                raw,
+                stored,
+                spoken_text=unit["spoken_text"],
+                removed=False,
+                structure={field: unit[field] for field in STRUCTURE_FIELDS},
+                segment_id=unit["id"],
+                characters=characters,
+            )
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            raise _invalid() from error
+        if raw is None or state not in {UNCHANGED, FITTED}:
+            review = True
+            continue
+        if entry is None:
+            # An adopted plan holds an entry for every block it planned.
+            raise _invalid()
+        entries.append((unit, raw, _record(entry, unit, characters), state == FITTED))
+    return entries, review
+
+
 def _freeze(
     row: Mapping[str, Any],
     annotations: Any,
@@ -328,46 +402,67 @@ def _freeze(
     if type(raw_units) is not list or len(raw_units) > MAX_PERFORMANCE_UNITS:
         raise _invalid()
     canonical = [unit for segment in segments[rid] if (unit := _unit(segment)) is not None]
-    if not canonical or len(raw_units) != len(canonical):
+    # An adopted plan outlives an edit that removes or blanks every block; it
+    # then carries no unit, as each removed or blank block carries none.
+    if not canonical and status != "adopted":
         raise _invalid()
     if type(annotations) is not dict or any(type(key) is not str for key in annotations):
         raise _invalid()
-    if set(annotations) - {unit["id"] for unit in canonical}:
-        raise _invalid()
-    if status == "adopted" and len(annotations) != len(canonical):
-        raise _invalid()
-    records = {}
     characters = settings["character_dictionary"]
-    for raw, unit in zip(raw_units, canonical, strict=True):
-        if (
-            type(raw) is not dict
-            or not _UNIT_FIELDS <= set(raw)
-            or set(raw) - _UNIT_FIELDS - _UNIT_OPTIONAL - _SOURCE_UNIT_OPTIONAL
-            or type(raw.get("source_hash", "")) is not str
-            or any(raw[key] != unit[key] for key in ("id", "text", "spoken_text", "text_hash"))
-        ):
+    # An adopted plan whose signature no longer matches is judged per block,
+    # as the destination judges it; a draft or a fresh plan is never judged.
+    judged = status == "adopted" and row.get("base_signature") != signatures[rid]
+    review = False
+    if judged:
+        entries, review = _judged_entries(
+            raw_units,
+            canonical,
+            {segment["id"] for segment in segments[rid]},
+            annotations,
+            characters,
+        )
+    else:
+        if len(raw_units) != len(canonical):
             raise _invalid()
+        if set(annotations) - {unit["id"] for unit in canonical}:
+            raise _invalid()
+        if status == "adopted" and len(annotations) != len(canonical):
+            raise _invalid()
+        entries = []
+        for raw, unit in zip(raw_units, canonical, strict=True):
+            if not _source_unit(raw) or any(
+                raw[key] != unit[key] for key in ("id", "text", "spoken_text", "text_hash")
+            ):
+                raise _invalid()
+            record = (
+                _record(annotations[unit["id"]], unit, characters)
+                if unit["id"] in annotations
+                else None
+            )
+            entries.append((unit, raw, record, False))
+    records = {}
+    kept = []
+    for unit, raw, record, fitted in entries:
         source_xml = None
         if "speech_xml" in raw:
             if type(raw["speech_xml"]) is not str:
                 raise _invalid()
-            source_xml = parse_speech_markup(
-                raw["speech_xml"],
-                expected_segment_id=unit["id"],
-                expected_text=unit["spoken_text"],
-                characters=characters,
-            ).xml
-        record = (
-            _record(annotations[unit["id"]], unit, characters)
-            if unit["id"] in annotations
-            else None
-        )
+            # A fitted unit's own markup was parsed against its earlier text;
+            # its effective markup comes from the fitted record instead.
+            if not fitted:
+                source_xml = parse_speech_markup(
+                    raw["speech_xml"],
+                    expected_segment_id=unit["id"],
+                    expected_text=unit["spoken_text"],
+                    characters=characters,
+                ).xml
         if record is not None:
             records[unit["id"]] = record
         legacy = raw.get("legacy_annotation", False)
         if (
             type(legacy) is not bool
             or legacy
+            and not fitted
             and (
                 settings["annotation_format"] != "xml" or record is None or SPEECH_XML_KEY in record
             )
@@ -386,13 +481,16 @@ def _freeze(
                 unit["speech_xml"] = effective
             elif settings["annotation_format"] == "xml":
                 raise _invalid()
+        kept.append(unit)
     result = {
         "id": identifier,
         "session_id": sid,
         "plan_revision_id": rid,
-        "base_signature": signatures[rid],
+        # A plan with a block still to review keeps a signature that differs
+        # from the current one, so the destination judges it per block again.
+        "base_signature": _review_signature(signatures[rid]) if review else signatures[rid],
         "settings_json": settings,
-        "units_json": canonical,
+        "units_json": kept,
         "manual_annotations_json": records,
         "status": status,
         "version": 1,

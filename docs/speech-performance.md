@@ -238,10 +238,15 @@ cannot leave a block out, so they are refused while any block of the revision
 needs review. A plan read reports `changed_segment_count`,
 `review_segment_count` and `review_segments` (the first 20, each with its
 0-based `ordinal`; the refusal and the speaker plan panel number blocks from 1)
-for an adopted plan on the selected revision; `stale` keeps its meaning. Phrase
-editing, the starting markup of a split, merge or re-segmentation, and the
-plan's own segment preview still need a plan that fits the whole revision: for
-those, copy the stale plan and adopt the copy.
+for an adopted plan on the selected revision; `stale` keeps its meaning.
+Copying the project carries such a plan into the new project, where the blocks
+that need review still need it. An edited block whose markup still fits arrives
+there on its new text and counts as unchanged, so a speaker plan copy in the new
+project keeps its entry and its neighbours' entries; to have such a block
+reviewed again, copy the speaker plan in the original project before copying
+the project. Phrase editing, the starting markup of a split, merge or
+re-segmentation, and the plan's own segment preview still need a plan that fits
+the whole revision: for those, copy the stale speaker plan and adopt that copy.
 
 With casting on and performance off, a revision without an adopted plan voices
 each block from its own markup, which usually means the narrator reads the
