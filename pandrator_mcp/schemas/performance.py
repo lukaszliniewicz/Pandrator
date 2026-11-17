@@ -72,9 +72,11 @@ class CreatePerformancePlanInput(PerformanceSessionInput):
         max_length=80,
         description=(
             "Copy entries from another plan. Pass that plan's purpose and "
-            "annotation_format too; a copy does not inherit them. A plan made stale by "
-            "an edit keeps the entries whose block and planning context are unchanged; "
-            "the response reports copied_count and skipped_count."
+            "annotation_format too; a copy does not inherit them. Only entries whose "
+            "block and planning context are unchanged can be copied (a locked entry "
+            "needs only its own block). Manual mode copies all of them; passive and "
+            "llm modes copy only locked ones unless keep_unchanged is true. The "
+            "response reports copied_count and skipped_count."
         ),
     )
     keep_unchanged: bool = Field(
