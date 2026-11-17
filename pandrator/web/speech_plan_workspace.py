@@ -60,6 +60,8 @@ def freeze_speech_snapshot(
     ``segment_ids=None`` validates every active segment; an explicit collection
     restricts only the language-binding records to those requested for synthesis.
     ``cast_segment_ids`` restricts cast resolution while retaining whole-plan metadata.
+    A segment in ``segment_ids`` (every segment when ``None``) that its adopted
+    speaker plan no longer fits refuses the freeze, naming the block.
     """
     revision = session.get(m.GenerationPlanRevision, revision_id)
     if revision is not None and (revision.operation_json or {}).get("draft"):
@@ -102,6 +104,7 @@ def freeze_speech_snapshot(
             _missing_selection=_missing_audible_selection,
             _root_binding=bind_root if defer_root else None,
             _carried_snapshot=_carried_cast_snapshot,
+            refuse_review=True, review_scope=segment_ids,
         )
     )
     if defer_root and not snapshot.get("generation_control_snapshot"):

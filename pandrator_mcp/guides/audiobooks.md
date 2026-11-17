@@ -134,7 +134,14 @@ option remains independent.
 General direction and Gemini before/after text context also work without this
 pass. Generation freezes the adopted annotations and context. Vocalizations are
 off by default; no previous generated audio is used as an implicit voice prompt.
-Explicit block changes require fresh performance review. Automatic split/regroup
+After a text edit, an adopted plan is judged block by block: unchanged blocks
+keep their directions, and so does an edited block whose change stays inside one
+stretch of its markup. Only a block whose markup no longer fits needs a fresh
+performance review; a run that includes it is refused naming it, and a run
+without it can start. `pandrator_get_performance_plan` reports
+`changed_segment_count`, `review_segment_count` and `review_segments` (first 20)
+for an adopted plan on the selected revision. Other explicit block changes, such
+as a split or merge, require fresh performance review. Automatic split/regroup
 passes are disabled while performance or semantic context is enabled.
 
 ## Multiple voices and audio drama

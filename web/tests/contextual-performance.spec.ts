@@ -455,3 +455,162 @@ test('a lost or stale speaker plan can be copied, keeping unchanged blocks', asy
     keep_unchanged: true
   });
 });
+
+test('an adopted speaker plan shows the blocks changed since adoption', async ({
+  page
+}) => {
+  await page.goto('/');
+  await page.getByLabel('Owner password').fill('pandrator-e2e');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+  const tour = page.getByRole('button', { name: 'Close tour' });
+  if (await tour.isVisible()) await tour.click();
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json())
+    .csrf_token;
+  const created = await page.request.post('/api/v1/sessions', {
+    headers: { 'X-CSRF-Token': csrf },
+    data: {
+      interface_mode: 'advanced',
+      name: `Adopted plan changes ${crypto.randomUUID()}`,
+      workflow_kind: 'audiobook'
+    }
+  });
+  expect(created.ok()).toBeTruthy();
+  const sessionId = (await created.json()).id as string;
+  const revisionId = 'edited-speech-revision';
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-plan/status*`,
+    (route) =>
+      route.fulfill({
+        json: {
+          session_id: sessionId,
+          session_revision: 1,
+          items: [
+            {
+              id: revisionId,
+              revision_number: 1,
+              summary: 'Edited text',
+              origin: 'manual',
+              reviewed: true,
+              compatible: true,
+              segment_count: 3,
+              active_segment_count: 3,
+              reusable_segment_count: 1,
+              stale_segment_count: 2,
+              source_artifact_id: null
+            }
+          ],
+          selected_revision_id: revisionId,
+          latest_revision_id: revisionId,
+          content_signature: 'edited-hash',
+          can_prepare: false,
+          can_generate: false,
+          current_input: null,
+          blocked_reason: null,
+          warning: null
+        }
+      })
+  );
+  // The plan read's per-block state; the second read is not judged (null).
+  let counts: Record<string, unknown> = {
+    changed_segment_count: 2,
+    review_segment_count: 1,
+    review_segments: [{ ordinal: 0, id: 'block-1' }]
+  };
+  const plan = () => ({
+    id: 'performance-adopted',
+    plan_revision_id: revisionId,
+    status: 'adopted',
+    version: 2,
+    total: 3,
+    analysed_count: 3,
+    steered_count: 1,
+    locked_count: 0,
+    stale: true,
+    settings: { mode: 'manual' },
+    ...counts
+  });
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/performance-plans**`,
+    async (route) => {
+      const request = route.request();
+      expect(request.method()).toBe('GET');
+      const suffix = new URL(request.url()).pathname.split(
+        '/performance-plans'
+      )[1];
+      await route.fulfill({
+        json: suffix
+          ? {
+              ...plan(),
+              items: [
+                {
+                  id: 'block-1',
+                  ordinal: 0,
+                  text: 'He said, “Bah,” then left.',
+                  spoken_text: 'He said, “Bah,” then left.',
+                  annotation: null
+                }
+              ]
+            }
+          : {
+              items: [plan()],
+              capabilities: {
+                model: 'fish_audio_s2_pro_q8_0',
+                instructions: 'inline',
+                dialect: 'fish_s2',
+                status: 'documented',
+                semantic_context: 'none'
+              }
+            }
+      });
+    }
+  );
+  await page.goto(`/sessions/${sessionId}`);
+  await page
+    .getByRole('region', { name: 'Speech plan', exact: true })
+    .getByRole('link', { name: 'Annotate & review', exact: true })
+    .click();
+  const panel = page.getByRole('region', {
+    name: 'Annotation workspace',
+    exact: true
+  });
+  const status = panel.getByTestId('performance-stale-plan');
+  // Blocks are numbered from 1 here, as the run refusal names them.
+  await expect(status).toContainText(
+    '2 blocks changed since adoption. 1 needs a new speaker plan review before generation: block #1. Every other block keeps its entry.'
+  );
+  // Copying stays the way to re-review the neighbours of an edited block.
+  await expect(
+    status.getByRole('button', { name: 'Copy unchanged blocks', exact: true })
+  ).toBeVisible();
+  await expect(
+    status.getByRole('button', {
+      name: 'Copy and analyse the rest',
+      exact: true
+    })
+  ).toBeVisible();
+  // Stale only through block settings the per-block judgement ignores.
+  counts = {
+    changed_segment_count: 0,
+    review_segment_count: 0,
+    review_segments: []
+  };
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(status).toContainText(
+    'Block settings such as voice or pauses changed since adoption. Every entry still holds'
+  );
+  await expect(status).not.toContainText('can no longer be adopted');
+  counts = {
+    changed_segment_count: null,
+    review_segment_count: null,
+    review_segments: null
+  };
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(status).toContainText(
+    'The speech changed after this draft was made, so it can no longer be adopted.'
+  );
+  await expect(status).not.toContainText('changed since adoption');
+  await expect(
+    status.getByRole('button', { name: 'Copy unchanged blocks', exact: true })
+  ).toBeVisible();
+});

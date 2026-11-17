@@ -134,6 +134,10 @@ def freeze_boundaries(
         else get_generation_controls(session, record.id)["characters"]
     )
     annotations = frozen.get("annotations") or {}
+    review_ids = set(frozen.get("review_segment_ids") or ())
+    # A review block has no frozen entry, so its own markup is read; like the
+    # cast freeze, read it with the current characters, loaded once if needed.
+    current_characters: list[dict] | None = None
     result = {}
     voices = {}
     # One catalogue for this freeze; cast spans would otherwise each rebuild it.
@@ -161,12 +165,19 @@ def freeze_boundaries(
         ).get("speech_xml")
         boundary = None
         if xml:
-            xml = remap_markup(xml, row.id, text, characters)
+            markup_characters = characters
+            if row.id in review_ids:
+                if current_characters is None:
+                    current_characters = list(
+                        get_generation_controls(session, record.id)["characters"]
+                    )
+                markup_characters = current_characters
+            xml = remap_markup(xml, row.id, text, markup_characters)
             parsed = parse_speech_markup(
                 xml,
                 expected_segment_id=row.id,
                 expected_text=text,
-                characters=characters,
+                characters=markup_characters,
             )
             boundary = effective_speech_boundary(parsed)
         speech_plan = row.speech_plan_json or {}
@@ -193,6 +204,10 @@ def freeze_boundaries(
                 settings["voice"] = settings["speaker"] = row.voice
             if row.language:
                 settings["language"] = row.language
+            if row.id in review_ids:
+                # Its speaker plan entry no longer fits and is not frozen; only
+                # its voices matter here, and those come from the cast freeze.
+                settings["performance_enabled"] = False
             settings = segment_performance_settings(
                 settings, snapshot, row.id, text, _service_config_cache=service_config_cache,
             )

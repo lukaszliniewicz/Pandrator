@@ -398,6 +398,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_performance_markup.py",
         "tests/test_performance_plans.py",
         "tests/test_performance_read_projections.py",
+        "tests/test_performance_segment_validity.py",
         "tests/test_workflow_plan_stage_scope.py",
         "tests/test_workflow_input_defaults.py",
         "tests/test_voice_reference_trim.py",

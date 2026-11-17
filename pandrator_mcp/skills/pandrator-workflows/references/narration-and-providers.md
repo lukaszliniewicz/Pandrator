@@ -14,21 +14,28 @@ dictionary before assigning voices. If the user asks to replace one cast voice,
 design and assign that character without discarding accepted narrator or cast
 assignments. Keep voice IDs and settings in the session, not only in chat.
 
-An adopted speaker plan belongs to one speech-plan revision, and a block edit
-makes it stale. After an edit, list performance plans for the active
-revision. Copy its stale adopted plan, or, when it has none,
-the plan `ancestor_adopted_plan` names: create a plan with that
-`copy_from_id`, the source plan's `purpose` and `annotation_format` (a copy
-does not inherit them, and the defaults are `delivery` and `pssml`), and
-`keep_unchanged=true`. That keeps each entry whose block and planning context
-are unchanged (a locked entry needs only its own block). The edited blocks
-need new entries, and so may unlocked neighbours whose planning context the
-edit changed; the plan's `total` minus `analysed_count` counts them. In
-`passive` mode, claim and submit the plan's batches for them; `llm` mode
-queues the analysis itself. Review those blocks before adopting the copy.
-Until then a cast run is refused; a revision with no plan can also run if the
-user accepts `allow_without_speaker_plan`, which voices dialogue from each
-block's markup.
+An adopted speaker plan belongs to one speech-plan revision. After a block
+edit it is judged block by block: unchanged blocks keep their entries, and so
+does an edited block whose change stays inside one stretch of its markup. Read
+the plan for the active revision: `review_segment_count` and `review_segments`
+name the blocks that need a new entry (a change that does not fit, or a
+changed speaker, language, node kind or section). A run that includes one is
+refused naming it; a run without it can start. Restores and edit copies carry
+the adopted plan, stale or not, with the same judgement. When blocks need
+review, or unlocked neighbours of an edited block should be reviewed again,
+copy the plan: list performance plans for the active revision and copy its
+adopted plan, or, when it has none, the plan `ancestor_adopted_plan` names:
+create a plan with that `copy_from_id`, the source plan's `purpose` and
+`annotation_format` (a copy does not inherit them, and the defaults are
+`delivery` and `pssml`), and `keep_unchanged=true`. That keeps each entry whose
+block and planning context are unchanged (a locked entry needs only its own
+block). The edited blocks need new entries, and so may unlocked neighbours
+whose planning context the edit changed; the plan's `total` minus
+`analysed_count` counts them. In `passive` mode, claim and submit the plan's
+batches for them; `llm` mode queues the analysis itself. Review those blocks
+before adopting the copy. A revision with no plan can also run if the user
+accepts `allow_without_speaker_plan`, which voices dialogue from each block's
+markup.
 
 New plain-text sources also need deterministic `clean_source` before
 `prepare_text`. Follow the ready stage or orchestration plan; leave agentic
