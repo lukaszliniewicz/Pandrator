@@ -436,6 +436,10 @@ def register_translation_project_routes(
             if replayed:
                 response.headers["Idempotency-Replayed"] = "true"
             return response
+        except PermissionError:
+            # PermissionError is also an OSError; preserve the common 403
+            # authorization response instead of labeling it a missing file.
+            raise
         except (
             KeyError,
             ValueError,

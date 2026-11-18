@@ -7,14 +7,18 @@ admits the work and returns a handle instead of holding the request open.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
 
 from pandrator.runtime import DataPaths
 
+from .access.contracts import ProjectAction
+from .access.current_session_policy import require_current_session_access
 from .artifacts import ArtifactService
 from .database import Database
+from .models import Job
 from .session_forks import SessionForkService
 from .translation_projects import (
     TRANSLATION_PROJECT_CREATE_JOB_KIND,
@@ -27,6 +31,8 @@ __all__ = [
     "creation_request",
     "run_creation",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 def creation_request(payload: dict[str, Any]) -> dict[str, Any]:
@@ -67,8 +73,13 @@ def run_creation(
 
     if canceled():
         return {}
+    job_id = str(payload.get("_job_id") or "")
     session_forks = SessionForkService(database, paths, artifacts)
     with database.snapshot_session() as db:
+        # The enqueueing request checked EDIT; the leased worker owns the write
+        # and must check the captured actor's present authority before any file
+        # materialises.
+        require_current_session_access(db, session_id, ProjectAction.EDIT)
         prepared = prepare_branch_files(
             db,
             session_id,
@@ -89,6 +100,10 @@ def run_creation(
         if canceled():
             return {}
         with database.immediate_session() as db:
+            job = db.get(Job, job_id) if job_id else None
+            if job is not None and (canceled() or job.status == "cancel_requested"):
+                # Cancellation wins over creation; the finally cleans any files.
+                return {}
             if prepared is not None:
                 prepared.revalidate(db)
             result = create_project_in_session(
@@ -103,6 +118,15 @@ def run_creation(
                 created_directories=directories,
                 prepared_files=prepared,
             )
+            if job is not None:
+                project_id = (result.get("project") or {}).get("id")
+                if project_id:
+                    # The commit point makes a later cancellation request refuse
+                    # rather than leave a committed project under a cancelled job.
+                    job.payload_json = {
+                        **(job.payload_json or {}),
+                        "committed_project_id": project_id,
+                    }
         committed = True
     finally:
         if prepared is not None:
@@ -121,7 +145,13 @@ def run_creation(
         for branch in project.get("branches") or []
         if isinstance(branch, dict)
     ]
-    report(1.0, "Translation project created")
+    try:
+        report(1.0, "Translation project created")
+    except Exception:  # noqa: BLE001 - the commit is already durable
+        logger.warning(
+            "Could not report translation project creation progress",
+            exc_info=True,
+        )
     return {
         "project_id": project.get("id"),
         "project_revision": project.get("revision"),

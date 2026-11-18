@@ -89,8 +89,8 @@ def _bounded_json(value: Any, *, depth: int = 0) -> Any:
     return str(value)[:8_000]
 
 
-def _deadline(value: Any) -> datetime | None:
-    """Read an ISO retry deadline from stored progress state."""
+def _stored_moment(value: Any) -> datetime | None:
+    """Read an ISO timestamp from stored progress state."""
 
     if not isinstance(value, str) or not value:
         return None
@@ -394,7 +394,7 @@ class WorkService:
         now = utcnow()
         live: list[tuple[int, float]] = []
         for entry in entries:
-            deadline = _deadline(entry.get("retry_at"))
+            deadline = _stored_moment(entry.get("retry_at"))
             if deadline is None or deadline <= now:
                 continue
             live.append(
@@ -436,7 +436,11 @@ class WorkService:
         synthesized = done - max(0, kept)
         if total < 1 or synthesized <= 0:
             return None
-        elapsed = (utcnow() - as_utc(job.started_at)).total_seconds()
+        # A reclaimed job measures its pace from this attempt's own start.
+        started_at = _stored_moment(source.get("attempt_started_at")) or as_utc(
+            job.started_at
+        )
+        elapsed = (utcnow() - started_at).total_seconds()
         if elapsed <= 0:
             return None
         # A couple of blocks or a few seconds is noise, not a pace.

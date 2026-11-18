@@ -134,6 +134,12 @@ class JobProgressState:
         self._blocks_kept = 0
         self._reported_detail: str | None = None
         self._reported_state: str | None = None
+        # A returned value stays pending until its heartbeat write succeeds, so
+        # a busy writer resends it instead of dropping it.
+        self._pending_detail: str | None = None
+        self._has_pending_detail = False
+        self._pending_state_signature: str | None = None
+        self._has_pending_state = False
 
     def observe(self, detail: str | None) -> None:
         """Remember the handler's own detail text for later heartbeats."""
@@ -158,16 +164,21 @@ class JobProgressState:
             return f"{self._detail}; {suffix}"
         return suffix
 
-    def desired_detail(self, now: datetime | None = None) -> str | None:
-        """Return the detail to write when it differs from the last write."""
+    def desired_detail(self, now: datetime | None = None) -> tuple[bool, str | None]:
+        """Return whether the detail changed, and the value to write.
+
+        A changed value may be ``None``: that is an explicit instruction to
+        clear the stored detail once a retry suffix no longer applies.
+        """
 
         moment = now or datetime.now(UTC)
         with self._lock:
             composed = self._composed_detail_locked(moment)
             if composed == self._reported_detail:
-                return None
-            self._reported_detail = composed
-            return composed
+                return False, None
+            self._pending_detail = composed
+            self._has_pending_detail = True
+            return True, composed
 
     def consume_state(
         self, now: datetime | None = None
@@ -194,8 +205,20 @@ class JobProgressState:
             signature = repr(state)
             if signature == self._reported_state:
                 return False, None
-            self._reported_state = signature
+            self._pending_state_signature = signature
+            self._has_pending_state = True
             return True, (state or None)
+
+    def acknowledge(self) -> None:
+        """Accept the values last returned, only once their write succeeded."""
+
+        with self._lock:
+            if self._has_pending_detail:
+                self._reported_detail = self._pending_detail
+                self._has_pending_detail = False
+            if self._has_pending_state:
+                self._reported_state = self._pending_state_signature
+                self._has_pending_state = False
 
 
 _STATES_LOCK = threading.Lock()
