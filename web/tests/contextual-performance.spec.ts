@@ -522,9 +522,10 @@ test('an adopted speaker plan shows the blocks changed since adoption', async ({
     review_segment_count: 1,
     review_segments: [{ ordinal: 0, id: 'block-1' }]
   };
+  let planRevisionId = revisionId;
   const plan = () => ({
     id: 'performance-adopted',
-    plan_revision_id: revisionId,
+    plan_revision_id: planRevisionId,
     status: 'adopted',
     version: 2,
     total: 3,
@@ -601,24 +602,35 @@ test('an adopted speaker plan shows the blocks changed since adoption', async ({
     review_segments: []
   };
   await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
+  // Saved settings leave adopted speech directions off, so generation does
+  // not read the plan yet; the notice must not say it does.
   await expect(status).toContainText(
-    'Block settings such as voice or pauses changed since adoption. Every entry still holds'
+    'Block settings such as voice or pauses changed since adoption. Every entry still fits. Generation uses it once Use adopted speech directions is on and saved.'
   );
+  await expect(status).not.toContainText('still uses this plan');
   await expect(status).not.toContainText('can no longer be adopted');
   counts = {
     changed_segment_count: null,
     review_segment_count: null,
     review_segments: null
   };
-  // Null counts: the adopted plan is not judged, as it is not on the
-  // revision in use. It is still an adopted plan, not a draft.
+  // Null counts: the adopted plan is not judged, as it belongs to another
+  // revision than the one in use. It is still an adopted plan, not a draft,
+  // and it cannot be copied from here.
+  planRevisionId = 'earlier-speech-revision';
   await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(status).toContainText(
-    'This plan was adopted for another version of the speech, not the one now in use, so generation does not use it.'
+    'This plan was adopted for another version of the speech, not the one now in use, so generation does not use it. The version in use offers to copy it when it has no adopted plan of its own.'
   );
   await expect(status).not.toContainText('can no longer be adopted');
   await expect(status).not.toContainText('changed since adoption');
   await expect(
     status.getByRole('button', { name: 'Copy unchanged blocks', exact: true })
-  ).toBeVisible();
+  ).toHaveCount(0);
+  await expect(
+    status.getByRole('button', {
+      name: 'Copy and analyse the rest',
+      exact: true
+    })
+  ).toHaveCount(0);
 });
