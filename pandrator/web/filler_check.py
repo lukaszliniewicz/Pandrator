@@ -46,13 +46,19 @@ def _not_checked(policy: str, reason: str) -> dict[str, Any]:
     }
 
 
-def _passage_identifier(item: Mapping[str, Any], ordinal: int) -> dict[str, Any]:
-    cue_ids = item.get("source_cue_ids")
-    first_cue_id = None
-    if isinstance(cue_ids, (list, tuple)) and cue_ids:
-        first_cue_id = cue_ids[0]
-    if first_cue_id is not None:
-        return {"passage_id": first_cue_id}
+def _passage_identifier(
+    item: Mapping[str, Any], ordinal: int, *, logical: bool
+) -> dict[str, Any]:
+    """Name a passage the way the patch tools take it.
+
+    A logical passage is named by its ``id`` ("p000028"), which the passage
+    preview and ``pandrator_patch_subtitle_passages`` use; a plain cue by its
+    1-based ordinal, for ``pandrator_patch_subtitle_cues``.
+    """
+
+    passage_id = item.get("id")
+    if logical and passage_id:
+        return {"passage_id": str(passage_id)}
     return {"cue_id": int(item.get("ordinal") or ordinal)}
 
 
@@ -62,8 +68,13 @@ def filler_check(
     kind: str,
     document_language: str,
     settings: Mapping[str, Any] | None,
+    logical: bool = False,
 ) -> dict[str, Any] | None:
-    """Scan finalised passages for fillers a filler-removing style should remove."""
+    """Scan finalised passages for fillers a filler-removing style should remove.
+
+    ``logical`` says ``values`` are the output's logical passages rather than
+    its display cues.
+    """
 
     if kind != "correction":
         return None
@@ -84,7 +95,7 @@ def filler_check(
         if len(passages) < MAX_REPORTED_PASSAGES:
             passages.append(
                 {
-                    **_passage_identifier(item, ordinal),
+                    **_passage_identifier(item, ordinal, logical=logical),
                     "text": text[:MAX_REPORTED_TEXT],
                 }
             )

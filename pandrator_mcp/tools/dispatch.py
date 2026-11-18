@@ -543,8 +543,9 @@ def _filler_action(payload: dict[str, Any]) -> NextAction | None:
         arguments=arguments,
         reason=(
             f"{count} filler token(s) remain in the finalised passages although the "
-            f"{policy} correction policy removes them. Review the listed passages and "
-            "patch them with dry_run first, then apply the same patch."
+            f"{policy} correction policy removes them. Read the edit guards with "
+            "pandrator_preview_subtitle_passages (artifact_id is this source_artifact_id), "
+            "patch the listed passage_id values with dry_run first, then apply the same patch."
         ),
     )
 

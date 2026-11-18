@@ -2707,11 +2707,14 @@ class DispatchRunService:
                 for sequence, parent_index in enumerate(indexes)
             ]
         )
+        # Passage outputs are patched by logical passage, so name those; the
+        # display cues in ``values`` carry no patchable passage ID.
         filler = filler_check(
-            values,
+            prepared.logical_values if prepared.logical_values is not None else values,
             kind=run.kind,
             document_language=str(document.language or ""),
             settings=run.settings_json,
+            logical=prepared.logical_values is not None,
         )
         artifact = self.artifacts.register_in_session(
             session,

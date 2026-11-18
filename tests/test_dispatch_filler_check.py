@@ -91,15 +91,26 @@ class FillerCheckUnitTests(unittest.TestCase):
         self.assertEqual(3, check["count"])
         self.assertEqual(2, len(check["passages"]))
 
-    def test_logical_passages_are_named_by_their_cue_id(self):
+    def test_logical_passages_are_named_by_their_passage_id(self):
         check = filler_check(
-            [{"text": "Uh, hello.", "source_cue_ids": [77, 78]}],
+            [{"id": "p000003", "text": "Uh, hello.", "source_cue_ids": ["cue-77", "cue-78"]}],
+            kind="correction",
+            document_language="en",
+            settings={"correction_style": "publishable"},
+            logical=True,
+        )
+
+        self.assertEqual([{"passage_id": "p000003", "text": "Uh, hello."}], check["passages"])
+
+    def test_display_cues_are_named_by_their_ordinal_even_with_an_id(self):
+        check = filler_check(
+            [{"id": "segment-uuid", "text": "Uh, hello.", "source_cue_ids": ["cue-77"]}],
             kind="correction",
             document_language="en",
             settings={"correction_style": "publishable"},
         )
 
-        self.assertEqual([{"passage_id": 77, "text": "Uh, hello."}], check["passages"])
+        self.assertEqual([{"cue_id": 1, "text": "Uh, hello."}], check["passages"])
 
 
 class FillerCheckMcpProjectionTests(unittest.TestCase):
@@ -255,6 +266,40 @@ class FillerCheckReceiptTests(unittest.TestCase):
             self.assertEqual(
                 "fillers_remaining", artifact.metadata_json["filler_check"]["status"]
             )
+
+    def test_a_reported_passage_can_be_patched_by_its_id(self):
+        submitted, _ = self._correct(texts=("Hello there.", "Um, goodbye."))
+        artifact_id = submitted["result_artifact_id"]
+        [reported] = submitted["filler_check"]["passages"]
+        with self.extension["database"].session() as session:
+            session_id = session.get(Artifact, artifact_id).session_id
+        review = self.client.get(
+            f"/api/v1/sessions/{session_id}/subtitles/review",
+            query_string={"artifact_id": artifact_id},
+        ).get_json()
+        [column] = [item for item in review["columns"] if item["artifact_id"] == artifact_id]
+        # As pandrator_patch_subtitle_passages sends it: every passage, one edited.
+        passages = [
+            {key: row[key] for key in ("id", "text", "speaker", "start_ms", "end_ms") if key in row}
+            for row in column["logical_passages"]
+        ]
+        [edited] = [row for row in passages if row["id"] == reported["passage_id"]]
+        edited["text"] = "Goodbye."
+
+        patched = self.client.post(
+            f"/api/v1/sessions/{session_id}/subtitles/{column['stage']}/passage-review",
+            json={
+                "source_artifact_id": artifact_id,
+                "expected_source_hash": column["source_content_hash"],
+                "expected_revision": column["revision"],
+                "expected_composition_hash": column["composition_hash"],
+                "passages": passages,
+                "dry_run": True,
+            },
+            headers=self._headers("patch-filler-1"),
+        )
+
+        self.assertEqual(200, patched.status_code, patched.get_json())
 
     def test_clean_correction_reports_clean(self):
         submitted, fetched = self._correct(texts=("Hello there.", "Goodbye."))
