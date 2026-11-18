@@ -831,8 +831,8 @@ def test_purge_jobs_require_retained_project_shape_and_keep_history(case: Any, k
 
 
 def test_a_queue_receipt_names_only_blockers_the_caller_may_see(case: Any) -> None:
-    from pandrator.web.jobs import JobQueue
     from pandrator.web.credentials import SecretRedactor
+    from pandrator.web.jobs import JobQueue
     from pandrator.web.work import WorkService
 
     context = _context(case, case.user, projects=(case.a,))
