@@ -222,14 +222,15 @@ def _source_document(
     target_revision: m.GenerationPlanRevision,
     plan: m.GenerationPlan,
     *,
-    timing_tolerant: bool,
+    other_document: bool,
 ) -> tuple[bool, str | None]:
     """Whether an ancestor describes the same source as the target.
 
     ``(False, None)``: its source document is missing, outside the plan's
-    session, or another document without a timing-only edit in between, so the
-    ancestor is skipped as a whole. ``(True, None)``: a narration plan, whose
-    blocks key on their typed passage references instead of a document.
+    session, or another document that its signatures do not tie to the
+    target's, so the ancestor is skipped as a whole. ``(True, None)``: a
+    narration plan, whose blocks key on their typed passage references instead
+    of a document.
     """
     source_document_revision_id = ancestor.source_revision_id
     target_document_revision_id = target_revision.source_revision_id
@@ -258,7 +259,7 @@ def _source_document(
             or target_document is None
             or source_document.session_id != plan.session_id
             or target_document.session_id != plan.session_id
-            or (source_document.id != target_document.id and not timing_tolerant)
+            or (source_document.id != target_document.id and not other_document)
         ):
             return False, None
         return True, source_document.id
@@ -506,20 +507,33 @@ def inherit_rebuilt_plan_audio(
     }
     target_signatures = stored_signatures(target_settings)
 
-    ancestors: list[tuple[m.GenerationPlanRevision, bool]] = []
+    # Each ancestor with whether its cue windows may differ (a timing-only
+    # edit) and whether it may name another document: either a timing-only
+    # edit, or recorded signatures equal to the target's. The legacy "exact"
+    # for a revision that recorded no source is not evidence of either.
+    ancestors: list[tuple[m.GenerationPlanRevision, bool, bool]] = []
     seen: set[str] = set()
     ancestor: m.GenerationPlanRevision | None = source_revision
     while ancestor is not None and len(ancestors) < _ANCESTOR_LIMIT:
         if ancestor.id in seen or ancestor.plan_id != plan.id:
             break
         seen.add(ancestor.id)
+        ancestor_settings = ancestor.settings_json or {}
+        compatibility = plan_source_compatibility(
+            ancestor_settings, current_source, target_signatures
+        )
+        ancestor_signatures = stored_signatures(ancestor_settings)
+        timing_tolerant = compatibility == "timing_only"
         ancestors.append(
             (
                 ancestor,
-                plan_source_compatibility(
-                    ancestor.settings_json or {}, current_source, target_signatures
-                )
-                == "timing_only",
+                timing_tolerant,
+                timing_tolerant
+                or (
+                    compatibility == "exact"
+                    and ancestor_signatures is not None
+                    and ancestor_signatures == target_signatures
+                ),
             )
         )
         ancestor = (
@@ -532,7 +546,7 @@ def inherit_rebuilt_plan_audio(
     # The immediate parent's source document answers before RVC does, as it did
     # before the walk; RVC itself still refuses the whole call.
     parent_document = _source_document(
-        session, ancestors[0][0], target_revision, plan, timing_tolerant=ancestors[0][1]
+        session, ancestors[0][0], target_revision, plan, other_document=ancestors[0][2]
     )
     if _rvc_requested(snapshot):
         reasons[
@@ -563,7 +577,7 @@ def inherit_rebuilt_plan_audio(
     reused_count = 0
     reused_from_older = 0
     revisions_checked = 0
-    for position, (ancestor, timing_tolerant) in enumerate(ancestors):
+    for position, (ancestor, timing_tolerant, other_document) in enumerate(ancestors):
         if not pending:
             break
         document = (
@@ -574,7 +588,7 @@ def inherit_rebuilt_plan_audio(
                 ancestor,
                 target_revision,
                 plan,
-                timing_tolerant=timing_tolerant,
+                other_document=other_document,
             )
         )
         revisions_checked += 1
@@ -593,6 +607,10 @@ def inherit_rebuilt_plan_audio(
             except Exception:
                 identity_failed = True
         if identity_failed:
+            if position > 0:
+                # Only an older ancestor got this far; the parent's own reason
+                # for each block still stands and is counted below.
+                break
             reasons["audio_identity_unknown"] += target_count
             return _receipt(
                 target_count, 0, reasons, matching, revisions_checked=revisions_checked
@@ -615,7 +633,8 @@ def inherit_rebuilt_plan_audio(
             timing_tolerant=timing_tolerant,
         )
         resolved: list[tuple[m.GenerationSegment, m.AudioTake]] = []
-        for target in list(pending):
+        unresolved: list[m.GenerationSegment] = []
+        for target in pending:
             source_take, reason = _candidate_take(
                 index,
                 target,
@@ -626,13 +645,13 @@ def inherit_rebuilt_plan_audio(
             if source_take is None:
                 if position == 0:
                     provisional[target.id] = reason or "audio_unavailable"
-                if reason == "target_has_take":
-                    # The target's own take settles the block; no ancestor can
-                    # improve on it, and the reason above still counts it.
-                    pending.remove(target)
+                # The target's own take settles the block; no ancestor can
+                # improve on it, and the reason above still counts it.
+                if reason != "target_has_take":
+                    unresolved.append(target)
                 continue
             resolved.append((target, source_take))
-            pending.remove(target)
+        pending = unresolved
         for target, source_take in resolved:
             session.add(
                 m.AudioTake(

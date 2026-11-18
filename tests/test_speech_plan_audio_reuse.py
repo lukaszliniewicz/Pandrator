@@ -76,6 +76,7 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
         target_refs=None,
         changed_text_indexes=(),
         timing_only=False,
+        equivalent_source=False,
         extra_ancestors=0,
         extra_takes=True,
         extra_settings=None,
@@ -147,6 +148,22 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
 
             source_settings = {"_source_artifact_id": "narration-source"} if narration else {}
             target_settings = copy.deepcopy(source_settings)
+            if equivalent_source:
+                # Another subtitle artifact whose text and timing both match.
+                signatures = {
+                    "_source_text_signature": "same-spoken-text",
+                    "_source_timing_signature": "same-timing",
+                }
+                source_settings.update(
+                    _source_artifact_id="old-subtitle-source",
+                    _source_content_hash="old-hash",
+                    **signatures,
+                )
+                target_settings.update(
+                    _source_artifact_id="new-subtitle-source",
+                    _source_content_hash="new-hash",
+                    **signatures,
+                )
             if timing_only:
                 source_settings.update(
                     _source_artifact_id="old-subtitle-source",
@@ -805,6 +822,42 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
                 )
                 self.assertEqual({"rvc_enabled": 1}, receipt["reason_counts"])
                 self.assertEqual(0, receipt["reused_audio_count"])
+
+    def test_identical_replacement_subtitles_reuse_takes_across_documents(self):
+        case = self._make_case(count=2, different_document=True, equivalent_source=True)
+        receipt = self._inherit(case)
+        # Equal timing keeps the exact cue-bound match.
+        self.assertEqual("exact_bounds", receipt["matching"])
+        self.assertEqual(2, receipt["reused_audio_count"])
+        self.assertEqual({}, receipt["reason_counts"])
+
+    def test_identical_replacement_still_needs_matching_cue_bounds(self):
+        case = self._make_case(
+            count=2, timing_change=True, different_document=True, equivalent_source=True
+        )
+        receipt = self._inherit(case)
+        self.assertEqual("exact_bounds", receipt["matching"])
+        self.assertEqual(1, receipt["reused_audio_count"])
+        self.assertEqual({"provenance_unavailable": 1}, receipt["reason_counts"])
+
+    def test_an_older_ancestor_that_cannot_read_identity_keeps_the_parent_reason(self):
+        case = self._make_case(
+            count=2,
+            timing_change=True,
+            different_document=True,
+            timing_only=True,
+            extra_ancestors=1,
+            extra_takes=False,
+            extra_settings={},
+        )
+        with patch(
+            "pandrator.web.generation_audio_identity.AudioIdentityContext",
+            side_effect=RuntimeError("identity unavailable"),
+        ):
+            receipt = self._inherit(case)
+        self.assertEqual(0, receipt["reused_audio_count"])
+        self.assertEqual({"source_document_changed": 2}, receipt["reason_counts"])
+        self.assertEqual(2, receipt["revisions_checked"])
 
     def test_different_document_and_wrong_immediate_parent_are_rejected(self):
         different_document = self._make_case(different_document=True)
