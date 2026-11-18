@@ -139,21 +139,30 @@ keep their directions, and so does an edited block whose change stays inside one
 stretch of its markup, away from a spoken line's edges (any boundary inside a
 line, such as an event or control, is an edge too), adds no text or words right
 beside an event or control (not even by rewording the word there, as "Hello" to
-"Hi, hello"), and adds, removes or replaces no quotation mark in a block with a spoken line (a
-single quote counts unless it sits inside a word, so an edit that moves it into
-or out of a word counts too).
-Only a block whose markup no longer fits needs a fresh performance review; a run
-that includes it is refused naming it, and a run without it can start. Recast,
-workflow checks and voiceover regroup or repair are refused while any block of
-the revision needs review. An edited attribution keeps the speaker the plan
-chose. `pandrator_get_performance_plan` reports `changed_segment_count`,
-`review_segment_count` and `review_segments` (first 20, with 0-based `ordinal`;
-the refusal counts blocks from 1) for an adopted plan on the selected revision.
-Phrase editing, the starting markup of a split, merge or re-segmentation, and
-the plan's own segment preview still need a plan that fits the whole revision,
-so copy and adopt it first; the blocks a split or merge makes then need fresh
-performance review. Automatic split/regroup passes are disabled while
-performance or semantic context is enabled.
+"Hi, hello"), and adds, removes or replaces no quotation mark anywhere in the
+block, with or without a spoken line, in either annotation format (a change
+whose span merely includes an existing mark counts too, as do two edits on
+either side of one saved together; a single quote counts unless it sits inside a
+word of a space-separated script, so an edit that moves it into or out of a word
+counts too; a dash that opens a line, as dialogue does in Polish, Spanish,
+Russian or French, counts as a quotation mark, and a dash inside narration does
+not). A plan made before Pandrator recorded each block's speaker, language, node
+kind and section needs review for every block after any change to the revision,
+a voice or pause change included, in a project copy too: the copy rebuilds each
+entry from the current block, so keeping an old one would hide a speaker change.
+Otherwise only a block whose markup no longer fits, or
+whose speaker, language, node kind or section changed, needs a fresh performance
+review; a run that includes it is refused naming it, and a run without it can
+start. Recast, workflow checks and voiceover regroup or repair are refused while
+any block of the revision needs review. An edited attribution keeps the speaker
+the plan chose. `pandrator_get_performance_plan` reports
+`changed_segment_count`, `review_segment_count` and `review_segments` (first 20,
+with 0-based `ordinal`; the refusal counts blocks from 1) for an adopted plan on
+the selected revision. Phrase editing, the starting markup of a split, merge or
+re-segmentation, and the plan's own segment preview still need a plan that fits
+the whole revision, so copy and adopt it first; the blocks a split or merge
+makes then need fresh performance review. Automatic split/regroup passes are
+disabled while performance or semantic context is enabled.
 
 ## Multiple voices and audio drama
 

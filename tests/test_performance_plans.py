@@ -812,6 +812,64 @@ def test_restore_carries_the_adopted_plan_without_a_new_review(case, annotation_
         assert (markup is not None) == (annotation_format == "xml")
 
 
+def test_restore_of_a_current_plan_with_units_made_before_structure_fields_needs_no_review(case):
+    # Judged per block, such units would all need review; a plan that fits its
+    # revision as a whole is not judged, so the restore needs none.
+    adopted = _adopted(case)
+    with case["services"]["database"].session() as session:
+        plan = session.get(m.PerformancePlan, adopted["id"])
+        plan.units_json = [
+            {
+                key: value
+                for key, value in unit.items()
+                if key not in {"speaker", "language", "node_kind", "section_id"}
+            }
+            for unit in plan.units_json
+        ]
+    assert not get(case, adopted)["stale"]
+    result = case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "restore", "target_revision_id": case["revision_id"]},
+    )
+    assert result["review_required"]["performance"] is False
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert not carried["stale"] and carried["review_segment_count"] == 0
+
+
+def test_a_topology_batch_carries_no_adopted_plan_and_needs_performance_review(case):
+    # A batch holds only splits and merges, which carry no adopted plan, so
+    # the new revision has none and ``performance`` is true by that reason.
+    _adopted(case)
+    revision = case["revision_id"]
+    response = case["client"].post(
+        f"/api/v1/sessions/{case['session_id']}/generation-plan/topology/batch",
+        json={
+            "expected_revision_id": revision,
+            "operations": [
+                {"action": "split", "segment_id": case["segment_ids"][0], "cursor": 3}
+            ],
+        },
+        headers={
+            **case["headers"],
+            "If-Match": f'"{revision}"',
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+    )
+    assert response.status_code == 201, response.get_json()
+    result = response.get_json()
+    assert result["plan_revision_id"] != revision
+    assert result["review_required"]["performance"] is True
+    with case["services"]["database"].session() as session:
+        adopted = session.scalars(
+            select(m.PerformancePlan).where(
+                m.PerformancePlan.plan_revision_id == result["plan_revision_id"],
+                m.PerformancePlan.status == "adopted",
+            )
+        ).all()
+    assert adopted == []
+
+
 @pytest.mark.parametrize("change", ["fits", "structure", "removed"])
 def test_restore_of_a_stale_plan_carries_it_judged_per_block(case, change):
     # Upstream carried nothing from a plan made stale by an edit, so from the

@@ -1390,9 +1390,12 @@ def carry_adopted_plan(
 def has_review_blocks(session, plan: m.PerformancePlan) -> bool:
     """Whether a block of the plan's own revision needs a new review.
 
-    A plan that fits its revision as a whole has none, so this needs no
-    signature: every block is unchanged and nothing is fitted.
+    A plan that fits its revision as a whole has none and is not judged, as
+    every other read checks the signature first: judged, a plan whose units
+    predate the structure fields would send every block to review.
     """
+    if plan.base_signature == plan_signature(session, plan.plan_revision_id):
+        return False
     return bool(plan_validity(session, plan, plan.plan_revision_id, counts_only=True).review)
 
 

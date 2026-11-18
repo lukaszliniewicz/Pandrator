@@ -403,6 +403,11 @@ def _frozen_parts(
         raise ValueError(
             "Spoken text changed after performance adoption. Review the performance plan again."
         )
+    # A block the run's frozen plan listed for review has no entry there; say
+    # why, rather than that it is absent from the snapshot or rendering its
+    # own markup. Casting alone freezes the adopted plan too.
+    if segment.id in (performance.get("review_segment_ids") or ()):
+        raise ValueError(REVIEW_MESSAGE)
     contexts = frozen_semantic_contexts(snapshot)
     effective = segment_performance_settings(
         settings,

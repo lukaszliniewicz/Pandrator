@@ -952,18 +952,30 @@ def test_judged_units_are_matched_by_id_not_position():
     assert frozen == freeze(rows, *stale_adopted(rows))
 
 
-@pytest.mark.parametrize("missing", [("section_id",), STRUCTURE_FIELDS])
-def test_judged_units_made_before_structure_fields_were_recorded_are_judged(missing):
+@pytest.mark.parametrize("missing", [("section_id",), ("language",), STRUCTURE_FIELDS])
+def test_judged_units_made_before_structure_fields_were_recorded_need_review(missing):
+    # The copy rebuilds each unit from its current block, so an entry kept for
+    # a unit that never recorded a field would hide a change to that field (the
+    # language below) and look current there. Such units need review, as a
+    # plan read in the app judges them; the copy itself still succeeds.
+    def changed(rows):
+        edit(rows, s0="Go on right now.")
+        rows["generation_segments"][1]["language"] = "fr"
+
+    recorded = judged_rows()
+    raw, annotations = stale_adopted(recorded)
+    changed(recorded)
+    assert unit_ids(freeze(recorded, raw, annotations)) == ["segment-0", "segment-4"]
     rows = judged_rows()
     raw, annotations = stale_adopted(rows)
-    expected = judged(deepcopy(judged_rows()), s0="Go on right now.", s1="Second line there.")
     for unit in raw["units_json"]:
         for field in missing:
             del unit[field]
-    edit(rows, s0="Go on right now.", s1="Second line there.")
+    changed(rows)
     frozen = freeze(rows, raw, annotations)
-    assert frozen == expected
-    assert all(field in unit for unit in frozen["units_json"] for field in STRUCTURE_FIELDS)
+    assert unit_ids(frozen) == []
+    assert frozen["manual_annotations_json"] == {}
+    assert frozen["base_signature"] == review_signature(current_signature(rows))
     round_trip(rows, frozen)
 
 
