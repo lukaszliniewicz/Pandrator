@@ -1643,9 +1643,11 @@ class VoiceoverRepairTests(unittest.TestCase):
                 **run.settings_snapshot_json,
                 "audio": {
                     **dict(run.settings_snapshot_json.get("audio") or {}),
-                    # The modelled advance (about 3.9 s) cannot cover this
-                    # pause, so the second half could never start earlier.
-                    "synchronization_sentence_gap_ms": 5000,
+                    # The halves are placed as separate blocks, so the pause
+                    # between them is the block gap. The modelled advance
+                    # (about 3.9 s) cannot cover it, so the second half could
+                    # never start earlier.
+                    "synchronization_min_block_gap_ms": 5000,
                 },
             }
 
@@ -1670,20 +1672,20 @@ class VoiceoverRepairTests(unittest.TestCase):
 
         self.assertIsNone(
             neighbour_growth_precheck(
-                estimated_advance_ms=3000, sentence_gap_ms=250
+                estimated_advance_ms=3000, pause_ms=250
             )
         )
         # Growth is verified by placement now, so window slack never skips;
         # only an advance at or below the pause does.
         self.assertIsNone(
             neighbour_growth_precheck(
-                estimated_advance_ms=1000, sentence_gap_ms=999
+                estimated_advance_ms=1000, pause_ms=999
             )
         )
         self.assertEqual(
             "neighbour_growth_precheck",
             neighbour_growth_precheck(
-                estimated_advance_ms=249, sentence_gap_ms=250
+                estimated_advance_ms=249, pause_ms=250
             ),
         )
 
@@ -1718,6 +1720,99 @@ class VoiceoverRepairTests(unittest.TestCase):
         )
         self.assertEqual([Path("a.wav")], groups[0].paths)
         self.assertEqual([Path("new.wav")], groups[1].paths)
+
+    def test_preview_refuses_when_the_selection_moved_off_the_run(self):
+        from pandrator.web.voiceover_repair import preview_early_blocks
+
+        self.plan(enabled=False)
+        self.generate()
+        with self.database.session() as session:
+            take = session.scalar(
+                select(AudioTake).where(
+                    AudioTake.generation_run_id == self.run_id,
+                    AudioTake.generation_segment_id == self.segment_ids[0],
+                )
+            )
+            take.is_active = False
+        preview = preview_early_blocks(self.database, self.paths, self.run_id)
+        # The pass would stop with selection_changed before staging, so the
+        # preview quotes no candidates and no synthesis calls.
+        self.assertEqual("selection_changed", preview["skipped_reason"])
+        self.assertEqual(0, preview["candidate_count"])
+        self.assertEqual(0, preview["estimated_synthesis_calls"])
+
+    def test_context_neighbour_count_counts_segments_of_multi_segment_blocks(self):
+        from types import SimpleNamespace
+
+        from pandrator.web.voiceover_repair import TimingGroup, _context_neighbour_count
+
+        def block(*ids: str) -> TimingGroup:
+            return TimingGroup(
+                [SimpleNamespace(id=item) for item in ids],  # pyright: ignore[reportArgumentType]
+                [Path(f"{item}.wav") for item in ids],
+                0,
+                1000,
+                [1],
+            )
+
+        groups = [block("a"), block("b"), block("c1", "c2"), block("d")]
+        settings = {"performance_context_before": 2, "performance_context_after": 1}
+        # Splitting block 1 can refresh block 0 and blocks 2 and 3; block 2
+        # holds two segments, and the pass re-synthesises each changed one.
+        self.assertEqual(4, _context_neighbour_count(groups, 1, settings))
+
+    def test_a_split_block_is_never_located_as_a_single_slot(self):
+        from types import SimpleNamespace
+
+        from pandrator.web.voiceover_repair import TimingGroup, _refreshed_neighbour_groups
+
+        def block(ids: list[str], start: int) -> TimingGroup:
+            return TimingGroup(
+                [SimpleNamespace(id=item) for item in ids],  # pyright: ignore[reportArgumentType]
+                [Path(f"{item}.wav") for item in ids],
+                start,
+                start + 1000,
+                [1],
+            )
+
+        groups = [block(["orig-a"], 0), block(["orig-b"], 2000)]
+        # orig-a was split earlier; its first child "a1" carries the mapping.
+        current_ids = {"orig-a": "a1", "orig-b": "b"}
+        staged = [block(["new-a1"], 0), block(["new-b"], 2000)]
+        refreshed = {"new-a1": "a1", "new-b": "b"}
+        located = _refreshed_neighbour_groups(
+            groups, current_ids, refreshed, staged, {"orig-a"}
+        )
+        self.assertNotIn("a1", located)
+        self.assertEqual(1, located["b"][0])
+        # Without the split record the first child would stand in for both.
+        self.assertIn("a1", _refreshed_neighbour_groups(groups, current_ids, refreshed, staged))
+
+    def test_a_block_pushed_late_mid_run_counts_as_added_delay(self):
+        from pandrator.web.voiceover_repair import TimingGroup, _starts_later
+
+        groups = [
+            TimingGroup([], [Path("a.wav")], 0, 1000, [1]),
+            TimingGroup([], [Path("b.wav")], 1000, 2000, [2]),
+            TimingGroup([], [Path("c.wav")], 3000, 4000, [3]),
+        ]
+        baseline = {1: 1000, 2: 2800}
+        # Block 1 now enters 200 ms late, although block 2 still enters on time.
+        self.assertTrue(_starts_later(groups, {1: 1200, 2: 2800}, baseline))
+        # Entering earlier than a block's own start never counts as late.
+        self.assertFalse(_starts_later(groups, {1: 900, 2: 2900}, baseline))
+
+    def test_a_shorter_take_with_more_speech_counts_as_grown(self):
+        from pandrator.web.voiceover_repair import _may_have_grown
+
+        # (duration, leading silence, trailing silence) in ms. The original
+        # 970 ms take holds 390 ms of speech; the refreshed one is shorter
+        # overall but holds 850 ms, so trimmed placement can push later blocks.
+        self.assertTrue(_may_have_grown((970, 300, 280), (850, 0, 0)))
+        # Shorter and no more speech at either edge cannot outgrow its slot.
+        self.assertFalse(_may_have_grown((970, 300, 280), (900, 300, 280)))
+        # Speech that only grows once one edge is trimmed still counts.
+        self.assertTrue(_may_have_grown((900, 500, 100), (850, 0, 600)))
 
     def _following_overrun_plan(self, *, overrun: bool) -> dict:
         """Candidate, a non-grown follower, then a follower that grows a little."""

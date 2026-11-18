@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 import tempfile
 import threading
+import uuid
 from collections import Counter
+from collections.abc import Collection
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -331,20 +333,82 @@ class GroupInspection:
     start_delay_ms: int
 
 
+def _take_speech_spans(
+    path: Path, work: Path, cancel_event: Any
+) -> tuple[int, int, int]:
+    """Duration, leading and trailing silence of one take, as placement trims them.
+
+    The take is decoded the way ``advance_timing`` assembles a block and its
+    edges are measured with the same trim, so the figures match placement.
+    """
+
+    sample_rate, channels = preferred_pcm_format(path, cancel_event=cancel_event)
+    plan = build_audio_assembly_plan(
+        [
+            AudioAssemblyPart(
+                path=path,
+                expected_duration_ms=_streaming_audio_duration_ms(path),
+                silence_after_ms=0,
+            )
+        ],
+        output_format="wav",
+        sample_rate_hz=sample_rate,
+        channels=channels,
+    )
+    token = uuid.uuid4().hex
+    decoded = work / f"neighbour-{token}.wav"
+    duration = assemble_audio_plan(
+        plan, decoded, backend="streaming", work_dir=work, cancel_event=cancel_event
+    ).duration_ms
+    _trimmed, lead_ms, tail_ms = _trim_block_wav(
+        decoded, work / f"neighbour-{token}-trimmed.wav"
+    )
+    return duration, lead_ms, tail_ms
+
+
+def _may_have_grown(
+    original: tuple[int, int, int], refreshed: tuple[int, int, int]
+) -> bool:
+    """Whether a refreshed take can place longer than the take it replaced.
+
+    Trimming removes only a block's outer silence, so a take keeps its
+    leading silence, its trailing silence, both or neither depending on its
+    position in the block.  Without knowing that position, it may grow if any
+    of the four placed lengths grew.
+    """
+
+    def placed(spans: tuple[int, int, int]) -> tuple[int, int, int, int]:
+        duration, lead, tail = spans
+        return duration, duration - lead, duration - tail, duration - lead - tail
+
+    return any(
+        after > before
+        for before, after in zip(placed(original), placed(refreshed), strict=True)
+    )
+
+
 def _grown_refreshed_neighbours(
     handler: Any,
     refreshed_context_parents: dict[str, str],
     take_ids: dict[str, str],
     staged_run_id: str,
+    *,
+    trimmed: bool = False,
+    work: Path | None = None,
+    cancel_event: Any = None,
 ) -> set[str]:
-    """Parents whose refreshed take is longer than the take it replaced.
+    """Parents whose refreshed take may be longer than the take it replaced.
 
     A shorter take cannot worsen its original timing slot; a longer one is not
-    rejected on its length any more, but it must be measured.  Missing
-    durations stay fatal for the attempt, as before.
+    rejected on its length any more, but it must be measured.  When block-edge
+    silence is trimmed (``trimmed``), placement measures speech rather than the
+    whole file, and a take that is shorter overall can still hold more speech,
+    so such a take is compared by its trimmed lengths as well.  Missing
+    durations or files stay fatal for the attempt, as before.
     """
 
     grown: set[str] = set()
+    to_measure: list[tuple[str, Path, Path]] = []
     with handler.database.session() as session:
         for descendant_id, old_id in refreshed_context_parents.items():
             original_take = session.get(AudioTake, take_ids.get(old_id) or "")
@@ -367,6 +431,30 @@ def _grown_refreshed_neighbours(
                 raise _RepairNotApplied("context_neighbour_unmeasurable")
             if refreshed_take.duration_ms > original_take.duration_ms:
                 grown.add(old_id)
+                continue
+            if not trimmed:
+                continue
+            paths: list[Path] = []
+            for take in (original_take, refreshed_take):
+                artifact = session.get(Artifact, take.artifact_id or "")
+                path = (
+                    handler.paths.managed_path(artifact.relative_path)
+                    if artifact is not None and artifact.relative_path
+                    else None
+                )
+                if path is None or not path.is_file():
+                    raise _RepairNotApplied("context_neighbour_unmeasurable")
+                paths.append(path)
+            to_measure.append((old_id, paths[0], paths[1]))
+    if to_measure:
+        with tempfile.TemporaryDirectory(prefix="voiceover-neighbour-") as scratch:
+            directory = work or Path(scratch)
+            for old_id, original_path, refreshed_path in to_measure:
+                if _may_have_grown(
+                    _take_speech_spans(original_path, directory, cancel_event),
+                    _take_speech_spans(refreshed_path, directory, cancel_event),
+                ):
+                    grown.add(old_id)
     return grown
 
 
@@ -375,6 +463,7 @@ def _refreshed_neighbour_groups(
     current_ids: dict[str, str],
     refreshed_context_parents: dict[str, str],
     staged_groups: list[TimingGroup],
+    split_originals: Collection[str] = (),
 ) -> dict[str, tuple[int, TimingGroup]]:
     """Locate each refreshed neighbour as a loop index plus its staged group.
 
@@ -382,6 +471,8 @@ def _refreshed_neighbour_groups(
     the parent in the current revision; ``current_ids`` maps the loop's source
     blocks to that revision.  The staged group carries the take that was just
     synthesised, so forward placement can measure it instead of the old audio.
+    A source block an earlier repair split (``split_originals``) now places as
+    two blocks, so neither child may stand in for its single loop slot.
     """
 
     descendant_by_parent = {
@@ -392,6 +483,7 @@ def _refreshed_neighbour_groups(
         current_ids.get(segment.id, segment.id): index
         for index, group in enumerate(groups)
         for segment in group.segments
+        if segment.id not in split_originals
     }
     staged_by_segment = {
         segment.id: group for group in staged_groups for segment in group.segments
@@ -440,15 +532,19 @@ def _place_group_run(
     cancel_event: Any,
     *,
     overrides: dict[int, TimingGroup] | None = None,
+    entries: dict[int, int] | None = None,
 ) -> int:
     """Forward-place groups ``first``..``last`` and return the cursor after them.
 
     Slots and next-block gaps mirror ``_inspect_group``; an override supplies
-    the staged group (and therefore the refreshed take) for one index.
+    the staged group (and therefore the refreshed take) for one index.  When
+    ``entries`` is given it receives the cursor entering each placed block.
     """
 
     overrides = overrides or {}
     for index in range(first, last + 1):
+        if entries is not None:
+            entries[index] = cursor
         group = overrides.get(index, groups[index])
         slot_end = (
             groups[index + 1].start_ms if index + 1 < len(groups) else group.end_ms
@@ -465,23 +561,45 @@ def _place_group_run(
     return cursor
 
 
+def _starts_later(
+    groups: list[TimingGroup],
+    replayed: dict[int, int],
+    baseline: dict[int, int],
+) -> bool:
+    """Whether any block enters later than it did, relative to its own start.
+
+    Comparing only the cursor after a run hides a block in the middle that a
+    refreshed neighbour pushed late but that still finished within its slot.
+    """
+
+    for index, cursor in replayed.items():
+        if index not in baseline:
+            continue
+        start = max(0, groups[index].start_ms)
+        if max(cursor, start) > max(baseline[index], start):
+            return True
+    return False
+
+
 _NEIGHBOUR_GROWTH_PRECHECK = "neighbour_growth_precheck"
 
 
 def neighbour_growth_precheck(
     *,
     estimated_advance_ms: int,
-    sentence_gap_ms: int,
+    pause_ms: int,
 ) -> str | None:
     """Refuse a candidate whose modelled gain cannot survive the split's own pause.
 
     A split only helps when the second half starts earlier than the original
     block did.  ``find_repair_boundary`` already requires a modelled advance,
     but it does not subtract the mandatory pause the two halves need between
-    them: when that pause consumes the whole advance, placing the second half
-    cannot gain anything and the pass rejects the attempt as added delay.  That
-    outcome is certain without synthesising anything, so a candidate in that
-    state is skipped with ``neighbour_growth_precheck`` before any call.
+    them.  The halves are placed as separate blocks, so that pause is the
+    minimum block gap (``pause_ms``), not the sentence gap inside a block.
+    When it consumes the whole advance, placing the second half cannot gain
+    anything and the pass rejects the attempt as added delay.  That outcome is
+    certain without synthesising anything, so a candidate in that state is
+    skipped with ``neighbour_growth_precheck`` before any call.
 
     Cue-window slack is deliberately not part of this rule.  The pass no longer
     rejects a refreshed neighbour for growing; it verifies the forward
@@ -490,7 +608,7 @@ def neighbour_growth_precheck(
     have been kept.
     """
 
-    if estimated_advance_ms - sentence_gap_ms <= 0:
+    if estimated_advance_ms - pause_ms <= 0:
         return _NEIGHBOUR_GROWTH_PRECHECK
     return None
 
@@ -500,24 +618,28 @@ def _context_neighbour_count(
     index: int,
     tts_settings: dict[str, Any],
 ) -> int:
-    """Count the blocks whose window a split at ``index`` can refresh.
+    """Count the segments whose window a split at ``index`` can refresh.
 
     A block's semantic window holds whole neighbouring block texts, so only
     blocks within the configured context counts around the split can see
-    different text.  A split replaces one block's text with two, so this is the
-    candidate set the pass considers for re-synthesis; it then compares the
-    frozen windows and keeps only those that actually changed.  Counting blocks
-    (not context units) can only widen the set, so a preview estimate never
-    under-counts the neighbours the pass would pay for.
+    different text.  A split replaces one block's text with two, so their
+    segments are the candidate set the pass considers for re-synthesis; it
+    then compares the frozen windows and keeps only those that actually
+    changed.  Counting every segment of those blocks can only widen the set,
+    so a preview estimate never under-counts the calls the pass would pay for.
     """
 
     before = tts_settings.get("performance_context_before", 2)
     after = tts_settings.get("performance_context_after", 1)
     before = before if isinstance(before, int) and not isinstance(before, bool) else 2
     after = after if isinstance(after, int) and not isinstance(after, bool) else 1
-    return len(range(max(0, index - after), index)) + len(
-        range(index + 1, min(len(groups), index + 1 + max(0, before)))
-    )
+    window = [
+        *range(max(0, index - after), index),
+        *range(index + 1, min(len(groups), index + 1 + max(0, before))),
+    ]
+    # The pass re-synthesises each changed segment, and one block can hold
+    # several, so count segments rather than blocks.
+    return sum(len(groups[block].segments) for block in window)
 
 
 def _inspect_group(
@@ -753,6 +875,9 @@ def repair_early_blocks(
         # Their recorded entry cursor was measured with the old audio, so a
         # preceding-neighbour comparison through them cannot be trusted.
         refreshed_by_earlier_repairs: set[str] = set()
+        # Source blocks an applied repair split into two; each now places as
+        # two blocks, so no single child stands in for its loop slot.
+        split_originals: set[str] = set()
         for index, group in enumerate(groups):
             entry_cursors[index] = cursor
             if stop.is_set():
@@ -795,7 +920,7 @@ def repair_early_blocks(
             repair_candidates += 1
             precheck = neighbour_growth_precheck(
                 estimated_advance_ms=boundary.estimated_advance_ms,
-                sentence_gap_ms=sentence_gap_ms_from_settings(audio_settings),
+                pause_ms=min_block_gap_ms_from_settings(audio_settings),
             )
             if precheck is not None:
                 # The split cannot move the second half even with no neighbour
@@ -1097,13 +1222,20 @@ def repair_early_blocks(
                         current_ids,
                         refreshed_context_parents,
                         staged_groups,
+                        split_originals,
                     )
                     staged_neighbours = {
                         block_index: staged_group
                         for block_index, staged_group in located.values()
                     }
                     grown = _grown_refreshed_neighbours(
-                        handler, refreshed_context_parents, take_ids, staged_run_id
+                        handler,
+                        refreshed_context_parents,
+                        take_ids,
+                        staged_run_id,
+                        trimmed=trim_silence_enabled_from_settings(audio_settings),
+                        work=work,
+                        cancel_event=stop,
                     )
                     if grown - set(located):
                         # A grown neighbour that cannot be placed is one an
@@ -1136,6 +1268,7 @@ def repair_early_blocks(
                                 raise _RepairNotApplied(
                                     "context_neighbour_added_delay"
                                 )
+                            replayed_entries: dict[int, int] = {}
                             new_cursor = _place_group_run(
                                 groups,
                                 preceding_blocks[0],
@@ -1145,11 +1278,10 @@ def repair_early_blocks(
                                 work,
                                 stop,
                                 overrides=staged_neighbours,
+                                entries=replayed_entries,
                             )
-                            candidate_start = max(0, group.start_ms)
-                            if max(new_cursor, candidate_start) > max(
-                                entry_cursors[index], candidate_start
-                            ):
+                            replayed_entries[index] = new_cursor
+                            if _starts_later(groups, replayed_entries, entry_cursors):
                                 raise _RepairNotApplied(
                                     "context_neighbour_added_delay"
                                 )
@@ -1193,6 +1325,8 @@ def repair_early_blocks(
                     # neighbour that already overruns its slot supplies drift
                     # the grown block must inherit, and starting later would
                     # hide it behind a roomier window.
+                    new_entries: dict[int, int] = {}
+                    old_entries: dict[int, int] = {}
                     new_cursor = _place_group_run(
                         groups,
                         index + 1,
@@ -1202,6 +1336,7 @@ def repair_early_blocks(
                         work,
                         stop,
                         overrides=staged_neighbours,
+                        entries=new_entries,
                     )
                     old_cursor = _place_group_run(
                         groups,
@@ -1211,8 +1346,14 @@ def repair_early_blocks(
                         audio_settings,
                         work,
                         stop,
+                        entries=old_entries,
                     )
-                    if new_cursor > old_cursor:
+                    # Every block in the run, not only the last cursor: a
+                    # refreshed block can push its neighbour late while a
+                    # later block still finishes on time.
+                    if new_cursor > old_cursor or _starts_later(
+                        groups, new_entries, old_entries
+                    ):
                         raise _RepairNotApplied("context_neighbour_added_delay")
                 anchor_tolerance = min(
                     NATURAL_OVERRUN_TOLERANCE_MS,
@@ -1284,20 +1425,6 @@ def repair_early_blocks(
                     effect["worst_lag_ms_after"], after_effect["worst_lag_ms"]
                 )
                 effect["blocks"] += 1
-                # The refreshed neighbours now have longer or shorter audio in
-                # this revision. Replace their measured paths so later
-                # iterations place them from the takes the plan now holds.
-                original_by_current = {
-                    current: original for original, current in current_ids.items()
-                }
-                for block_index, staged_group in staged_neighbours.items():
-                    if block_index < 0 or block_index >= len(groups):
-                        continue
-                    groups[block_index].paths = list(staged_group.paths)
-                refreshed_by_earlier_repairs.update(
-                    original_by_current.get(old_id, old_id)
-                    for old_id in refreshed_context_parents.values()
-                )
                 # A later candidate measures the audio this pass's plan now
                 # holds.  Unchanged neighbours reuse their cloned take, but a
                 # refreshed neighbour has a new one, so its measured path must
@@ -1312,6 +1439,11 @@ def repair_early_blocks(
                     if old_id in original_by_current
                 )
                 _adopt_refreshed_takes(groups, staged_neighbours)
+                split_originals.update(
+                    original
+                    for original, current in current_ids.items()
+                    if len(proposal["lineage"].get(current) or ()) > 1
+                )
                 current_ids = {
                     original: proposal["lineage"][current][0]
                     for original, current in current_ids.items()
@@ -1470,6 +1602,18 @@ def preview_early_blocks(
             resolved_thresholds,
             skipped_reason="no_speech_blocks",
         )
+    with database.session() as session:
+        choices, _signature = _selection_state(session, source_revision_id)
+    if choices != take_ids:
+        # The pass stops before staging when a different take is selected on
+        # this revision, so quoting candidates and calls here would mislead.
+        return _preview_envelope(
+            run_id,
+            session_id,
+            source_revision_id,
+            resolved_thresholds,
+            skipped_reason="selection_changed",
+        )
     if not _source_context_available(snapshot, source_revision_id, take_ids):
         return _preview_envelope(
             run_id,
@@ -1480,7 +1624,7 @@ def preview_early_blocks(
         )
     audio_settings = dict(snapshot.get("audio") or {})
     context_mode = str(tts_settings.get("tts_context_mode") or "off")
-    gap_ms = sentence_gap_ms_from_settings(audio_settings)
+    pause_ms = min_block_gap_ms_from_settings(audio_settings)
     event = cancel_event if cancel_event is not None else threading.Event()
     checked = 0
     cursor = 0
@@ -1510,7 +1654,7 @@ def preview_early_blocks(
                     continue
                 skipped = neighbour_growth_precheck(
                     estimated_advance_ms=boundary.estimated_advance_ms,
-                    sentence_gap_ms=gap_ms,
+                    pause_ms=pause_ms,
                 )
                 neighbours = (
                     _context_neighbour_count(groups, index, tts_settings)
