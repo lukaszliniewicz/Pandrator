@@ -2213,6 +2213,12 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 {speaker.casefold() for speaker in speaker_by_subtitle.values()}
             ),
             "revision_id": revision_id,
+            "overlaps_clamped": int(
+                getattr(transcription_result, "overlaps_clamped", 0) or 0
+            ),
+            "overlaps_unresolved": int(
+                getattr(transcription_result, "overlaps_unresolved", 0) or 0
+            ),
         }
 
     def _begin_agentic_operation(

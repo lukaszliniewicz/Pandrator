@@ -144,7 +144,7 @@ def test_clamp_overlaps_removes_every_overlap_and_keeps_the_text(tmp_path: Path)
     self_check = diagnose_srt_content(finalized, settings)
     assert self_check["overlapping_cues"] == 0
     assert report["overlaps_clamped"] == 15
-    assert report["overlap_unresolved"] == 0
+    assert report["overlaps_unresolved"] == 0
     assert subtitle_text_integrity(source.read_text(encoding="utf-8"), finalized)[
         "matches"
     ]
@@ -179,7 +179,7 @@ def test_clamp_leaves_a_cue_that_cannot_keep_its_minimum_duration(tmp_path: Path
     finalize_srt_file(source, destination, settings, report=report)
 
     assert report["overlaps_clamped"] == 0
-    assert report["overlap_unresolved"] == 1
+    assert report["overlaps_unresolved"] == 1
     assert diagnose_srt_content(
         destination.read_text(encoding="utf-8"), settings
     )["overlapping_cues"] == 1
@@ -194,7 +194,7 @@ def test_clamp_is_off_by_default(tmp_path: Path):
 
     finalize_srt_file(source, destination, settings, report=report)
 
-    assert report == {"overlaps_clamped": 0, "overlap_unresolved": 0}
+    assert report == {"overlaps_clamped": 0, "overlaps_unresolved": 0}
     assert diagnose_srt_content(
         destination.read_text(encoding="utf-8"), settings
     )["overlapping_cues"] == 15

@@ -141,10 +141,14 @@ class TranscriptCompositionResult:
 
     Words removed during normalization/deduplication have no owner. Keys follow
     ``NormalizedTranscript.words`` ordering, including stable timestamp ties.
+    ``overlaps_clamped`` and ``overlaps_unresolved`` report the cue ends this
+    composition moved to remove an overlap and those it could not move.
     """
 
     segments: list[SubtitleSegment]
     word_segment_ordinals: dict[int, int]
+    overlaps_clamped: int = 0
+    overlaps_unresolved: int = 0
 
 
 @dataclass(frozen=True)
@@ -867,10 +871,10 @@ def finalize_srt_file(
             )
         if isinstance(report, dict):
             report["overlaps_clamped"] = clamped
-            report["overlap_unresolved"] = unresolved
+            report["overlaps_unresolved"] = unresolved
     elif isinstance(report, dict):
         report.setdefault("overlaps_clamped", 0)
-        report.setdefault("overlap_unresolved", 0)
+        report.setdefault("overlaps_unresolved", 0)
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     destination_path.write_text(
         finalized,
@@ -1618,6 +1622,12 @@ def compose_transcript_segments_with_ownership(
         ordered.append(item)
         previous_start = start
     adjusted = _adjust_durations([item.cue for item in ordered], config)
+    # One subtitle track displays one cue at a time. Trim each cue end that
+    # still overlaps the next cue after duration adjustment; starts and word
+    # timings stay untouched because alignment and editing read them as
+    # evidence. A cue that cannot shrink to the minimum duration is left as it
+    # is and counted as unresolved.
+    adjusted, overlaps_clamped, overlaps_unresolved = _clamp_overlaps(adjusted, config)
     final_segments: list[SubtitleSegment] = []
     word_segment_ordinals: dict[int, int] = {}
     for index, (item, cue) in enumerate(zip(ordered, adjusted, strict=False), start=1):
@@ -1631,7 +1641,12 @@ def compose_transcript_segments_with_ownership(
         final_segments.append(final_cue)
         for word_ordinal in item.word_ordinals:
             word_segment_ordinals[word_ordinal] = index - 1
-    return TranscriptCompositionResult(final_segments, word_segment_ordinals)
+    return TranscriptCompositionResult(
+        final_segments,
+        word_segment_ordinals,
+        overlaps_clamped=overlaps_clamped,
+        overlaps_unresolved=overlaps_unresolved,
+    )
 
 
 def compose_transcript_segments(
@@ -1647,8 +1662,16 @@ def compose_transcript_segments(
 def compose_from_transcript_json(
     metadata_path: str | Path,
     settings: dict[str, Any] | None = None,
+    *,
+    report: dict[str, int] | None = None,
 ) -> str:
-    return compose_srt(compose_transcript_segments(metadata_path, settings))
+    """Compose one display track and, optionally, report its overlap counts."""
+
+    composition = compose_transcript_segments_with_ownership(metadata_path, settings)
+    if isinstance(report, dict):
+        report["overlaps_clamped"] = composition.overlaps_clamped
+        report["overlaps_unresolved"] = composition.overlaps_unresolved
+    return compose_srt(composition.segments)
 
 
 def compose_from_crispasr_json(

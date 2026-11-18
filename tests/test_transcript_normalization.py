@@ -11,6 +11,7 @@ from pandrator.logic.dubbing.transcript_normalization import (
     TimedSegment,
     normalize_transcript,
     register_transcript_adapter,
+    split_glued_digits,
     unregister_transcript_adapter,
 )
 
@@ -116,6 +117,114 @@ class TranscriptNormalizationTests(unittest.TestCase):
                 self.assertEqual([word.start_ms for word in transcript.words], [1000, 1320])
                 self.assertEqual([word.speaker for word in transcript.words], ["speaker 2", "speaker 2"])
                 self.assertEqual(transcript.words[0].confidence, 0.0)
+
+    def test_glued_digits_split_only_where_a_word_meets_a_number(self):
+        cases = {
+            "for16 years": "for 16 years",
+            "more than27 years": "more than 27 years",
+            "in1900": "in 1900",
+            "the19th century": "the 19th century",
+            "in1,900": "in 1,900",
+            "at10:30": "at 10:30",
+            "(in1900),": "(in 1900),",
+            "für1990er": "für1990er",
+            "MP3": "MP3",
+            "mp3": "mp3",
+            "COVID19": "COVID19",
+            "iPhone15": "iPhone15",
+            "abc123def": "abc123def",
+            "16": "16",
+            "16th": "16th",
+            "know,70 years": "know, 70 years",
+            "No,10": "No, 10",
+            "about 1,900": "about 1,900",
+            "": "",
+        }
+
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(expected, split_glued_digits(source))
+
+    def test_crispasr_parakeet_splits_glued_digits_without_retiming_words(self):
+        payload = {
+            "crispasr": {"backend": "parakeet", "language_detected": "en"},
+            "transcription": [
+                {
+                    "offsets": {"from": 0, "to": 4000},
+                    "text": "We worked for16 years and in1900 it was the19th century.",
+                    "words": [
+                        {"text": "We", "offsets": {"from": 0, "to": 200}},
+                        {"text": "worked", "offsets": {"from": 220, "to": 500}},
+                        {"text": "for16", "offsets": {"from": 520, "to": 900}},
+                        {"text": "years", "offsets": {"from": 920, "to": 1200}},
+                        {"text": "and", "offsets": {"from": 1220, "to": 1400}},
+                        {"text": "in1900", "offsets": {"from": 1420, "to": 1800}},
+                        {"text": "it", "offsets": {"from": 1820, "to": 1900}},
+                        {"text": "was", "offsets": {"from": 1920, "to": 2100}},
+                        {"text": "the19th", "offsets": {"from": 2120, "to": 2500}},
+                        {"text": "century.", "offsets": {"from": 2520, "to": 3000}},
+                    ],
+                }
+            ],
+        }
+
+        transcript = normalize_transcript(payload)
+        segment = transcript.segments[0]
+
+        self.assertEqual(
+            [
+                "We", "worked", "for 16", "years", "and",
+                "in 1900", "it", "was", "the 19th", "century.",
+            ],
+            [word.text for word in segment.words],
+        )
+        self.assertEqual(
+            [(word.start_ms, word.end_ms) for word in segment.words],
+            [
+                (0, 200), (220, 500), (520, 900), (920, 1200), (1220, 1400),
+                (1420, 1800), (1820, 1900), (1920, 2100), (2120, 2500),
+                (2520, 3000),
+            ],
+        )
+        self.assertEqual(
+            "We worked for 16 years and in 1900 it was the 19th century.",
+            segment.text,
+        )
+
+    def test_crispasr_output_other_than_parakeet_is_not_split(self):
+        # Unlabelled output keeps its text too: only Parakeet is known to glue.
+        for header in (
+            {"backend": "whisper", "language_detected": "en"},
+            {"backend": "qwen3", "language_detected": "en"},
+            {"backend": "moss-diarize", "language_detected": "en"},
+            {"language_detected": "en"},
+        ):
+            with self.subTest(header=header):
+                transcript = normalize_transcript(
+                    {
+                        "crispasr": header,
+                        "transcription": [
+                            {
+                                "offsets": {"from": 0, "to": 1800},
+                                "text": "We worked for16 years.",
+                                "words": [
+                                    {"text": "We", "offsets": {"from": 0, "to": 200}},
+                                    {"text": "worked", "offsets": {"from": 220, "to": 500}},
+                                    {"text": "for16", "offsets": {"from": 520, "to": 900}},
+                                    {"text": "years.", "offsets": {"from": 920, "to": 1200}},
+                                ],
+                            }
+                        ],
+                    }
+                )
+
+                self.assertEqual(
+                    ["We", "worked", "for16", "years."],
+                    [word.text for word in transcript.segments[0].words],
+                )
+                self.assertEqual(
+                    "We worked for16 years.", transcript.segments[0].text
+                )
 
     def test_whisperx_accepts_pyannote_speakers_or_no_diarization(self):
         diarized = normalize_transcript(

@@ -18,6 +18,24 @@ from typing import Any, Callable, Iterable
 
 from .text_units import join_fragments
 
+# CrispASR's Parakeet decoder emits subword pieces without word spacing, so a
+# number can arrive glued to the word before it ("for16 years"). Match only
+# that seam: a maximal run of two or more cased letters, then a digit run that
+# ends the token apart from an ordinal or plural suffix.
+_GLUED_DIGITS = re.compile(
+    r"(?<![^\W\d_])"
+    r"([^\W\d_]{2,})"
+    r"(?=\d[\d.,:/]*(?:st|nd|rd|th|s)?(?![^\W_]))"
+)
+# Lowercase stems that name a format or a version, not a word and a number.
+_GLUED_DIGIT_PREFIXES = frozenset({"mp", "ipv", "utf", "sha", "gpt", "ps"})
+# A comma or semicolon glued to a number after a word ("know,70"). Digit
+# grouping ("1,900") has a digit before the comma, so it never matches.
+_GLUED_DIGIT_PUNCTUATION = re.compile(r"(?<=[^\W\d_])([,;])(?=\d)")
+# The CrispASR backends seen gluing numbers to words. Every other backend,
+# and output with no backend label, keeps its text as the engine wrote it.
+_GLUED_DIGIT_CRISPASR_BACKENDS = frozenset({"parakeet"})
+
 
 class TranscriptFormatError(ValueError):
     """Raised when no registered transcript adapter accepts an input."""
@@ -229,14 +247,39 @@ def _crisp_span(item: dict[str, Any], *, allow_zero: bool = False) -> tuple[int,
     return _valid_span(item.get("start"), item.get("end"), scale=1000.0, allow_zero=allow_zero)
 
 
+def split_glued_digits(text: str) -> str:
+    """Insert a space where a lowercase word, or a comma after a word, runs into a number.
+
+    Surfaces stay otherwise untouched: uppercase runs ("MP3", "iPhone15"),
+    lowercase technical prefixes ("mp3", "sha256"), and tokens whose digits
+    are followed by other letters ("abc123def", "für1990er") keep their
+    original spelling. Surrounding punctuation is left in place.
+    """
+
+    value = str(text or "")
+    if not value:
+        return value
+
+    def separate(match: re.Match[str]) -> str:
+        letters = match.group(1)
+        if not letters.islower() or letters.casefold() in _GLUED_DIGIT_PREFIXES:
+            return letters
+        return letters + " "
+
+    return _GLUED_DIGIT_PUNCTUATION.sub(r"\1 ", _GLUED_DIGITS.sub(separate, value))
+
+
 def _word(
     item: dict[str, Any],
     *,
     span_parser: Callable[[dict[str, Any]], tuple[int, int] | None],
     fallback_speaker: str = "",
+    text_transform: Callable[[str], str] | None = None,
 ) -> TimedWord | None:
     span = span_parser(item)
     text = str(item.get("text") or item.get("word") or "").strip()
+    if text_transform is not None:
+        text = text_transform(text)
     if not span or not text:
         return None
     excluded = {
@@ -262,6 +305,7 @@ def _segment(
     span_parser: Callable[[dict[str, Any]], tuple[int, int] | None],
     word_span_parser: Callable[[dict[str, Any]], tuple[int, int] | None],
     identifier: Any = "",
+    text_transform: Callable[[str], str] | None = None,
 ) -> TimedSegment | None:
     speaker = _speaker_from(item)
     raw_words = item.get("words")
@@ -272,7 +316,12 @@ def _segment(
                 parsed
                 for value in word_values
                 if isinstance(value, dict)
-                and (parsed := _word(value, span_parser=word_span_parser, fallback_speaker=speaker))
+                and (parsed := _word(
+                    value,
+                    span_parser=word_span_parser,
+                    fallback_speaker=speaker,
+                    text_transform=text_transform,
+                ))
             ),
             key=lambda value: (value.start_ms, value.end_ms),
         )
@@ -281,6 +330,8 @@ def _segment(
     if span is None and words:
         span = words[0].start_ms, max(word.end_ms for word in words)
     text = str(item.get("text") or "").strip()
+    if text_transform is not None:
+        text = text_transform(text)
     if not text and words:
         text = join_fragments(word.text for word in words)
     if not span or not text:
@@ -342,6 +393,11 @@ def _parse_crispasr(payload: dict[str, Any]) -> NormalizedTranscript:
     header = raw_header if isinstance(raw_header, dict) else {}
     backend = str(header.get("backend") or "")
     qwen_words = backend in {"qwen3", "qwen3-1.7b"}
+    # Only the CrispASR token streams that glue numbers to the preceding word
+    # are repaired here; backends with their own word spacing stay verbatim.
+    text_transform = (
+        split_glued_digits if backend in _GLUED_DIGIT_CRISPASR_BACKENDS else None
+    )
     segments = (
         parsed
         for item in groups
@@ -350,6 +406,7 @@ def _parse_crispasr(payload: dict[str, Any]) -> NormalizedTranscript:
             item,
             span_parser=_crisp_span,
             word_span_parser=partial(_crisp_span, allow_zero=qwen_words),
+            text_transform=text_transform,
         ))
     )
     diarization = "native" if backend == "moss-diarize" else "external-or-channel"

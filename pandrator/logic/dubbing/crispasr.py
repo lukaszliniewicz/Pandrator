@@ -356,6 +356,10 @@ class CrispASRTranscriptionResult:
     compute_backend: str
     resolved_language: str = ""
     routing: dict[str, Any] = field(default_factory=dict)
+    # Subtitle-composition counts: cue ends trimmed to remove an overlap, and
+    # cue ends left alone because trimming would create a micro-cue.
+    overlaps_clamped: int = 0
+    overlaps_unresolved: int = 0
 
 
 class CrispASRError(RuntimeError):

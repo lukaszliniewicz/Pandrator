@@ -611,15 +611,24 @@ def transcribe_source_file_with_metadata(
         )
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelled("Transcription was canceled.")
+    overlaps_clamped = 0
+    overlaps_unresolved = 0
     if require_word_timestamps:
         if progress_callback is not None:
             progress_callback(0.82, "Speech recognition complete; composing subtitles")
         if before_io is not None:
             before_io()
+        composition_report: dict[str, int] = {}
         Path(result.srt_path).write_text(
-            compose_from_transcript_json(result.word_timestamps_path, resolved_settings),
+            compose_from_transcript_json(
+                result.word_timestamps_path,
+                resolved_settings,
+                report=composition_report,
+            ),
             encoding="utf-8",
         )
+        overlaps_clamped = composition_report.get("overlaps_clamped", 0)
+        overlaps_unresolved = composition_report.get("overlaps_unresolved", 0)
         if before_io is not None:
             before_io()
         result_srt_path = postprocess_transcribed_srt(result.srt_path)
@@ -639,6 +648,8 @@ def transcribe_source_file_with_metadata(
         compute_backend=result.compute_backend,
         resolved_language=effective_language,
         routing=routing,
+        overlaps_clamped=overlaps_clamped,
+        overlaps_unresolved=overlaps_unresolved,
     )
 
 

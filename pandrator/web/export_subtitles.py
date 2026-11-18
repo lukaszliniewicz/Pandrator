@@ -98,7 +98,7 @@ def subtitle_export_diagnostics(
         "text_integrity": subtitle_text_integrity(source, finalized),
         "clamp_overlaps": bool(settings.get("clamp_overlaps")),
         "overlaps_clamped": int(report.get("overlaps_clamped") or 0),
-        "overlap_unresolved": int(report.get("overlap_unresolved") or 0),
+        "overlaps_unresolved": int(report.get("overlaps_unresolved") or 0),
     }
 
 

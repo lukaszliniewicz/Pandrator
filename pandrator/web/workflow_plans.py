@@ -737,6 +737,25 @@ class WorkflowExecutionPlanService:
                 return host not in {"localhost", "host.docker.internal"}
         return bool(provider and provider not in LOCAL_PROVIDER_IDS)
 
+    def _may_download_models(self, context: AccessContext) -> bool:
+        """Whether a run by this plan's actor may fetch a missing model.
+
+        It mirrors the acquisition gate the run itself passes
+        (``model_acquisition_for_actor``): only an Administrator, or the host.
+        """
+
+        from .accounts.administration import (
+            AdministratorRequired,
+            require_execution_administrator_actor,
+        )
+
+        try:
+            with execution_actor_scope(context.actor):
+                require_execution_administrator_actor(self.database, allow_host=True)
+        except AdministratorRequired:
+            return False
+        return True
+
     def _transcription_readiness(
         self,
         *,
@@ -1808,11 +1827,21 @@ class WorkflowExecutionPlanService:
             step.get("stage") == "transcribe" and step.get("decision") == "run"
             for step in steps
         ):
-            public_plan["transcription_readiness"] = self._transcription_readiness(
+            from pandrator.logic.dubbing.transcription_readiness import (
+                has_pending_download,
+                transcription_readiness_warnings,
+                withhold_downloads,
+            )
+
+            readiness = self._transcription_readiness(
                 session_id=session_id,
                 resolved=resolved,
                 target_stage=target_stage,
             )
+            if has_pending_download(readiness) and not self._may_download_models(context):
+                readiness = withhold_downloads(readiness)
+            public_plan["transcription_readiness"] = readiness
+            warnings.extend(transcription_readiness_warnings(readiness))
         execution_payload = dict(resolved.payload)
         if continuation:
             reused = {

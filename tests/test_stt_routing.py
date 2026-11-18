@@ -209,7 +209,7 @@ def test_shared_freezes_metadata_before_composition_and_uses_resolved_language(t
     stub = fake_transcript(tmp_path)
     dispatch = Mock(return_value=stub)
     monkeypatch.setattr(transcription, "transcribe", dispatch)
-    def compose(path, settings):
+    def compose(path, settings, **_kwargs):
         payload = json.loads(Path(path).read_text())
         assert payload["metadata"]["stt_routing"]["engine"] == "parakeet"
         assert payload["language"] == settings["stt_language"] == "pl"

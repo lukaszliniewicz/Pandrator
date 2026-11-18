@@ -430,6 +430,8 @@ def test_native_word_storage_failure_preserves_previous_output(case):
 def test_plain_asr_success_preserves_receipt_and_replaces_selection(case):
     result = _run(case)
     _assert_receipt(case, result, speaker_count=0, surfaces=["HELLO", "WORLD"])
+    assert result["overlaps_clamped"] == 0
+    assert result["overlaps_unresolved"] == 0
     with case.database.session() as session:
         assert (
             selected_artifacts(session, case.session.id)["transcribe"].id == result["artifact_id"]
@@ -444,6 +446,25 @@ def test_plain_asr_success_preserves_receipt_and_replaces_selection(case):
         )
     for path in case.protected_files:
         assert path.read_bytes() == case.before["files"][str(path)]
+
+
+@pytest.mark.parametrize("case", ["plain-asr"], indirect=True)
+def test_plain_asr_reports_the_composition_overlap_counts(case):
+    case.result = SimpleNamespace(
+        srt_path=case.result.srt_path,
+        word_timestamps_path=case.result.word_timestamps_path,
+        engine="fixture-asr",
+        compute_backend="cpu",
+        resolved_language="en",
+        routing={},
+        overlaps_clamped=15,
+        overlaps_unresolved=2,
+    )
+
+    result = _run(case)
+
+    assert result["overlaps_clamped"] == 15
+    assert result["overlaps_unresolved"] == 2
 
 
 def test_caption_native_moss_list_boundary_preserves_raw_bytes(case):

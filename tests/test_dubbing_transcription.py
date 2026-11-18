@@ -737,6 +737,65 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             self.assertEqual(segments[0].text, "Hello friend.")
             self.assertGreaterEqual(segments[0].end_ms - segments[0].start_ms, 833)
 
+    def test_transcribe_source_reports_composed_overlap_trimming(self):
+        words_payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "a",
+                    "start_ms": 0,
+                    "end_ms": 3000,
+                    "speaker": "A",
+                    "text": "alpha bravo charlie",
+                    "words": [
+                        {"text": "alpha", "start_ms": 0, "end_ms": 900},
+                        {"text": "bravo", "start_ms": 950, "end_ms": 1800},
+                        {"text": "charlie", "start_ms": 1850, "end_ms": 3000},
+                    ],
+                },
+                {
+                    "id": "b",
+                    "start_ms": 2840,
+                    "end_ms": 5200,
+                    "speaker": "B",
+                    "text": "delta echo foxtrot",
+                    "words": [
+                        {"text": "delta", "start_ms": 2840, "end_ms": 3600},
+                        {"text": "echo", "start_ms": 3650, "end_ms": 4300},
+                        {"text": "foxtrot", "start_ms": 4350, "end_ms": 5200},
+                    ],
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "overlap.wav"
+            source.write_bytes(b"normalized-wav")
+            words_path = Path(temp_dir) / "overlap_words.json"
+            words_path.write_text(json.dumps(words_payload), encoding="utf-8")
+            stub = crispasr.CrispASRTranscriptionResult(
+                srt_path=str(Path(temp_dir) / "overlap.srt"),
+                word_timestamps_path=str(words_path),
+                engine="parakeet",
+                compute_backend="cpu",
+            )
+            with patch.object(
+                transcription, "transcribe", return_value=stub
+            ) as native:
+                result = transcription.transcribe_source_file_with_metadata(
+                    temp_dir,
+                    source,
+                    {"stt_engine": "parakeet", "stt_language": "en"},
+                    source_is_normalized=True,
+                )
+
+            native.assert_called_once()
+            self.assertEqual(1, result.overlaps_clamped)
+            self.assertEqual(0, result.overlaps_unresolved)
+            cues = srt_utils.parse_srt(Path(result.srt_path).read_text(encoding="utf-8"))
+            self.assertEqual([0, 2840], [cue.start_ms for cue in cues])
+            self.assertEqual([2760, 5200], [cue.end_ms for cue in cues])
+
     def test_untimed_qwen_preserves_native_srt_and_records_routing_and_isolation(self):
         from pandrator.logic.dubbing import qwen_asr
 

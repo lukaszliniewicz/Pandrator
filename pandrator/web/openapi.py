@@ -3353,7 +3353,13 @@ def build_openapi_document() -> dict:
                                             "scope": {"type": "string", "const": "local_model_files"},
                                             "status": {
                                                 "type": "string",
-                                                "enum": ["cached", "missing", "unresolved", "not_required"],
+                                                "enum": [
+                                                    "cached",
+                                                    "missing",
+                                                    "unresolved",
+                                                    "not_required",
+                                                    "will_download",
+                                                ],
                                             },
                                             "ready": {"type": ["boolean", "null"]},
                                             "engine": {"type": "string"},
