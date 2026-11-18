@@ -223,8 +223,9 @@ def test_export_variant_forwards_explicit_and_default_version_side(side, audio_m
     application = Mock()
     application.create_workflow_plan.return_value = {"id": "plan-1"}
     runtime = SimpleNamespace(require_application=lambda: application)
+    # Plans come back in the compact summary view unless view="full" is asked for.
     assert plan_export_variant(runtime, PlanExportVariantInput(**arguments)).result == {
-        "id": "plan-1"
+        "id": "plan-1", "view": "summary", "omitted": []
     }
     expected_output = {
         "generation_run_id": "run-1",

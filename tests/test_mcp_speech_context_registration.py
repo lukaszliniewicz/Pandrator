@@ -137,7 +137,7 @@ def test_native_context_schema_is_optional_and_strict(tmp_path: Path) -> None:
             return await client.list_tools()
 
     tools = asyncio.run(discover()).tools
-    assert len(tools) == 231
+    assert len(tools) == 232
     names = {tool.name for tool in tools}
     assert "pandrator_preview_subtitle_passages" in names
     assert "pandrator_patch_subtitle_passages" in names
