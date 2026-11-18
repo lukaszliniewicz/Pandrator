@@ -54,6 +54,26 @@ def test_minimum_block_gap_accepts_bounds_and_preserves_other_settings(value):
     assert settings == {"synchronization_min_block_gap_ms": value, "unrelated": "kept"}
 
 
+@pytest.mark.parametrize("value", [0, 1, "true", None, 1.5])
+def test_trim_silence_rejects_non_boolean_values(value):
+    with pytest.raises(ValueError, match="synchronization_trim_silence.*boolean"):
+        validate_audio_pause_settings({"synchronization_trim_silence": value})
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_trim_silence_defaults_on_and_accepts_both_booleans(case, value):
+    assert BUILTIN_DEFAULTS["audio"]["synchronization_trim_silence"] is True
+    settings = {"synchronization_trim_silence": value, "unrelated": "kept"}
+    validate_audio_pause_settings(settings)
+    assert settings["unrelated"] == "kept"
+
+    workspace = case["services"]["workspace_settings"]
+    session_id = case["session_id"]
+    workspace.update(session_id, "audio", 0, {"synchronization_trim_silence": value})
+    resolved, _ = workspace.resolve(session_id, sections=["audio"])
+    assert resolved["audio"]["synchronization_trim_silence"] is value
+
+
 def test_minimum_block_gap_default_validation_and_explicit_zero_round_trip(case):
     services = case["services"]
     workspace = services["workspace_settings"]

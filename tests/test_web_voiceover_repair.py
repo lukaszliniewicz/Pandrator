@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pydub import AudioSegment
 from pydub.generators import Sine
 from sqlalchemy import func, select
 
@@ -1126,6 +1127,43 @@ class VoiceoverRepairTests(unittest.TestCase):
                     self.assertEqual(actual["original_audio_ms"], duration)
                     self.assertEqual(actual["start_delay_ms"], delay)
                     self.assertEqual(end + actual["drift_after_ms"], cursor)
+
+    def test_timing_preview_measures_the_trimmed_block(self):
+        self.plan(enabled=False)
+
+        def synth(text, *_args, **_kwargs):
+            return (
+                AudioSegment.silent(duration=300, frame_rate=24_000)
+                + Sine(440, sample_rate=24_000).to_audio_segment(duration=270)
+                + AudioSegment.silent(duration=400, frame_rate=24_000)
+            )
+
+        self.generate(synth)
+        groups, _ = _load_groups(self.handlers, self.run_id)
+        group = groups[0]
+        for trim, expected in ((True, 390), (False, 970)):
+            with (
+                self.subTest(trim=trim),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                settings = {
+                    "synchronization_speed": 1.0,
+                    "synchronization_delay_ms": 0,
+                    "synchronization_slowdown_enabled": False,
+                    "synchronization_trim_silence": trim,
+                }
+                diagnostics = {}
+                _cursor, duration, _delay = advance_timing(
+                    group,
+                    0,
+                    group.end_ms,
+                    settings,
+                    Path(temporary),
+                    threading.Event(),
+                    diagnostics=diagnostics,
+                )
+                self.assertEqual(expected, duration)
+                self.assertEqual(expected, diagnostics["original_audio_ms"])
 
     def test_plan_change_during_repair_is_not_overwritten(self):
         self.plan()

@@ -573,6 +573,21 @@ class GenerationAudioIdentityTests(unittest.TestCase):
         prepared = self.generation.prepare_start(session_id, run_override=changed, stale_only=True)
         self.assertEqual(segment_ids[1:], prepared["requested_segment_ids"])
 
+    def test_trim_silence_setting_stays_out_of_the_take_identity(self):
+        from pandrator.web.generation_audio_identity import _material_settings
+
+        session_id, _revision_id, _segment_ids = self._create_case()
+        snapshot = self._resolved(session_id, self._override())
+        self.assertIs(True, snapshot["audio"]["synchronization_trim_silence"])
+        flipped = {
+            **snapshot,
+            "audio": {**snapshot["audio"], "synchronization_trim_silence": False},
+        }
+
+        # Assembly-time trimming must not invalidate existing takes: the key is
+        # a built-in audio default, so it stays out of the material settings.
+        self.assertEqual(_material_settings(snapshot), _material_settings(flipped))
+
     def test_legacy_take_identity_is_playable_but_not_reused(self):
         session_id, _revision_id, segment_ids = self._create_case()
         self._seed_takes(

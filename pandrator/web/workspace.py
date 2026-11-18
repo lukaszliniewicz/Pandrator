@@ -83,6 +83,13 @@ from .source_library import SourceLibraryService as SourceLibraryService
 from .source_resolution import resolve_primary_source as resolve_primary_source
 from .workspace_settings import WorkspaceSettingsService as WorkspaceSettingsService
 
+# Changes whenever assembly output changes for the same settings; it is part of
+# the stored assembly snapshot, so earlier assemblies no longer match. Bumping
+# it invalidates every stored assembly: they are rebuilt at the next export.
+OUTPUT_ASSEMBLY_ALGORITHM_VERSION = 2
+# Assemblies stored before the version field existed predate version 2.
+LEGACY_OUTPUT_ASSEMBLY_ALGORITHM_VERSION = 1
+
 
 def output_assembly_settings_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Return the settings that materially define assembled audio.
@@ -106,6 +113,11 @@ def output_assembly_settings_snapshot(snapshot: dict[str, Any]) -> dict[str, Any
     return {
         "audio": dict(snapshot.get("audio") or {}),
         "output": {key: output.get(key) for key in assembly_output_keys},
+        # Bumped whenever assembly output changes for settings that did not
+        # change, so an assembly built by an earlier algorithm stops matching
+        # and is rebuilt at the next export. Version 2 trims the silence
+        # around each speech block before fitting it to the subtitle timing.
+        "assembly_algorithm": OUTPUT_ASSEMBLY_ALGORITHM_VERSION,
     }
 
 
@@ -387,6 +399,13 @@ def output_assembly_matches(
         settings_container,
         expected_boundaries,
     ):
+        return False
+    stored_algorithm = stored_resolved.get("assembly_algorithm")
+    if not isinstance(stored_algorithm, int) or isinstance(stored_algorithm, bool):
+        stored_algorithm = LEGACY_OUTPUT_ASSEMBLY_ALGORITHM_VERSION
+    if stored_algorithm != OUTPUT_ASSEMBLY_ALGORITHM_VERSION:
+        # The stored render was produced by different assembly code, so its
+        # output for the same settings is not the one the caller expects.
         return False
     return (
         assembly.settings_hash == expected_settings_hash

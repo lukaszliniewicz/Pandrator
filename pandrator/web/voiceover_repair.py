@@ -23,10 +23,12 @@ from pandrator.logic.dubbing.audio_sync import (
     NATURAL_OVERRUN_TOLERANCE_RATIO,
     _speed_up_wav_streaming,
     _streaming_audio_duration_ms,
+    _trim_block_wav,
     alignment_adjustment,
     min_block_gap_ms_from_settings,
     sentence_gap_ms_from_settings,
     slowdown_enabled_from_settings,
+    trim_silence_enabled_from_settings,
 )
 from pandrator.logic.dubbing.early_repair import find_repair_boundary
 from pandrator.logic.dubbing.timing_drift import PlacedSpeechBlock, late_cue_metrics
@@ -256,6 +258,14 @@ def advance_timing(
     duration = assemble_audio_plan(
         plan, source, backend="streaming", work_dir=work, cancel_event=cancel_event
     ).duration_ms
+    if trim_silence_enabled_from_settings(settings):
+        # Assembly fits the trimmed block, so the preview measures that one.
+        trimmed_source, trimmed_lead_ms, trimmed_tail_ms = _trim_block_wav(
+            source, work / "timing-input-trimmed.wav"
+        )
+        if trimmed_lead_ms or trimmed_tail_ms:
+            source = trimmed_source
+            duration = _streaming_audio_duration_ms(source)
     start = max(0, group.start_ms)
     cursor = max(cursor, start)
     slot_end = max(start + 1, slot_end)

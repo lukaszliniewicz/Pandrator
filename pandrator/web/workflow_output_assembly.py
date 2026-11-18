@@ -63,6 +63,7 @@ def assemble_generation_output(
         min_block_gap_ms_from_settings,
         sentence_gap_ms_from_settings,
         slowdown_enabled_from_settings,
+        trim_silence_enabled_from_settings,
     )
     from pandrator.logic.dubbing.models import AudioAlignmentBlock
 
@@ -420,6 +421,8 @@ def assemble_generation_output(
             "mode": "sequential",
             "block_count": len(loaded),
             "speed_adjusted_block_count": 0,
+            "silence_trimmed_ms": 0,
+            "silence_trimmed_block_count": 0,
         }
 
         prove()
@@ -598,7 +601,7 @@ def assemble_generation_output(
                     raw_speed * 100 if raw_speed <= 10 else raw_speed
                 )
                 logger.info(
-                    "Assembling %s with subtitle timing: blocks=%d max_speed=%.3fx max_delay=%dms sentence_gap=%dms min_block_gap=%dms slowdown=%s",
+                    "Assembling %s with subtitle timing: blocks=%d max_speed=%.3fx max_delay=%dms sentence_gap=%dms min_block_gap=%dms slowdown=%s trim=%s",
                     assembly_id,
                     len(alignment_blocks),
                     max(1.0, speed_up_percent / 100.0),
@@ -609,6 +612,7 @@ def assemble_generation_output(
                     sentence_gap_ms_from_settings(audio_settings),
                     min_block_gap_ms_from_settings(audio_settings),
                     slowdown_enabled_from_settings(audio_settings),
+                    trim_silence_enabled_from_settings(audio_settings),
                 )
                 progress(
                     0.48,
@@ -629,6 +633,7 @@ def assemble_generation_output(
                         allow_slowdown=slowdown_enabled_from_settings(audio_settings),
                         sentence_gap_ms=sentence_gap_ms_from_settings(audio_settings),
                         min_block_gap_ms=min_block_gap_ms_from_settings(audio_settings),
+                        trim_silence=trim_silence_enabled_from_settings(audio_settings),
                         output_path=temporary_path / "aligned.wav",
                         diagnostics=alignment_diagnostics,
                         backend=backend,

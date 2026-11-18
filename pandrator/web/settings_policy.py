@@ -323,6 +323,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "synchronization_slowdown_enabled": True,
         "synchronization_sentence_gap_ms": 100,
         "synchronization_min_block_gap_ms": 100,
+        "synchronization_trim_silence": True,
     },
     "rvc": {
         "enabled": False,
@@ -928,3 +929,6 @@ def validate_audio_pause_settings(value: dict[str, Any]) -> None:
     key = "synchronization_min_block_gap_ms"
     if key in value and (type(value[key]) is not int or not 0 <= value[key] <= 5000):
         raise ValueError(f"{key} must be an integer from 0 to 5000.")
+    key = "synchronization_trim_silence"
+    if key in value and type(value[key]) is not bool:
+        raise ValueError(f"{key} must be a boolean.")

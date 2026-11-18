@@ -376,6 +376,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "synchronization_slowdown_enabled": "Enabled by default. Preserves the voiceover start delay first, then applies proportionate pitch-preserving slowdown down to 0.9x using the remaining room in the block's own cue span. Playback that starts late can still slow down if it finishes within that cue and before the next block. Explicitly saved off settings remain off.",
         "synchronization_sentence_gap_ms": "Adds this many milliseconds between sentence files inside one subtitle-timed speech block before alignment computes catch-up speed.",
         "synchronization_min_block_gap_ms": "Keeps at least this much inserted silence between speech blocks, including while catching up. Alignment reserves the gap when calculating speed, start delay and slowdown. Longer source pauses remain; if the maximum speed cannot fit speech and the gap, the remaining delay carries forward. Zero disables the minimum. No extra gap is added after the final block.",
+        "synchronization_trim_silence": "Trims silence before and after each speech block's audio before fitting it to the subtitle timing, keeping a short margin. Speech providers often pad short takes with silence, which pushes later speech late. Turn off to fit takes exactly as generated.",
     },
     "rvc": {
         "enabled": "Enables applying the selected RVC voice-conversion model to generated or explicitly converted audio; a model is still required for conversion.",
@@ -1073,6 +1074,10 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "maximum": 5000,
             "unit": "milliseconds",
             "applicability": "Subtitle-timed voiceover assembly and timing repair.",
+        },
+        "synchronization_trim_silence": {
+            "applicability": "Subtitle-timed voiceover assembly and timing repair.",
+            "caveat": "Only the outer edges of a block are trimmed; the pause between takes inside a block and any silence inside a take remain.",
         },
     },
     "rvc": {

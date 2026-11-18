@@ -465,6 +465,7 @@ before being fitted to the shared timing window. Relevant assembly defaults:
 | `synchronization_slowdown_enabled` | `true` | Preserve start-delay priority, then apply proportionate pitch-preserving slowdown down to 0.9× within the remaining own-cue time. Account for incoming playback delay and the next block's start; slowdown must fit both boundaries. |
 | `synchronization_sentence_gap_ms` | `100` | Silence inserted between sentence files inside one speech block, before alignment. |
 | `synchronization_min_block_gap_ms` | `100` | Minimum inserted silence between independent speech blocks, including during catch-up. Reserved when fitting speech; longer pauses remain. Zero disables this minimum. No extra gap follows the final block. |
+| `synchronization_trim_silence` | `true` | Trim the silence before and after each block's audio before fitting it, keeping 40 ms in front and 80 ms behind. Only the block's outer edges are trimmed; pauses between takes and inside a take remain. |
 | `audio_verification_mode` | `off` | Optional signal-level checks for suspicious generated audio. |
 | `sentence_silence_ms` | `250` | Narration pause after a sentence; timed subtitle blocks normally derive timing from the source instead. |
 | `paragraph_silence_ms` | `700` | Narration pause after a paragraph. |
