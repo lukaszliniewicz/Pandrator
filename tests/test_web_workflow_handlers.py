@@ -2697,6 +2697,35 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         with self.database.session() as db:
             self.assertEqual(secret, db.get(StoredCredential, (initial_personal_workspace(db).id, key)).secret_value)
 
+    def test_reviewable_start_hands_its_job_to_generation(self):
+        """A workflow continuation's generation reports pace and retries on its job."""
+
+        _path, _source_bytes, source = self._reviewable_start_source()
+        revision_id, _ = self.handlers._store_generation_plan(
+            self.session.id, [{"text": "Native narration."}],
+            settings={"service": "XTTS"}, source_artifact_id=source.id,
+        )
+        job = self.handlers.jobs.enqueue(
+            "workflow.continue", {"session_id": self.session.id}, session_id=self.session.id
+        )
+        captured = []
+        payload = {
+            "session_id": self.session.id, "source_artifact_id": source.id,
+            "settings": {"service": "XTTS"}, "speech_plan_revision_id": revision_id,
+        }
+        with mock.patch.object(
+            self.handlers, "run_generation",
+            side_effect=lambda value, _progress, _cancel: captured.append(value) or {},
+        ):
+            self.handlers._run_reviewable_generation(
+                payload, self.progress, threading.Event(), job_id=job.id
+            )
+            self.handlers._run_reviewable_generation(
+                payload, self.progress, threading.Event()
+            )
+        self.assertEqual(job.id, captured[0]["_job_id"])
+        self.assertNotIn("_job_id", captured[1])
+
     def test_reviewable_start_redacts_snapshot_sections_without_mutating_inputs(self):
         path, source_bytes, source = self._reviewable_start_source()
         payload = {

@@ -258,6 +258,9 @@ def run_reviewable_generation(
                 "generation_run_id": run_id,
                 "segment_ids": [],
                 "operation": "generate",
+                # The running job's heartbeats read pace and retries from the
+                # progress state opened under this ID.
+                **({"_job_id": job_id} if job_id else {}),
             },
             lambda value, detail=None: progress(
                 0.03 + max(0.0, min(1.0, float(value))) * 0.97, detail
