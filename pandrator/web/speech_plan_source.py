@@ -1,9 +1,13 @@
 """Which subtitle source a speech plan was prepared from, and whether it still fits.
 
 A plan depends on two narrower things than the artifact's exact identity: the
-spoken text of every passage, and the cue windows those passages occupy. A
+spoken text of every passage, and the passage windows the plan is fitted to. A
 timing-only edit (trimmed cue ends) keeps the first and changes the second, so
 its takes stay usable and only the fit needs rebuilding.
+
+Display cue windows are deliberately not part of either signature: a display
+reflow (a different line width, say) keeps the passages, so the plan built from
+them is unchanged. A saved cue retime rewrites the passage window it owns.
 """
 
 from __future__ import annotations
@@ -21,8 +25,9 @@ from .settings_policy import stable_hash
 SIGNATURE_VERSION = 1
 TIMING_ONLY_WARNING = (
     "Subtitle timing changed after this plan was prepared, but the text did not. "
-    "Existing audio is kept and still follows the plan's timing; prepare the speech "
-    "plan again to fit it to the new timing (no audio is regenerated)."
+    "The current audio still follows the plan's timing. Prepare the speech plan "
+    "again to fit the new timing: preparing starts no generation, and takes that "
+    "can be reused carry forward."
 )
 # Artifact roles whose passages are the display subtitles a plan is built from.
 _SUBTITLE_ROLES = frozenset(

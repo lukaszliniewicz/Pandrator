@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -9,10 +11,15 @@ import pytest
 from pandrator.web import models as m
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.settings_policy import RevisionConflict
 from pandrator.web.speech_plan_source import (
     plan_source_compatibility,
     source_plan_settings,
     source_signatures,
+)
+from pandrator.web.workflow_generation_start import (
+    GenerationStartContext,
+    run_reviewable_generation,
 )
 
 SRT = (
@@ -325,3 +332,76 @@ def test_revision_without_a_source_artifact_stays_compatible():
         )
         == "exact"
     )
+
+
+class _PastTheGuard(Exception):
+    """Raised where generation would materialize its plan."""
+
+
+def _start_generation(services, session_id, source, revision_id):
+    def materialize(*_args, **_kwargs):
+        raise _PastTheGuard
+
+    context = GenerationStartContext(
+        database=services.database,
+        _resolve_input=lambda _artifact_id: (source, Path("source.srt")),
+        _generation_language=lambda *_args: "nl",
+        _materialize_subtitle_generation_plan=materialize,
+        _store_generation_plan=None,
+        run_generation=lambda *_args: {},
+        _secret_free_tts_settings=lambda settings: settings,
+    )
+    run_reviewable_generation(
+        context,
+        {
+            "session_id": session_id,
+            "source_artifact_id": source.id,
+            "speech_plan_revision_id": revision_id,
+            "settings": {},
+        },
+        lambda *_args, **_kwargs: None,
+        Event(),
+    )
+
+
+def test_generation_start_keeps_a_plan_whose_subtitles_were_only_retimed(app_case):
+    services, session_id = app_case
+    original = _timed_artifact(
+        services,
+        session_id,
+        "translation.srt",
+        cues=[(1000, 3000, "Hello, world."), (4000, 6000, "Second thought.")],
+    )
+    retimed = _timed_artifact(
+        services,
+        session_id,
+        "retimed.srt",
+        cues=[(1000, 2920, "Hello, world."), (4000, 5920, "Second thought.")],
+    )
+    reworded = _timed_artifact(
+        services,
+        session_id,
+        "reworded.srt",
+        cues=[(1000, 3000, "Hello, world."), (4000, 6000, "Third thought.")],
+    )
+    with services.database.immediate_session() as db:
+        plan = m.GenerationPlan(session_id=session_id)
+        db.add(plan)
+        db.flush()
+        revision = m.GenerationPlanRevision(
+            plan_id=plan.id,
+            revision_number=1,
+            content_hash="reviewed-plan",
+            settings_json={
+                "_source_artifact_id": original.id,
+                **source_plan_settings(db, db.get(m.Artifact, original.id)),
+            },
+        )
+        db.add(revision)
+        db.flush()
+        plan.active_revision_id = revision.id
+        revision_id = revision.id
+    with pytest.raises(_PastTheGuard):
+        _start_generation(services, session_id, retimed, revision_id)
+    with pytest.raises(RevisionConflict, match="different generation input"):
+        _start_generation(services, session_id, reworded, revision_id)
