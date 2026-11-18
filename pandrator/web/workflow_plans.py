@@ -1080,9 +1080,12 @@ class WorkflowExecutionPlanService:
         effective_export: dict[str, dict[str, Any]] | None = None
         export_context: dict[str, Any] = {}
         if target_stage == "export":
-            effective_export, export_context = self._export_effective_settings(
-                session_id, supplied, resolved
-            )
+            # Settings reads check access against the execution actor, so read
+            # them as the plan's principal, not as an ambient caller.
+            with execution_actor_scope(context.actor):
+                effective_export, export_context = self._export_effective_settings(
+                    session_id, supplied, resolved
+                )
         disclosures = self._provider_disclosures(resolved)
         external = [item for item in disclosures if self._is_external(item)]
         resource_services = [
