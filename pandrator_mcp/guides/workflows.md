@@ -20,8 +20,8 @@ The supported workflow kinds are:
 For transcription alone, use `pandrator_transcribe` without creating a session.
 Supply a file relative to an approved MCP-host source root, or a base64 clip
 up to 8 MiB, a stable idempotency key, and `format=txt|srt|json`. The tool
-uploads the source and waits up to 30 seconds; pending work returns a temporary
-transcription ID. Retrieve it with `pandrator_transcription_get` and page large
+uploads the source and waits at most the server ceiling, 25 seconds by default;
+pending work returns a temporary transcription ID. Retrieve it with `pandrator_transcription_get` and page large
 results with `pandrator_transcription_result`. Results expire one hour after
 completion. `pandrator_transcription_cancel` stops work and
 `pandrator_transcription_delete` removes temporary data. Recognition uses the

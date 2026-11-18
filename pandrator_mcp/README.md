@@ -121,12 +121,15 @@ batch order before the next wave. A parent model can populate the initial
 capsule itself or delegate that extraction first. Serial mode additionally
 hands accepted boundary output to the next worker.
 
-`pandrator_get_work` accepts an optional bounded `wait_seconds` (up to one
-hour). It polls according to the application's `poll_after_ms` hint, clamped
-to a safe 250 ms–10 s interval, and returns wait telemetry. A host's own MCP
-request or gateway timeout can still end the call before this application-side
-wait expires, so clients should preserve the returned work handle and follow
-the generated `next_action` when necessary.
+`pandrator_get_work` accepts an optional bounded `wait_seconds`. Every
+server-side wait is capped by `maximum_wait_seconds`, 25 seconds by default, so
+long schema maxima no longer outlive a host's own request timeout. Waits poll
+according to the application's `poll_after_ms` hint, clamped to a safe
+250 ms–10 s interval, and return `wait_requested_seconds`,
+`wait_effective_seconds`, `elapsed_seconds`, `poll_count` and `timed_out`.
+Poll again while `timed_out` is true; a true timeout never means the work
+finished. Clients should preserve the returned work handle and follow the
+generated `next_action` when necessary.
 
 `pandrator_describe_parameters` is the filtered parameter-discovery surface.
 Provide at least one section, name, workflow kind, or query filter; the sidecar
@@ -235,8 +238,10 @@ workflow planning can then continue with narration preparation.
 
 The source must already be managed and attached. Use
 `pandrator_import_local_source` for a file beneath an operator-approved named
-root, or attach a source returned by `pandrator_list_sources`. The cleanup
-tools themselves never accept an arbitrary filesystem path.
+root, `pandrator_import_source_url` for a public http(s) page that the Pandrator
+host downloads with yt-dlp, or attach a source returned by
+`pandrator_list_sources`. The cleanup tools themselves never accept an
+arbitrary filesystem path.
 
 ### Speech-optimization dispatch
 
@@ -391,6 +396,20 @@ Other commands own their own option, for example
 `pandrator-mcp print-config` prints a public projection without credential
 references.
 
+### Process settings
+
+Two runtime settings tune this process; neither appears in a model-visible tool
+argument.
+
+| Setting | CLI flag | Environment | Default | Effect |
+| --- | --- | --- | --- | --- |
+| `request_timeout_seconds` | none | none | 15 s | One application request before the client reports an unknown outcome. |
+| `maximum_wait_seconds` | `--max-wait-seconds` | `PANDRATOR_MCP_MAX_WAIT_SECONDS` | 25 s | Ceiling for any server-side tool wait; a longer requested wait is clamped and reported. |
+
+Set the ceiling below your host's own MCP request timeout. `--max-wait-seconds` applies to
+`pandrator-mcp stdio` and `pandrator-mcp http`; the environment variable applies to
+every entry point, including the Manager-owned HTTP service.
+
 ### Approved local files and outputs
 
 The operator chooses which sidecar-host directories are visible.
@@ -433,6 +452,12 @@ identical managed source when possible, otherwise uploads it in resumable
 chunks, and then attaches it with the inspected session revision. Upload state
 and completion results are replayable, so an interrupted model turn can safely
 continue.
+
+`pandrator_import_source_url` is the alternative when the media is already
+published somewhere public, such as a video page. The route refuses any scheme
+other than http(s) and any URL without a host before a job exists; the download
+job then rejects private, loopback and other non-public addresses at download
+time. It returns a work handle, so poll it with `pandrator_get_work`.
 
 For text already present in the conversation, `pandrator_create_text_source`
 creates and attaches a bounded UTF-8 source directly. This avoids manufacturing

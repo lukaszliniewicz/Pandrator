@@ -15,6 +15,12 @@ from ..schemas.generation_operations import (
     GetGenerationOperationInput,
     GetGenerationRunCoverageInput,
 )
+from ..waits import (
+    effective_wait_seconds,
+    requested_wait_seconds,
+    wait_ceiling,
+    wait_receipt,
+)
 
 _WORK_STATES = frozenset({"queued", "running", "waiting", "succeeded", "failed", "cancelled"})
 _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
@@ -160,6 +166,7 @@ def _next_actions(
     *,
     include_coverage: bool,
     wait_seconds: int,
+    ceiling: int,
 ) -> list[NextAction]:
     state = summary["state"]
     operation_id = summary["id"]
@@ -169,7 +176,7 @@ def _next_actions(
                 tool="pandrator_get_generation_operation",
                 arguments={
                     "operation_id": operation_id,
-                    "wait_seconds": max(1, min(wait_seconds or 30, 60)),
+                    "wait_seconds": max(1, min(wait_seconds or ceiling, ceiling)),
                     "include_coverage": include_coverage,
                 },
                 reason="Continue polling the same stable generation operation until it reaches a terminal state.",
@@ -218,11 +225,11 @@ def get_generation_operation(
         _GenerationOperationApplication,
         runtime.require_application(),
     )
-    requested_seconds = arguments.wait_seconds
+    requested_seconds = requested_wait_seconds(arguments.wait_seconds)
+    effective_seconds = effective_wait_seconds(runtime, requested_seconds)
     started_at = time.monotonic()
-    deadline = started_at + requested_seconds
+    deadline = started_at + effective_seconds
     poll_count = 0
-    timed_out = False
 
     while True:
         payload = application.get_generation_operation(
@@ -234,8 +241,7 @@ def get_generation_operation(
         if summary["state"] in _TERMINAL_STATES:
             break
         now = time.monotonic()
-        if requested_seconds == 0 or now >= deadline:
-            timed_out = requested_seconds > 0
+        if effective_seconds == 0 or now >= deadline:
             break
         delay = min(
             max(summary["poll_after_ms"] / 1_000.0, 0.1),
@@ -243,7 +249,6 @@ def get_generation_operation(
             max(0.0, deadline - now),
         )
         if delay <= 0:
-            timed_out = True
             break
         time.sleep(delay)
 
@@ -251,9 +256,14 @@ def get_generation_operation(
     summary.update(
         {
             "wait_requested_seconds": requested_seconds,
+            "wait_effective_seconds": effective_seconds,
             "elapsed_seconds": round(elapsed_seconds, 3),
             "poll_count": poll_count,
-            "timed_out": timed_out,
+            "timed_out": wait_receipt(
+                requested=requested_seconds,
+                effective=effective_seconds,
+                terminal=summary["state"] in _TERMINAL_STATES,
+            )["timed_out"],
         }
     )
 
@@ -276,7 +286,8 @@ def get_generation_operation(
         next_actions=_next_actions(
             summary,
             include_coverage=arguments.include_coverage,
-            wait_seconds=requested_seconds,
+            wait_seconds=effective_seconds,
+            ceiling=wait_ceiling(runtime),
         ),
     )
 

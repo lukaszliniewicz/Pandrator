@@ -37,6 +37,20 @@ class ApplicationSourceMethods(ApplicationRequests):
             parameters=parameters or None,
         )
 
+    def import_source_url(
+        self,
+        session_id: str,
+        *,
+        url: str,
+    ) -> dict[str, Any]:
+        """Queue one public-URL download on the Pandrator host."""
+
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/sources/url",
+            method="POST",
+            body={"url": url},
+        )
+
     def attach_existing_source(
         self,
         session_id: str,

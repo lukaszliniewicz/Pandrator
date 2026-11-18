@@ -476,3 +476,47 @@ class DispatchHandlerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DelegationContextCapsuleTests(unittest.TestCase):
+    def test_empty_values_are_ignored_and_empty_keys_still_fail(self):
+        capsule = CreateDispatchRunInput(
+            session_id="session-1",
+            kind="correction",
+            idempotency_key="create:empty-context",
+            context_capsule={
+                "overview": "Shared",
+                "terminology": {"kept": "kept value", "blank": "", "spaces": "   "},
+                "entities": {"empty": ""},
+                "style_rules": ["", "Keep titles formal.", "  "],
+                "notes": [""],
+            },
+        )
+        self.assertEqual({"kept": "kept value"}, capsule.context_capsule.terminology)
+        self.assertEqual({}, capsule.context_capsule.entities)
+        self.assertEqual(["Keep titles formal."], capsule.context_capsule.style_rules)
+        self.assertEqual([], capsule.context_capsule.notes)
+        with self.assertRaises(ValidationError):
+            CreateDispatchRunInput(
+                session_id="session-1",
+                kind="correction",
+                idempotency_key="create:empty-key",
+                context_capsule={"terminology": {"": "value"}},
+            )
+
+    def test_empty_context_values_reach_the_application_cleaned(self):
+        application = _Application()
+        runtime = SimpleNamespace(require_application=lambda: application)
+        create_dispatch_run(
+            runtime,
+            CreateDispatchRunInput(
+                session_id="session-1",
+                kind="correction",
+                idempotency_key="create:cleaned-context",
+                context_capsule={"notes": ["", "Real note"], "entities": {"blank": ""}},
+            ),
+        )
+        capsule = application.calls[0][1]["context_capsule"]
+        self.assertEqual(["Real note"], capsule["notes"])
+        self.assertEqual({}, capsule["entities"])
+        self.assertEqual({}, capsule["terminology"])

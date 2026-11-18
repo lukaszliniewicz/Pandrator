@@ -611,6 +611,17 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_import_source_url",
+            "Import and attach a source from a public URL",
+            "ImportSourceUrlInput",
+            RiskClass.WRITE,
+            "app.write",
+            "downloadSourceUrl",
+            "POST",
+            "/api/v1/sessions/{sessionId}/sources/url",
+            True,
+        ),
+        ActionSpec(
             "pandrator_transcribe",
             "Upload and transcribe a source",
             "TranscribeInput",

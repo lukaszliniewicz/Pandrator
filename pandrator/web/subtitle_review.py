@@ -688,7 +688,11 @@ def _review_passage_rows(
                 raise ValueError("Logical source references do not belong to the selected source.")
             selected = [by_passage[value] for value in supplied]
             if {row["id"] for row in selected} != {row["id"] for row in owned}:
-                raise ValueError("Logical source references conflate or omit selected source passages.")
+                raise ValueError(
+                    "This subtitle artifact is organised in logical passages, and this edit "
+                    "would split or drop one. Use pandrator_patch_subtitle_passages (preview "
+                    "the passages with pandrator_preview_subtitle_passages first)."
+                )
             owned = selected
         if not owned:
             raise ValueError("Reviewed cue has no selected logical source passage.")

@@ -69,6 +69,7 @@ from .schemas import (
     GetWorkLogInput,
     GuideTopic,
     ImportLocalSourceInput,
+    ImportSourceUrlInput,
     ImportSubtitlesInput,
     ListArtifactsInput,
     ListSourcesInput,
@@ -123,6 +124,7 @@ from .tools import (
     get_work_log,
     get_workflow,
     import_local_source,
+    import_source_url,
     import_subtitles,
     list_artifacts,
     list_sources,
@@ -152,6 +154,7 @@ from .tools.workflow_inputs import (
     get_workflow_inputs,
     select_workflow_input,
 )
+from .waits import WAIT_DESCRIPTION
 
 _STDOUT_GUARD = threading.Lock()
 
@@ -968,6 +971,26 @@ def build_server(runtime: McpRuntime):
             ),
         )
 
+    @server.tool(
+        name="pandrator_import_source_url",
+        title="Import and attach a source from a public URL",
+        annotations=write_action,
+    )
+    def source_url_import_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        url: Annotated[str, Field(min_length=8, max_length=4_096)],
+    ) -> dict[str, Any]:
+        """Download a source from a public http(s) URL, such as a video page, on the Pandrator host with yt-dlp. Returns a work handle; poll it with pandrator_get_work."""
+
+        return _call_with_input_factory(
+            import_source_url,
+            runtime,
+            lambda: ImportSourceUrlInput(
+                session_id=session_id,
+                url=url,
+            ),
+        )
+
     register_transcription_tools(
         server,
         runtime,
@@ -1219,7 +1242,7 @@ def build_server(runtime: McpRuntime):
         context_capsule: DelegationContextCapsuleInput | None = None,
         materialize: bool = False,
         filename: Annotated[NativeNullableString, Field(max_length=255)] = None,
-        wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
+        wait_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 0,
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
         packet_format: Literal["standard", "compact"] = "compact",
         response_mode: Literal["standard", "structured"] = "standard",
@@ -1645,7 +1668,7 @@ def build_server(runtime: McpRuntime):
         work_type: Literal["job", "manager_operation"] = "job",
         include_events: bool = False,
         event_limit: Annotated[int, Field(ge=1, le=200)] = 50,
-        wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
+        wait_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 0,
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Inspect work, optionally polling until terminal or the wait deadline."""

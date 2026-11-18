@@ -4,7 +4,8 @@
 
 Retain `generation_operation_id` from the generation or regeneration receipt.
 When advertised, poll `pandrator_get_generation_operation` with the stable
-`operation_id` and a bounded `wait_seconds` (up to 60); choose
+`operation_id` and a bounded `wait_seconds` (the server waits at most 25 seconds
+per call by default; poll again while `timed_out` is true); choose
 `response_mode="structured"` only when the host consumes `structuredContent`,
 otherwise use `standard`. Its stable ID follows preparation
 and the committed synthesis job across reloads. Phase and state describe work;

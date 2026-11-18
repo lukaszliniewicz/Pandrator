@@ -1040,18 +1040,56 @@ _ContextValue = Annotated[str, Field(min_length=1, max_length=2_000)]
 _ContextNote = Annotated[str, Field(min_length=1, max_length=2_000)]
 
 
+def _blank_context(value: object) -> bool:
+    return isinstance(value, str) and not value.strip()
+
+
 class _DispatchContextFields(StrictModel):
     terminology: dict[_ContextKey, _ContextValue] = Field(
         default_factory=dict,
         max_length=500,
+        description="Source term to preferred renderings. Empty values are ignored.",
     )
     entities: dict[_ContextKey, _ContextValue] = Field(
         default_factory=dict,
         max_length=500,
+        description="Named entity to a short note. Empty values are ignored.",
     )
-    style_rules: list[_ContextNote] = Field(default_factory=list, max_length=200)
-    decisions: list[_ContextNote] = Field(default_factory=list, max_length=200)
-    notes: list[_ContextNote] = Field(default_factory=list, max_length=200)
+    style_rules: list[_ContextNote] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Standing style rules. Empty items are ignored.",
+    )
+    decisions: list[_ContextNote] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Accepted decisions that later batches must respect. Empty items are ignored.",
+    )
+    notes: list[_ContextNote] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Free-form context notes. Empty items are ignored.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_empty_values(cls, value: Any) -> Any:
+        """Ignore blank values exactly as the MCP schema and normalisers do."""
+
+        if not isinstance(value, dict):
+            return value
+        cleaned = dict(value)
+        for name in ("terminology", "entities"):
+            entries = cleaned.get(name)
+            if isinstance(entries, dict):
+                cleaned[name] = {
+                    key: item for key, item in entries.items() if not _blank_context(item)
+                }
+        for name in ("style_rules", "decisions", "notes"):
+            entries = cleaned.get(name)
+            if isinstance(entries, list):
+                cleaned[name] = [item for item in entries if not _blank_context(item)]
+        return cleaned
 
 
 class DispatchContextDelta(_DispatchContextFields):

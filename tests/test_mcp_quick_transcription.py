@@ -516,6 +516,7 @@ class QuickTranscriptionToolTests(unittest.TestCase):
                 handle=reader,
                 filename="clip.wav",
                 size_bytes=10,
+                wait_seconds=25,
             )
 
         self.assertEqual("source_changed", error.exception.code)

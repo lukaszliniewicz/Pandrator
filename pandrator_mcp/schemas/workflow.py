@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from ..waits import WAIT_DESCRIPTION
 from .common import ToolInput
 from .delegation import DelegationExecutionMixin
 
@@ -102,7 +103,10 @@ class PlanWorkflowInput(ToolInput):
     ] = "generate_audio"
     overrides: dict[str, Any] = Field(default_factory=dict)
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
-    continuation: bool = Field(default=True, description="Include prerequisite workflow stages. Use false for export-only planning from existing inputs/audio.")
+    continuation: bool = Field(
+        default=True,
+        description="Include prerequisite workflow stages. Use false for export-only planning from existing inputs/audio.",
+    )
     reuse_stages: list[str] = Field(
         default_factory=list,
         max_length=20,
@@ -165,13 +169,15 @@ class PlanOrchestratedWorkflowInput(DelegationExecutionMixin):
     subtitle_format: Literal["srt", "vtt"] = "srt"
     materialize: bool = False
     filename: str | None = Field(default=None, max_length=255)
-    wait_seconds: int = Field(default=0, ge=0, le=3_600)
+    wait_seconds: int = Field(default=0, ge=0, le=3_600, description=WAIT_DESCRIPTION)
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
 
     @model_validator(mode="after")
     def validate_existing_audio_export(self):
         if self.generation_run_id and (self.final_stage != "export" or self.passive_stages):
-            raise ValueError("A selected generation run requires export with no upstream passive stages.")
+            raise ValueError(
+                "A selected generation run requires export with no upstream passive stages."
+            )
         return self
 
     @field_validator("goal")

@@ -287,3 +287,26 @@ def test_publication_failure_rolls_back_artifact_source_asset_and_selection(libr
     completed = execute(f, receipt)
     assert completed.status == "failed" and "Synthetic selection" in completed.error_message
     assert counts(f) == before
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("file:///etc/passwd", "must use http or https"),
+        ("ftp://example.com/media", "must use http or https"),
+        ("https:///no-host", "must use http or https"),
+        ("https://user:secret@example.com/media", "must not contain a user name"),
+    ],
+)
+def test_url_scheme_and_host_are_refused_before_any_job_exists(library, url, message):
+    f, u = library, library.u
+    record = project(u.alice, u.ah, u.workspace_id)
+    before = counts(f)
+    response = u.alice.post(
+        f"/api/v1/sessions/{record['id']}/sources/url", json={"url": url}, headers=u.ah
+    )
+    assert response.status_code == 422, response.get_json()
+    error = response.get_json()["error"]
+    assert error["code"] == "validation_error"
+    assert message in error["message"]
+    assert counts(f) == before

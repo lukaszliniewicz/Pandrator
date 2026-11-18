@@ -11,8 +11,9 @@ documents, prompts, credentials, arbitrary Manager task inputs, or raw results.
 
 Generation and regeneration return `generation_operation_id`. Use
 `pandrator_get_generation_operation` with that ID to follow preparation into
-synthesis without changing handles. Bounded waits run up to 60 seconds; structured
-responses keep the routine receipt small. Terminal synthesis includes selected-run
+synthesis without changing handles. Bounded waits stop at the process ceiling,
+25 seconds by default, and report `timed_out`; structured responses keep the
+routine receipt small. Terminal synthesis includes selected-run
 coverage: included, effective, generated, inherited and missing audio counts, missing-file
 counts and `export_ready`. Read it independently with
 `pandrator_get_generation_run_coverage` for any saved run. Readiness concerns

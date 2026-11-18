@@ -8,6 +8,8 @@ from pandrator.web.dispatch_context import (
     context_capsule_for_wave,
     execution_policy,
     merge_context_capsule,
+    normalize_context_capsule,
+    normalize_context_delta,
     store_context_delta,
     wave_bounds,
 )
@@ -172,3 +174,48 @@ def test_merge_rejects_individually_valid_deltas_that_overfill_the_capsule():
 
     with pytest.raises(ValueError, match="Merged context capsule exceeds"):
         merge_context_capsule(initial, [(0, delta)])
+
+
+def test_empty_context_values_are_dropped_rather_than_rejected():
+    capsule = DispatchContextCapsule.model_validate(
+        {
+            "overview": "A historical novel.",
+            "terminology": {"kept": "kept value", "blank": "", "spaces": "   "},
+            "entities": {"name": "Alice", "empty": ""},
+            "style_rules": ["Keep titles formal.", "", "  "],
+            "notes": ["", "One note"],
+        }
+    )
+    assert capsule.terminology == {"kept": "kept value"}
+    assert capsule.entities == {"name": "Alice"}
+    assert capsule.style_rules == ["Keep titles formal."]
+    assert capsule.notes == ["One note"]
+    delta = DispatchContextDelta.model_validate({"notes": ["", " "], "terminology": {"a": ""}})
+    assert delta.notes == [] and delta.terminology == {}
+
+
+def test_empty_context_keys_are_still_invalid():
+    with pytest.raises(ValidationError):
+        DispatchContextCapsule.model_validate({"terminology": {"": "value"}})
+    with pytest.raises(ValidationError):
+        DispatchContextDelta.model_validate({"entities": {"": "value"}})
+
+
+def test_normalizers_drop_empty_values_for_direct_http_callers():
+    capsule = normalize_context_capsule(
+        {
+            "terminology": {"kept": "kept value", "blank": ""},
+            "entities": {"empty": "   "},
+            "notes": ["", "One note", "   "],
+            "style_rules": [""],
+        }
+    )
+    assert capsule["terminology"] == {"kept": "kept value"}
+    assert capsule["entities"] == {}
+    assert capsule["notes"] == ["One note"]
+    assert capsule["style_rules"] == []
+    delta = normalize_context_delta(
+        {"entities": {"empty": ""}, "decisions": ["", "Kept decision"]}
+    )
+    assert delta["entities"] == {}
+    assert delta["decisions"] == ["Kept decision"]

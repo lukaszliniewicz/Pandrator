@@ -23,11 +23,35 @@ from ..schemas.transcription import (
     TranscribeInput,
     validate_transcription_filename,
 )
+from ..waits import effective_wait_seconds, wait_receipt
 from .e2e import _named_source_root, _open_contained_file, _relative_parts
 
 MAX_LOCAL_BYTES = 256 * 1024 * 1024
 MAX_CHUNK_BYTES = 8 * 1024 * 1024
 HASH_CHUNK_BYTES = 1024 * 1024
+_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "interrupted"})
+
+
+def _terminal(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("status") or "").strip().lower() in _TERMINAL_STATUSES
+
+
+def _with_wait_receipt(
+    payload: dict[str, Any],
+    *,
+    requested: int,
+    effective: int,
+) -> dict[str, Any]:
+    return {
+        **payload,
+        **wait_receipt(
+            requested=requested,
+            effective=effective,
+            terminal=_terminal(payload),
+        ),
+    }
 
 
 def _invalid(message: str, **details: Any) -> PandratorMcpError:
@@ -58,6 +82,7 @@ def _upload_and_start(
     handle: BinaryIO,
     size_bytes: int,
     arguments: TranscribeInput,
+    wait_seconds: int,
 ) -> dict[str, Any]:
     transcription_id = str(initial.get("id") or "").strip()
     if not transcription_id:
@@ -72,7 +97,7 @@ def _upload_and_start(
         return application.get_transcription(
             transcription_id,
             format=arguments.format,
-            wait_seconds=arguments.wait_seconds,
+            wait_seconds=wait_seconds,
         )
 
     chunk_size = _integer(initial, "chunk_size", MAX_CHUNK_BYTES)
@@ -111,11 +136,11 @@ def _upload_and_start(
         return application.get_transcription(
             transcription_id,
             format=arguments.format,
-            wait_seconds=arguments.wait_seconds,
+            wait_seconds=wait_seconds,
         )
     return application.start_transcription(
         transcription_id,
-        wait_seconds=arguments.wait_seconds,
+        wait_seconds=wait_seconds,
     )
 
 
@@ -126,6 +151,7 @@ def _transcribe_handle(
     handle: BinaryIO,
     filename: str,
     size_bytes: int,
+    wait_seconds: int,
     before_stat: os.stat_result | None = None,
 ) -> ToolOutcome:
     if size_bytes > MAX_LOCAL_BYTES:
@@ -200,6 +226,7 @@ def _transcribe_handle(
         handle=handle,
         size_bytes=size_bytes,
         arguments=arguments,
+        wait_seconds=wait_seconds,
     )
     if before_stat is not None:
         after_stat = os.fstat(handle.fileno())
@@ -218,7 +245,15 @@ def _transcribe_handle(
                 "source_changed",
                 "The local transcription source changed while it was being uploaded.",
             )
-    return ToolOutcome(result=result)
+    return ToolOutcome(
+        result=_with_wait_receipt(
+            result,
+            requested=arguments.wait_seconds,
+            effective=wait_seconds,
+        )
+        if isinstance(result, dict)
+        else result
+    )
 
 
 def _decode_base64(source: Base64TranscriptionSource) -> bytes:
@@ -237,6 +272,7 @@ def _decode_base64(source: Base64TranscriptionSource) -> bytes:
 def transcribe(runtime: McpRuntime, arguments: TranscribeInput) -> ToolOutcome:
     """Upload a local or inline source, resume missing chunks, and start it."""
 
+    wait_seconds = effective_wait_seconds(runtime, arguments.wait_seconds)
     source = arguments.source
     if isinstance(source, LocalFileTranscriptionSource):
         _, root = _named_source_root(runtime, source.root)
@@ -259,6 +295,7 @@ def transcribe(runtime: McpRuntime, arguments: TranscribeInput) -> ToolOutcome:
                     handle=handle,
                     filename=filename,
                     size_bytes=before_stat.st_size,
+                    wait_seconds=wait_seconds,
                     before_stat=before_stat,
                 )
         except OSError as error:
@@ -276,6 +313,7 @@ def transcribe(runtime: McpRuntime, arguments: TranscribeInput) -> ToolOutcome:
         handle=BytesIO(decoded),
         filename=filename,
         size_bytes=len(decoded),
+        wait_seconds=wait_seconds,
     )
 
 
@@ -283,12 +321,20 @@ def get_transcription(
     runtime: McpRuntime,
     arguments: GetTranscriptionInput,
 ) -> ToolOutcome:
+    wait_seconds = effective_wait_seconds(runtime, arguments.wait_seconds)
+    result = runtime.require_application().get_transcription(
+        arguments.id,
+        format=arguments.format,
+        wait_seconds=wait_seconds,
+    )
     return ToolOutcome(
-        result=runtime.require_application().get_transcription(
-            arguments.id,
-            format=arguments.format,
-            wait_seconds=arguments.wait_seconds,
+        result=_with_wait_receipt(
+            result,
+            requested=arguments.wait_seconds,
+            effective=wait_seconds,
         )
+        if isinstance(result, dict)
+        else result
     )
 
 

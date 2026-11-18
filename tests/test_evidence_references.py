@@ -445,3 +445,29 @@ def test_thousand_real_rows_use_two_bound_json_arrays_and_limit_before_body(case
         "FROM subtitle_evidence" in statement or "FROM jobs" in statement
         for statement, _ in rejected
     )
+
+
+def test_cue_review_route_returns_the_passage_guidance_verbatim(case, monkeypatch):
+    enable(case, monkeypatch)
+    client, csrf = login(case, "owner")
+    src = source(case, client, csrf)
+    guidance = (
+        "This subtitle artifact is organised in logical passages, and this edit would "
+        "split or drop one. Use pandrator_patch_subtitle_passages (preview the passages "
+        "with pandrator_preview_subtitle_passages first)."
+    )
+    services = case.app.extensions["pandrator"]["services"]
+
+    def reject(*_args, **_kwargs):
+        raise ValueError(guidance)
+
+    monkeypatch.setattr(services.subtitle_mutations, "save_review", reject)
+    response = client.post(
+        f"/api/v1/sessions/{src.session_id}/subtitles/transcription/review",
+        json={"expected_revision": 1, "segments": [{"start_ms": 0, "end_ms": 1000, "text": "x"}]},
+        headers=headers(csrf, "passage-guidance-http"),
+    )
+    assert response.status_code == 422
+    error = response.get_json()["error"]
+    assert error["code"] == "validation_error"
+    assert error["message"] == guidance

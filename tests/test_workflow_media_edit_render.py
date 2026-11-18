@@ -234,6 +234,8 @@ def _assert_pair(case, result=None):
             assert result["document_id"] == document.id
             assert result["document_revision_id"] == revision.id
             assert result["word_timestamps_artifact_id"] == words_artifact.id
+            assert "word_timestamps_path" not in result
+            assert not any("stage-runs" in str(value) for value in result.values())
             assert result["word_count"] == 2 and result["duration_ms"] == 2000
     assert (case.paths.root / subtitle.relative_path).is_file()
     assert (case.paths.root / words_artifact.relative_path).is_file()

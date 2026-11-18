@@ -21,6 +21,7 @@ from .route_context import RouteContext
 from .schemas import SourceAttachRequest, SourceReuseRequest, SourceUpdateRequest, SourceUrlRequest
 from .settings_policy import RevisionConflict as WorkspaceRevisionConflict
 from .source_document_reads import list_revision_words, list_session_documents
+from .source_urls import parse_source_url
 
 
 def register_source_library_routes(
@@ -428,13 +429,19 @@ def register_source_ingestion_routes(app: DomainBlueprints, context: RouteContex
     @ingress_guard("source.download_url")
     def source_download_url(session_id: str):
         payload = SourceUrlRequest.model_validate(request.get_json(silent=True) or {})
+        # Reject an unusable scheme or host before any job exists; the job
+        # repeats this check and resolves the host at download time.
+        try:
+            source_url = parse_source_url(payload.url).geturl()
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         try:
             with database.immediate_session() as unit:
                 require_source_ingress_access(unit, session_id, "source.download_url")
                 job = jobs.enqueue_in_session(
                     unit,
                     "source.download_url",
-                    {"session_id": session_id, "url": payload.url},
+                    {"session_id": session_id, "url": source_url},
                     session_id=session_id,
                     resource_keys=[f"session:{session_id}"],
                 )

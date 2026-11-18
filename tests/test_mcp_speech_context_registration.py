@@ -93,7 +93,7 @@ def test_native_speech_context_forwarding(tmp_path: Path, capsys, mode: str, del
 
 
 @pytest.mark.parametrize("mode", ["auto", "legacy"])
-@pytest.mark.parametrize("delta", [{"entities": {"Alice": ""}}, {"unexpected": "field"}])
+@pytest.mark.parametrize("delta", [{"unexpected": "field"}])
 def test_native_invalid_context_does_not_submit(tmp_path: Path, mode: str, delta) -> None:
     runtime, calls, application = speech_runtime(tmp_path)
     before = (_REQUEST_ID.get(), _TRACE_ID.get())
@@ -111,6 +111,24 @@ def test_native_invalid_context_does_not_submit(tmp_path: Path, mode: str, delta
     )
 
 
+@pytest.mark.parametrize("mode", ["auto", "legacy"])
+def test_native_empty_context_values_are_ignored_not_rejected(tmp_path: Path, mode: str) -> None:
+    runtime, calls, application = speech_runtime(tmp_path)
+    delta = {"entities": {"Alice": "", "Bob": "narrator"}, "notes": ["", "  "]}
+
+    async def call():
+        async with Client(build_server(runtime), mode=mode, raise_exceptions=False) as client:
+            return await client.call_tool(TOOL, {**BASE, "context_delta": delta})
+
+    value = envelope(asyncio.run(call()))
+    assert value["result"]["accepted"] is True
+    assert len(calls) == len(application.mock_calls) == 1
+    forwarded = calls[0]["kwargs"]["context_delta"]
+    assert forwarded["entities"] == {"Bob": "narrator"}
+    assert forwarded["notes"] == []
+    assert forwarded["terminology"] == {}
+
+
 def test_native_context_schema_is_optional_and_strict(tmp_path: Path) -> None:
     runtime, calls, application = speech_runtime(tmp_path)
 
@@ -119,7 +137,7 @@ def test_native_context_schema_is_optional_and_strict(tmp_path: Path) -> None:
             return await client.list_tools()
 
     tools = asyncio.run(discover()).tools
-    assert len(tools) == 230
+    assert len(tools) == 231
     names = {tool.name for tool in tools}
     assert "pandrator_preview_subtitle_passages" in names
     assert "pandrator_patch_subtitle_passages" in names

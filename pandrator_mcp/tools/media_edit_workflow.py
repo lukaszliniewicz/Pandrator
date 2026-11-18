@@ -14,6 +14,7 @@ from ..schemas.media_edit_workflow import (
     MediaEditSourceReference,
     PlanMediaEditWorkflowInput,
 )
+from ..waits import effective_wait_seconds
 
 _ACTIVE_RUN_STATES = frozenset({"queued", "ready", "running", "finalizing"})
 _COMPLETE_STATES = frozenset({"complete", "completed", "succeeded"})
@@ -289,9 +290,15 @@ def _source_action(
     if source.source_asset_id is not None:
         tool = "pandrator_attach_existing_source"
         arguments["source_asset_id"] = source.source_asset_id
+        reason = f"Attach the supplied {role} source using the inspected session revision."
     else:
         tool = "pandrator_import_local_source"
         arguments.update({"root": source.root, "relative_path": source.relative_path})
+        reason = (
+            f"Attach the supplied {role} source using the inspected session revision. "
+            "For a source published at a public http(s) URL, use "
+            "pandrator_import_source_url instead of downloading it first."
+        )
     arguments["idempotency_key"] = _idempotency_key(
         "attach" if tool.endswith("attach_existing_source") else "import",
         session_id=session_id,
@@ -300,11 +307,7 @@ def _source_action(
         instructions=instructions,
         inputs={"role": role, **arguments},
     )
-    return _next_action(
-        tool,
-        arguments,
-        f"Attach the supplied {role} source using the inspected session revision.",
-    )
+    return _next_action(tool, arguments, reason)
 
 
 def _workflow_transcribe_summary(
@@ -358,6 +361,7 @@ def plan_media_edit_workflow(
 
     application = runtime.require_application()
     session = _mapping(application.get_session(arguments.session_id))
+    wait_seconds = effective_wait_seconds(runtime, arguments.wait_seconds)
     if (session.get("workflow_kind") or session.get("kind")) != "media_edit":
         raise PandratorMcpError(
             "ineligible_session",
@@ -555,7 +559,7 @@ def plan_media_edit_workflow(
                     "work_type": "job",
                     "work_id": str(stage.get("job_id")),
                     "include_events": True,
-                    "wait_seconds": arguments.wait_seconds,
+                    "wait_seconds": wait_seconds,
                 },
                 "The transcribe/alignment stage is already running; monitor its durable work item.",
             )
@@ -792,7 +796,7 @@ def plan_media_edit_workflow(
                                     "work_type": "job",
                                     "work_id": render_job_id,
                                     "include_events": True,
-                                    "wait_seconds": arguments.wait_seconds,
+                                    "wait_seconds": wait_seconds,
                                 },
                                 "The reviewed media-edit render is already running; monitor its durable work item.",
                             )
@@ -801,8 +805,8 @@ def plan_media_edit_workflow(
                             render_arguments = {
                                 "session_id": arguments.session_id,
                                 "revision": active_revision,
-                                "wait": arguments.wait_seconds > 0,
-                                "timeout_seconds": arguments.wait_seconds,
+                                "wait": wait_seconds > 0,
+                                "timeout_seconds": wait_seconds,
                             }
                             render_arguments["idempotency_key"] = _idempotency_key(
                                 "render",

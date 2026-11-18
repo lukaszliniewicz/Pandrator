@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from ..waits import WAIT_DESCRIPTION
 from .common import ToolInput
 from .sessions import _guard_settings
 
@@ -102,7 +103,7 @@ class PlanMediaEditWorkflowInput(ToolInput):
     caption_alignment_min_confidence: float = Field(default=0.5, ge=0.5, le=1.0)
     caption_alignment_fallback_coverage: float = Field(default=0.9, ge=0.0, le=1.0)
     stt_overrides: dict[str, Any] = Field(default_factory=dict)
-    wait_seconds: int = Field(default=0, ge=0, le=3_600)
+    wait_seconds: int = Field(default=0, ge=0, le=3_600, description=WAIT_DESCRIPTION)
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
     materialize: bool = False
     filename: str | None = Field(default=None, max_length=255)

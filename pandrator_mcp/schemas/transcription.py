@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 
+from ..waits import WAIT_DESCRIPTION
 from .common import ToolInput
 
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
@@ -99,10 +100,10 @@ class TranscribeInput(ToolInput):
     )
     compute_backend: Literal["auto", "cpu", "cuda", "vulkan", "metal"] | None = None
     qwen_asr_model: Literal["qwen3_asr_0_6b", "qwen3_asr_1_7b"] | None = None
-    transcription_vocal_isolation: Literal[
-        "off", "bs_roformer", "mel_band_roformer", "htdemucs"
-    ] | None = None
-    wait_seconds: int = Field(default=30, ge=0, le=30)
+    transcription_vocal_isolation: (
+        Literal["off", "bs_roformer", "mel_band_roformer", "htdemucs"] | None
+    ) = None
+    wait_seconds: int = Field(default=30, ge=0, le=30, description=WAIT_DESCRIPTION)
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,
@@ -113,7 +114,7 @@ class TranscribeInput(ToolInput):
 class GetTranscriptionInput(ToolInput):
     id: str = Field(min_length=1, max_length=120)
     format: Literal["txt", "srt", "json"] | None = None
-    wait_seconds: int = Field(default=0, ge=0, le=30)
+    wait_seconds: int = Field(default=0, ge=0, le=30, description=WAIT_DESCRIPTION)
 
 
 class GetTranscriptionResultInput(ToolInput):

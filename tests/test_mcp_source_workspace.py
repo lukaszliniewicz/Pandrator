@@ -19,8 +19,10 @@ from pandrator_mcp.clients.application_sources import ApplicationSourceMethods
 from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.schemas.e2e import CreateTextSourceInput, ImportLocalSourceInput
+from pandrator_mcp.schemas.sessions import ImportSourceUrlInput
 from pandrator_mcp.server import build_server
 from pandrator_mcp.tools import e2e
+from pandrator_mcp.tools.sessions import import_source_url as import_source_url_tool
 from tests.test_account_authentication_integration import case as case  # noqa: F401
 from tests.test_evidence_access_routes import body, team
 from tests.test_mcp_e2e import _runtime
@@ -220,3 +222,78 @@ def test_registered_mcp_source_tools_expose_optional_workspace_and_forward_it(tm
         ]
         == "team"
     )
+
+
+def test_url_import_tool_returns_the_queued_work_handle(tmp_path):
+    runtime, application = fake_runtime(tmp_path)
+    calls = []
+
+    def import_url(session_id, *, url):
+        calls.append((session_id, url))
+        return {
+            "id": "job-url-1",
+            "kind": "source.download_url",
+            "session_id": session_id,
+            "status": "queued",
+            "progress": 0.0,
+            "progress_detail": "Queued",
+        }
+
+    application.import_source_url = import_url
+    outcome = import_source_url_tool(
+        runtime,
+        ImportSourceUrlInput(session_id="session-1", url="https://example.com/watch?v=1"),
+    )
+
+    assert calls == [("session-1", "https://example.com/watch?v=1")]
+    assert outcome.work.id == "job-url-1"
+    assert outcome.work.state == "queued"
+    assert outcome.result["work"]["id"] == "job-url-1"
+    assert outcome.result["url"] == "https://example.com/watch?v=1"
+    assert outcome.next_actions[0].tool == "pandrator_get_work"
+    assert outcome.next_actions[0].arguments == {
+        "work_type": "job",
+        "work_id": "job-url-1",
+        "wait_seconds": 25,
+    }
+
+
+def test_url_import_tool_calls_the_authenticated_route_through_the_client(case, monkeypatch):
+    u = team(case, monkeypatch)
+    record = project(u.alice, u.ah, u.workspace_id)
+    application = SourceHttpClient(u.alice, u.ah)
+    runtime = cast(McpRuntime, SimpleNamespace(require_application=lambda: application))
+    url = "https://video.example.invalid/watch?v=fixture"
+    outcome = import_source_url_tool(
+        runtime, ImportSourceUrlInput(session_id=record["id"], url=url)
+    )
+    assert [path for path, _ in application.calls] == [
+        f"/api/v1/sessions/{record['id']}/sources/url"
+    ]
+    assert application.calls[0][1]["body"] == {"url": url}
+    assert outcome.work.id and outcome.work.state == "queued"
+    assert outcome.result["kind"] == "source.download_url"
+
+
+def test_url_import_tool_is_registered_with_the_source_write_scope(tmp_path):
+    from pandrator_mcp.catalog import ACTION_CATALOG, RiskClass
+
+    runtime, _application = fake_runtime(tmp_path)
+    action = ACTION_CATALOG.get("pandrator_import_source_url")
+    assert action.risk == RiskClass.WRITE
+    assert action.required_scope == "app.write"
+    assert action.downstream_operation_id == "downloadSourceUrl"
+    assert action.method == "POST"
+    assert action.path == "/api/v1/sessions/{sessionId}/sources/url"
+    assert action.enabled and not action.requires_idempotency
+
+    async def exercise():
+        async with Client(build_server(runtime), mode="auto", raise_exceptions=True) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            schema = tools["pandrator_import_source_url"].input_schema
+            assert set(schema["required"]) == {"session_id", "url"}
+            assert schema["properties"]["url"]["minLength"] == 8
+            assert schema["properties"]["url"]["maxLength"] == 4_096
+            assert "yt-dlp" in tools["pandrator_import_source_url"].description
+
+    asyncio.run(exercise())

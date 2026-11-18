@@ -21,6 +21,7 @@ from ..schemas import (
     PlanOrchestratedWorkflowInput,
     PlanWorkflowInput,
 )
+from ..waits import effective_wait_seconds
 from ..work_mapping import application_work_reference
 from ..workflow_results import workflow_plan_outcome
 
@@ -568,7 +569,7 @@ def plan_orchestrated_workflow(
             "work_type": "job",
             "work_id": "<work id returned by pandrator_execute_workflow_plan>",
             "include_events": False,
-            "wait_seconds": min(arguments.wait_seconds, 60),
+            "wait_seconds": effective_wait_seconds(runtime, arguments.wait_seconds),
         },
         "completion_condition": (
             "The returned durable work state is succeeded; inspect its error and "

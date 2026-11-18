@@ -82,7 +82,13 @@ def test_native_transcription_options_forwarded(
 
     result = asyncio.run(call())
     value = envelope(result)
-    assert value["result"] == {"id": "transcription-1", "status": "queued"}
+    assert value["result"] == {
+        "id": "transcription-1",
+        "status": "queued",
+        "wait_requested_seconds": 30,
+        "wait_effective_seconds": 25,
+        "timed_out": True,
+    }
     assert value["work"] is None
     assert value["warnings"] == value["next_actions"] == []
     assert (_REQUEST_ID.get(), _TRACE_ID.get()) == before
@@ -104,7 +110,7 @@ def test_native_transcription_options_forwarded(
         "idempotency_key": KEY,
     }
     assert calls[1]["args"] == ["transcription-1"]
-    assert calls[1]["kwargs"] == {"format": "txt", "wait_seconds": 30}
+    assert calls[1]["kwargs"] == {"format": "txt", "wait_seconds": 25}
     assert len(application.mock_calls) == len(calls) == 2
     assert all(c["headers"]["X-Request-ID"] == value["request_id"] for c in calls)
     captured = capsys.readouterr()

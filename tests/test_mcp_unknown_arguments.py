@@ -108,9 +108,18 @@ def test_declared_arguments_keep_native_success_and_correlation(
             return await client.call_tool(name, arguments)
 
     value = envelope(asyncio.run(call()))
-    assert value["result"] == (
+    expected = (
         {"status": "ready"} if kind == "empty" else {"id": "transcription-1", "status": "queued"}
     )
+    if kind != "empty":
+        expected.update(
+            {
+                "wait_requested_seconds": 30 if kind == "nested" else 0,
+                "wait_effective_seconds": 25 if kind == "nested" else 0,
+                "timed_out": kind == "nested",
+            }
+        )
+    assert value["result"] == expected
     assert all(c["headers"]["X-Request-ID"] == value["request_id"] for c in calls)
     assert len(calls) == (2 if kind == "nested" else 1)
     assert len(application.mock_calls) == (0 if kind == "empty" else len(calls))
@@ -129,7 +138,7 @@ def test_every_registered_tool_advertises_closed_top_level_arguments(tmp_path: P
             return await client.list_tools()
 
     tools = asyncio.run(discover()).tools
-    assert len(tools) == 230
+    assert len(tools) == 231
     names = {tool.name for tool in tools}
     assert "pandrator_preview_subtitle_passages" in names
     assert "pandrator_patch_subtitle_passages" in names

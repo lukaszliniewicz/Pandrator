@@ -119,8 +119,9 @@ preview remains a separate check when needed.
 ## 5. Generate and deliver
 
 Review the selected plan and generate it. Retain the returned work ID and use
-`pandrator_get_work(wait_for="terminal", wait_seconds=30)` when the transport
-permits. Assemble the selected completed takes, then export and download the
+`pandrator_get_work(wait_for="terminal", wait_seconds=25)` when the transport
+permits. The server caps every wait at 25 seconds by default, so poll again
+while the result reports `timed_out`. Assemble the selected completed takes, then export and download the
 requested result. Generation, assembly, and export are distinct outcomes.
 
 If delivery analysis is wanted, run it after accepting speaker structure. Qwen

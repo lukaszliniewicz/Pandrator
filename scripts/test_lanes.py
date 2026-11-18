@@ -250,6 +250,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_workflow_inputs.py",
         "tests/test_mcp_workflow_transport.py",
         "tests/test_mcp_work_polling.py",
+        "tests/test_mcp_wait_ceiling.py",
         "tests/test_mcp_delegation_schema.py",
         "tests/test_mcp_source_cleaning_dispatch.py",
         "tests/test_mcp_doctor.py",

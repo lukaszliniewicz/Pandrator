@@ -44,22 +44,40 @@ def empty_context_capsule() -> dict[str, Any]:
     }
 
 
+def _blank(value: object) -> bool:
+    """Whether an optional context value or note carries no content."""
+
+    return isinstance(value, str) and not value.strip()
+
+
+def _context_map(raw: object) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(key): str(item) for key, item in raw.items() if not _blank(item)
+    }
+
+
+def _context_list(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if not _blank(item)]
+
+
 def normalize_context_capsule(value: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Return only the stable, explicitly supported capsule fields."""
+    """Return only the stable, explicitly supported capsule fields.
+
+    Empty values and empty items are dropped rather than rejected, so a caller
+    that assembles a capsule from optional parts need not filter them first.
+    """
 
     source = dict(value or {})
     result = empty_context_capsule()
     result["overview"] = str(source.get("overview") or "")
     for field in _MAP_FIELDS:
-        raw = source.get(field)
-        result[field] = (
-            {str(key): str(item) for key, item in raw.items()}
-            if isinstance(raw, Mapping)
-            else {}
-        )
+        result[field] = _context_map(source.get(field))
     for field in _LIST_FIELDS:
-        raw = source.get(field)
-        result[field] = [str(item) for item in raw] if isinstance(raw, list) else []
+        result[field] = _context_list(source.get(field))
     validate_context_size(
         result,
         maximum_bytes=MAX_CONTEXT_CAPSULE_BYTES,
@@ -74,15 +92,9 @@ def normalize_context_delta(value: Mapping[str, Any] | None) -> dict[str, Any]:
     source = dict(value or {})
     result: dict[str, Any] = {}
     for field in _MAP_FIELDS:
-        raw = source.get(field)
-        result[field] = (
-            {str(key): str(item) for key, item in raw.items()}
-            if isinstance(raw, Mapping)
-            else {}
-        )
+        result[field] = _context_map(source.get(field))
     for field in _LIST_FIELDS:
-        raw = source.get(field)
-        result[field] = [str(item) for item in raw] if isinstance(raw, list) else []
+        result[field] = _context_list(source.get(field))
     validate_context_size(
         result,
         maximum_bytes=MAX_CONTEXT_DELTA_BYTES,

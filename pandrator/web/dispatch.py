@@ -1979,9 +1979,15 @@ class DispatchRunService:
                         "from another session, subtitle revision, or cue."
                     )
                 if evidence.status in {"queued", "running"}:
-                    raise ValueError(
-                        f"Correction uncertainty {position} references evidence "
-                        "that is still running."
+                    raise DispatchError(
+                        "evidence_pending",
+                        (
+                            f"Correction uncertainty {position} references evidence that "
+                            "is still running. Wait for it with "
+                            "pandrator_get_subtitle_evidence, or submit the uncertainty "
+                            "without evidence_ids."
+                        ),
+                        409,
                     )
             start_ms, end_ms = DispatchRunService._normalize_timing(valid[cue_id])
             normalized[cue_id] = {

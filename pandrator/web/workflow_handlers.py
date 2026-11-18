@@ -74,6 +74,7 @@ from .models import (
     utcnow,
 )
 from .outcome_plans import resolve_workflow_inputs
+from .source_urls import parse_source_url
 from .workflow_audio_preview import AudioPreviewContext
 from .workflow_audio_preview import generate_audio_preview as _generate_audio_preview_impl
 from .workflow_audio_preview import preview_output_mix as _preview_output_mix_impl
@@ -864,11 +865,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
     def _validate_download_url(raw_url: str) -> str:
         import ipaddress
         import socket
-        from urllib.parse import urlparse
 
-        parsed = urlparse(str(raw_url or "").strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("Source URL must use http or https.")
+        parsed = parse_source_url(raw_url)
         for _family, _type, _proto, _canon, address in socket.getaddrinfo(
             parsed.hostname, parsed.port or 443
         ):

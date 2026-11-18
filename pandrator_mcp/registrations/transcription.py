@@ -25,6 +25,7 @@ from ..tools.transcription import (
     get_transcription_result,
     transcribe,
 )
+from ..waits import WAIT_DESCRIPTION
 
 
 def register_transcription_tools(
@@ -76,7 +77,7 @@ def register_transcription_tools(
         transcription_vocal_isolation: NativeNullableEnum[
             Literal["off", "bs_roformer", "mel_band_roformer", "htdemucs"]
         ] = None,
-        wait_seconds: Annotated[int, Field(ge=0, le=30)] = 30,
+        wait_seconds: Annotated[int, Field(ge=0, le=30, description=WAIT_DESCRIPTION)] = 30,
     ) -> dict[str, Any]:
         """Upload one bounded source, resume its chunks, and start transcription."""
 
@@ -106,7 +107,7 @@ def register_transcription_tools(
     def transcription_get_tool(
         id: Annotated[str, Field(min_length=1, max_length=120)],
         format: NativeNullableEnum[Literal["txt", "srt", "json"]] = None,
-        wait_seconds: Annotated[int, Field(ge=0, le=30)] = 0,
+        wait_seconds: Annotated[int, Field(ge=0, le=30, description=WAIT_DESCRIPTION)] = 0,
     ) -> dict[str, Any]:
         """Return the bounded status snapshot for one transcription."""
 

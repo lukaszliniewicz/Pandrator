@@ -17,6 +17,12 @@ from ..schemas.media_edit import (
     RenderMediaEditArguments,
     UpdateMediaEditArguments,
 )
+from ..waits import (
+    bounded_suggestion,
+    effective_wait_seconds,
+    requested_wait_seconds,
+    wait_receipt,
+)
 from ..work_mapping import application_work_reference
 
 _TERMINAL_JOB_STATES = frozenset({"succeeded", "failed", "cancelled", "canceled"})
@@ -48,7 +54,17 @@ def _job_outcome(
 ) -> ToolOutcome:
     application = runtime.require_application()
     job_id = _job_id(job)
-    result = application.wait_for_job(job_id, timeout_seconds=timeout_seconds) if wait else job
+    requested_seconds = requested_wait_seconds(timeout_seconds)
+    effective_seconds = effective_wait_seconds(runtime, requested_seconds)
+    result = (
+        application.wait_for_job(job_id, timeout_seconds=effective_seconds) if wait else job
+    )
+    receipt = wait_receipt(
+        requested=requested_seconds,
+        effective=effective_seconds if wait else 0,
+        terminal=_is_terminal(result),
+    )
+    result = {**result, **receipt}
     next_actions: list[NextAction] = []
     if not _is_terminal(result):
         next_actions.append(
@@ -56,7 +72,7 @@ def _job_outcome(
                 tool="pandrator_get_work",
                 arguments={
                     "work_id": job_id,
-                    "wait_seconds": timeout_seconds,
+                    "wait_seconds": bounded_suggestion(runtime, effective_seconds),
                 },
                 reason=(
                     f"Continue monitoring the durable {tool_name} job until it reaches a terminal state."

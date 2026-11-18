@@ -14,6 +14,7 @@ from ..schemas import (
     GetWorkLogInput,
     ListWorkInput,
 )
+from ..waits import effective_wait_seconds, requested_wait_seconds, wait_receipt
 from ..work_mapping import (
     application_work_reference,
     manager_task_log,
@@ -49,9 +50,10 @@ def get_work(
     runtime: McpRuntime,
     arguments: GetWorkInput,
 ) -> ToolOutcome:
-    requested_seconds = arguments.wait_seconds
-    started = time.monotonic() if requested_seconds else 0.0
-    deadline = started + requested_seconds
+    requested_seconds = requested_wait_seconds(arguments.wait_seconds)
+    effective_seconds = effective_wait_seconds(runtime, requested_seconds)
+    started = time.monotonic() if effective_seconds else 0.0
+    deadline = started + effective_seconds
     application = runtime.require_application() if arguments.work_type == "job" else None
 
     if arguments.work_type == "manager_operation":
@@ -73,7 +75,7 @@ def get_work(
     timed_out = False
     no_clock_progress = False
     poll_delay = _poll_delay_seconds(work)
-    while requested_seconds and not _work_is_terminal(work):
+    while effective_seconds and not _work_is_terminal(work):
         now = time.monotonic()
         remaining = deadline - now
         if remaining <= 0:
@@ -105,10 +107,10 @@ def get_work(
             timed_out = True
             break
 
-    if requested_seconds:
+    if effective_seconds:
         elapsed_seconds = max(0.0, time.monotonic() - started)
         if timed_out:
-            elapsed_seconds = min(float(requested_seconds), elapsed_seconds)
+            elapsed_seconds = min(float(effective_seconds), elapsed_seconds)
         elapsed_seconds = round(elapsed_seconds, 3)
     else:
         elapsed_seconds = 0.0
@@ -125,12 +127,19 @@ def get_work(
         except PandratorMcpError:
             # An app restart must not hide the successful durable operation.
             result["tts_catalogue_refresh"] = {"status": "application_unavailable", "retry_tool": "pandrator_get_tts_catalog"}
+    receipt = wait_receipt(
+        requested=requested_seconds,
+        effective=effective_seconds,
+        terminal=_work_is_terminal(work),
+    )
     result["wait"] = {
         "requested_seconds": requested_seconds,
+        "effective_seconds": effective_seconds,
         "elapsed_seconds": elapsed_seconds,
         "poll_count": poll_count,
-        "timed_out": timed_out,
+        "timed_out": receipt["timed_out"],
     }
+    result.update(receipt)
     if arguments.include_events:
         if arguments.work_type == "manager_operation":
             result["events"] = manager_task_log(runtime.manager.operation_tasks(arguments.work_id))
@@ -145,7 +154,10 @@ def get_work(
         next_actions.append(
             NextAction(
                 tool="pandrator_get_work",
-                arguments=arguments.model_dump(mode="json"),
+                arguments={
+                    **arguments.model_dump(mode="json"),
+                    "wait_seconds": effective_seconds,
+                },
                 reason="Continue monitoring this durable work item until terminal.",
             )
         )

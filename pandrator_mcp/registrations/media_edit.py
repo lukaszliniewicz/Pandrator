@@ -48,6 +48,7 @@ from ..tools import (
     submit_media_edit_dispatch_batch,
     update_media_edit,
 )
+from ..waits import WAIT_DESCRIPTION
 
 
 def register_media_edit_tools(
@@ -190,7 +191,7 @@ def register_media_edit_tools(
                 description="Safe STT/VAD setting overrides merged into the current STT section."
             ),
         ] = None,
-        wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
+        wait_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 0,
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
         materialize: Annotated[
             bool,
@@ -356,7 +357,7 @@ def register_media_edit_tools(
         ],
         model: Annotated[NativeNullableString, Field(max_length=512)] = None,
         wait: bool = True,
-        timeout_seconds: Annotated[int, Field(ge=0, le=3_600)] = 60,
+        timeout_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 60,
     ) -> dict[str, Any]:
         """Queue an instruction-driven proposal and optionally wait for its job."""
 
@@ -392,7 +393,7 @@ def register_media_edit_tools(
             ),
         ],
         wait: bool = True,
-        timeout_seconds: Annotated[int, Field(ge=0, le=3_600)] = 60,
+        timeout_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 60,
         subtitles_only: bool = False,
     ) -> dict[str, Any]:
         """Render an edit, or resegment its subtitles only, and optionally wait."""

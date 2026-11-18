@@ -553,6 +553,86 @@ class DispatchWebTests(unittest.TestCase):
             headers=self._headers(key),
         )
 
+    def test_pending_evidence_is_a_state_conflict_that_frees_the_idempotency_key(self):
+        session_id, source_id = self._source()
+        with self.extension["database"].session() as session:
+            source = session.get(Artifact, source_id)
+            revision_id = str(source.metadata_json["revision_id"])
+            segment = session.scalar(
+                select(Segment).where(
+                    Segment.revision_id == revision_id,
+                    Segment.ordinal == 0,
+                )
+            )
+            session.add(
+                SubtitleEvidence(
+                    id="evidence-pending-1",
+                    session_id=session_id,
+                    source_artifact_id=source_id,
+                    source_revision_id=revision_id,
+                    source_segment_id=segment.id,
+                    cue_id=1,
+                    start_ms=int(segment.start_ms),
+                    end_ms=int(segment.end_ms),
+                    clip_start_ms=0,
+                    clip_end_ms=int(segment.end_ms) + 2_000,
+                    reason="Confirm the title.",
+                    routes_json=["whisper"],
+                    audio_model_ids_json=[],
+                    status="running",
+                    candidates_json=[],
+                    resolution_json={},
+                )
+            )
+        run = self._create(session_id, source_artifact_id=source_id)
+        claim = self._claim(run["id"], "pending-evidence-claim")
+        uncertain = {
+            "lease_token": claim["lease_token"],
+            "result": {
+                "kind": "correction",
+                "operations": [],
+                "uncertainties": [
+                    {
+                        "cue_id": 1,
+                        "reason": "The name is not back from the listen yet.",
+                        "evidence_ids": ["evidence-pending-1"],
+                    }
+                ],
+            },
+        }
+        rejected = self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json=uncertain,
+            headers=self._headers("pending-evidence-submit"),
+        )
+        self.assertEqual(409, rejected.status_code, rejected.get_json())
+        error = rejected.get_json()["error"]
+        self.assertEqual("evidence_pending", error["code"])
+        self.assertEqual(
+            "Correction uncertainty 1 references evidence that is still running. "
+            "Wait for it with pandrator_get_subtitle_evidence, or submit the uncertainty "
+            "without evidence_ids.",
+            error["message"],
+        )
+        accepted = self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json={
+                **uncertain,
+                "result": {
+                    **uncertain["result"],
+                    "uncertainties": [
+                        {
+                            "cue_id": 1,
+                            "reason": "The name is not back from the listen yet.",
+                        }
+                    ],
+                },
+            },
+            headers=self._headers("pending-evidence-submit"),
+        )
+        self.assertIn(accepted.status_code, {200, 202}, accepted.get_json())
+        self.assertNotEqual("true", accepted.headers.get("Idempotency-Replayed"))
+
     def test_correction_end_to_end_and_redacted_metadata(self):
         session_id, source_id = self._source()
         run = self._create(session_id, source_artifact_id=source_id)

@@ -94,7 +94,8 @@ Delivery analysis and pronunciation optimization remain independent.
 
 A returned `work` handle is not a finished artifact. Poll `pandrator_get_work`
 with that handle until terminal; retain it across timeouts and interruptions.
-Prefer waits short enough for the host's request timeout and progress needs.
+Every server-side wait stops at the process ceiling, 25 seconds by default, and
+reports `timed_out`; poll again while it is true instead of raising the request.
 Use `pandrator_get_work_log` for diagnosis rather than repeatedly dumping logs.
 For generation, prefer `pandrator_get_generation_operation` with the stable
 `generation_operation_id`; it follows preparation and synthesis and reports

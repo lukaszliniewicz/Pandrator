@@ -125,8 +125,10 @@ for the distinct result contracts.
   uncertain responses. Re-inspect and re-plan on stale plans or revision
   conflicts; do not force an earlier snapshot onto changed work.
 - Keep `generation_operation_id` from generation/regeneration receipts. When
-  advertised, use `pandrator_get_generation_operation` with waits up to 60
-  seconds: it follows preparation and synthesis under that same ID. Inspect
+  advertised, use `pandrator_get_generation_operation` with a bounded wait (the
+  server waits at most 25 seconds per call by default; poll again while
+  `timed_out` is true): it follows preparation and synthesis under that same
+  ID. Inspect
   `coverage.export_ready` before dependent audio export. Older servers expose
   `followup_work` through `get_work`; preparation success alone is insufficient.
   Read [recovery](references/recovery.md) for uncertain responses or interruption.
