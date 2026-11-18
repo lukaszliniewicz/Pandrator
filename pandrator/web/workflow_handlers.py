@@ -3438,6 +3438,15 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             payload, progress, cancel_event
         )
 
+    def create_translation_project(self, payload, progress, cancel_event):
+        """Fork a pinned source into language branches through the leased queue."""
+        from .translation_project_jobs import run_creation
+
+        return run_creation(
+            self.database, self.paths, self.artifacts, payload,
+            progress=progress, cancel_event=cancel_event,
+        )
+
     def generate_video_preview(self, payload, progress, cancel_event):
         """Generate a bounded compatible derivative without changing its source."""
         from .video_previews import VideoPreviewService

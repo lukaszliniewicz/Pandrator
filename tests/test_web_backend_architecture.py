@@ -489,15 +489,17 @@ class BackendArchitectureTests(unittest.TestCase):
     def test_workflow_job_registry_has_domain_ownership_and_late_binding(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         registry = handlers.handler_registry
-        self.assertEqual(50, len(registry))
+        self.assertEqual(51, len(registry))
         self.assertIn("generation.admit", registry)
         self.assertIn("voice.google_design", registry)
+        self.assertIn("translation_project.create", registry)
         self.assertEqual(
             {
                 "delivery",
                 "generation",
                 "maintenance",
                 "media_edit",
+                "projects",
                 "source",
                 "sounds",
                 "system",

@@ -1,0 +1,130 @@
+"""Durable translation-project creation run by its queue worker.
+
+Forking one language session per planned language hashes and links every
+artifact, which took 45 to 80 seconds on four branches. The route therefore
+admits the work and returns a handle instead of holding the request open.
+"""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+from typing import Any
+
+from pandrator.runtime import DataPaths
+
+from .artifacts import ArtifactService
+from .database import Database
+from .session_forks import SessionForkService
+from .translation_projects import (
+    TRANSLATION_PROJECT_CREATE_JOB_KIND,
+    create_project_in_session,
+    prepare_branch_files,
+)
+
+__all__ = [
+    "TRANSLATION_PROJECT_CREATE_JOB_KIND",
+    "creation_request",
+    "run_creation",
+]
+
+
+def creation_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract the explicit request a creation job carries."""
+
+    return {
+        "checkpoint_artifact_id": str(payload.get("checkpoint_artifact_id") or ""),
+        "name": str(payload.get("name") or ""),
+        "expected_revision": int(payload.get("expected_revision") or 0),
+        "create_planned_branches": bool(payload.get("create_planned_branches")),
+    }
+
+
+def run_creation(
+    database: Database,
+    paths: DataPaths,
+    artifacts: ArtifactService,
+    payload: dict[str, Any],
+    progress=None,
+    cancel_event=None,
+) -> dict[str, Any]:
+    """Create the project and its planned branches as one durable job.
+
+    The fork trees are collected from an authorized read snapshot, materialized
+    outside it, then consumed inside the writer that creates the project. A
+    failure leaves no project row and no prepared directory behind.
+    """
+
+    session_id = str(payload.get("session_id") or "")
+    request = creation_request(payload)
+
+    def report(value: float, detail: str | None = None) -> None:
+        if progress is not None:
+            progress(value, detail)
+
+    def canceled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    if canceled():
+        return {}
+    session_forks = SessionForkService(database, paths, artifacts)
+    with database.snapshot_session() as db:
+        prepared = prepare_branch_files(
+            db,
+            session_id,
+            request,
+            session_resource=True,
+            session_forks=session_forks,
+            paths=paths,
+        )
+    directories: list[Path] = []
+    committed = False
+    try:
+        if prepared is not None:
+            if canceled():
+                return {}
+            report(0.15, "Preparing branch files")
+            prepared.materialize()
+            report(0.45, "Branch files prepared")
+        if canceled():
+            return {}
+        with database.immediate_session() as db:
+            if prepared is not None:
+                prepared.revalidate(db)
+            result = create_project_in_session(
+                db,
+                session_id,
+                request["checkpoint_artifact_id"],
+                request["name"],
+                request["expected_revision"],
+                paths=paths,
+                create_planned_branches=request["create_planned_branches"],
+                session_forks=session_forks,
+                created_directories=directories,
+                prepared_files=prepared,
+            )
+        committed = True
+    finally:
+        if prepared is not None:
+            prepared.cleanup(committed=committed)
+        if not committed:
+            for directory in directories:
+                shutil.rmtree(directory, ignore_errors=True)
+    project = result.get("project") or {}
+    branches = [
+        {
+            "branch_id": branch.get("id"),
+            "session_id": branch.get("session_id"),
+            "name": branch.get("name"),
+            "target_language": branch.get("target_language"),
+        }
+        for branch in project.get("branches") or []
+        if isinstance(branch, dict)
+    ]
+    report(1.0, "Translation project created")
+    return {
+        "project_id": project.get("id"),
+        "project_revision": project.get("revision"),
+        "branch_count": len(branches),
+        "branches": branches,
+    }

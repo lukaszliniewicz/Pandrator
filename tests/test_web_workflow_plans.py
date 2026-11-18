@@ -11,6 +11,7 @@ from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.jobs import Worker
 from pandrator.web.models import (
     Artifact,
     GenerationPlan,
@@ -31,6 +32,7 @@ from pandrator.web.models import (
 )
 from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.workflow_plans import (
+    FINGERPRINT_EXPORT,
     WorkflowExecutionPlanService,
     canonical_digest,
 )
@@ -2013,6 +2015,275 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                     "plan_stale",
                     response.get_json()["error"]["code"],
                 )
+
+    def _run_jobs(self) -> int:
+        worker = Worker(
+            self.extension["services"].jobs,
+            "plan-test-worker",
+            self.extension["workflow_handlers"].handlers(),
+        )
+        ran = 0
+        while worker.run_once():
+            ran += 1
+        return ran
+
+    def _publish(self, session_id, *, role, filename, kind="srt"):
+        path = Path(self.temporary.name) / filename
+        path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        return self.extension["artifacts"].register(
+            path, kind=kind, role=role, session_id=session_id,
+        )
+
+    def _export_artifact(self, session_id):
+        return self._publish(
+            session_id, role="export_subtitle_source", filename="sibling-export.srt"
+        )
+
+    def _sibling_export_plan(self, session_id, subtitle_format):
+        return self._plan(
+            session_id,
+            target_stage="export",
+            overrides={
+                "output": {
+                    "export_mode": "subtitles",
+                    "subtitle_mode": "none",
+                    "subtitle_selection": "source",
+                    "subtitle_format": subtitle_format,
+                }
+            },
+            continuation=False,
+        )
+
+    def _export_outputs(self, session_id) -> list[str]:
+        with self.extension["database"].session() as db_session:
+            return list(
+                db_session.scalars(
+                    select(Artifact.role).where(
+                        Artifact.session_id == session_id,
+                        Artifact.role.like("export%"),
+                    )
+                ).all()
+            )
+
+    def test_two_subtitle_export_plans_both_execute_back_to_back(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="subtitles", suffix="srt",
+        )
+        srt_plan = self._sibling_export_plan(session_id, "srt")
+        vtt_plan = self._sibling_export_plan(session_id, "vtt")
+        self.assertNotEqual(srt_plan["plan_digest"], vtt_plan["plan_digest"])
+
+        first = self._execute(srt_plan, key="sibling-srt-execute")
+        self.assertEqual(202, first.status_code, first.get_json())
+        self._run_jobs()
+        self.assertTrue(self._export_outputs(session_id))
+        with self.extension["database"].session() as db_session:
+            first_job = db_session.get(Job, first.get_json()["id"])
+        self.assertEqual("succeeded", first_job.status, first_job.error_message)
+
+        second = self._execute(vtt_plan, key="sibling-vtt-execute")
+        self.assertEqual(202, second.status_code, second.get_json())
+
+    def test_an_audio_export_plan_survives_the_assembly_its_sibling_built(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover", suffix="mp4",
+        )
+        with self.extension["database"].session() as db_session:
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash="sibling-assembly-plan",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status="completed",
+            )
+            db_session.add(run)
+            db_session.flush()
+            run_id = run.id
+
+        def audio_plan(subtitle_format):
+            return self._plan(
+                session_id,
+                target_stage="export",
+                overrides={
+                    "output": {
+                        "generation_run_id": run_id,
+                        "export_mode": "media",
+                        "audio_mode": "dubbing_only",
+                        "subtitle_mode": "none",
+                        "subtitle_format": subtitle_format,
+                    }
+                },
+                continuation=False,
+            )
+
+        first_plan = audio_plan("srt")
+        second_plan = audio_plan("vtt")
+        self.assertEqual("run", first_plan["ordered_steps"][0]["decision"])
+        self.assertEqual("assemble_audio", first_plan["ordered_steps"][0]["stage"])
+
+        executed = self._execute(first_plan, key="sibling-audio-first")
+        self.assertEqual(202, executed.status_code, executed.get_json())
+        # Write what that execution publishes: the assembly row, its published
+        # audio artifact, and the export file itself.
+        assembled = self._publish(
+            session_id, role="assembled_audio", filename="sibling-assembly.wav",
+            kind="audio",
+        )
+        with self.extension["database"].session() as db_session:
+            db_session.add(
+                OutputAssembly(
+                    session_id=session_id,
+                    generation_run_id=run_id,
+                    status="completed",
+                    artifact_id=assembled.id,
+                    settings_json={"resolved": {}},
+                    settings_hash=output_assembly_settings_hash({"resolved": {}}),
+                )
+            )
+        self._export_artifact(session_id)
+
+        second = self._execute(second_plan, key="sibling-audio-second")
+        self.assertEqual(202, second.status_code, second.get_json())
+
+    def test_an_export_plan_still_goes_stale_on_settings_selection_or_run(self):
+        def settings_change(db_session, session_id, _artifact_id, _asset_id):
+            setting = db_session.get(SessionSetting, (session_id, "output"))
+            if setting is None:
+                db_session.add(SessionSetting(
+                    session_id=session_id, section="output",
+                    value_json={"subtitle_format": "vtt"},
+                ))
+            else:
+                setting.value_json = {**setting.value_json, "subtitle_format": "vtt"}
+                setting.revision += 1
+
+        def selection_change(db_session, session_id, artifact_id, _asset_id):
+            selection = db_session.get(
+                SessionStageSelection, (session_id, "translate")
+            )
+            if selection is None:
+                db_session.add(SessionStageSelection(
+                    session_id=session_id, stage_key="translate",
+                    artifact_id=artifact_id,
+                ))
+            else:
+                selection.revision += 1
+
+        def run_change(db_session, session_id, _artifact_id, _asset_id):
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash="sibling-stale-run-plan",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            db_session.add(
+                GenerationRun(
+                    session_id=session_id,
+                    plan_revision_id=revision.id,
+                    sequence_number=1,
+                )
+            )
+
+        for name, mutation in (
+            ("settings", settings_change),
+            ("selection", selection_change),
+            ("generation_run", run_change),
+        ):
+            with self.subTest(change=name):
+                session_id, artifact_id, asset_id = self._ready_session(
+                    workflow_kind="subtitles", suffix="srt",
+                )
+                plan = self._sibling_export_plan(session_id, "srt")
+                with self.extension["database"].immediate_session() as db_session:
+                    mutation(db_session, session_id, artifact_id, asset_id)
+                response = self._execute(plan, key=f"sibling-stale-{name}")
+                self.assertEqual(409, response.status_code, response.get_json())
+                self.assertEqual("plan_stale", response.get_json()["error"]["code"])
+
+    def test_a_non_export_plan_keeps_its_full_fingerprint(self):
+        session_id, _artifact_id, _asset_id = self._ready_session()
+        plan = self._plan(session_id)
+        database = self.extension["database"]
+        self._export_artifact(session_id)
+        with database.session() as db_session:
+            full = WorkflowExecutionPlanService._state_fingerprint(
+                db_session, session_id
+            )
+            export = WorkflowExecutionPlanService._state_fingerprint(
+                db_session, session_id, fingerprint_variant=FINGERPRINT_EXPORT,
+            )
+        self.assertNotEqual(full, export)
+        response = self._execute(plan, key="non-export-fingerprint")
+        self.assertEqual(409, response.status_code, response.get_json())
+        self.assertEqual("plan_stale", response.get_json()["error"]["code"])
+
+    def test_an_export_artifact_does_not_move_an_export_plan_fingerprint(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="subtitles", suffix="srt",
+        )
+        plan = self._sibling_export_plan(session_id, "srt")
+        database = self.extension["database"]
+        with database.session() as db_session:
+            before = WorkflowExecutionPlanService._state_fingerprint(
+                db_session, session_id, fingerprint_variant=FINGERPRINT_EXPORT,
+            )
+        self._export_artifact(session_id)
+        with database.session() as db_session:
+            after = WorkflowExecutionPlanService._state_fingerprint(
+                db_session, session_id, fingerprint_variant=FINGERPRINT_EXPORT,
+            )
+        self.assertEqual(before, after)
+        response = self._execute(plan, key="export-artifact-ignored")
+        self.assertEqual(202, response.status_code, response.get_json())
+
+    def test_a_plan_stored_before_the_variant_compares_with_all_state(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="subtitles", suffix="srt",
+        )
+        plan = self._sibling_export_plan(session_id, "srt")
+        database = self.extension["database"]
+        # An earlier release stored no variant marker and hashed every row.
+        with database.immediate_session() as db_session:
+            record = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            execution = dict(record.plan_json["_execution"])
+            execution.pop("fingerprint_variant", None)
+            record.plan_json = {**record.plan_json, "_execution": execution}
+            record.state_fingerprint = WorkflowExecutionPlanService._state_fingerprint(
+                db_session, session_id
+            )
+        response = self._execute(plan, key="pre-upgrade-export-plan")
+        self.assertEqual(202, response.status_code, response.get_json())
+
+        stored = self._sibling_export_plan(session_id, "vtt")
+        with database.immediate_session() as db_session:
+            record = db_session.get(WorkflowExecutionPlan, stored["plan_id"])
+            execution = dict(record.plan_json["_execution"])
+            execution.pop("fingerprint_variant", None)
+            record.plan_json = {**record.plan_json, "_execution": execution}
+            record.state_fingerprint = WorkflowExecutionPlanService._state_fingerprint(
+                db_session, session_id
+            )
+        self._export_artifact(session_id)
+        stale = self._execute(stored, key="pre-upgrade-export-stale")
+        self.assertEqual(409, stale.status_code, stale.get_json())
+        self.assertEqual("plan_stale", stale.get_json()["error"]["code"])
 
     def test_digest_confirmation_expiry_and_inline_url_credentials(self):
         session_id, _artifact_id, _asset_id = self._ready_session()

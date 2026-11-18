@@ -58,6 +58,19 @@ from .workflows import (
 logger = logging.getLogger(__name__)
 
 PLAN_SCHEMA_VERSION = "1"
+# Export plans may all be executed side by side: an export resolves its output
+# assembly and file names at execution, so the outputs a sibling export added
+# never change what this plan produces. Plans stored before this variant
+# existed carry no marker and keep comparing against the full snapshot.
+FINGERPRINT_FULL = "full"
+FINGERPRINT_EXPORT = "export_outputs_ignored"
+FINGERPRINT_VARIANTS = frozenset({FINGERPRINT_FULL, FINGERPRINT_EXPORT})
+EXPORT_PLAN_TARGET_STAGE = "export"
+# Roles an export job registers for its own files; "export" is the generic
+# output and soundtrack/subtitle tracks add a suffix.
+EXPORT_OUTPUT_ROLE = "export"
+EXPORT_OUTPUT_ROLE_PREFIX = "export_"
+
 LOCAL_PROVIDER_IDS = frozenset(
     {
         "audio.cpp",
@@ -157,6 +170,20 @@ def _contains_url_credentials(value: Any) -> bool:
             )
         )
     )
+
+
+def _is_export_execution_output(artifact, assembly_artifact_ids: set[str]) -> bool:
+    """Return whether an export execution itself can add this artifact.
+
+    Export files carry the generic "export" role or an "export_" prefix. An
+    export that must assemble its generation run also publishes the assembly's
+    audio artifact, so the artifact an output assembly points at counts too.
+    """
+
+    role = str(getattr(artifact, "role", "") or "")
+    if role == EXPORT_OUTPUT_ROLE or role.startswith(EXPORT_OUTPUT_ROLE_PREFIX):
+        return True
+    return artifact.id in assembly_artifact_ids
 
 
 _EXPORT_OUTPUT_KEYS = (
@@ -313,7 +340,12 @@ class WorkflowExecutionPlanService:
         return record
 
     @staticmethod
-    def _state_snapshot(db_session, session_id: str) -> dict[str, Any]:
+    def _state_snapshot(
+        db_session,
+        session_id: str,
+        *,
+        fingerprint_variant: str = FINGERPRINT_FULL,
+    ) -> dict[str, Any]:
         record = db_session.get(SessionRecord, session_id)
         if record is None:
             raise KeyError(session_id)
@@ -431,7 +463,17 @@ class WorkflowExecutionPlanService:
                 .order_by(OutputAssembly.id)
             ).all()
         )
-        return {
+        export_variant = fingerprint_variant == FINGERPRINT_EXPORT
+        if export_variant:
+            assembly_artifact_ids = {
+                item.artifact_id for item in output_assemblies if item.artifact_id
+            }
+            artifacts = [
+                artifact
+                for artifact in artifacts
+                if not _is_export_execution_output(artifact, assembly_artifact_ids)
+            ]
+        snapshot = {
             "session": {
                 "id": record.id,
                 "workflow_kind": record.workflow_kind,
@@ -571,14 +613,48 @@ class WorkflowExecutionPlanService:
                 for item in output_assemblies
             ],
         }
+        if export_variant:
+            # Both are resolved again when the export executes.
+            snapshot.pop("output_assemblies")
+        return snapshot
 
     @classmethod
     def _state_fingerprint(
         cls,
         db_session,
         session_id: str,
+        *,
+        fingerprint_variant: str = FINGERPRINT_FULL,
     ) -> str:
-        return canonical_digest(cls._state_snapshot(db_session, session_id))
+        return canonical_digest(
+            cls._state_snapshot(
+                db_session, session_id, fingerprint_variant=fingerprint_variant
+            )
+        )
+
+    @staticmethod
+    def _plan_fingerprint_variant(target_stage: str) -> str:
+        """Return the snapshot variant a plan for this target stage compares with.
+
+        Only an export target can execute an export step, so only that variant
+        ignores what a sibling export execution added.
+        """
+
+        return (
+            FINGERPRINT_EXPORT
+            if canonical_stage_key(target_stage) == EXPORT_PLAN_TARGET_STAGE
+            else FINGERPRINT_FULL
+        )
+
+    @staticmethod
+    def _stored_fingerprint_variant(plan_json: Any) -> str:
+        """Read the variant a stored plan was created with; old plans used all state."""
+
+        execution = plan_json.get("_execution") if isinstance(plan_json, dict) else None
+        if not isinstance(execution, dict):
+            return FINGERPRINT_FULL
+        variant = str(execution.get("fingerprint_variant") or FINGERPRINT_FULL)
+        return variant if variant in FINGERPRINT_VARIANTS else FINGERPRINT_FULL
 
     @staticmethod
     def _provider_disclosures(
@@ -1361,9 +1437,11 @@ class WorkflowExecutionPlanService:
             )
         with self.database.session() as db_session:
             require_session_access(db_session, context, session_id, ProjectAction.RUN)
+            fingerprint_variant = self._plan_fingerprint_variant(target_stage)
             before = self._state_fingerprint(
                 db_session,
                 session_id,
+                fingerprint_variant=fingerprint_variant,
             )
         requested_reuse_stages = {
             str(value) for value in (reuse_stages or []) if str(value)
@@ -1714,6 +1792,7 @@ class WorkflowExecutionPlanService:
                 "job_kind": execution_job_kind,
                 "payload": execution_payload,
                 "resource_keys": list(resolved.resource_keys),
+                "fingerprint_variant": fingerprint_variant,
             },
         }
         digest = canonical_digest(public_plan)
@@ -1722,6 +1801,7 @@ class WorkflowExecutionPlanService:
             after = self._state_fingerprint(
                 db_session,
                 session_id,
+                fingerprint_variant=fingerprint_variant,
             )
             if not hmac.compare_digest(before, after):
                 raise WorkflowPlanError(
@@ -1846,6 +1926,7 @@ class WorkflowExecutionPlanService:
             current_fingerprint = self._state_fingerprint(
                 db_session,
                 record.session_id,
+                fingerprint_variant=self._stored_fingerprint_variant(record.plan_json),
             )
             if not hmac.compare_digest(
                 record.state_fingerprint,

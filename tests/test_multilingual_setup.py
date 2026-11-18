@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.jobs import Worker
 from pandrator.web.models import (
     Artifact,
     Document,
@@ -626,14 +627,24 @@ def test_native_mcp_setup_lifecycle_with_disposable_api(case, tmp_path):
             checkpoint = _reviewed_correction(services, sid)
             ready = await call("pandrator_get_translation_project", {"session_id": sid})
             assert ready["setup_state"] == "ready"
-            project = await call("pandrator_create_translation_project", {
+            handle = await call("pandrator_create_translation_project", {
                 "session_id": sid, "checkpoint_artifact_id": checkpoint.id,
                 "expected_revision": renamed["revision"], "create_planned_branches": True,
                 "idempotency_key": "native-language-project-key",
             })
+            assert handle["kind"] == "translation_project.create"
+            worker = Worker(
+                services["jobs"], "native-language-worker",
+                services["workflow_handlers"].handlers(),
+            )
+            while worker.run_once():
+                pass
+            assert services["jobs"].get(handle["id"]).status == "succeeded"
+            project = await call(
+                "pandrator_get_translation_project", {"session_id": sid}
+            )
             assert len(project["project"]["branches"]) == 2
-            assert (await call("pandrator_get_translation_project", {"session_id": sid}))[
-                "setup_state"] == "active"
+            assert project["setup_state"] == "active"
             direct_voiceover = await call("pandrator_create_session", {
                 "name": "Native voiceover setup", "workflow_kind": "voiceover",
                 "source_language": "en", "included_stages": ["correct", "translate", "generate_audio"],

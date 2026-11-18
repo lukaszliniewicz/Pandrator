@@ -20,6 +20,8 @@ from ..schemas.session_branches import (
     RequestTranslationProjectExportBundleInput,
     RetryTranslationProjectOperationPreviewInput,
 )
+from ..waits import bounded_suggestion
+from ..work_mapping import application_work_reference
 from .session_purge import _register_tool
 from .sessions import _session_projection
 
@@ -176,14 +178,41 @@ def create_translation_project(
     runtime: McpRuntime,
     arguments: CreateTranslationProjectInput,
 ) -> ToolOutcome:
+    """Admit a project creation as durable work and return its handle."""
+
+    application = runtime.require_application()
+    job = application.create_translation_project(
+        arguments.session_id,
+        checkpoint_artifact_id=arguments.checkpoint_artifact_id,
+        expected_revision=arguments.expected_revision,
+        idempotency_key=arguments.idempotency_key,
+        name=arguments.name,
+        create_planned_branches=arguments.create_planned_branches,
+        run_as_job=True,
+    )
+    work = application_work_reference(job)
+    work_id = str(job.get("id") or job.get("job_id") or job.get("work_id") or "")
     return ToolOutcome(
-        result={
-            "schema_version": "1",
-            **runtime.require_application().create_translation_project(
-                arguments.session_id,
-                **arguments.model_dump(exclude={"session_id"}, exclude_none=True),
+        result={"schema_version": "1", **job},
+        work=work,
+        next_actions=[
+            NextAction(
+                tool="pandrator_get_work",
+                arguments={
+                    "work_id": work_id,
+                    "wait_seconds": bounded_suggestion(runtime, None),
+                },
+                reason=(
+                    "Poll the durable creation until it succeeds; forking every "
+                    "language session can take a minute or more."
+                ),
             ),
-        }
+            NextAction(
+                tool="pandrator_get_translation_project",
+                arguments={"session_id": arguments.session_id},
+                reason="Read the created project, its branches and their languages once the work succeeds.",
+            ),
+        ],
     )
 
 
@@ -313,6 +342,8 @@ def register_session_branch_tools(
             create_translation_project,
             "pandrator_create_translation_project",
             "Create a multilingual project",
+            "Queue creation of a pinned multilingual project and return its work handle; "
+            "use pandrator_get_work until it succeeds, then pandrator_get_translation_project. "
             "Pin an exact corrected source and edited timeline for a multilingual project. "
             "Set create_planned_branches to create the saved session language plan atomically. "
             "Planned branches use automatic target-language subtitle profiles by default; "

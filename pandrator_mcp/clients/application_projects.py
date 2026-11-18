@@ -23,6 +23,7 @@ class ApplicationProjectMethods(ApplicationRequests):
         idempotency_key: str,
         name: str | None = None,
         create_planned_branches: bool = False,
+        run_as_job: bool = False,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "checkpoint_artifact_id": checkpoint_artifact_id,
@@ -31,6 +32,8 @@ class ApplicationProjectMethods(ApplicationRequests):
         }
         if name is not None:
             body["name"] = name
+        if run_as_job:
+            body["run_as_job"] = True
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/translation-project",
             method="POST",

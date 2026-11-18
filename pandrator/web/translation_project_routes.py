@@ -13,10 +13,12 @@ from sqlalchemy.exc import IntegrityError
 from .access.contracts import AccessContext, ProjectAction, ProjectNotFound
 from .access.session_policy import require_session_access
 from .access.translation_project_policy import require_translation_project_access
+from .http_serialization import job_payload
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .project_readiness import enrich_project_payload
 from .session_routes import session_project_memberships
 from .settings_policy import RevisionConflict
+from .translation_project_jobs import TRANSLATION_PROJECT_CREATE_JOB_KIND
 from .translation_project_summary import get_compact_project, get_compact_session_project
 from .translation_projects import (
     TranslationProjectConflict,
@@ -26,7 +28,9 @@ from .translation_projects import (
     get_session_project,
     prepare_branch_files,
     rename_project_in_session,
+    require_no_existing_project_or_work,
     update_project_source_in_session,
+    validate_new_project_request,
 )
 
 
@@ -37,6 +41,9 @@ class TranslationProjectCreateRequest(BaseModel):
     name: str = Field(default="", max_length=255)
     expected_revision: int = Field(ge=1)
     create_planned_branches: bool = False
+    # The web UI keeps the synchronous response; a caller that cannot wait for
+    # every branch fork asks for a work handle instead.
+    run_as_job: bool = False
 
 
 class TranslationBranchTarget(BaseModel):
@@ -169,6 +176,15 @@ def translation_project_paths() -> dict:
                 "description": "Compact returns bounded metadata without branch readiness histories.",
             }]
         paths.setdefault(path, {})[method] = operation
+    create = paths["/api/v1/sessions/{sessionId}/translation-project"]["post"]
+    create["responses"]["202"] = {
+        "description": "Creation queued as durable work",
+        "content": {"application/json": {"schema": {"type": "object", "additionalProperties": True}}},
+    }
+    create["responses"]["400"] = {"description": "An idempotency key is required or invalid"}
+    create["responses"]["200"]["description"] = (
+        "Translation project state; returned when run_as_job is false"
+    )
     return paths
 
 
@@ -352,6 +368,87 @@ def register_translation_project_routes(
                 for directory in directories:
                     shutil.rmtree(directory, ignore_errors=True)
 
+    def enqueue_project_creation(session_id: str, payload: dict):
+        """Validate synchronously, then admit the forks as durable work."""
+
+        try:
+            key = services.idempotency.validate_key(request.headers.get("Idempotency-Key"))
+        except ValueError as error:
+            return error_response("idempotency_key_required", str(error), 400)
+        request_payload = {"resource_id": session_id, **payload, "run_as_job": True}
+        try:
+            # Hash the pinned checkpoint and check every precondition before the
+            # queue writer, so a refused request returns its usual 4xx at once.
+            with services.database.snapshot_session() as db:
+                authorize(
+                    db, session_id, session_resource=True, action=ProjectAction.EDIT,
+                )
+                early_replay = services.idempotency.replay_if_present(
+                    db, principal=principal(),
+                    operation_id="createSessionTranslationProject",
+                    idempotency_key=key, payload=request_payload,
+                )
+                if early_replay is None:
+                    validate_new_project_request(
+                        db, session_id, payload, paths=services.paths, verify_file=True,
+                    )
+            if early_replay is not None:
+                assert early_replay.response is not None
+                body, status = early_replay.response
+                response = jsonify(body)
+                response.status_code = status
+                response.headers["Idempotency-Replayed"] = "true"
+                return response
+            with services.database.immediate_session() as db:
+                authorize(
+                    db, session_id, session_resource=True, action=ProjectAction.EDIT,
+                )
+                reservation = services.idempotency.begin(
+                    db, principal=principal(),
+                    operation_id="createSessionTranslationProject",
+                    idempotency_key=key, payload=request_payload,
+                )
+                if reservation.response is not None:
+                    body, status = reservation.response
+                    replayed = True
+                else:
+                    replayed = False
+                    # The checks that need no file IO repeat inside the writer,
+                    # so a project or job that appeared meanwhile still refuses.
+                    validate_new_project_request(
+                        db, session_id, payload, paths=services.paths, verify_file=False,
+                    )
+                    job = services.jobs.enqueue_in_session(
+                        db,
+                        TRANSLATION_PROJECT_CREATE_JOB_KIND,
+                        {"session_id": session_id, **payload},
+                        session_id=session_id,
+                        resource_keys=[f"session:{session_id}"],
+                    )
+                    body = job_payload(job)
+                    status = 202
+                    services.idempotency.complete(
+                        db, reservation, response=body, status_code=status,
+                        resource_kind="job", resource_id=job.id,
+                    )
+            response = jsonify(body)
+            response.status_code = status
+            if replayed:
+                response.headers["Idempotency-Replayed"] = "true"
+            return response
+        except (
+            KeyError,
+            ValueError,
+            RevisionConflict,
+            TranslationProjectConflict,
+            IdempotencyConflict,
+            IdempotencyInProgress,
+            IntegrityError,
+            FileNotFoundError,
+            OSError,
+        ) as error:
+            return failure(error)
+
     @app.get("/api/v1/sessions/<session_id>/translation-project")
     @require_auth
     def session_translation_project(session_id):
@@ -369,15 +466,23 @@ def register_translation_project_routes(
         payload = parsed(TranslationProjectCreateRequest)
         if not isinstance(payload, dict):
             return payload
+        if payload.pop("run_as_job", False):
+            return enqueue_project_creation(session_id, payload)
+
+        def create_now(db, directories, prepared):
+            # A queued creation job would otherwise find this project and fail.
+            require_no_existing_project_or_work(db, session_id)
+            return create_project_in_session(
+                db, session_id, **payload, paths=services.paths,
+                session_forks=services.session_forks,
+                created_directories=directories, prepared_files=prepared,
+            )
+
         return mutate(
             session_id,
             "createSessionTranslationProject",
             payload,
-            lambda db, directories, prepared: create_project_in_session(
-                db, session_id, **payload, paths=services.paths,
-                session_forks=services.session_forks,
-                created_directories=directories, prepared_files=prepared,
-            ),
+            create_now,
             session_resource=True,
             prepare=lambda db: prepare_branch_files(
                 db, session_id, payload, session_resource=True,

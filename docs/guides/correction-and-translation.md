@@ -120,7 +120,10 @@ language workspaces** pins the chosen source and creates all selected languages
 in one operation. Failed creation leaves no partial project or language sessions.
 
 Through MCP, use `pandrator_create_translation_project` with the inspected
-source session revision, transcription or correction artifact ID and an idempotency key. Then
+source session revision, transcription or correction artifact ID and an idempotency key. It
+queues the creation and returns a work handle, because forking several languages takes a
+minute or more: poll `pandrator_get_work`, then read the project with
+`pandrator_get_translation_project`. Then
 use `pandrator_create_translation_branches` with the project revision and
 `targets: [{"target_language": "de"}, {"target_language": "ja"}]`. Inspect
 the project from either the source or a branch with
@@ -133,7 +136,7 @@ For the same deferred setup through MCP, pass `multilingual_setup` to
 `pandrator_get_translation_project`; update it through
 `pandrator_update_session` before project creation. After source review,
 use `pandrator_create_translation_project` with `create_planned_branches: true`
-to create the project and planned languages atomically. Subtitle-only language
+to create the project and planned languages in one queued job. Subtitle-only language
 sessions preserve the original audio; voiceover sessions require independent
 voice selection and speech-plan review. Each branch's language is applied to
 translation, speech and export settings. Creating these workspaces does not

@@ -292,6 +292,24 @@ def register_media_edit_handlers(
     )
 
 
+def register_project_handlers(
+    registry: JobHandlerRegistry,
+    handlers: object,
+) -> None:
+    """Queue a translation project's branch forks without holding the request."""
+
+    from .translation_projects import TRANSLATION_PROJECT_CREATE_JOB_KIND
+
+    registry.register(
+        TRANSLATION_PROJECT_CREATE_JOB_KIND,
+        _late_bound(handlers, "create_translation_project"),
+        domain="projects",
+        payload_contract=JobPayloadContract(
+            required_fields=("session_id", "checkpoint_artifact_id", "expected_revision")
+        ),
+    )
+
+
 def register_workflow_handlers(
     registry: JobHandlerRegistry,
     handlers: object,
@@ -314,6 +332,7 @@ def build_workflow_handler_registry(
     register_source_handlers(registry, handlers)
     register_delivery_handlers(registry, handlers)
     register_media_edit_handlers(registry, handlers)
+    register_project_handlers(registry, handlers)
     register_workflow_handlers(registry, handlers)
     from .comparison_export_render import ComparisonExportContext, render_comparison_export
     from .comparison_exports import COMPARISON_EXPORT_JOB_KIND
