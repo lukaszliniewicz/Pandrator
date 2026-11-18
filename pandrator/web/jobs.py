@@ -36,8 +36,10 @@ from .accounts.job_authorization import require_execution_actor_in_session
 from .accounts.model_acquisition import model_acquisition_for_actor
 from .credentials import SecretRedactor
 from .database import Database, is_sqlite_busy
+from .generation_progress import job_progress_state
 from .job_execution import current_job_lease
 from .job_identity import job_creation_ownership
+from .job_lane_kinds import SESSION_BESIDE_JOB_KINDS
 from .model_base import as_utc
 from .model_maintenance import ensure_app_job_allowed
 from .models import (
@@ -68,6 +70,7 @@ JobHandler = Callable[
 WORKER_LEASE_SECONDS = 30
 WORKER_LEASE_SAFETY_SECONDS = 2
 HEARTBEAT_WRITE_TIMEOUT_MS = 250
+_UNSET: Any = object()
 
 
 def _canonical_tts_resource_key(key: str) -> str:
@@ -864,6 +867,11 @@ class JobQueue:
             job.lease_expires_at = None
             job.attempts = max(0, job.attempts - 1)
             job.available_at = now + timedelta(seconds=delay)
+            # A deferred job is queued, not started: it was claimed only to
+            # discover that its resources were busy. Keeping the first claim's
+            # started_at made several waiters look like they began together.
+            job.started_at = None
+            job.progress_state_json = None
             job.updated_at = now
             self._event(
                 session,
@@ -912,6 +920,8 @@ class JobQueue:
             job.lease_expires_at = None
             job.attempts = max(0, job.attempts - 1)
             job.available_at = now + timedelta(seconds=delay)
+            job.started_at = None
+            job.progress_state_json = None
             job.error_code = "storage_pressure"
             job.error_message = safe_detail
             job.progress_detail = safe_detail
@@ -966,13 +976,29 @@ class JobQueue:
         visibility: ColumnElement[bool] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Select blockers in the caller's unit, optionally intersecting its policy."""
-        waiters_by_resource: dict[str, list[str]] = {}
+        keys_by_waiter: dict[str, Sequence[str]] = {}
         for record in records:
             if record.status != "queued":
                 continue
             raw_keys = record.resource_keys_json
-            if not isinstance(raw_keys, list):
-                continue
+            if isinstance(raw_keys, list):
+                keys_by_waiter[record.id] = raw_keys
+        return self.blockers_for_waiters(session, keys_by_waiter, visibility=visibility)
+
+    def blockers_for_waiters(
+        self,
+        session: Session,
+        keys_by_waiter: dict[str, Sequence[str]],
+        *,
+        visibility: ColumnElement[bool] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Resolve live holders for already-read waiter resource keys.
+
+        Callers that must not load raw job columns (the bounded work list) read
+        the keys in their own projection query and share this rule.
+        """
+        waiters_by_resource: dict[str, list[str]] = {}
+        for waiter_id, raw_keys in keys_by_waiter.items():
             keys = {
                 canonical_resource_key(str(key))
                 for key in raw_keys
@@ -981,7 +1007,7 @@ class JobQueue:
             if not keys:
                 continue
             for key in keys:
-                waiters_by_resource.setdefault(key, []).append(record.id)
+                waiters_by_resource.setdefault(key, []).append(waiter_id)
 
         if not waiters_by_resource:
             return {}
@@ -1028,7 +1054,9 @@ class JobQueue:
                 waiting_for[waiter_id] = {
                     "id": blocker.id,
                     "kind": blocker.kind,
+                    "session_id": blocker.session_id,
                     "progress_detail": blocker.progress_detail,
+                    "resource": resource_key,
                 }
         return waiting_for
 
@@ -1036,10 +1064,21 @@ class JobQueue:
         self, session: Session, now, kinds: frozenset[str] | None = None,
     ) -> str | None:
         """Skip occupied resources without spending attempts or rewriting waiters."""
-        running_session_ids = select(Job.session_id).where(
-            Job.status == "running",
-            Job.session_id.is_not(None),
-            Job.lease_expires_at > now,
+        beside = SESSION_BESIDE_JOB_KINDS
+        # A job may run beside a different job in its session only when the
+        # session fence below lets it through: another running job of the same
+        # beside set still serialises it.
+        running = aliased(Job)
+        session_blocker = (
+            select(running.id)
+            .where(
+                running.session_id == Job.session_id,
+                running.status == "running",
+                running.lease_expires_at > now,
+                or_(Job.kind.not_in(beside), running.kind.in_(beside)),
+            )
+            .correlate(Job)
+            .exists()
         )
         statement = (
             select(Job.id, Job.resource_keys_json)
@@ -1048,7 +1087,7 @@ class JobQueue:
                     self._available_filter(now),
                     and_(Job.status == "running", Job.lease_expires_at <= now),
                 ),
-                or_(Job.session_id.is_(None), Job.session_id.not_in(running_session_ids)),
+                or_(Job.session_id.is_(None), ~session_blocker),
                 Job.attempts < Job.max_attempts,
             )
             .order_by(Job.created_at.asc(), Job.id.asc())
@@ -1056,13 +1095,15 @@ class JobQueue:
         if kinds is not None:
             # A lane must not overtake older unfinished work in the same
             # session, including work a lapsed lease left to be reclaimed: an
-            # export queued after an assembly has to see its output.
+            # export queued after an assembly has to see its output. A beside
+            # job is not downstream of the other kinds it runs beside.
             older = aliased(Job)
             statement = statement.where(
                 Job.kind.in_(kinds),
                 ~select(older.id).where(
                     older.session_id == Job.session_id,
                     older.status.in_(("queued", "running", "cancel_requested")),
+                    or_(Job.kind.not_in(beside), older.kind.in_(beside)),
                     or_(
                         older.created_at < Job.created_at,
                         and_(older.created_at == Job.created_at, older.id < Job.id),
@@ -1140,6 +1181,8 @@ class JobQueue:
             job.available_at = None
             job.attempts += 1
             job.started_at = job.started_at or now
+            # Structured progress describes one attempt; a new one reports afresh.
+            job.progress_state_json = None
             job.updated_at = now
             self._event(
                 session,
@@ -1162,6 +1205,8 @@ class JobQueue:
         lease_generation: int,
         progress: float | None = None,
         detail: str | None = None,
+        progress_state: dict[str, Any] | None | object = _UNSET,
+        force_detail: bool = False,
         lease_seconds: int = 30,
     ) -> bool:
         with self.database.immediate_session(
@@ -1184,9 +1229,16 @@ class JobQueue:
                 progress_was_current = requested_progress >= float(job.progress or 0.0)
                 job.progress = max(float(job.progress or 0.0), requested_progress)
                 payload["progress"] = job.progress
-            if detail is not None and progress_was_current:
+            if detail is not None and (progress_was_current or force_detail):
                 job.progress_detail = self.secret_redactor.redact(detail)
                 payload["detail"] = job.progress_detail
+            if progress_state is not _UNSET:
+                # Structured progress is replaced whole and carries no user
+                # text, so it is written even when a late progress value lost.
+                job.progress_state_json = (
+                    dict(progress_state) if isinstance(progress_state, dict) else None
+                )
+                payload["state"] = job.progress_state_json
             if payload:
                 self._event(session, job.id, "job.progress", payload)
             return True
@@ -1821,13 +1873,31 @@ class Worker:
             *, progress_value: float | None = None, progress_detail: str | None = None
         ) -> bool | None:
             nonlocal last_successful_heartbeat
+            state = job_progress_state(job.id)
+            detail = progress_detail
+            state_payload: Any = _UNSET
+            force_detail = False
+            if state is not None:
+                # A retry that a batch worker thread recorded is folded into
+                # this heartbeat, even when the caller had no detail of its own.
+                composed = state.desired_detail()
+                if composed is not None:
+                    detail = composed
+                    # A retry-only update must reach the job even when a late
+                    # progress value would otherwise keep its detail.
+                    force_detail = True
+                changed, payload = state.consume_state()
+                if changed:
+                    state_payload = payload
             try:
                 renewed = self.queue.heartbeat(
                     job.id,
                     self.worker_id,
                     lease_generation=lease_generation,
                     progress=progress_value,
-                    detail=progress_detail,
+                    detail=detail,
+                    progress_state=state_payload,
+                    force_detail=force_detail,
                     lease_seconds=WORKER_LEASE_SECONDS,
                 )
                 if not renewed:
@@ -1901,6 +1971,9 @@ class Worker:
                 lease_generation=lease_generation,
             ):
                 cancel_event.set()
+            state = job_progress_state(job.id)
+            if state is not None:
+                state.observe(detail)
             renew_lease(progress_value=value, progress_detail=detail)
 
         try:

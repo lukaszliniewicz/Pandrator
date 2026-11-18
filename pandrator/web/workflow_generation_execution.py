@@ -32,6 +32,7 @@ from .access.generation_execution_policy import (
     require_generation_execution,
 )
 from .assembly_silences import remap_render_parts_after_rvc
+from .generation_progress import JobProgressState, open_job_progress_state
 from .jobs import JobQueue
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, new_id, utcnow
 from .speech_input_contracts import SpeechInputOwner
@@ -183,11 +184,15 @@ def run_generation(
             redact_diagnostic=context.secret_redactor.redact if context.secret_redactor else None,
         ):
             try:
-                return _run_generation(
-                    context, payload, progress, cancel_event, prove=prove,
-                    hydrate=speech.hydrate, validate=speech.validate,
-                    prepare_reference=prepare_reference,
-                )
+                with open_job_progress_state(
+                    str(payload.get("_job_id") or "") or None
+                ) as progress_state:
+                    return _run_generation(
+                        context, payload, progress, cancel_event, prove=prove,
+                        hydrate=speech.hydrate, validate=speech.validate,
+                        prepare_reference=prepare_reference,
+                        progress_state=progress_state,
+                    )
             except Exception as error:
                 if context.secret_redactor is None:
                     raise
@@ -230,6 +235,7 @@ def _run_generation(
     hydrate: Callable[[dict[str, Any]], dict[str, Any]],
     validate: Callable[[dict[str, Any]], dict[str, Any]],
     prepare_reference: Callable[[dict[str, Any]], dict[str, Any]],
+    progress_state: JobProgressState | None = None,
 ) -> dict[str, Any]:
     """Generate immutable per-segment takes with safe pause and resume boundaries."""
 
@@ -842,6 +848,9 @@ def _run_generation(
                     batch_size=effective_batch_size,
                     tts_urls=tts_urls,
                     cancel_event=cancel_event,
+                    retry_tracker=(
+                        progress_state.retry if progress_state is not None else None
+                    ),
                 )
                 if (
                     batch_capabilities is not None
@@ -912,6 +921,11 @@ def _run_generation(
             + (index / len(segment_ids)) * (1.0 - optimization_share),
             f"Generating speech: {index + 1} of {len(segment_ids)}",
         )
+        if progress_state is not None:
+            # Structured counts for the running estimate; never parsed from text.
+            # Segments a resume kept took no time in this attempt, so they
+            # must not count towards its pace.
+            progress_state.set_blocks(index, len(segment_ids), kept=skipped)
         take_path: Path | None = None
         take_file_identity: tuple[int, int] | None = None
         take_committed = False

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import event, inspect, select, text
+from sqlalchemy import event, insert, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 
 from pandrator.web import storage_admission as core
@@ -44,8 +44,10 @@ def database(tmp_path: Path) -> Iterator[Database]:
 
 def _job(database: Database, job_id: str, *, seconds: float = 60) -> StorageJobLease:
     lease = StorageJobLease(job_id, f"owner-{job_id}", 1)
+    # A Core insert names only these columns, so it also works on a pinned
+    # predecessor schema that lacks columns later migrations add to jobs.
     with database.session() as unit:
-        unit.add(Job(
+        unit.execute(insert(Job).values(
             id=job_id, kind="synthetic", workspace_id="workspace", status="running",
             lease_owner=lease.owner_id, lease_generation=lease.generation,
             lease_expires_at=datetime.now(UTC) + timedelta(seconds=seconds),
@@ -465,6 +467,7 @@ def test_upgrade_from_0085_preserves_jobs_and_downgrade_protects_live_rows(
         command.downgrade(config, "0085_project_speech_references")
         assert "storage_reservations" not in inspect(database.engine).get_table_names()
         with database.snapshot_session() as unit:
-            assert unit.get(Job, lease.job_id) is not None
+            # The ORM entity maps later columns; read the identity alone.
+            assert unit.scalar(select(Job.id).where(Job.id == lease.job_id)) is not None
     finally:
         database.dispose()

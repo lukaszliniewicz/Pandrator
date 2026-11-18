@@ -41,6 +41,8 @@ LATER_ORM_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("jobs", "external_effect_json", "JSON"),
     # 0087_public_project_links
     ("upload_sessions", "attach_to_session", "BOOLEAN NOT NULL DEFAULT 1"),
+    # 0089_job_progress_state
+    ("jobs", "progress_state_json", "JSON"),
 )
 
 

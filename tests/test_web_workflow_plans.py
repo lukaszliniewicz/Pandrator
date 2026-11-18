@@ -964,6 +964,17 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             [item for item in plan["warnings"] if "Speech recognition" in item]
         )
 
+    def test_generate_audio_plan_reports_no_history_without_a_measured_pace(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover", suffix="srt"
+        )
+        plan = self._plan(session_id, target_stage="generate_audio")
+        step = plan["ordered_steps"][-1]
+        self.assertEqual("generate_audio", step["stage"])
+        # No prepared speech plan and no completed run: nothing to measure.
+        self.assertIsNone(step["estimated_seconds"])
+        self.assertEqual("no_history", step["estimate_basis"])
+
     def test_generate_audio_plan_warns_about_an_inherited_unverified_route(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
             workflow_kind="voiceover",

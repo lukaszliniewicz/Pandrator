@@ -15,6 +15,7 @@ from sqlalchemy import select
 from pandrator.logic.tts_retry import retry_reason_suffix
 
 from .generation_plan_store import DefaultSilenceProtocol
+from .generation_progress import JobProgressState
 from .models import Artifact, GenerationPlan, GenerationSegment, SessionRecord, new_id, utcnow
 from .tts_provider_contracts import synthesize_with_optional_timing
 from .voice_execution_identity import voice_execution_workspace
@@ -75,6 +76,13 @@ class AutomaticGenerationContext:
     _logger: logging.Logger
 
 
+def _record_blocks_done(
+    state: JobProgressState | None, done: int, total: int
+) -> None:
+    if state is not None:
+        state.set_blocks(done, total)
+
+
 def generate_audio(
     context: AutomaticGenerationContext,
     session_id: str,
@@ -86,6 +94,7 @@ def generate_audio(
     *,
     role: str,
     job_id: str | None = None,
+    progress_state: JobProgressState | None = None,
 ) -> dict[str, Any]:
     from .media_process import MediaProcessCancelled
 
@@ -280,6 +289,9 @@ def generate_audio(
                 batch_size=effective_batch_size,
                 tts_urls=tts_urls,
                 cancel_event=cancel_event,
+                retry_tracker=(
+                    progress_state.retry if progress_state is not None else None
+                ),
             )
             context._logger.info(
                 "Using grouped %s-item TTS batches for %d automatic generation segments.",
@@ -308,6 +320,8 @@ def generate_audio(
             optimization_share + ((index - 1) / len(records)) * synthesis_share,
             f"Generating segment {index} of {len(records)}",
         )
+        # Structured counts for the running estimate; never parsed from text.
+        _record_blocks_done(progress_state, index - 1, len(records))
         batch_context = batch_contexts.get(generation_segment_id)
         if batch_context is not None:
             synthesized_text = str(batch_context["synthesized_text"])
@@ -375,7 +389,7 @@ def generate_audio(
             synthesis_progress_share: float = synthesis_share,
             generation_segment_id: str = generation_segment_id,
             render_manifest: list[dict[str, Any]] = render_manifest,
-        ):
+        ) -> AudioSegment | None:
             nonlocal speech_timing
             if casting_enabled:
                 from .generation_cast_runtime import segment_render_parts

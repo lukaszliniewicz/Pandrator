@@ -268,7 +268,9 @@ def test_generation_ignores_saved_preview_routing_metadata(generation_case, monk
 
     def capture_route(settings, **kwargs):
         routed.append(g.handlers.tts_providers.service_id_for_settings(settings))
-        assert routed[-1] == "google_gemini"
+        # The stored display name resolves to the canonical service, not to a
+        # spelling that would fall through to the compatible adapter.
+        assert routed[-1] == "gemini"
         assert not set(settings) & {
             "preview_service_id",
             "service_id",

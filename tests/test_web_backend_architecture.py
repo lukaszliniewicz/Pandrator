@@ -437,10 +437,16 @@ class BackendArchitectureTests(unittest.TestCase):
                 owner.return_value = expected
                 optional = {"role": "controlled-role", **({"job_id": "controlled-job"} if explicit else {})}
                 self.assertIs(expected, handlers._generate_audio(*arguments, **optional))
+                forwarded = dict(owner.call_args.kwargs)
+                progress_state = forwarded.pop("progress_state")
                 self.assertEqual(
                     {"role": "controlled-role", "job_id": "controlled-job" if explicit else None},
-                    owner.call_args.kwargs,
+                    forwarded,
                 )
+                if explicit:
+                    self.assertEqual("controlled-job", progress_state.job_id)
+                else:
+                    self.assertIsNone(progress_state)
                 owner.assert_called_once()
                 context, *sent_arguments = owner.call_args.args
                 contexts.append(context)

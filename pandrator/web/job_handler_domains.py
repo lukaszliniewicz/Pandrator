@@ -5,22 +5,11 @@ from __future__ import annotations
 from functools import wraps
 from typing import TYPE_CHECKING, Protocol
 
+from .job_lane_kinds import DELIVERY_LANE_JOB_KINDS as DELIVERY_LANE_JOB_KINDS
+from .job_lane_kinds import SESSION_BESIDE_JOB_KINDS as SESSION_BESIDE_JOB_KINDS
 from .job_registry import JobHandlerRegistry, JobPayloadContract
 from .jobs import JobHandler
 from .projects.copy_contracts import PROJECT_COPY_JOB_KIND
-
-# Delivery jobs a person waits on. Each worker process also runs a lane that
-# claims only these, so an export never queues behind a long generation in
-# another project. Jobs in one project still run one at a time and in order.
-# PANDRATOR_DELIVERY_LANE=0 turns the lane off.
-DELIVERY_LANE_JOB_KINDS = frozenset({
-    "export.create",
-    "export.variant",
-    "export.comparison",
-    "output.mix_preview",
-    "session.bundle.export",
-    "project.exports.bundle",
-})
 
 if TYPE_CHECKING:
     from pandrator.runtime import DataPaths

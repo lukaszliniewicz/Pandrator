@@ -1227,6 +1227,47 @@ class WorkflowExecutionPlanService:
             "outcome": outcome,
         }
 
+    def _apply_generation_estimate(
+        self,
+        steps: list[dict[str, Any]],
+        *,
+        session_id: str,
+        resolved: ResolvedWorkflowStage,
+        supplied: dict[str, Any],
+    ) -> None:
+        """Tell the plan how long synthesis should take, when history can say.
+
+        The pace comes from the takes of this workspace's most recent
+        completed run on the same service, model and concurrency, so it already
+        reflects parallel requests.
+        """
+
+        from .generation_estimates import block_count, plan_time_estimate
+        from .settings_identity import settings_workspace_id
+
+        snapshot = resolved.payload.get("resolved_settings_snapshot")
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        sections = resolved.payload.get("settings")
+        sections = sections if isinstance(sections, dict) else {}
+        tts_override = supplied.get("tts")
+        tts = dict(sections.get("tts") or {})
+        if isinstance(tts_override, dict):
+            tts.update(tts_override)
+        if not tts:
+            tts = dict(snapshot.get("tts") or {})
+        with self.database.snapshot_session() as session:
+            blocks = block_count(session, session_id)
+            estimate = plan_time_estimate(
+                session,
+                workspace_id=settings_workspace_id(session, session_id=session_id),
+                settings={"tts": tts},
+                blocks=blocks,
+            )
+        for step in steps:
+            if step["stage"] == "generate_audio":
+                step["estimated_seconds"] = estimate["estimated_seconds"]
+                step["estimate_basis"] = estimate["estimate_basis"]
+
     @staticmethod
     def _speech_timing_warnings(
         speech_timing: dict[str, Any] | None,
@@ -1666,6 +1707,13 @@ class WorkflowExecutionPlanService:
                 for step in steps:
                     if step["stage"] == target_stage:
                         step["tail_extension"] = tail
+        if any(step["stage"] == "generate_audio" for step in steps):
+            self._apply_generation_estimate(
+                steps,
+                session_id=session_id,
+                resolved=resolved,
+                supplied=supplied,
+            )
         effective_stage: dict[str, dict[str, Any]] = {}
         stage_support: dict[str, Any] | None = None
         with execution_actor_scope(context.actor):

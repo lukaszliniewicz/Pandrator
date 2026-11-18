@@ -934,6 +934,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_job_storage_wait.py",
         "tests/test_job_terminal_lease_fencing.py",
         "tests/test_job_time_projections.py",
+        "tests/test_work_queue_projection.py",
         "tests/test_local_resource_declarations.py",
         "tests/test_managed_worker_capacity.py",
         "tests/test_optimization_review_access.py",

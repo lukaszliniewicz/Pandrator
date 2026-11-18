@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 from sqlalchemy import case, exists, func, select
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy.orm import Session, load_only, object_session
 
 from .access.contracts import AccessContext
 from .access.job_policy import (
@@ -18,6 +18,7 @@ from .access.job_policy import (
     require_job_access,
 )
 from .credentials import SecretRedactor
+from .job_lane_kinds import DELIVERY_LANE_JOB_KINDS, SESSION_BESIDE_JOB_KINDS
 from .jobs import JobQueue
 from .model_base import as_utc, utcnow
 from .models import Job, JobEvent, SessionPurge
@@ -88,6 +89,55 @@ def _bounded_json(value: Any, *, depth: int = 0) -> Any:
     return str(value)[:8_000]
 
 
+def _deadline(value: Any) -> datetime | None:
+    """Read an ISO retry deadline from stored progress state."""
+
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return as_utc(datetime.fromisoformat(value))
+    except ValueError:
+        return None
+
+
+def _lane_candidates(
+    rows: Sequence[Any],
+    lane: str,
+    delivery_kinds: frozenset[str],
+    beside_kinds: frozenset[str],
+    now: datetime,
+) -> list[Any]:
+    """The queued jobs one lane would consider, in claim order.
+
+    This mirrors ``JobQueue._next_claimable_job_id``: availability, remaining
+    attempts, the lane's kinds, and the delivery lane's rule that an export
+    never overtakes older unfinished work in its own session.
+    """
+
+    candidates: list[Any] = []
+    for row in rows:
+        if row.status != "queued":
+            continue
+        if (str(row.kind) in delivery_kinds) != (lane == "delivery"):
+            continue
+        if int(row.attempts or 0) >= int(row.max_attempts or 1):
+            continue
+        if row.available_at is not None and as_utc(row.available_at) > now:
+            continue
+        if lane == "delivery" and any(
+            other.session_id is not None
+            and other.session_id == row.session_id
+            and other.id != row.id
+            and other.status in {"queued", "running", "cancel_requested"}
+            and (str(row.kind) not in beside_kinds or str(other.kind) in beside_kinds)
+            and (other.created_at, other.id) < (row.created_at, row.id)
+            for other in rows
+        ):
+            continue
+        candidates.append(row)
+    return candidates
+
+
 def _work_state(status: str) -> WorkState:
     normalized = str(status or "queued").strip().lower()
     if normalized in {"canceled", "cancelled"}:
@@ -104,6 +154,50 @@ class WorkError(BaseModel):
 
     code: str | None = None
     message: str
+
+
+class WorkQueueBlocker(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    work_id: str
+    kind: str
+    session_id: str | None = None
+    detail: str | None = None
+
+
+class WorkQueueView(BaseModel):
+    """Why a queued job has not started yet, and where it sits in its lane."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    position: int = Field(ge=1)
+    lane: Literal["main", "delivery"]
+    reason: Literal["session_busy", "resource_busy", "worker_busy", "scheduled"]
+    blocked_by: WorkQueueBlocker | None = None
+    resource: str | None = None
+
+
+class WorkRetry(BaseModel):
+    """Retries in flight inside a batch synthesis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pending_requests: int = Field(ge=0)
+    max_attempt: int = Field(ge=0)
+    attempt_limit: int = Field(ge=1)
+    provider: str | None = None
+    next_retry_in_seconds: float | None = None
+
+
+class WorkEstimate(BaseModel):
+    """How much of a generation run is left, from its own measured pace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    blocks_done: int = Field(ge=0)
+    blocks_total: int = Field(ge=1)
+    blocks_per_minute: float = Field(ge=0.0)
+    remaining_seconds: float = Field(ge=0.0)
 
 
 class WorkView(BaseModel):
@@ -133,6 +227,18 @@ class WorkView(BaseModel):
     available_at: datetime | None = Field(
         default=None, description="Earliest UTC time at which queued work can be claimed again."
     )
+    queue: WorkQueueView | None = Field(
+        default=None,
+        description="For queued work: its place in its lane and what it is waiting for.",
+    )
+    retry: WorkRetry | None = Field(
+        default=None,
+        description="Retries in flight, for generation work that reports them.",
+    )
+    estimate: WorkEstimate | None = Field(
+        default=None,
+        description="Measured pace and remaining time, for a running generation.",
+    )
 
     @model_serializer(mode="wrap")
     def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -141,6 +247,9 @@ class WorkView(BaseModel):
             payload.pop("external_effect", None)
         if self.available_at is None:
             payload.pop("available_at", None)
+        for field in ("queue", "retry", "estimate"):
+            if getattr(self, field) is None:
+                payload.pop(field, None)
         return payload
 
 
@@ -180,7 +289,13 @@ class WorkService:
         self.queue = queue
         self.redactor = redactor
 
-    def _project(self, job: Job, *, purge_claimed: bool | None = None) -> WorkView:
+    def _project(
+        self,
+        job: Job,
+        *,
+        purge_claimed: bool | None = None,
+        queue: WorkQueueView | None = None,
+    ) -> WorkView:
         state = _work_state(job.status)
         safe_detail = (
             self.redactor.redact(job.progress_detail)[:2_000]
@@ -256,7 +371,245 @@ class WorkService:
             finished_at=as_utc(job.finished_at) if job.finished_at is not None else None,
             updated_at=as_utc(job.updated_at) if job.updated_at is not None else None,
             available_at=as_utc(job.available_at) if job.available_at is not None else None,
+            queue=queue,
+            retry=self._retry_view(job, state),
+            estimate=self._estimate_view(job, state),
         )
+
+    def _retry_view(self, job: Job, state: WorkState) -> WorkRetry | None:
+        """Retries a running generation is waiting on, from its own last report."""
+
+        if state not in {"queued", "running"}:
+            return None
+        source = job.progress_state_json
+        retry = source.get("retry") if isinstance(source, dict) else None
+        if not isinstance(retry, dict):
+            return None
+        pending = retry.get("pending")
+        entries = [
+            item
+            for item in (pending if isinstance(pending, list) else [])
+            if isinstance(item, dict)
+        ]
+        now = utcnow()
+        live: list[tuple[int, float]] = []
+        for entry in entries:
+            deadline = _deadline(entry.get("retry_at"))
+            if deadline is None or deadline <= now:
+                continue
+            live.append(
+                (
+                    int(entry.get("attempt") or 0),
+                    (deadline - now).total_seconds(),
+                )
+            )
+        if not live:
+            return None
+        raw_limit = retry.get("attempt_limit")
+        attempt_limit = int(raw_limit) if isinstance(raw_limit, int) else 0
+        if attempt_limit < 1:
+            attempt_limit = max([attempt for attempt, _seconds in live] or [1])
+        provider = retry.get("provider")
+        return WorkRetry(
+            pending_requests=len(live),
+            max_attempt=max(attempt for attempt, _seconds in live),
+            attempt_limit=max(1, attempt_limit),
+            provider=str(provider) if isinstance(provider, str) and provider else None,
+            next_retry_in_seconds=round(min(seconds for _attempt, seconds in live), 1),
+        )
+
+    def _estimate_view(self, job: Job, state: WorkState) -> WorkEstimate | None:
+        """Remaining time from this run's own measured pace, once it is credible."""
+
+        if state != "running" or job.started_at is None:
+            return None
+        source = job.progress_state_json
+        if not isinstance(source, dict):
+            return None
+        try:
+            done = int(source.get("blocks_done") or 0)
+            total = int(source.get("blocks_total") or 0)
+            kept = int(source.get("blocks_kept") or 0)
+        except (TypeError, ValueError):
+            return None
+        # Blocks a resume kept from an earlier attempt cost this one no time.
+        synthesized = done - max(0, kept)
+        if total < 1 or synthesized <= 0:
+            return None
+        elapsed = (utcnow() - as_utc(job.started_at)).total_seconds()
+        if elapsed <= 0:
+            return None
+        # A couple of blocks or a few seconds is noise, not a pace.
+        if synthesized < 10 and elapsed < 120:
+            return None
+        remaining_blocks = max(0, total - done)
+        return WorkEstimate(
+            blocks_done=min(done, total),
+            blocks_total=total,
+            blocks_per_minute=round(synthesized / (elapsed / 60.0), 2),
+            remaining_seconds=round(remaining_blocks * (elapsed / synthesized), 1),
+        )
+
+    def _queue_views(
+        self,
+        session: Session,
+        jobs: Sequence[Job],
+        *,
+        context: AccessContext | None = None,
+    ) -> dict[str, WorkQueueView]:
+        """One pass over the live queue, for every queued job in this page."""
+
+        queued = [job for job in jobs if _work_state(job.status) == "queued"]
+        if not queued:
+            return {}
+        now = utcnow()
+        # Positions count the real queue; a blocker is named only when the
+        # caller may see that job.
+        visibility = job_visibility_clause(session, context) if context is not None else None
+        with session.no_autoflush:
+            rows = session.execute(
+                select(
+                    Job.id,
+                    Job.kind,
+                    Job.session_id,
+                    Job.created_at,
+                    Job.status,
+                    Job.available_at,
+                    Job.attempts,
+                    Job.max_attempts,
+                    Job.progress_detail,
+                    Job.lease_expires_at,
+                    Job.resource_keys_json,
+                )
+                .where(Job.status.in_(("queued", "running", "cancel_requested")))
+                .order_by(Job.created_at.asc(), Job.id.asc())
+                .limit(500)
+            ).all()
+            waiting_ids = {job.id for job in queued}
+            blocked = self.queue.blockers_for_waiters(
+                session,
+                {
+                    row.id: row.resource_keys_json or []
+                    for row in rows
+                    if row.status == "queued" and row.id in waiting_ids
+                },
+                visibility=visibility,
+            )
+            visible_ids: set[str] | None = None
+            if visibility is not None:
+                visible_ids = set(
+                    session.scalars(
+                        select(Job.id).where(
+                            Job.status.in_(("running", "cancel_requested")),
+                            visibility,
+                        )
+                    ).all()
+                )
+        delivery_kinds = DELIVERY_LANE_JOB_KINDS
+        beside_kinds = SESSION_BESIDE_JOB_KINDS
+        running = [
+            row
+            for row in rows
+            if row.status in {"running", "cancel_requested"}
+            and row.lease_expires_at is not None
+            and as_utc(row.lease_expires_at) > now
+            and (visible_ids is None or row.id in visible_ids)
+        ]
+        candidates = {
+            lane: _lane_candidates(rows, lane, delivery_kinds, beside_kinds, now)
+            for lane in ("main", "delivery")
+        }
+        views: dict[str, WorkQueueView] = {}
+        for job in queued:
+            lane = "delivery" if str(job.kind) in delivery_kinds else "main"
+            # An in-memory job carries an aware timestamp; stored rows do not.
+            created_at = as_utc(job.created_at) if job.created_at is not None else now
+            position = 1 + sum(
+                1
+                for row in candidates[lane]
+                if (as_utc(row.created_at), row.id) < (created_at, job.id)
+            )
+            available = job.available_at is not None and as_utc(job.available_at) > now
+            if available:
+                views[job.id] = WorkQueueView(
+                    position=position, lane=lane, reason="scheduled"
+                )
+                continue
+            # The same rule as the claim fence: a beside job (evidence) waits
+            # only for another beside job in its session.
+            session_blocker = next(
+                (
+                    row
+                    for row in running
+                    if row.session_id is not None
+                    and row.session_id == job.session_id
+                    and (
+                        str(job.kind) not in beside_kinds
+                        or str(row.kind) in beside_kinds
+                    )
+                ),
+                None,
+            )
+            if session_blocker is not None:
+                views[job.id] = WorkQueueView(
+                    position=position,
+                    lane=lane,
+                    reason="session_busy",
+                    blocked_by=self._blocker(session_blocker),
+                )
+                continue
+            resource_blocker = blocked.get(job.id)
+            if resource_blocker is not None:
+                views[job.id] = WorkQueueView(
+                    position=position,
+                    lane=lane,
+                    reason="resource_busy",
+                    blocked_by=WorkQueueBlocker(
+                        work_id=str(resource_blocker.get("id") or ""),
+                        kind=str(resource_blocker.get("kind") or ""),
+                        session_id=resource_blocker.get("session_id"),
+                        detail=self._blocker_detail(resource_blocker.get("progress_detail")),
+                    ),
+                    resource=(
+                        str(resource_blocker["resource"])
+                        if resource_blocker.get("resource")
+                        else None
+                    ),
+                )
+                continue
+            lane_blocker = next(
+                (
+                    row
+                    for row in running
+                    if row.session_id != job.session_id
+                    and (str(row.kind) in delivery_kinds) == (lane == "delivery")
+                ),
+                None,
+            )
+            if lane_blocker is not None:
+                views[job.id] = WorkQueueView(
+                    position=position,
+                    lane=lane,
+                    reason="worker_busy",
+                    blocked_by=self._blocker(lane_blocker),
+                )
+                continue
+            # Nothing observed is holding it: the worker has not reached it yet.
+            views[job.id] = WorkQueueView(
+                position=position, lane=lane, reason="worker_busy"
+            )
+        return views
+
+    def _blocker(self, row: Any) -> WorkQueueBlocker:
+        return WorkQueueBlocker(
+            work_id=str(row.id),
+            kind=str(row.kind),
+            session_id=row.session_id,
+            detail=self._blocker_detail(row.progress_detail),
+        )
+
+    def _blocker_detail(self, detail: str | None) -> str | None:
+        return self.redactor.redact(detail)[:400] if detail else None
 
     def _project_event(self, event: JobEvent) -> WorkEvent:
         source = event.payload_json if isinstance(event.payload_json, dict) else {}
@@ -330,6 +683,7 @@ class WorkService:
                 Job.status,
                 Job.progress,
                 Job.progress_detail,
+                Job.progress_state_json,
                 Job.result_json,
                 Job.external_effect_json,
                 Job.error_code,
@@ -365,6 +719,7 @@ class WorkService:
                     .where(Job.id.in_([job.id for job in jobs]))
                 )
             } if context is not None and jobs else {}
+            queues = self._queue_views(session, jobs, context=context)
             views = [
                 self._project(
                     job,
@@ -373,6 +728,7 @@ class WorkService:
                         if job.kind == "maintenance.session_purge"
                         else False
                     ),
+                    queue=queues.get(job.id),
                 )
                 for job in jobs
             ]
@@ -437,13 +793,14 @@ class WorkService:
         )
 
     def get(self, job_id: str) -> WorkView:
-        return self._project(self.queue.get(job_id))
+        job = self.queue.get(job_id)
+        return self._project(job, queue=self._queue_for_job(job))
 
     def get_in_session(
         self, session: Session, context: AccessContext, job_id: str
     ) -> WorkView:
         job = self.diagnostic_get_in_session(session, context, job_id)
-        view = self.project_job_in_session(session, job)
+        view = self.project_job_in_session(session, job, context=context)
         with session.no_autoflush:
             may_cancel = session.scalar(
                 select(job_cancellation_clause(session, context)).select_from(Job).where(Job.id == job_id)
@@ -454,9 +811,22 @@ class WorkService:
     def project_job(self, job: Job) -> WorkView:
         """Project a job already loaded in the caller's transaction."""
 
-        return self._project(job)
+        return self._project(job, queue=self._queue_for_job(job))
 
-    def project_job_in_session(self, session: Session, job: Job) -> WorkView:
+    def _queue_for_job(self, job: Job) -> WorkQueueView | None:
+        if _work_state(job.status) != "queued":
+            return None
+        # Read in the caller's transaction when the job came from one, so a job
+        # it has just enqueued is part of the queue it is placed in.
+        owner = object_session(job)
+        if owner is not None:
+            return self._queue_views(owner, [job]).get(job.id)
+        with self.queue.database.snapshot_session() as session:
+            return self._queue_views(session, [job]).get(job.id)
+
+    def project_job_in_session(
+        self, session: Session, job: Job, *, context: AccessContext | None = None
+    ) -> WorkView:
         """Project an authorized job and resolve purge state in the caller session.
 
         This method does not authorize ``job``; its caller must have loaded the
@@ -479,7 +849,11 @@ class WorkService:
                 else None
             )
         purge_claimed = journal_state in {"purging", "failed", "complete"}
-        return self._project(job, purge_claimed=purge_claimed)
+        return self._project(
+            job,
+            purge_claimed=purge_claimed,
+            queue=self._queue_views(session, [job], context=context).get(job.id),
+        )
 
     def events(
         self,

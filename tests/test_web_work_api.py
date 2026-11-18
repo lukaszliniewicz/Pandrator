@@ -498,8 +498,12 @@ class WorkServiceListingTests(unittest.TestCase):
         job_selects = [
             (statement, parameters)
             for statement, parameters in statements
-            if "SELECT jobs.id, jobs.kind" in statement and "FROM jobs" in statement
+            if "SELECT jobs.id, jobs.kind" in statement
+            and "FROM jobs" in statement
+            and "order by jobs.created_at desc" in statement.lower()
         ]
+        # One bounded page read; the queue projection reads the same table in
+        # its own statement, which the assertions below do not inspect.
         self.assertEqual(1, len(job_selects))
         statement, parameters = job_selects[0]
         select_clause = statement.split("FROM jobs", maxsplit=1)[0].lower()

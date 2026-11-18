@@ -97,7 +97,9 @@ def test_queued_preview_blocker_is_exposed_by_get_list_and_compact_snapshot():
         expected = {
             "id": blocker_id,
             "kind": "generation.run",
+            "session_id": None,
             "progress_detail": "Extending final frame",
+            "resource": "service:tts:xtts",
         }
 
         get_response = case.client.get(f"/api/v1/jobs/{waiter_id}")
@@ -219,7 +221,9 @@ def test_waiting_for_jobs_canonicalizes_tts_aliases_and_ignores_other_services()
             alias_waiter: {
                 "id": alias_blocker,
                 "kind": "generation.run",
+                "session_id": None,
                 "progress_detail": "Alias blocker detail",
+                "resource": "service:tts:kobold_qwen",
             }
         }
     finally:

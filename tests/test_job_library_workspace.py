@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import sqlite3
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +36,7 @@ from pandrator.web.projects.models import Project
 from pandrator.web.schemas import TrainingCreateRequest
 from pandrator.web.sound_service import SoundService
 from pandrator.web.training_lifecycle import TrainingService
+from tests.legacy_schema_support import prepare_read_only_pinned_schema
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -269,15 +269,14 @@ def test_google_design_job_uses_created_voice_workspace(library_case, monkeypatc
 
 
 def _legacy_job_roots(database) -> None:
-    """Reach the pre-0075 root shape, then keep the current ORM column."""
+    """Reach the pre-0075 root shape, then keep the current ORM columns."""
     config = Config()
     config.set_main_option(
         "script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations")
     )
     config.set_main_option("sqlalchemy.url", sqlite_url(database.path))
     command.downgrade(config, "0074_actor_attribution")
-    with sqlite3.connect(database.path) as connection:
-        connection.execute("ALTER TABLE jobs ADD COLUMN external_effect_json JSON")
+    prepare_read_only_pinned_schema(database.path, [Job])
 
 
 @pytest.mark.parametrize("bad_scope", ["foreign", "unscoped", "project"])

@@ -42,6 +42,7 @@ from .generation_plan_store import (
     prepare_generation_plan_rows as _prepare_generation_plan_rows_impl,
 )
 from .generation_plan_store import store_generation_plan as _store_generation_plan_impl
+from .generation_progress import open_job_progress_state
 from .google_voice_design import design_google_voice as _design_google_voice_impl
 from .job_inputs import artifact_job_ownership
 from .jobs import JobQueue
@@ -2771,6 +2772,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         batch_size: int,
         tts_urls: dict[str, str],
         cancel_event,
+        retry_tracker: Any = None,
     ):
         from .tts_providers import TtsBatchItem
 
@@ -2782,6 +2784,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 ],
                 batch_size=batch_size,
                 cancel_event=cancel_event,
+                retry_tracker=retry_tracker,
                 **tts_urls,
             )
         )
@@ -3006,17 +3009,19 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         role: str,
         job_id: str | None = None,
     ) -> dict[str, Any]:
-        return _automatic_generate_audio(
-            self._automatic_generation_context(),
-            session_id,
-            source_artifact,
-            source_path,
-            settings,
-            progress,
-            cancel_event,
-            role=role,
-            job_id=job_id,
-        )
+        with open_job_progress_state(job_id) as progress_state:
+            return _automatic_generate_audio(
+                self._automatic_generation_context(),
+                session_id,
+                source_artifact,
+                source_path,
+                settings,
+                progress,
+                cancel_event,
+                role=role,
+                job_id=job_id,
+                progress_state=progress_state,
+            )
 
     def generate_dubbing_audio(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.speech_blocks import generate_speech_blocks_file
