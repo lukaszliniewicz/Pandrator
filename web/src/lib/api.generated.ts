@@ -945,8 +945,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Admit a timing-only repair for a completed voiceover
-         * @description Queue one durable generation.repair-existing job for a completed voiceover on its active speech plan. The frozen settings must enable early-finish repair; audio-version and automatic second-pass children are refused. Send no body parameters; an empty JSON object is equivalent to no body. A new job returns 202, while an eligible existing job returns 200 with reused_job=true. Reusing the same Idempotency-Key replays the retained receipt.
+         * Queue a timing preview or a timing repair for a completed voiceover
+         * @description With {"preview": true} queue one CPU-only generation.repair-preview job whose result lists the candidate blocks, the thresholds in force and the estimated synthesis calls without staging or synthesising anything. Otherwise queue one durable generation.repair-existing job for a completed voiceover on its active speech plan, using the repair thresholds resolved at request time. The frozen automatic-pass setting is not required; audio-version and second-pass child runs are refused. A new job returns 202, while an eligible existing job returns 200 with reused_job=true. Reusing the same Idempotency-Key replays the retained receipt.
          */
         post: operations["repairGenerationTiming"];
         delete?: never;
@@ -5789,7 +5789,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.14.5
+             * @default 0.15.0
              */
             application_version?: string;
             /** Canonical Origin */
@@ -6257,6 +6257,8 @@ export interface components {
              * @default null
              */
             error_message?: string | null;
+            /** @default null */
+            filler_check?: components["schemas"]["DispatchFillerCheck"] | null;
             /**
              * Final Artifact Id
              * @default null
@@ -6331,22 +6333,37 @@ export interface components {
          * @description Shared, parent-supplied or accumulated context for delegated batches.
          */
         DispatchContextCapsule: {
-            /** Decisions */
+            /**
+             * Decisions
+             * @description Accepted decisions that later batches must respect. Empty items are ignored.
+             */
             decisions?: string[];
-            /** Entities */
+            /**
+             * Entities
+             * @description Named entity to a short note. Empty values are ignored.
+             */
             entities?: {
                 [key: string]: string;
             };
-            /** Notes */
+            /**
+             * Notes
+             * @description Free-form context notes. Empty items are ignored.
+             */
             notes?: string[];
             /**
              * Overview
              * @default
              */
             overview?: string;
-            /** Style Rules */
+            /**
+             * Style Rules
+             * @description Standing style rules. Empty items are ignored.
+             */
             style_rules?: string[];
-            /** Terminology */
+            /**
+             * Terminology
+             * @description Source term to preferred renderings. Empty values are ignored.
+             */
             terminology?: {
                 [key: string]: string;
             };
@@ -6356,17 +6373,32 @@ export interface components {
          * @description Bounded knowledge learned while processing one delegated batch.
          */
         DispatchContextDelta: {
-            /** Decisions */
+            /**
+             * Decisions
+             * @description Accepted decisions that later batches must respect. Empty items are ignored.
+             */
             decisions?: string[];
-            /** Entities */
+            /**
+             * Entities
+             * @description Named entity to a short note. Empty values are ignored.
+             */
             entities?: {
                 [key: string]: string;
             };
-            /** Notes */
+            /**
+             * Notes
+             * @description Free-form context notes. Empty items are ignored.
+             */
             notes?: string[];
-            /** Style Rules */
+            /**
+             * Style Rules
+             * @description Standing style rules. Empty items are ignored.
+             */
             style_rules?: string[];
-            /** Terminology */
+            /**
+             * Terminology
+             * @description Source term to preferred renderings. Empty values are ignored.
+             */
             terminology?: {
                 [key: string]: string;
             };
@@ -6479,6 +6511,49 @@ export interface components {
             wave_batch_count: number;
             /** Wave Number */
             wave_number: number;
+        };
+        /**
+         * DispatchFillerCheck
+         * @description Post-correction scan of the declared filler-removal policy.
+         */
+        DispatchFillerCheck: {
+            /** Count */
+            count: number;
+            /** Passages */
+            passages?: components["schemas"]["DispatchFillerCheckPassage"][];
+            /** Policy */
+            policy: string;
+            /**
+             * Reason
+             * @default null
+             */
+            reason?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "clean" | "fillers_remaining" | "not_checked";
+        };
+        /**
+         * DispatchFillerCheckPassage
+         * @description One finalised passage that still contains a filler token.
+         */
+        DispatchFillerCheckPassage: {
+            /**
+             * Cue Id
+             * @default null
+             */
+            cue_id?: number | string | null;
+            /**
+             * Passage Id
+             * @default null
+             */
+            passage_id?: number | string | null;
+            /**
+             * Text
+             * @default
+             */
+            text?: string;
         };
         /** DispatchRunCreateRequest */
         DispatchRunCreateRequest: {
@@ -7200,6 +7275,13 @@ export interface components {
              * @enum {string}
              */
             status: "queued" | "running" | "succeeded";
+        };
+        GenerationTimingRepairRequest: {
+            /**
+             * @description List the candidate blocks, the thresholds in force and the estimated synthesis calls without queueing a job.
+             * @default false
+             */
+            preview?: boolean;
         };
         /** GenerationTopologyEdit */
         GenerationTopologyEdit: {
@@ -11277,6 +11359,11 @@ export interface components {
              * @default
              */
             name?: string;
+            /**
+             * Run As Job
+             * @default false
+             */
+            run_as_job?: boolean;
         };
         /** TranslationProjectRenameRequest */
         TranslationProjectRenameRequest: {
@@ -11937,6 +12024,20 @@ export interface components {
             /** Message */
             message: string;
         };
+        /**
+         * WorkEstimate
+         * @description How much of a generation run is left, from its own measured pace.
+         */
+        WorkEstimate: {
+            /** Blocks Done */
+            blocks_done: number;
+            /** Blocks Per Minute */
+            blocks_per_minute: number;
+            /** Blocks Total */
+            blocks_total: number;
+            /** Remaining Seconds */
+            remaining_seconds: number;
+        };
         /** WorkEvent */
         WorkEvent: {
             /**
@@ -11979,6 +12080,70 @@ export interface components {
              */
             schema_version?: "1";
         };
+        /** WorkQueueBlocker */
+        WorkQueueBlocker: {
+            /**
+             * Detail
+             * @default null
+             */
+            detail?: string | null;
+            /** Kind */
+            kind: string;
+            /**
+             * Session Id
+             * @default null
+             */
+            session_id?: string | null;
+            /** Work Id */
+            work_id: string;
+        };
+        /**
+         * WorkQueueView
+         * @description Why a queued job has not started yet, and where it sits in its lane.
+         */
+        WorkQueueView: {
+            /** @default null */
+            blocked_by?: components["schemas"]["WorkQueueBlocker"] | null;
+            /**
+             * Lane
+             * @enum {string}
+             */
+            lane: "main" | "delivery";
+            /** Position */
+            position: number;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "session_busy" | "resource_busy" | "worker_busy" | "scheduled";
+            /**
+             * Resource
+             * @default null
+             */
+            resource?: string | null;
+        };
+        /**
+         * WorkRetry
+         * @description Retries in flight inside a batch synthesis.
+         */
+        WorkRetry: {
+            /** Attempt Limit */
+            attempt_limit: number;
+            /** Max Attempt */
+            max_attempt: number;
+            /**
+             * Next Retry In Seconds
+             * @default null
+             */
+            next_retry_in_seconds?: number | null;
+            /** Pending Requests */
+            pending_requests: number;
+            /**
+             * Provider
+             * @default null
+             */
+            provider?: string | null;
+        };
         /**
          * WorkView
          * @description Stable public work projection; raw job inputs are intentionally absent.
@@ -12005,6 +12170,11 @@ export interface components {
             /** @default null */
             error?: components["schemas"]["WorkError"] | null;
             /**
+             * @description Measured pace and remaining time, for a running generation.
+             * @default null
+             */
+            estimate?: components["schemas"]["WorkEstimate"] | null;
+            /**
              * External Effect
              * @default null
              */
@@ -12028,12 +12198,22 @@ export interface components {
              */
             progress?: number | null;
             /**
+             * @description For queued work: its place in its lane and what it is waiting for.
+             * @default null
+             */
+            queue?: components["schemas"]["WorkQueueView"] | null;
+            /**
              * Result Summary
              * @default null
              */
             result_summary?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * @description Retries in flight, for generation work that reports them.
+             * @default null
+             */
+            retry?: components["schemas"]["WorkRetry"] | null;
             /**
              * Schema Version
              * @default 1
@@ -12122,6 +12302,10 @@ export interface components {
             overrides?: {
                 [key: string]: unknown;
             };
+            /** Rerun Stages */
+            rerun_stages?: string[];
+            /** Reuse Stages */
+            reuse_stages?: string[];
             /**
              * Target Stage
              * @default generate_audio
@@ -14632,11 +14816,11 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": Record<string, never>;
+                "application/json": components["schemas"]["GenerationTimingRepairRequest"];
             };
         };
         responses: {
-            /** @description Existing eligible timing repair job reused. The receipt is a frozen snapshot of the admitting call; read the job or run for live status. */
+            /** @description Existing eligible job reused (repair or a running preview). A queued receipt is a frozen snapshot of the admitting call; read the job or run for live status. */
             200: {
                 headers: {
                     /** @description True when replaying the retained response for this request key. */
@@ -14693,7 +14877,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Body parameters were supplied; timing repair accepts an empty body only */
+            /** @description A body parameter is invalid or unknown */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -19551,6 +19735,8 @@ export interface operations {
                 before_revision_number?: number;
                 /** @description When true, skip audio-reuse inspection: reuse counts are null with audio_reuse_checked=false. Default full preserves the legacy payload. */
                 summary?: boolean;
+                /** @description Count reuse against this run's frozen settings snapshot, the same basis its segment rows use. Without it the session's current settings are the basis; reuse_basis names the one used. */
+                generation_run_id?: string;
             };
             header?: never;
             path: {
@@ -21847,7 +22033,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Effective settings and inheritance */
+            /** @description Effective settings, each key's origin, and inheritance */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -23930,6 +24116,11 @@ export interface operations {
                 content: {
                     "application/json": {
                         assets: {
+                            /**
+                             * @description A missing model this caller's run may not download.
+                             * @enum {string}
+                             */
+                            download?: "administrator_required";
                             id: string;
                             kind: string;
                             status: string;
@@ -23944,7 +24135,7 @@ export interface operations {
                         /** @constant */
                         scope: "local_model_files";
                         /** @enum {string} */
-                        status: "cached" | "missing" | "unresolved" | "not_required";
+                        status: "cached" | "missing" | "unresolved" | "not_required" | "will_download";
                     };
                 };
             };
@@ -24050,7 +24241,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Translation project state */
+            /** @description Translation project state; returned when run_as_job is false */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -24060,6 +24251,24 @@ export interface operations {
                         [key: string]: unknown;
                     };
                 };
+            };
+            /** @description Creation queued as durable work */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description An idempotency key is required or invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Session, checkpoint, or project not found */
             404: {
