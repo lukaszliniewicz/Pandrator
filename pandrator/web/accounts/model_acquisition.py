@@ -8,9 +8,30 @@ from contextlib import contextmanager
 from pandrator.logic.model_acquisition import model_acquisition_scope
 
 from ..database import Database
-from .administration import require_execution_administrator_actor
-from .execution_actor import HostActor, UserActor, current_execution_actor
+from .administration import AdministratorRequired, require_execution_administrator_actor
+from .execution_actor import (
+    ExecutionActor,
+    HostActor,
+    UserActor,
+    current_execution_actor,
+    execution_actor_scope,
+)
 from .job_authorization import require_execution_actor_in_session
+
+
+def may_acquire_models(database: Database, actor: ExecutionActor | None) -> bool:
+    """Whether a run by ``actor`` would pass the acquisition gate below.
+
+    Plans and readiness checks use it to say "will download" only to someone
+    whose run may actually download: an Administrator, or the host.
+    """
+
+    try:
+        with execution_actor_scope(actor):
+            require_execution_administrator_actor(database, allow_host=True)
+    except AdministratorRequired:
+        return False
+    return True
 
 
 @contextmanager

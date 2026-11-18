@@ -773,3 +773,67 @@ def test_workflow_plan_warns_about_an_uncached_named_vad_model(
         item["stage"] == "transcribe" and item["decision"] == "run"
         for item in plan["ordered_steps"]
     )
+
+
+@pytest.mark.parametrize("may_download", [True, False])
+def test_route_promises_a_download_only_to_someone_who_may_download(
+    readiness_web, monkeypatch, may_download
+):
+    from pandrator.web.accounts import model_acquisition
+
+    monkeypatch.setattr(
+        model_acquisition, "may_acquire_models", lambda _database, _actor: may_download
+    )
+    cache = readiness_web.temp_path / "route-vad-cache"
+    _write(cache / "ggml-large-v3.bin")
+    monkeypatch.setenv("CRISPASR_CACHE_DIR", str(cache))
+
+    response = readiness_web.alice.post(
+        f"/api/v1/sessions/{readiness_web.alice_session}/transcription-readiness",
+        json={
+            "settings": {
+                "stt_engine": "whisper",
+                "stt_model_quantization": "f16",
+                "stt_language": "en",
+                "stt_lid_backend": "off",
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_model": "silero",
+            }
+        },
+        headers=readiness_web.alice_headers,
+    )
+
+    assert response.status_code == 200, response.get_json()
+    vad = _asset(response.get_json(), "vad", "silero")
+    if may_download:
+        assert vad["status"] == "will_download"
+    else:
+        assert vad["status"] == "missing"
+        assert vad["download"] == "administrator_required"
+
+
+def test_route_withholds_the_download_from_a_token_without_admin_scope(
+    readiness_web, monkeypatch
+):
+    # The fixture's tokens carry read, write and run but not app.admin.
+    cache = readiness_web.temp_path / "route-vad-real-gate"
+    _write(cache / "ggml-large-v3.bin")
+    monkeypatch.setenv("CRISPASR_CACHE_DIR", str(cache))
+    response = readiness_web.alice.post(
+        f"/api/v1/sessions/{readiness_web.alice_session}/transcription-readiness",
+        json={
+            "settings": {
+                "stt_engine": "whisper",
+                "stt_model_quantization": "f16",
+                "stt_language": "en",
+                "stt_lid_backend": "off",
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_model": "silero",
+            }
+        },
+        headers=readiness_web.alice_headers,
+    )
+    assert response.status_code == 200, response.get_json()
+    assert _asset(response.get_json(), "vad", "silero")["download"] == (
+        "administrator_required"
+    )

@@ -3373,6 +3373,11 @@ def build_openapi_document() -> dict:
                                                         "id": {"type": "string"},
                                                         "status": {"type": "string"},
                                                         "verification": {"type": "string"},
+                                                        "download": {
+                                                            "type": "string",
+                                                            "enum": ["administrator_required"],
+                                                            "description": "A missing model this caller's run may not download.",
+                                                        },
                                                     },
                                                 },
                                             },

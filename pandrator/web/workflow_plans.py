@@ -744,17 +744,9 @@ class WorkflowExecutionPlanService:
         (``model_acquisition_for_actor``): only an Administrator, or the host.
         """
 
-        from .accounts.administration import (
-            AdministratorRequired,
-            require_execution_administrator_actor,
-        )
+        from .accounts.model_acquisition import may_acquire_models
 
-        try:
-            with execution_actor_scope(context.actor):
-                require_execution_administrator_actor(self.database, allow_host=True)
-        except AdministratorRequired:
-            return False
-        return True
+        return may_acquire_models(self.database, context.actor)
 
     def _transcription_readiness(
         self,
