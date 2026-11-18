@@ -181,10 +181,14 @@ def _is_export_execution_output(artifact, assembly_artifact_ids: set[str]) -> bo
     Export files carry the generic "export" role or an "export_" prefix. An
     export that must assemble its generation run also publishes the assembly's
     audio artifact, so the artifact an output assembly points at counts too.
+    A mixed export caches its soundtrack master, which is derived output, not
+    a reviewed input.
     """
 
     role = str(getattr(artifact, "role", "") or "")
     if role == EXPORT_OUTPUT_ROLE or role.startswith(EXPORT_OUTPUT_ROLE_PREFIX):
+        return True
+    if role == "soundtrack_master":
         return True
     return artifact.id in assembly_artifact_ids
 
@@ -1091,6 +1095,7 @@ class WorkflowExecutionPlanService:
             resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
         )
         assembly_id = ""
+        assembly_artifact_id = ""
         duration_ms = 0
         timing_drift: dict[str, Any] | None = None
         source_id = ""
@@ -1116,6 +1121,7 @@ class WorkflowExecutionPlanService:
                 if assembly is None:
                     return None
                 assembly_id = assembly.id
+                assembly_artifact_id = str(assembly.artifact_id or "")
                 stored = (
                     assembly.settings_json
                     if isinstance(assembly.settings_json, dict)
@@ -1152,6 +1158,8 @@ class WorkflowExecutionPlanService:
             return None
         return {
             "assembly_id": assembly_id,
+            # Private: create() binds a no-run export to it, then drops it.
+            "_assembly_artifact_id": assembly_artifact_id,
             "assembly_duration_ms": duration_ms,
             "timing_drift": timing_drift,
             "tail": self._export_tail_projection(
@@ -1698,6 +1706,11 @@ class WorkflowExecutionPlanService:
                 speech_timing = self._export_speech_timing(
                     session_id, resolved, effective_export, export_output_snapshot
                 )
+        reviewed_assembly_artifact_id = (
+            str(speech_timing.pop("_assembly_artifact_id", "") or "")
+            if speech_timing is not None
+            else ""
+        )
         disclosures = self._provider_disclosures(resolved)
         external = [item for item in disclosures if self._is_external(item)]
         resource_services = [
@@ -1943,6 +1956,22 @@ class WorkflowExecutionPlanService:
             public_plan["transcription_readiness"] = readiness
             warnings.extend(transcription_readiness_warnings(readiness))
         execution_payload = dict(resolved.payload)
+        planned_settings = execution_payload.get("settings")
+        if (
+            reviewed_assembly_artifact_id
+            and not str(
+                (planned_settings if isinstance(planned_settings, dict) else {}).get(
+                    "generation_run_id"
+                )
+                or ""
+            ).strip()
+        ):
+            # An export that names no run resolves the current assembly when
+            # it runs. Bind it to the one this plan measured, so a replaced or
+            # removed assembly is refused instead of rendered unreviewed.
+            execution_payload["expected_assembly_artifact_id"] = (
+                reviewed_assembly_artifact_id
+            )
         if continuation:
             reused = {
                 str(item["stage"])
@@ -2150,6 +2179,22 @@ class WorkflowExecutionPlanService:
                     "plan_invalid",
                     "The stored workflow execution input is invalid.",
                 )
+            expected_assembly = str(
+                execution_payload.get("expected_assembly_artifact_id") or ""
+            )
+            if expected_assembly:
+                current_assembly = self._current_session_assembly(
+                    db_session, record.session_id
+                )
+                if (
+                    current_assembly is None
+                    or current_assembly.artifact_id != expected_assembly
+                ):
+                    raise WorkflowPlanError(
+                        "plan_stale",
+                        "The assembled audio this export plan measured was "
+                        "replaced or removed. Plan the export again.",
+                    )
             if execution_guard is not None:
                 execution_guard(db_session)
             if (

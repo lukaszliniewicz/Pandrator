@@ -313,6 +313,21 @@ def resolve_export_inputs(
             assembled_audio_candidates = active_plan_assemblies(
                 session, session_id, assembled_audio_candidates
             )
+            expected_assembly = str(
+                payload.get("expected_assembly_artifact_id") or ""
+            ).strip()
+            if (
+                expected_assembly
+                and uses_generated_audio
+                and [item.id for item in assembled_audio_candidates]
+                != [expected_assembly]
+            ):
+                # The plan measured one assembly; a timing edit and a new
+                # assembly after queueing must not swap in unreviewed audio.
+                raise ValueError(
+                    "The assembled audio this export was planned with is no "
+                    "longer current. Plan the export again."
+                )
     by_role = collect_export_roles(current, selected_text)
     if pinned_subtitles is not None:
         for role in SUBTITLE_TRACK_ROLES:

@@ -1543,19 +1543,9 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         self.assertEqual(400, tail["overrun_ms"])
         self.assertEqual("stops", tail["outcome"])
 
-    def test_export_plan_without_a_run_reports_the_active_plan_assembly(self):
-        """After a timing-only edit the plan is assembled again without a run."""
+    def _current_takes_assembly(self, session_id, *, revision_number=2, name="current"):
+        """An assembly of the current takes, made without a generation run."""
 
-        session_id, _artifact_id, _asset_id = self._ready_session(
-            workflow_kind="voiceover",
-            suffix="mp4",
-        )
-        output = {"export_mode": "media", "audio_mode": "mixed"}
-        self._assembly_for_plan(
-            session_id,
-            output,
-            timing_drift={"worst_block_lag_ms": 9_000, "blocks": 2},
-        )
         database = self.extension["database"]
         with database.session() as db_session:
             generation_plan = db_session.scalar(
@@ -1563,9 +1553,9 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             )
             prepared = GenerationPlanRevision(
                 plan_id=generation_plan.id,
-                revision_number=2,
+                revision_number=revision_number,
                 settings_json={},
-                content_hash=f"timing-only-prepare-{session_id}",
+                content_hash=f"timing-only-prepare-{name}-{session_id}",
             )
             db_session.add(prepared)
             db_session.flush()
@@ -1577,8 +1567,8 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                 project_id=ownership.project_id,
                 kind="audio",
                 role="assembled_audio",
-                relative_path=f"current-takes-{session_id}.wav",
-                content_hash=hashlib.sha256(session_id.encode()).hexdigest(),
+                relative_path=f"{name}-takes-{session_id}.wav",
+                content_hash=hashlib.sha256(f"{name}{session_id}".encode()).hexdigest(),
                 state="current",
             )
             db_session.add(artifact)
@@ -1599,7 +1589,22 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             )
             db_session.add(current)
             db_session.flush()
-            current_id = current.id
+            return artifact.id, current.id
+
+    def test_export_plan_without_a_run_reports_the_active_plan_assembly(self):
+        """After a timing-only edit the plan is assembled again without a run."""
+
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        self._assembly_for_plan(
+            session_id,
+            output,
+            timing_drift={"worst_block_lag_ms": 9_000, "blocks": 2},
+        )
+        _artifact_id, current_id = self._current_takes_assembly(session_id)
 
         plan = self._plan(
             session_id,
@@ -1609,9 +1614,52 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         )
 
         self.assertEqual(current_id, plan["speech_timing"]["assembly_id"])
+        self.assertNotIn("_assembly_artifact_id", plan["speech_timing"])
         self.assertEqual(
             400, plan["speech_timing"]["timing_drift"]["worst_block_lag_ms"]
         )
+
+    def test_a_no_run_export_plan_runs_only_the_assembly_it_measured(self):
+        """A replaced or removed assembly is refused, not rendered unreviewed."""
+
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        database = self.extension["database"]
+
+        def replace(session_id, artifact_id):
+            with database.session() as db_session:
+                db_session.get(Artifact, artifact_id).state = "superseded"
+            self._current_takes_assembly(session_id, revision_number=3, name="longer")
+
+        def remove(session_id, artifact_id):
+            with database.session() as db_session:
+                db_session.get(Artifact, artifact_id).state = "deleted"
+
+        for name, change in (("replaced", replace), ("removed", remove)):
+            with self.subTest(change=name):
+                session_id, _source_id, _asset_id = self._ready_session(
+                    workflow_kind="voiceover",
+                    suffix="mp4",
+                )
+                self._assembly_for_plan(session_id, output)
+                artifact_id, _assembly_id = self._current_takes_assembly(session_id)
+                plan = self._plan(
+                    session_id,
+                    target_stage="export",
+                    overrides={"output": output},
+                    continuation=False,
+                )
+                with database.session() as db_session:
+                    stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+                    self.assertEqual(
+                        artifact_id,
+                        stored.plan_json["_execution"]["payload"][
+                            "expected_assembly_artifact_id"
+                        ],
+                    )
+                change(session_id, artifact_id)
+                response = self._execute(plan, key=f"no-run-assembly-{name}")
+                self.assertEqual(409, response.status_code, response.get_json())
+                self.assertEqual("plan_stale", response.get_json()["error"]["code"])
 
     def test_export_plan_skips_the_tail_when_the_timeline_is_not_matched(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
@@ -2444,6 +2492,11 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                 db_session, session_id, fingerprint_variant=FINGERPRINT_EXPORT,
             )
         self._export_artifact(session_id)
+        # A mixed sibling export caches its soundtrack master; that is derived
+        # output, not an input this plan reviewed.
+        self._publish(
+            session_id, role="soundtrack_master", filename="soundtrack-master.wav"
+        )
         with database.session() as db_session:
             after = WorkflowExecutionPlanService._state_fingerprint(
                 db_session, session_id, fingerprint_variant=FINGERPRINT_EXPORT,

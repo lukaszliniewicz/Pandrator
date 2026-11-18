@@ -372,7 +372,17 @@ class ExportInputResolutionTests(unittest.TestCase):
                 select(OutputAssembly).where(OutputAssembly.artifact_id == older.id)
             )
             older_assembly.settings_json = {"plan_revision_id": revisions[0]}
-        result = self.handlers.export(payload, mock.Mock(), threading.Event())
+        # A plan that measured the older assembly must not render the one a
+        # later timing edit made current while the export was queued.
+        self.assert_rejected_before_output(
+            {**payload, "expected_assembly_artifact_id": older.id},
+            "planned with is no longer current",
+        )
+        result = self.handlers.export(
+            {**payload, "expected_assembly_artifact_id": current.id},
+            mock.Mock(),
+            threading.Event(),
+        )
         _exported, output = self.artifacts.resolve(result["artifact_ids"][0])
         self.assertEqual(second.read_bytes(), output.read_bytes())
         self.assertNotEqual(first.read_bytes(), output.read_bytes())
