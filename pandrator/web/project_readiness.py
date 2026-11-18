@@ -662,7 +662,13 @@ def enrich_project_payload(
                 )
                 if voice["status"] == "blocked" and generation["status"] != "running":
                     generation.update(status="blocked", reasons=voice["reasons"])
-                elif plan["warning"] and generation["status"] not in {"running", "completed"}:
+                elif (
+                    plan["warning"]
+                    # The timing-only warning is advice; every other warning
+                    # blocks, as it does for the speech stage above.
+                    and plan["warning"] != TIMING_ONLY_WARNING
+                    and generation["status"] not in {"running", "completed"}
+                ):
                     generation.update(
                         status="stale" if speech["status"] == "stale" else "blocked",
                         reasons=[plan["warning"]],

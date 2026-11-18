@@ -97,6 +97,49 @@ class SpeechEdgesTests(unittest.TestCase):
         )
 
 
+class SpeechEdgesSampleRateTests(unittest.TestCase):
+    """A frame is a whole sample count, so its length in ms is not exact.
+
+    ``frame_ms`` only describes the requested frame: at 22,050 Hz a 10 ms frame
+    is 220 samples, which is 9.98 ms. Reporting ``frames * frame_ms`` slightly
+    overstated the measured silence, and trimming could cut into speech.
+    """
+
+    def _edges(self, sample_rate: int, silent_samples: int) -> tuple[int, int]:
+        tone = Sine(440, sample_rate=sample_rate).to_audio_segment(
+            duration=270
+        ).raw_data
+        raw = (
+            b"\x00\x00" * silent_samples
+            + tone
+            + b"\x00\x00" * (sample_rate // 2)
+        )
+        return audio_sync.speech_edges_ms(
+            raw, sample_rate=sample_rate, channels=1, sample_width=2
+        )
+
+    def test_22050_hz_edges_never_exceed_the_measured_silence(self):
+        sample_rate = 22_050
+        # Thirty whole 220-sample frames plus a few samples: rounding the frame
+        # to 10 ms would claim three samples more silence than the block has.
+        silent_samples = 6_610
+
+        lead_ms, tail_ms = self._edges(sample_rate, silent_samples)
+
+        self.assertEqual(299, lead_ms)
+        self.assertEqual(498, tail_ms)
+        self.assertLessEqual(lead_ms * sample_rate // 1000, silent_samples)
+        self.assertLessEqual(tail_ms * sample_rate // 1000, sample_rate // 2)
+
+    def test_24000_hz_edges_are_unchanged(self):
+        sample_rate = 24_000
+
+        lead_ms, tail_ms = self._edges(sample_rate, sample_rate * 3 // 10)
+
+        self.assertEqual(300, lead_ms)
+        self.assertEqual(500, tail_ms)
+
+
 class TrimSettingTests(unittest.TestCase):
     def test_missing_setting_trims_and_explicit_false_does_not(self):
         self.assertTrue(audio_sync.trim_silence_enabled_from_settings({}))

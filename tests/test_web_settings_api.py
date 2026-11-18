@@ -99,6 +99,32 @@ class SettingsApiTests(unittest.TestCase):
             route["language_support"], {"supported", "unverified", "unsupported"}
         )
 
+    def test_tts_route_reports_the_model_and_voice_the_resolver_fills(self):
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Route defaults"},
+            headers=self.headers,
+        ).get_json()
+        services = self.app.extensions["pandrator"]
+        path = f'/api/v1/sessions/{created["id"]}/settings/tts'
+        current = self.client.get(path, headers=self.headers).get_json()
+        # No layer sets a model or voice, so both come from the service record.
+        saved = self.client.put(
+            path,
+            json={"value": {"service": "voxcpm"}},
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+        route = saved.get_json()["tts_route"]
+        with services["database"].session() as session:
+            resolved, _hash = services["workspace_settings"].resolve_in_session(
+                session, created["id"], ["tts"]
+            )
+        self.assertTrue(route["model"])
+        self.assertTrue(route["voice"])
+        self.assertEqual(resolved["tts"]["model"], route["model"])
+        self.assertEqual(resolved["tts"]["voice"], route["voice"])
+
     def test_tts_retry_defaults_and_explicit_overrides(self):
         created = self.client.post(
             "/api/v1/sessions", json={"name": "Retry settings"}, headers=self.headers,

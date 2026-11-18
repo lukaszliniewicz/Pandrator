@@ -181,12 +181,19 @@ def test_a_provider_default_wins_over_the_global_layer():
         global_value={"voice": "alloy"},
         effective={"voice": "Algenib"},
     )
-    snapshot["service"] = {}
+    # The service layer names a third voice, so the assertion below proves the
+    # provider default beats both the service connection and the global layer.
+    snapshot["service"] = {"voice": "Puck"}
     snapshot["provider"] = {"voice": "Algenib"}
 
     assert settings_provenance(snapshot, ["voice"])["voice"] == {
         "effective": "Algenib",
         "origin": "provider",
+    }
+    without_provider = {**snapshot, "provider": {}, "effective": {"voice": "Puck"}}
+    assert settings_provenance(without_provider, ["voice"])["voice"] == {
+        "effective": "Puck",
+        "origin": "service",
     }
 
 

@@ -531,6 +531,29 @@ class CrispASRTranscriptionTests(unittest.TestCase):
         )
         self.assertIn("ggml-large-v3-q5_0.bin", whisper)
 
+    def test_vad_model_filename_alias_becomes_the_native_keyword(self):
+        # Readiness reports a filename alias such as firered-vad.gguf as ready,
+        # but CrispASR reads --vad-model as a path and would fail to open it.
+        for alias, keyword in (
+            ("firered-vad.gguf", "firered"),
+            ("marblenet-vad.gguf", "marblenet"),
+            ("whisper-vad-asmr-q4_k.gguf", "whisper-vad"),
+        ):
+            with self.subTest(alias=alias):
+                command = crispasr.build_command(
+                    "audio.wav",
+                    "output",
+                    {
+                        "stt_engine": "parakeet",
+                        "crispasr_vad_enabled": True,
+                        "crispasr_vad_model": alias,
+                    },
+                    executable="crispasr-test",
+                )
+                self.assertEqual(
+                    keyword, command[command.index("--vad-model") + 1]
+                )
+
     def test_unsupported_quantization_falls_back_to_engine_f16(self):
         command = crispasr.build_command(
             "audio.wav",

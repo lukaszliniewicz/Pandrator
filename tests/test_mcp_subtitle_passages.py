@@ -173,6 +173,6 @@ def test_cue_tools_point_at_passage_tools_when_a_logical_passage_would_split(cas
             idempotency_key="passage-hint-patch"))
     for error in (replaced.value, patched.value):
         assert error.code == "validation_error"
-        assert "organised in logical passages" in str(error)
+        assert "passage references do not match this cue's passages" in str(error)
         assert "pandrator_patch_subtitle_passages" in str(error)
         assert "pandrator_preview_subtitle_passages" in str(error)

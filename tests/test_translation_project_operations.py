@@ -387,7 +387,9 @@ def test_plan_source_compatibility_agrees_across_status_readiness_start_and_run(
             )
         readiness = next(
             item for item in project["project"]["branches"] if item["id"] == branch["id"]
-        )["readiness"]["speech_plan"]
+        )["readiness"]
+        generation_readiness = readiness["generation"]
+        readiness = readiness["speech_plan"]
         assert readiness["source_compatibility"] == compatibility
         assert readiness["status"] == (
             "stale" if compatibility == "incompatible" else "completed"
@@ -419,6 +421,9 @@ def test_plan_source_compatibility_agrees_across_status_readiness_start_and_run(
         if compatibility == "timing_only":
             assert status["warning"] == TIMING_ONLY_WARNING
             assert child["preview"]["warnings"] == [TIMING_ONLY_WARNING]
+            # Advice about timing must not make generation look blocked or stale.
+            assert generation_readiness["status"] not in {"blocked", "stale"}
+            assert TIMING_ONLY_WARNING not in generation_readiness["reasons"]
         elif compatibility == "exact":
             assert status["warning"] is None
             assert child["preview"]["warnings"] == []

@@ -222,7 +222,14 @@ def speech_edges_ms(
         and silent(frame_count - 1 - tail_frames)
     ):
         tail_frames += 1
-    return (lead_frames * frame_ms, tail_frames * frame_ms)
+    # Convert whole-frame counts to milliseconds through the real sample
+    # positions. ``frame_samples`` is rounded, so a frame is not exactly
+    # ``frame_ms`` long at every rate: 10 ms at 22,050 Hz is 220 samples, and
+    # multiplying by ``frame_ms`` would overstate the measured silence and cut
+    # into speech. Flooring keeps the trim inside the silence.
+    lead_ms = lead_frames * frame_samples * 1000 // sample_rate
+    tail_ms = tail_frames * frame_samples * 1000 // sample_rate
+    return (lead_ms, tail_ms)
 
 
 def _trim_pcm_bytes(

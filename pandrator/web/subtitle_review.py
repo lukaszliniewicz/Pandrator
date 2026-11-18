@@ -689,8 +689,8 @@ def _review_passage_rows(
             selected = [by_passage[value] for value in supplied]
             if {row["id"] for row in selected} != {row["id"] for row in owned}:
                 raise ValueError(
-                    "This subtitle artifact is organised in logical passages, and this edit "
-                    "would split or drop one. Use pandrator_patch_subtitle_passages (preview "
+                    "The passage references do not match this cue's passages. "
+                    "Use pandrator_patch_subtitle_passages (preview "
                     "the passages with pandrator_preview_subtitle_passages first)."
                 )
             owned = selected

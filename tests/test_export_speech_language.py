@@ -44,6 +44,15 @@ class SpeechTrackLanguageTests(unittest.TestCase):
             speech_track_language(record, {"language": "pl"}),
         )
 
+    def test_auto_output_language_does_not_mask_a_concrete_language(self):
+        record = SimpleNamespace(target_language=None, source_language="en")
+        self.assertEqual(
+            ("de", "output_language"),
+            speech_track_language(
+                record, {"output_language": "auto", "language": "de"}
+            ),
+        )
+
     def test_run_language_is_the_last_resort(self):
         record = SimpleNamespace(target_language=None, source_language="auto")
         self.assertEqual(

@@ -743,6 +743,10 @@ class MediaEditService:
             parent = session.get(MediaEditPlanRevision, current_id)
             if parent is None or parent.plan_id != active.plan_id:
                 break
+            # A revision built on another source is not refine ancestry, even
+            # inside the same plan: a forced prepare starts a fresh chain.
+            if parent.source_media_artifact_id != active.source_media_artifact_id:
+                break
             ancestors.append(parent.id)
             current_id = parent.parent_revision_id
         return ancestors

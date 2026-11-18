@@ -754,7 +754,9 @@ def diagnose_srt_content(
                     [
                         previous_end_ordinal or ordinal,
                         ordinal + 1,
-                        previous_end_ms - cue.start_ms,
+                        # A cue nested inside an earlier span overlaps only up to
+                        # its own end; the span end would overstate it.
+                        min(previous_end_ms, cue.end_ms) - cue.start_ms,
                     ]
                 )
         if cue.end_ms >= previous_end_ms:

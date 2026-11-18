@@ -1976,12 +1976,20 @@ class GenerationService(GenerationHistoryReader):
         source_snapshot = prepared.get("settings_source_snapshot")
         if not isinstance(source_snapshot, dict):
             return {}
+        run_override = dict(prepared.get("run_override") or {})
         resolved, _hash = self.settings.resolve_in_session(
-            session, session_id, ["tts"], dict(prepared.get("run_override") or {})
+            session, session_id, ["tts"], run_override
         )
-        return settings_source_material_diff(
-            source_snapshot.get("tts"), resolved.get("tts")
-        )
+        # The run override applies to both sides. A setting the override makes
+        # equal on both is not something the replay imposes, so it is not a
+        # difference to report.
+        source_tts = source_snapshot.get("tts")
+        override_tts = run_override.get("tts")
+        if isinstance(override_tts, dict):
+            source_tts = _merge(
+                source_tts if isinstance(source_tts, dict) else {}, override_tts
+            )
+        return settings_source_material_diff(source_tts, resolved.get("tts"))
 
     @staticmethod
     def _start_snapshot(

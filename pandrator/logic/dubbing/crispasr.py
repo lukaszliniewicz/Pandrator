@@ -163,6 +163,34 @@ DEFAULT_LID_ARTIFACT = CrispASRArtifact(
     url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
 )
 
+#: VAD selections Pandrator recognises by name, and the keyword CrispASR's
+#: ``--vad-model`` expects. CrispASR 0.8.36 reads that option as a path, so a
+#: bare filename alias would be opened as a file and fail. Readiness promises a
+#: named model will be found by keyword, so command construction canonicalises
+#: the alias first.
+VAD_MODEL_ALIASES = {
+    "": "silero",
+    "auto": "silero",
+    "default": "silero",
+    "ggml-silero-v6.2.0.bin": "silero",
+    "firered-vad": "firered",
+    "firered-vad.gguf": "firered",
+    "marblenet-vad": "marblenet",
+    "marblenet-vad.gguf": "marblenet",
+    "whisper-vad-asmr-q4_k.gguf": "whisper-vad",
+}
+
+
+def canonical_vad_model_selection(value: str) -> str:
+    """Return the CrispASR keyword for a recognised VAD alias.
+
+    Only a recognised alias is rewritten. Any other value is the user's own
+    model path and is returned lowered, as it always reached the command line.
+    """
+
+    normalized = str(value or "").strip().lower()
+    return VAD_MODEL_ALIASES.get(normalized, normalized)
+
 
 MODEL_QUANTIZATION_ALIASES = {
     "": "f16",
@@ -544,19 +572,7 @@ def _prefetch_windows_vad_model(
         return None
 
     configured = str(settings.get("crispasr_vad_model") or "silero").strip()
-    normalized = configured.lower()
-    aliases = {
-        "": "silero",
-        "auto": "silero",
-        "default": "silero",
-        "ggml-silero-v6.2.0.bin": "silero",
-        "firered-vad": "firered",
-        "firered-vad.gguf": "firered",
-        "marblenet-vad": "marblenet",
-        "marblenet-vad.gguf": "marblenet",
-        "whisper-vad-asmr-q4_k.gguf": "whisper-vad",
-    }
-    artifact = VAD_ARTIFACTS.get(aliases.get(normalized, normalized))
+    artifact = VAD_ARTIFACTS.get(canonical_vad_model_selection(configured))
     if artifact is not None:
         return _prefetch_windows_artifact(settings, artifact, opener=opener)
 
@@ -742,7 +758,9 @@ def build_command(
         if vad_model_path is not None:
             command.extend(("--vad-model", str(vad_model_path)))
         else:
-            vad_model = str(settings.get("crispasr_vad_model") or "silero").strip().lower()
+            vad_model = canonical_vad_model_selection(
+                str(settings.get("crispasr_vad_model") or "silero")
+            )
             if vad_model not in {"", "auto", "silero"}:
                 command.extend(("--vad-model", vad_model))
         command.extend(
@@ -1075,7 +1093,9 @@ def build_vad_export_command(
     if vad_model_path is not None:
         command.extend(("--vad-model", str(vad_model_path)))
     else:
-        vad_model = str(settings.get("crispasr_vad_model") or "silero").strip().lower()
+        vad_model = canonical_vad_model_selection(
+            str(settings.get("crispasr_vad_model") or "silero")
+        )
         if vad_model not in {"", "auto", "silero"}:
             command.extend(("--vad-model", vad_model))
     command.extend(

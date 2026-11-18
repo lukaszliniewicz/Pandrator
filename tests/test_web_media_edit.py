@@ -353,6 +353,44 @@ class MediaEditServiceTests(unittest.TestCase):
                 [second.id, first.id], state["plan"]["ancestor_revision_ids"]
             )
 
+    def test_forced_prepare_for_a_new_source_is_not_refine_ancestry(self):
+        from sqlalchemy import select
+
+        self._seed_external()
+        service = self._service()
+        first = service.prepare(self.session_id)["plan"]
+        self.assertEqual([], first["ancestor_revision_ids"])
+
+        # Replace the session's source, as a forced prepare for a new file does.
+        with self.database.session() as session:
+            for source in session.scalars(
+                select(SessionSource).where(
+                    SessionSource.session_id == self.session_id
+                )
+            ).all():
+                source.is_current = False
+        replacement_media = self._register(
+            "replacement.mp4", "upload", b"replacement", "video"
+        )
+        self._attach(replacement_media, "primary", "video")
+        replacement_captions = self._register(
+            "replacement.vtt",
+            "captions",
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nReplacement line.\n",
+            "vtt",
+        )
+        self._attach(replacement_captions, "transcript", "vtt")
+
+        state = service.prepare(self.session_id, force=True)
+        plan = state["plan"]
+        self.assertEqual(2, plan["revision"])
+        self.assertEqual(
+            replacement_media.id, state["readiness"]["source_media_artifact"]["id"]
+        )
+        # The earlier revision was prepared for another source, so it is not
+        # refine ancestry.
+        self.assertEqual([], plan["ancestor_revision_ids"])
+
     def test_schema_head_and_media_edit_foreign_keys(self):
         with closing(sqlite3.connect(self.paths.database)) as connection:
             self.assertEqual(
