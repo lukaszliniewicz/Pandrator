@@ -1200,9 +1200,14 @@ def download_artifact(
     ):
         output_root = str(Path(profile.workspace) / "exports")
     if not output_root:
+        # Only the operator can approve a local folder, so the message names
+        # the host command rather than a tool.
+        target = profile.name if profile else "<target>"
         raise PandratorMcpError(
             "precondition_required",
-            "Configure a local output root before materializing artifacts.",
+            "This target has no local output root, so artifacts cannot be "
+            "downloaded. Ask the operator to set one on the MCP host: "
+            f"pandrator-mcp target output-root-set {target} <folder>.",
         )
     application = runtime.require_application()
     context = application.artifact_context(arguments.artifact_id)

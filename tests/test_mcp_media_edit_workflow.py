@@ -758,9 +758,15 @@ class MediaEditWorkflowPlannerTests(unittest.TestCase):
 
     def test_wrong_kind_attached_caption_block_and_idempotency(self):
         application = _Application()
-        application.get_session = lambda _session_id: {"workflow_kind": "subtitles"}
-        with self.assertRaises(PandratorMcpError):
+        application.get_session = lambda _session_id: {"workflow_kind": "voiceover"}
+        with self.assertRaises(PandratorMcpError) as refused:
             _plan(application)
+        self.assertEqual("ineligible_session", refused.exception.code)
+        self.assertIn("media_edit session", str(refused.exception))
+        self.assertEqual(
+            [("pandrator_create_session", {"workflow_kind": "media_edit"})],
+            [(item.tool, item.arguments) for item in refused.exception.next_actions],
+        )
 
         blocked = _plan(_Application(), transcript_mode="asr")
         self.assertIsNone(blocked.result["next_action"])

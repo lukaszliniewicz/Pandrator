@@ -393,7 +393,16 @@ def plan_media_edit_workflow(
     if (session.get("workflow_kind") or session.get("kind")) != "media_edit":
         raise PandratorMcpError(
             "ineligible_session",
-            "The media-edit workflow planner requires a media_edit session.",
+            "The media-edit workflow planner requires a media_edit session. Cut the "
+            "recording in its own media_edit session; a translation project made "
+            "from it gives voiceover branches.",
+            next_actions=[
+                _next_action(
+                    "pandrator_create_session",
+                    {"workflow_kind": "media_edit"},
+                    "Create a media_edit session for the recording, then import the source there.",
+                )
+            ],
         )
     workflow = _mapping(application.get_workflow(arguments.session_id))
     media_edit = _mapping(application.get_media_edit(arguments.session_id))
