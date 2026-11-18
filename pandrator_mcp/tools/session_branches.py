@@ -102,6 +102,7 @@ def _branch_summary(branch: dict[str, Any]) -> dict[str, Any]:
             "translation_status",
             "target_language_matches_settings",
             "effective_target_language",
+            "source_checkpoint_artifact_id",
         )
         if key in branch
     }
@@ -222,8 +223,10 @@ def create_translation_branches(
 ) -> ToolOutcome:
     result = runtime.require_application().create_translation_branches(
         arguments.project_id,
-        **arguments.model_dump(exclude={"project_id"}, mode="json", exclude_none=True),
+        **arguments.model_dump(exclude={"project_id", "view"}, mode="json", exclude_none=True),
     )
+    if arguments.view == "summary":
+        result = _translation_project_summary(result)
     return ToolOutcome(result={"schema_version": "1", **result})
 
 

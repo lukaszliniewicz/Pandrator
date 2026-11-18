@@ -135,8 +135,12 @@ def test_native_mcp_fork_and_parallel_language_runs(tmp_path: Path):
                                 "carry_source_subtitle_settings": True}],
                     "idempotency_key": "mcp-branches-test-001",
                 }
-                project = (await call("pandrator_create_translation_branches", args))["project"]
+                created = await call("pandrator_create_translation_branches", args)
+                # The summary, as pandrator_get_translation_project gives by default.
+                assert created["view"] == "summary"
+                project = created["project"]
                 branches = project["branches"]
+                assert all("settings" not in branch for branch in branches)
                 assert len(branches) == 2
                 assert len({branch["session_id"] for branch in branches}) == 2
                 for branch in branches:
