@@ -1,0 +1,6 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  path_filters:
+    # The browser bundle is built from web/src and checked by check:assets;
+    # its hashed chunks change on every release and carry nothing to review.
+    - "!pandrator/web/static/**"
