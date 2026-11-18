@@ -228,6 +228,97 @@ def _assert_locked_changes(
             )
 
 
+_SPEAKER_QUERY = re.compile(
+    r"<speaker\b[^>]*?\b(ref|n)\s*=\s*(\"[^\"]*\"|'[^']*')"
+)
+
+
+def _character_names(character: Mapping[str, Any]) -> set[str]:
+    names = {
+        str(character[key])
+        for key in ("name", "display_name")
+        if isinstance(character.get(key), str)
+    }
+    aliases = character.get("aliases") or ()
+    if isinstance(aliases, str):
+        aliases = (aliases,)
+    names.update(str(alias) for alias in aliases if isinstance(alias, str))
+    return names
+
+
+def _refuse_characters_named_in_markup(
+    session: Session,
+    session_id: str,
+    current: list[dict[str, Any]],
+    candidate: list[dict[str, Any]],
+) -> None:
+    """Refuse removing a character that a block's own speech markup still names.
+
+    A block's markup names its speakers by ID or by name, and every run
+    resolves the markup of every block of the plan, selected or not. Removing
+    a character it names would stop each later run until the block is edited.
+    An adopted speaker plan's entries are not checked: a removed character
+    sends its blocks to review, and each such block reads its own markup.
+    """
+
+    kept_ids = {str(item["id"]) for item in candidate}
+    removed = [item for item in current if str(item["id"]) not in kept_ids]
+    if not removed:
+        return
+    kept_names = set().union(*(_character_names(item) for item in candidate))
+    removed_by_query: dict[tuple[str, str], str] = {}
+    for item in removed:
+        identifier = str(item["id"])
+        removed_by_query[("ref", identifier)] = identifier
+        for name in _character_names(item) - kept_names:
+            removed_by_query[("n", name)] = identifier
+    plan = session.scalar(
+        select(m.GenerationPlan).where(m.GenerationPlan.session_id == session_id)
+    )
+    revision_id = plan.active_revision_id if plan is not None else None
+    if not revision_id:
+        return
+    from html import unescape
+
+    markup: dict[str, list[str]] = {}
+    segments = session.execute(
+        select(m.GenerationSegment.id, m.GenerationSegment.ordinal, m.GenerationSegment.speech_plan_json)
+        .where(
+            m.GenerationSegment.plan_revision_id == revision_id,
+            m.GenerationSegment.removed.is_(False),
+        )
+    ).all()
+    ordinals = {segment_id: ordinal for segment_id, ordinal, _plan in segments}
+    for segment_id, _ordinal, speech_plan in segments:
+        xml = (speech_plan or {}).get("speech_xml") if isinstance(speech_plan, dict) else None
+        if isinstance(xml, str):
+            markup.setdefault(segment_id, []).append(xml)
+    named: dict[str, set[int]] = {}
+    for segment_id, documents in markup.items():
+        for xml in documents:
+            for kind, quoted in _SPEAKER_QUERY.findall(xml):
+                identifier = removed_by_query.get((kind, unescape(quoted[1:-1])))
+                if identifier is not None:
+                    named.setdefault(identifier, set()).add(ordinals[segment_id] + 1)
+    if named:
+        labels = {
+            str(item["id"]): str(item.get("display_name") or item.get("name") or item["id"])
+            for item in removed
+        }
+        details = "; ".join(
+            f"{labels[identifier]} (block{'s' if len(blocks) > 1 else ''} "
+            + ", ".join(str(block) for block in sorted(blocks)[:10])
+            + (", ..." if len(blocks) > 10 else "")
+            + ")"
+            for identifier, blocks in sorted(named.items())
+        )
+        raise ValueError(
+            "Cannot delete characters that speech markup still names: "
+            + details
+            + ". Change those blocks' speakers first."
+        )
+
+
 def _validate_update(
     session: Session,
     payload: Mapping[str, Any],
@@ -268,6 +359,10 @@ def _validate_update(
                 "Cannot delete characters still referenced by the existing cast: "
                 + ", ".join(sorted(referenced))
             )
+    if characters is not None and session_id is not None:
+        _refuse_characters_named_in_markup(
+            session, session_id, current_characters, candidate_characters
+        )
 
     candidate_cast = (
         deepcopy(dict(existing_cast_raw))
@@ -366,7 +461,7 @@ def prepare_generation_controls_update(
     root = session_project(session, session_id)
     return _validate_update(
         session, _payload(record), characters=characters, cast=cast, unlock_ids=unlock_ids,
-        workspace_id=root.workspace_id, _check_managed=False,
+        workspace_id=root.workspace_id, _check_managed=False, session_id=session_id,
     )
 
 

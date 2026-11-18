@@ -8,6 +8,7 @@ rest need a new review. Work is counted, never timed.
 
 from __future__ import annotations
 
+import time
 import uuid
 from contextlib import contextmanager
 from copy import deepcopy
@@ -21,7 +22,10 @@ from pandrator.web import models as m
 from pandrator.web import performance_plans as plans
 from pandrator.web import performance_validity as validity
 from pandrator.web.generation_audio_identity import IDENTITY_KEY, AudioIdentityContext
-from pandrator.web.generation_performance_snapshot import refuse_review_segments
+from pandrator.web.generation_performance_snapshot import (
+    refuse_review_segments,
+    segment_performance_settings,
+)
 from pandrator.web.performance_validity import REVIEW_MESSAGE, fit_entry
 from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.speech_annotation_records import normalized_record, record_markup
@@ -275,6 +279,18 @@ def test_an_edit_that_turns_an_apostrophe_into_a_quotation_mark_or_back_does_not
     assert fit(plain, plain_record, "Then couldn't leave.") is not None
 
 
+def test_two_edits_beside_an_unchanged_quotation_mark_keep_the_block():
+    old = "Yesterday I said “go” before dinner."
+    record = xml_record(old, f'<segment id="s">{old}</segment>')
+    new = "Today I said “go” before lunch."
+    # The marks are untouched by either edit, so the block keeps its markup.
+    fitted = fit(old, record, new)
+    assert fitted is not None
+    assert parsed(fitted, new).transcript == new
+    # A mark that really is removed still needs review.
+    assert fit(old, record, "Yesterday I said “go before dinner.") is None
+
+
 def test_a_block_without_a_spoken_line_that_gains_or_loses_a_quotation_mark_needs_review():
     # The maintainer's example (#167): narration gains its first quote.
     old = "Hello world, she began"
@@ -377,6 +393,32 @@ def test_words_added_to_the_words_beside_an_event_or_control_do_not_fit():
     )
     assert fit(spaced_text, spaced, "He paused a bit. Then left.") is not None
     assert fit(spaced_text, spaced, "He paused. So then left.") is None
+
+
+def test_a_spaceless_greeting_is_aligned_beside_a_leading_laugh():
+    old = "こんにちは、皆さん。"
+    record = xml_record(old, f'<segment id="s"><event kind="laugh"/>{old}</segment>')
+    # Each CJK character is its own token, as a word is in a spaced script, so
+    # a change the repeated characters let sit before the first one counts as
+    # words added beside the laugh.
+    assert fit(old, record, "ここにちは、皆さん。") is None
+    # Without spaces nothing places a changed greeting apart from the laugh
+    # before it, so any change in that run of letters needs review.
+    assert fit(old, record, "こんばんは。では、皆さん。") is None
+    # A change in the next clause, past the punctuation, still fits.
+    assert fit(old, record, "こんにちは、皆さま。") is not None
+
+
+def test_a_long_block_edit_needs_review_without_an_alignment():
+    old = " ".join(["la"] * 5_000)
+    plain = xml_record(old, f'<segment id="s">{old}</segment>')
+    started = time.monotonic()
+    # The character diff and the token alignment are both bounded, so the edit
+    # is assumed to need review rather than stalling a plan read.
+    assert fit(old, plain, " ".join(["lo"] * 5_000)) is None
+    record = xml_record(old, f'<segment id="s"><event kind="laugh"/>{old}</segment>')
+    assert fit(old, record, old + " la") is None
+    assert time.monotonic() - started < 5
 
 
 def test_a_carriage_return_survives_the_rebase():
@@ -938,6 +980,113 @@ def test_a_review_block_naming_a_new_character_does_not_stop_a_run_without_it(ca
     assert f"block 1 ({flagged})" in refused.get_json()["error"]["message"]
     started = start_run(case, [case["segment_ids"][2]])
     assert started.status_code == 202, started.get_json()
+
+
+def test_a_selected_freeze_limits_boundaries_to_the_selected_blocks(cast_case, monkeypatch):
+    from pandrator.web import speech_boundaries
+
+    case, _plan, _before, _work = cast_case
+    calls: list[list[str] | None] = []
+
+    def capture(session, revision_id, snapshot, *, segments=None):
+        calls.append(None if segments is None else [row.id for row in segments])
+
+    monkeypatch.setattr(speech_boundaries, "freeze_boundaries", capture)
+    selected = case["segment_ids"][2]
+    with case["services"]["database"].session() as session:
+        freeze_speech_snapshot(
+            session, case["revision_id"], live_snapshot(case), explicit=True,
+            segment_ids=[selected],
+        )
+    assert calls == [[selected]]
+
+
+def test_a_character_that_speech_markup_names_cannot_be_deleted(cast_case):
+    # Every run resolves the markup of every block, selected or not, so a
+    # deleted character that a block still names would stop each later run.
+    from pandrator.web.generation_controls import save_generation_controls
+
+    case, _plan, _before, _work = cast_case
+    flagged = case["segment_ids"][0]
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    with case["services"]["database"].session() as session:
+        segment = session.get_one(m.GenerationSegment, flagged)
+        segment.speech_plan_json = {
+            **(segment.speech_plan_json or {}),
+            "speech_xml": (
+                f'<segment id="{flagged}">He said, <dialogue><speaker n="Scrooge">'
+                "“Bah,”</speaker></dialogue> then left.</segment>"
+            ),
+        }
+    with case["services"]["database"].session() as session:
+        with pytest.raises(
+            ValueError, match=r"speech markup still names: Scrooge \(block 1\)"
+        ):
+            save_generation_controls(
+                session, case["session_id"], expected_revision=1, characters=[],
+                cast={"narrator": {"voice": "Kore"}, "characters": {}},
+            )
+
+
+def test_a_stale_review_block_outside_the_selected_boundaries_does_not_fail(
+    cast_case, monkeypatch
+):
+    # Markup saved before deletion was refused can still name a deleted
+    # character. The block fails on its own, but a freeze limited to another
+    # block never reads it.
+    from pandrator.web import generation_controls
+    from pandrator.web.speech_boundaries import freeze_boundaries
+
+    case, _plan, _before, _work = cast_case
+    monkeypatch.setattr(
+        generation_controls, "_refuse_characters_named_in_markup", lambda *_args: None
+    )
+    with case["services"]["database"].session() as session:
+        generation_controls.save_generation_controls(
+            session, case["session_id"], expected_revision=1, characters=[],
+            cast={"narrator": {"voice": "Kore"}, "characters": {}},
+        )
+    flagged = case["segment_ids"][0]
+    other = case["segment_ids"][2]
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    with case["services"]["database"].session() as session:
+        segment = session.get_one(m.GenerationSegment, flagged)
+        segment.speech_plan_json = {
+            **(segment.speech_plan_json or {}),
+            "speech_xml": (
+                f'<segment id="{flagged}">He said, <dialogue><speaker ref="c-scrooge">'
+                "“Bah,”</speaker></dialogue> then left.</segment>"
+            ),
+        }
+    with case["services"]["database"].session() as session:
+        rows = {
+            segment_id: session.get_one(m.GenerationSegment, segment_id)
+            for segment_id in (flagged, other)
+        }
+        freeze_boundaries(session, case["revision_id"], {}, segments=[rows[other]])
+        with pytest.raises(ValueError, match="unresolved speaker reference"):
+            freeze_boundaries(session, case["revision_id"], {}, segments=[rows[flagged]])
+
+
+def test_a_blank_unremoved_block_has_no_performance_settings(case):
+    adopt(case, edit(case, create(case)))
+    settings = {
+        "service": "gemini", "model": "gemini-2.5-flash-tts", "voice": "Kore",
+        "performance_enabled": True,
+    }
+    set_text(case, 1, "   ")
+    snapshot = {"tts": settings}
+    with case["services"]["database"].session() as session:
+        plans.freeze_performance_snapshot(session, case["revision_id"], snapshot)
+    blank = case["segment_ids"][1]
+    assert blank not in snapshot["performance_snapshot"]["annotations"]
+    # The plan judge treats a blank block as silent, so a run holds no
+    # speaker performance for it and must not fail looking one up.
+    assert "_performance" not in segment_performance_settings(settings, snapshot, blank, "   ")
+    spoken = segment_performance_settings(
+        settings, snapshot, case["segment_ids"][0], "The request was rejected."
+    )
+    assert "_performance" in spoken
 
 
 def test_a_neighbour_whose_request_carries_the_edited_text_really_changes(case):
