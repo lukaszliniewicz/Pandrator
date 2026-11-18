@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..context import McpRuntime
 from ..schemas import RecommendNextStepsInput
+
+# "voiceover" names an outcome, not a request to cast or design voices.
+_VOICE_CASTING = re.compile(r"\bcast|\bvoices?\b(?![ -]?over)|audio drama|scottish")
+_MULTILINGUAL = re.compile(r"multilingual|\blanguages\b|translation project|branches")
+_MULTILINGUAL_REASON = (
+    "Read 'Several languages from one recording': render any media edit, correct "
+    "its media_edit_subtitles, check fillers, then create a translation project "
+    "with a branch per language."
+)
 
 
 def recommend_next_steps(
@@ -45,10 +55,9 @@ def recommend_next_steps(
             "audio drama",
         )
     )
+    multilingual = bool(_MULTILINGUAL.search(goal))
     voice_steps = []
-    if not multivoice and any(
-        term in goal for term in ("cast", "voice", "audio drama", "scottish")
-    ):
+    if not multivoice and _VOICE_CASTING.search(goal):
         voice_steps = [
             {
                 "tool": "pandrator_get_voice_capabilities",
@@ -101,6 +110,23 @@ def recommend_next_steps(
             if any(word in goal for word in ("book", "epub", "pdf", "audiobook"))
             else "workflows"
         )
+        guide_steps: list[dict[str, Any]] = [
+            {
+                "tool": "pandrator_explain_system",
+                "arguments": {"topic": workflow_topic},
+                "reason": "Choose the workflow that matches the desired outcome.",
+            }
+        ]
+        if multilingual:
+            languages_step = {
+                "tool": "pandrator_explain_system",
+                "arguments": {"topic": "voiceover-and-dubbing", "detail": "full"},
+                "reason": _MULTILINGUAL_REASON,
+            }
+            if workflow_topic == "voiceover-and-dubbing":
+                guide_steps = [languages_step]
+            else:
+                guide_steps.append(languages_step)
         return {
             "schema_version": "1",
             "goal": arguments.goal,
@@ -122,11 +148,7 @@ def recommend_next_steps(
                     "tool": "pandrator_list_sessions",
                     "reason": "Inspect existing work before creating or replacing anything.",
                 },
-                {
-                    "tool": "pandrator_explain_system",
-                    "arguments": {"topic": workflow_topic},
-                    "reason": "Choose the workflow that matches the desired outcome.",
-                },
+                *guide_steps,
                 {
                     "tool": "pandrator_browse_local_sources",
                     "reason": (
@@ -199,7 +221,7 @@ def recommend_next_steps(
                 "reason": "Create a passive correction run for this model to process.",
             }
         )
-    if not media_edit_session and "translat" in goal:
+    if not media_edit_session and "translat" in goal and not multilingual:
         steps.append(
             {
                 "tool": "pandrator_create_dispatch_run",
@@ -246,6 +268,18 @@ def recommend_next_steps(
                 ),
             }
         )
+    if multilingual:
+        steps.append(
+            {
+                "tool": "pandrator_create_translation_project",
+                "arguments": {"session_id": arguments.session_id},
+                "reason": (
+                    "After any media edit is rendered and its media_edit_subtitles "
+                    "are corrected, create one project with a branch per language; "
+                    "it returns a work handle to poll with pandrator_get_work."
+                ),
+            }
+        )
     if not media_edit_session and any(word in goal for word in ("tts", "voice", "narrat", "audio")):
         steps.extend(
             [
@@ -263,7 +297,8 @@ def recommend_next_steps(
                 },
             ]
         )
-    if not media_edit_session:
+    # Several languages are generated and exported per branch, not here.
+    if not media_edit_session and not multilingual:
         final_tool = (
             "pandrator_plan_export_variant"
             if any(word in goal for word in ("export", "burn", "deliver", "final product"))

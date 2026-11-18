@@ -141,7 +141,7 @@
       ],
       "minimum_application_version": "0.11.0",
       "minimum_manager_version": "0.9.0",
-      "revision": 10,
+      "revision": 11,
       "file": "durable-work.md"
     },
     {
@@ -302,10 +302,12 @@
         "pandrator_select_workflow_input",
         "pandrator_get_dispatch_preview",
         "pandrator_terminate_dispatch_run",
-        "pandrator_get_subtitle_evidence_routes"
+        "pandrator_get_subtitle_evidence_routes",
+        "pandrator_preview_subtitle_passages",
+        "pandrator_patch_subtitle_passages"
       ],
       "minimum_application_version": "0.8.16",
-      "revision": 4,
+      "revision": 5,
       "file": "subtitles.md"
     },
     {
@@ -368,10 +370,20 @@
         "pandrator_submit_speech_optimization_dispatch_batch",
         "pandrator_list_generation_runs",
         "pandrator_plan_export_variant",
-        "pandrator_download_artifact"
+        "pandrator_download_artifact",
+        "pandrator_import_source_url",
+        "pandrator_plan_media_edit_workflow",
+        "pandrator_render_media_edit",
+        "pandrator_create_translation_project",
+        "pandrator_get_translation_project",
+        "pandrator_create_translation_branches",
+        "pandrator_preview_translation_project_operation",
+        "pandrator_execute_translation_project_operation",
+        "pandrator_patch_subtitle_passages",
+        "pandrator_repair_generation_timing"
       ],
       "minimum_application_version": "0.8.17",
-      "revision": 5,
+      "revision": 6,
       "file": "dubbing-voiceover.md"
     },
     {

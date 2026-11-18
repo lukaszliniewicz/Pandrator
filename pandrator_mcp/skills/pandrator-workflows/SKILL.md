@@ -42,6 +42,12 @@ credentials and personal folders do not become shared. Can view is read-only.
   attribution, read the derived dictionary, then design and assign the cast.
   For narration, cast design, provider instructions and context, read
   [narration and providers](references/narration-and-providers.md).
+- **Several languages from one recording:** one source session, then a
+  translation project with a branch per language. Order matters: render any
+  media edit first, correct its `media_edit_subtitles` (not the pre-edit
+  transcript), fix fillers the correction left, then call
+  `pandrator_create_translation_project`, which returns a work handle. Read
+  "Several languages" in [MCP operations](references/mcp-operations.md).
 - **PDF/EPUB cleanup:** use the source-cleaning dispatcher before narration
   preparation. Read [semantic dispatch](references/semantic-dispatch.md).
 - **Recording edits:** use `pandrator_plan_media_edit_workflow` and the
@@ -148,8 +154,10 @@ for the distinct result contracts.
 
 ## Deliver the actual outcome
 
-Generated takes, assembled media, exports, and downloaded files are separate
-results. Verify the requested language, artifact role and revision, generation
+Before executing a voiceover export plan, check its effective `audio_mode`
+(normally `mixed` when the source has sound) and its `speech_timing` lag and
+tail, and pass on its warnings. Generated takes, assembled media, exports, and
+downloaded files are separate results. Verify the requested language, artifact role and revision, generation
 completeness, export format, and destination. Use the download result's size
 and checksum verification when available. Report the delivered files and any
 remaining review or incomplete work; a completed stage alone is not completion

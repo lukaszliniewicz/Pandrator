@@ -99,3 +99,70 @@ def test_team_onboarding_recommends_packaged_collaboration_guide_without_transpo
         assert result['steps'][0]['tool'] == 'pandrator_explain_system'
         assert result['steps'][0]['arguments'] == {'topic': 'collaboration', 'detail': 'full'}
         assert result['steps'][1]['tool'] == 'pandrator_get_target_status'
+
+
+FIELD_TEST_GOAL = (
+    "Media edit the webinar, polish the English subtitles, translate them into "
+    "four languages and make a Vertex TTS voiceover for each"
+)
+
+
+def _sessionless(goal: str) -> dict:
+    runtime = cast(McpRuntime, SimpleNamespace(require_application=lambda: None))
+    return recommend_next_steps(runtime, RecommendNextStepsInput(goal=goal))
+
+
+def test_a_voiceover_goal_does_not_start_with_voice_casting():
+    tools = [step["tool"] for step in _sessionless(FIELD_TEST_GOAL)["steps"]]
+    # "voiceover" contains "voice"; a single-voice dub needs no casting first.
+    assert "pandrator_get_voice_capabilities" not in tools
+    assert "pandrator_get_voice_catalog" not in tools
+    casting = [step["tool"] for step in _sessionless("Design a Scottish voice")["steps"]]
+    assert "pandrator_get_voice_capabilities" in casting
+
+
+def test_a_multilingual_goal_points_to_the_translation_project_route():
+    steps = _sessionless(FIELD_TEST_GOAL)["steps"]
+    guides = [
+        step["arguments"]
+        for step in steps
+        if step["tool"] == "pandrator_explain_system"
+    ]
+    # The media edit still picks the workflows guide; the languages section follows.
+    assert guides == [
+        {"topic": "workflows"},
+        {"topic": "voiceover-and-dubbing", "detail": "full"},
+    ]
+    dubbing = _sessionless("Dub this lecture into three languages")["steps"]
+    assert [
+        step["arguments"]
+        for step in dubbing
+        if step["tool"] == "pandrator_explain_system"
+    ] == [{"topic": "voiceover-and-dubbing", "detail": "full"}]
+
+
+def test_a_multilingual_session_goal_creates_a_project_not_an_in_session_translation():
+    class _Voiceover(_Application):
+        def get_session(self, session_id):
+            return {**super().get_session(session_id), "workflow_kind": "voiceover"}
+
+    application = _Voiceover(None)
+    runtime = cast(McpRuntime, SimpleNamespace(require_application=lambda: application))
+    result = recommend_next_steps(
+        runtime,
+        RecommendNextStepsInput(
+            session_id="session-1",
+            goal="Correct the subtitles and translate them into four languages",
+        ),
+    )
+    steps = result["steps"]
+    tools = [step["tool"] for step in steps]
+    assert "pandrator_create_translation_project" in tools
+    assert {"session_id": "session-1", "kind": "correction"} in [
+        step.get("arguments") for step in steps
+    ]
+    assert not any(
+        step.get("arguments", {}).get("kind") == "translation" for step in steps
+    )
+    # Generation and export happen per branch, so no source-session plan step.
+    assert "pandrator_plan_workflow" not in tools

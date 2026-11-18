@@ -14,6 +14,11 @@ an operation is unfamiliar or the server differs from this reference.
 - Browse an approved root with `pandrator_browse_local_sources`, then pass the
   returned relative path to `pandrator_import_local_source`. The sidecar
   transfers bytes and attaches the source without exposing them to the model.
+  For a public video page or media URL, `pandrator_import_source_url` downloads
+  on the Pandrator host and returns a work handle.
+- A transcription plan names the effective recognition engine, which may be
+  inherited from saved settings. Hotwords do not reliably fix names (with
+  Parakeet they made no visible difference in testing); plan to correct names.
 - Filter `pandrator_describe_parameters` with `sections`, `names`,
   `workflow_kind`, or `query`; at least one filter is required.
 - Inspect provider, TTS, and voice catalogues only when those choices matter.
@@ -71,6 +76,32 @@ providers, locks, and confirmations, and execute the unchanged plan/digest
 through `pandrator_execute_workflow_plan` with an idempotency key. Re-plan on
 revision conflicts, expiry, or a stale digest.
 
+## Several languages
+
+One source session feeds a translation project; each language is a branch,
+itself a voiceover session with pinned copies of the source text and timeline.
+
+1. If the recording is cut, render the reviewed media edit first
+   (`pandrator_render_media_edit`) and wait for it. Correction comes after:
+   select the render's `media_edit_subtitles`, not the pre-edit transcript.
+   `pandrator_create_dispatch_run` warns when the source is on the pre-edit
+   timeline; a correction there does not reach the edited video, and the
+   translation project refuses its text.
+2. After the correction finalises, read `filler_check` from
+   `pandrator_get_dispatch_run`. Passages listed under `fillers_remaining`
+   kept an "uh" or "um"; fix them with `pandrator_patch_subtitle_passages`.
+   Every translation copies what the source says, and later source edits do
+   not reach existing branches.
+3. `pandrator_create_translation_project` takes the corrected checkpoint and
+   returns a work handle, not the project. Poll `pandrator_get_work` to
+   terminal, then read `pandrator_get_translation_project` (summary by
+   default, `view="full"` on request). Add languages with
+   `pandrator_create_translation_branches`.
+4. Translate, generate or export several branches at once with
+   `pandrator_preview_translation_project_operation` and
+   `pandrator_execute_translation_project_operation`, or work in one branch.
+   Edit passage-based translations with `pandrator_patch_subtitle_passages`.
+
 ## Multiple-voice narration
 
 Use the packaged `multivoice-audiobooks` guide for the complete tool sequence.
@@ -107,6 +138,14 @@ with errors and progress; save large detailed receipts privately when needed.
 Changing this presentation view does not change a generation mutation or its
 idempotency key. Avoid repeatedly fetching full settings or catalogues while
 polling work that already supplies its identity and status.
+
+Queued work reports `queue`: its `lane`, `position` (1 is next), a `reason`
+(`session_busy`, `resource_busy`, `worker_busy` or `scheduled`) and, where the
+caller may see it, `blocked_by`. Waiting behind a render or another session's
+job is normal; do not cancel and resubmit. Running generation adds `retry`
+(provider retries in flight) and, after 10 blocks or 2 minutes, `estimate`
+with `remaining_seconds`. A workflow plan's `generate_audio` step carries
+`estimated_seconds` when comparable history exists.
 
 Call `pandrator_cancel_work` once when cancellation is requested, then inspect
 until terminal. Quick transcription has its own polling and cancellation tools.
@@ -151,7 +190,14 @@ instead of substituting current settings. Returned origins make this explicit.
    `pandrator_assemble_generation_run` and wait for it to finish.
 5. Create one `pandrator_plan_export_variant` per requested output, inspect
    its media/text/subtitle options, and execute the exact plan with
-   `pandrator_execute_workflow_plan`. For a requested bilingual video,
+   `pandrator_execute_workflow_plan`. Omitting `audio_mode` uses the session's
+   effective value; check it and its origin (a voiceover over sound normally
+   wants `mixed`). Read `speech_timing`: `timing_drift` gives the worst block
+   and cue lag and the late cues, `tail` says whether speech outruns the
+   video. `synchronization_speed` defaults to 1.15 and the plan warns above
+   1.2; for a language that runs long, condense the text rather than raise the
+   speed. Older subtitles with overlapping cues can be trimmed at export with
+   the subtitle setting `clamp_overlaps`. For a requested bilingual video,
    `subtitle_selection="dual"` selects source then translation, provided
    both documents exist: `subtitle_mode="soft"` retains separate selectable
    tracks, while `subtitle_mode="burned"` makes one bilingual overlay.
