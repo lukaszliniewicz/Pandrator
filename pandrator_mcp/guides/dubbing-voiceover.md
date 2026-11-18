@@ -73,11 +73,14 @@ bypass the queue.
 Use one source session and a translation project, not one session per language.
 The order matters, because each step pins the one before it:
 
-1. **Edit first.** If the recording needs cutting, finish the media edit before
-   any correction: plan it with `pandrator_plan_media_edit_workflow`, review the
-   cuts, and render with `pandrator_render_media_edit`. The render writes
-   `media_edit_subtitles`, the subtitles on the edited timeline. A recording
-   that is not cut skips this step.
+1. **Edit first.** If the recording needs cutting, the source session is a
+   `media_edit` session (`pandrator_create_session` with
+   `workflow_kind="media_edit"`); its translation project still gives voiceover
+   branches. Finish the media edit before any correction: plan it with
+   `pandrator_plan_media_edit_workflow`, review the cuts, and render with
+   `pandrator_render_media_edit`. The render writes `media_edit_subtitles`, the
+   subtitles on the edited timeline. A recording that is not cut skips this
+   step, and the voiceover session itself can be the source.
 2. **Correct the edited subtitles.** Wait for the render, then correct
    `media_edit_subtitles`, not the pre-edit transcript. A correction on the
    pre-edit timeline does not carry onto the edited video, and a translation
@@ -134,7 +137,10 @@ display text. Keep utterance boundaries intact, then review the new speech-plan
 content signature and preview representative provider requests.
 
 Accepted passive correction and translation are reused by default: their
-dispatch evidence stands in for the managed settings fingerprint. A plan reports
+dispatch evidence stands in for the managed settings fingerprint. So is a saved
+review of either, such as a `pandrator_patch_subtitle_passages` edit and its
+copy in a language branch (`reuse_basis: reviewed_revision`); a reviewed
+translation is still rerun when the target language changes. A plan reports
 `reuse_basis` for each reused stage. Use the top-level `reuse_stages` argument
 to keep another changed prerequisite result anyway, and `rerun_stages` to run a
 current one again. Inspect the resulting artifact IDs and reuse decisions before
@@ -154,8 +160,19 @@ Plan and execute generation, then poll its durable work handle. Use
 `pandrator_list_generation_runs` to select the completed run rather than
 assuming “latest.” For each deliverable, call
 `pandrator_plan_export_variant` with its audio mode, subtitle mode, subtitle
-selection, and optional generation-run ID. Execute that immutable plan and
-poll it to terminal before planning another dependent output.
+selection, and the run's `generation_run_id`: the plan then lists the assembly
+it reuses or prepares and reports `speech_timing`. Without a run ID the export
+uses the session's current assembly, the one made from the active speech plan.
+Execute that immutable plan and poll it to terminal before planning another
+dependent output.
+
+After a subtitle change that only moves timing, prepare the speech plan again
+with `pandrator_prepare_speech_plan`; every take is kept. Then assemble the
+current takes with `pandrator_assemble_generation_run` without a
+`generation_run_id`, and plan the export without one. Do not plan
+`generate_audio` for it: a new run synthesises every block again, and the plan
+warns that every take is reusable. Timing repair needs a run on the active
+speech plan, so run it before such an edit.
 
 Omitting `subtitle_selection` uses saved output settings; `auto` explicitly
 includes the available documents. `source`, `translation` and `dual` are binding

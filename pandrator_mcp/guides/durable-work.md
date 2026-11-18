@@ -40,7 +40,10 @@ A queued work item carries `queue`: its `lane` (`main` for long work,
   exception and may run beside a render.
 - `resource_busy`: another job holds a resource it needs, such as the GPU or a
   speech provider (`resource` names the key, `blocked_by` the holder).
-- `worker_busy`: its lane is running work from another session.
+- `worker_busy`: its lane is running work from another session (`blocked_by`),
+  or, without `blocked_by`, the worker has not picked it up yet. A job that
+  stays first in line without `blocked_by` while nothing else runs may have no
+  worker to run it: report that to the operator rather than resubmitting.
 - `scheduled`: it is waiting for a retry time (`available_at`).
 
 A blocker in a session the caller cannot see is not named. Waiting is normal;

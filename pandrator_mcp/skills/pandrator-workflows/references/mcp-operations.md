@@ -81,7 +81,8 @@ revision conflicts, expiry, or a stale digest.
 One source session feeds a translation project; each language is a branch,
 itself a voiceover session with pinned copies of the source text and timeline.
 
-1. If the recording is cut, render the reviewed media edit first
+1. If the recording is cut, the source is a `media_edit` session (its branches
+   are still voiceover sessions). Render the reviewed media edit first
    (`pandrator_render_media_edit`) and wait for it. Correction comes after:
    select the render's `media_edit_subtitles`, not the pre-edit transcript.
    `pandrator_create_dispatch_run` warns when the source is on the pre-edit
@@ -142,7 +143,9 @@ polling work that already supplies its identity and status.
 Queued work reports `queue`: its `lane`, `position` (1 is next), a `reason`
 (`session_busy`, `resource_busy`, `worker_busy` or `scheduled`) and, where the
 caller may see it, `blocked_by`. Waiting behind a render or another session's
-job is normal; do not cancel and resubmit. Running generation adds `retry`
+job is normal; do not cancel and resubmit. A job first in line with
+`worker_busy`, no `blocked_by` and nothing else running may have no worker:
+tell the operator. Running generation adds `retry`
 (provider retries in flight) and, after 10 blocks or 2 minutes, `estimate`
 with `remaining_seconds`. A workflow plan's `generate_audio` step carries
 `estimated_seconds` when comparable history exists.
@@ -202,10 +205,17 @@ instead of substituting current settings. Returned origins make this explicit.
    both documents exist: `subtitle_mode="soft"` retains separate selectable
    tracks, while `subtitle_mode="burned"` makes one bilingual overlay.
    Do not substitute a missing language or confuse this with speech-only text.
-   Poll again.
+   Pass the run's `generation_run_id`; without it the export uses the
+   assembly made from the active speech plan. Poll again.
 6. Locate outputs with `pandrator_list_artifacts` and deliver them with
    `pandrator_download_artifact`. Supply an optional plain `filename`, not a
-   destination path. The configured output root determines the destination.
+   destination path. The configured output root determines the destination;
+   without one, ask the operator to set it on the MCP host.
+
+After a subtitle change that only moves timing, prepare the speech plan again
+(every take is kept), assemble with `pandrator_assemble_generation_run` without
+a `generation_run_id`, and plan the export without one. A new generation run
+would synthesise every block again; the plan warns when every take is reusable.
 
 The downloader resumes partial transfers and verifies size and SHA-256. It
 refuses conflicting existing content. Report its final path and verification
