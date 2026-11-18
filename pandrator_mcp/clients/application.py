@@ -164,6 +164,32 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
 )
 
 
+def _unmodelled_conflict(downstream: dict[str, Any], status_code: int) -> PandratorMcpError:
+    """Keep the application's reason for a 409 this request does not pass through.
+
+    Most such refusals are not revision races (a run that is no longer on the
+    active plan, a missing checkpoint), and the application's message names
+    the way out. Only a bare 409 is reported as a changed resource.
+    """
+
+    code = str(downstream.get("code") or "").strip()
+    message = str(downstream.get("message") or "").strip()
+    if not message:
+        return PandratorMcpError(
+            "revision_conflict",
+            "The Pandrator resource changed since it was inspected.",
+            details={"status": status_code},
+        )
+    return PandratorMcpError(
+        "state_conflict",
+        message[:2_000],
+        details={
+            "status": status_code,
+            **({"downstream_code": code[:120]} if code else {}),
+        },
+    )
+
+
 class ApplicationClient(
     ApplicationEditorMethods,
     ApplicationSoundMethods,
@@ -515,11 +541,7 @@ class ApplicationClient(
         if status_code == 404:
             raise PandratorMcpError("not_found", "The Pandrator resource was not found.")
         if status_code == 409:
-            raise PandratorMcpError(
-                "revision_conflict",
-                "The Pandrator resource changed since it was inspected.",
-                details={"status": status_code},
-            )
+            raise _unmodelled_conflict(downstream_error, status_code)
         if status_code == 422:
             raise PandratorMcpError(
                 "validation_error",
@@ -713,11 +735,7 @@ class ApplicationClient(
         if status_code == 404:
             raise PandratorMcpError("not_found", "The Pandrator resource was not found.")
         if status_code == 409:
-            raise PandratorMcpError(
-                "revision_conflict",
-                "The Pandrator resource changed since it was inspected.",
-                details={"status": status_code},
-            )
+            raise _unmodelled_conflict(downstream, status_code)
         if status_code == 422:
             raise PandratorMcpError(
                 "validation_error",

@@ -1411,6 +1411,30 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertEqual("a" * 64, body["expected_revision"])
         self.assertEqual(2, len(session.calls))
 
+    def test_unmodelled_conflict_keeps_the_application_reason(self):
+        reason = "Timing repair requires a completed voiceover on its active speech plan."
+        session = FakeSession([
+            FakeResponse(409, {"error": {"code": "invalid_state", "message": reason}}),
+            FakeResponse(409, {}),
+        ])
+        client = ApplicationClient(
+            local_registry("http://127.0.0.1:8097").bind("local"),
+            CredentialResolver(()), session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        with self.assertRaises(PandratorMcpError) as caught:
+            client.repair_generation_timing("run-1", preview=True)
+        # Not a revision race: re-reading would not help, the reason does.
+        self.assertEqual("state_conflict", caught.exception.code)
+        self.assertEqual(reason, str(caught.exception))
+        self.assertEqual(
+            {"status": 409, "downstream_code": "invalid_state"},
+            caught.exception.details,
+        )
+        with self.assertRaises(PandratorMcpError) as bare:
+            client.repair_generation_timing("run-1", preview=True)
+        self.assertEqual("revision_conflict", bare.exception.code)
+
     def test_bounded_post_uses_csrf_idempotency_and_typed_errors(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(
