@@ -288,6 +288,7 @@ class MediaEditClaimTests(unittest.TestCase):
             }
         )
         self.assertEqual(1, len(projected["batch"]["cues"]))
+        self.assertNotIn("words", projected["batch"]["cues"][0])
 
     def test_backend_claim_evidence_omits_word_arrays(self):
         from pandrator.web.media_edit_dispatch import MediaEditDispatchRunService

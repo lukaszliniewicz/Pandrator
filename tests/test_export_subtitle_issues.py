@@ -115,6 +115,19 @@ def test_subtitle_issues_survive_the_work_projection():
     assert "[TRUNCATED]" in str(nested)
 
 
+def test_nested_cue_overlap_is_measured_up_to_its_own_end():
+    # A cue inside an earlier span overlaps by its own duration only. The
+    # earlier span's end would report 9000 ms here instead of 1000.
+    settings = {"subtitle_language": "en"}
+    source = _srt([(0, 10_000, "A long line."), (1_000, 2_000, "Nested line.")])
+
+    diagnostics = subtitle_export_diagnostics(
+        source, source, settings, None, language="en", language_origin="test"
+    )
+
+    assert diagnostics["final"]["overlaps"] == [[1, 2, 1_000]]
+
+
 def test_overlap_rows_carry_ordinals_and_milliseconds():
     settings = {"subtitle_language": "en"}
     source = _srt(_overlapping_cues())

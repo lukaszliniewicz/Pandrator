@@ -234,14 +234,14 @@ def speech_track_language(
 
     A translation branch keeps its language on the session record rather than in
     the export settings, so the dubbed track is named from the session when the
-    run itself does not say. No usable value means no tag, as before.
+    run itself does not say. ``output_language`` and its older ``language`` key
+    are separate candidates: an ``auto`` placeholder in one must not mask a
+    concrete language in the other. No usable value means no tag, as before.
     """
 
     candidates = (
-        (
-            "output_language",
-            settings.get("output_language") or settings.get("language"),
-        ),
+        ("output_language", settings.get("output_language")),
+        ("output_language", settings.get("language")),
         ("session_target_language", record.target_language),
         ("session_source_language", record.source_language),
         ("run_language", settings.get("target_language")),

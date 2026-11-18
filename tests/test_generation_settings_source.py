@@ -458,6 +458,58 @@ class GenerationSettingsSourceTests(unittest.TestCase):
             source_id, started["settings_source_receipt"]["settings_source_run_id"]
         )
 
+    def test_run_override_makes_a_voice_change_equal_on_both_sides(self):
+        source_id = self.make_source_run(
+            1,
+            prompt="Frozen source.",
+            performance_enabled=False,
+            casting_enabled=False,
+            context_mode="off",
+        )
+        with self.database.immediate_session() as session:
+            run = session.get(GenerationRun, source_id)
+            snapshot = dict(run.settings_snapshot_json)
+            snapshot["tts"] = {**snapshot["tts"], "voice": "voice-a"}
+            run.settings_snapshot_json = snapshot
+            run.settings_hash = stable_hash(snapshot)
+        self.set_current_settings()
+        current = self.services["workspace_settings"].get(self.session_id, "tts")
+        self.services["workspace_settings"].patch(
+            self.session_id, "tts", current["revision"], {"voice": "voice-b"}
+        )
+        generation = self.services["generation"]
+        # A plan edit moves the active revision on, so the replay diff path runs.
+        generation.revise_topology(
+            self.session_id,
+            self.revision_id,
+            {
+                "action": "split",
+                "segment_id": self.segment_id,
+                "cursor": 1,
+                "text_layer": "display",
+            },
+        )
+
+        unoverridden = generation.preview_selection(
+            self.session_id,
+            settings_source="run",
+            settings_source_run_id=source_id,
+        )
+        self.assertEqual(
+            {"run": "voice-a", "current": "voice-b"},
+            unoverridden["settings_source_diff"].get("voice"),
+        )
+
+        overridden = generation.preview_selection(
+            self.session_id,
+            run_override={"tts": {"voice": "voice-b"}},
+            settings_source="run",
+            settings_source_run_id=source_id,
+        )
+        # The override applies to the source side too, so it is not a difference
+        # the replay imposes.
+        self.assertNotIn("voice", overridden["settings_source_diff"])
+
     def test_settings_source_run_from_the_same_revision_reports_no_diff(self):
         source_id = self.make_source_run(
             1,

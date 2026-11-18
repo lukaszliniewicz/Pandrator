@@ -495,8 +495,10 @@ def assemble_generation_output(
             alignment_blocks: list[AudioAlignmentBlock] = []
             # Each final alignment block keeps its display cue windows here (and
             # only here) so placement can be compared with the subtitles after
-            # alignment. The windows are never stored in metadata.
-            cues_by_block: dict[str, list[tuple[int, int]]] = {}
+            # alignment. A window is keyed by its source cue identity, so a cue
+            # that two merged segments both reference is counted once instead of
+            # twice. The windows are never stored in metadata.
+            cues_by_block: dict[str, dict[int, tuple[int, int]]] = {}
             previous_alignment_group: str | None = None
             with tempfile.TemporaryDirectory(
                 prefix=f".assembly-{assembly_id}-",
@@ -522,7 +524,9 @@ def assemble_generation_output(
                         raise ValueError(
                             f"Subtitle generation segment {segment.ordinal + 1} has no source timing references. Regenerate its speech-block plan."
                         )
-                    cue_windows = [(value[0], value[1]) for value in timings]
+                    cue_windows = {
+                        value[2]: (value[0], value[1]) for value in timings
+                    }
                     input_path = temporary_path / f"segment-{index + 1:06d}.wav"
                     segment_plan = build_audio_assembly_plan(
                         [
@@ -580,13 +584,13 @@ def assemble_generation_output(
                                 {*previous.subtitles, *block.subtitles}
                             ),
                         )
-                        cues_by_block[alignment_blocks[-1].number] = [
-                            *cues_by_block.pop(previous.number, []),
-                            *cue_windows,
-                        ]
+                        cues_by_block[alignment_blocks[-1].number] = {
+                            **cues_by_block.pop(previous.number, {}),
+                            **cue_windows,
+                        }
                     else:
                         alignment_blocks.append(block)
-                        cues_by_block[block.number] = list(cue_windows)
+                        cues_by_block[block.number] = dict(cue_windows)
                     previous_alignment_group = alignment_group
                     manifest.append(
                         {
@@ -664,7 +668,9 @@ def assemble_generation_output(
                 for detail in alignment_diagnostics.get("blocks") or []:
                     speech_start = int(detail.get("speech_start_ms") or 0)
                     speech_end = int(detail.get("speech_end_ms") or 0)
-                    cues = cues_by_block.get(str(detail.get("block")), [])
+                    cues = list(
+                        cues_by_block.get(str(detail.get("block")), {}).values()
+                    )
                     cue_metrics = late_cue_metrics(
                         [PlacedSpeechBlock(speech_start, speech_end, cues)]
                     )

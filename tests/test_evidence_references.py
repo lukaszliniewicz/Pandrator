@@ -452,8 +452,8 @@ def test_cue_review_route_returns_the_passage_guidance_verbatim(case, monkeypatc
     client, csrf = login(case, "owner")
     src = source(case, client, csrf)
     guidance = (
-        "This subtitle artifact is organised in logical passages, and this edit would "
-        "split or drop one. Use pandrator_patch_subtitle_passages (preview the passages "
+        "The passage references do not match this cue's passages. "
+        "Use pandrator_patch_subtitle_passages (preview the passages "
         "with pandrator_preview_subtitle_passages first)."
     )
     services = case.app.extensions["pandrator"]["services"]

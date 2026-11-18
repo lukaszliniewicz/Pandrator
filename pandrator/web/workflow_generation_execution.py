@@ -618,7 +618,15 @@ def _run_generation(
                     )
                 rvc_source_sequence = source_run.sequence_number
     generated = 0
-    skipped = 0
+    # A resume keeps every block that already has a completed take. Count them
+    # all before the loop: the pace estimate must divide by the blocks that
+    # still need synthesis, and counting a kept block only when the loop
+    # reaches it made the earlier blocks look as if they had taken its time.
+    skipped = (
+        sum(1 for segment_id in segment_ids if segment_id in completed_take_ids)
+        if operation == "resume"
+        else 0
+    )
     # Segments the provider declined or returned without audio. The run goes
     # on and finishes partial; these are reported with their reasons.
     failed_segments: list[dict[str, Any]] = []
@@ -900,7 +908,6 @@ def _run_generation(
                     **({"failed_segments": failed_segments} if failed_segments else {}),
                 }
             if operation == "resume" and segment_id in completed_take_ids:
-                skipped += 1
                 progress(
                     optimization_share
                     + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),

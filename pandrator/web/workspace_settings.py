@@ -359,6 +359,54 @@ def _selected_service(
     )
 
 
+def _tts_service_defaults(
+    effective: Mapping[str, Any], selected: Mapping[str, Any] | None
+) -> dict[str, str]:
+    """Return the model and voice a selected TTS service supplies by default.
+
+    ``resolve_in_session`` fills these after the layers are merged, so a caller
+    that only merges the layers reports no model or voice at all. The resolver
+    logic lives here so the resolved section and the reported route cannot
+    drift apart. A value the layers already supply is returned unchanged; the
+    default only answers a key nobody set.
+    """
+    if not isinstance(selected, Mapping):
+        return {}
+    from pandrator.logic import tts_handler
+
+    selected_id = str(selected.get("id") or "").lower()
+    if selected_id == "kobold_qwen":
+        model = tts_handler.resolve_kobold_qwen_model(
+            dict(effective), fallback=str(selected.get("default_model") or "")
+        )
+    else:
+        model = str(effective.get("model") or selected.get("default_model") or "")
+    default_voices = selected.get("default_voices")
+    if not isinstance(default_voices, dict):
+        default_voices = {}
+    language_defaults = selected.get("default_voices_by_language")
+    if not isinstance(language_defaults, dict):
+        language_defaults = {}
+    model_language_defaults = language_defaults.get(model)
+    if not isinstance(model_language_defaults, dict):
+        model_language_defaults = {}
+    language = (
+        str(effective.get("language") or effective.get("target_language") or "")
+        .strip()
+        .lower()
+    )
+    if selected_id == "kokoro":
+        language = tts_handler.normalize_kokoro_language_code(language)
+    voice = str(
+        effective.get("voice")
+        or language_default_voice(model_language_defaults, language)
+        or default_voices.get(model)
+        or selected.get("default_voice")
+        or ""
+    )
+    return {"model": model, "voice": voice}
+
+
 @dataclass(slots=True)
 class _SettingsReadContext:
     session_id: str
@@ -615,12 +663,22 @@ class WorkspaceSettingsService:
             session_context,
             normalize_tts_voice_aliases(override_value),
         )
+        # The resolver fills a model and voice the selected service supplies by
+        # default after its layers are merged. Report those same defaults here,
+        # so the route a caller reads is the route a run would use. Only a key
+        # no layer supplies is filled, and it is reported as provider-supplied.
+        service_defaults = {
+            key: value
+            for key, value in _tts_service_defaults(route_effective, selected).items()
+            if value and not route_effective.get(key)
+        }
+        route_effective.update(service_defaults)
         origins = settings_provenance(
             {
                 "builtin": BUILTIN_DEFAULTS["tts"],
                 "global": normalize_tts_voice_aliases(global_value),
                 "service": service_layer,
-                "provider": provider_layer,
+                "provider": _merge(provider_layer, service_defaults),
                 "session_context": session_context,
                 "override": normalize_tts_voice_aliases(override_value),
                 "effective": route_effective,
@@ -1461,8 +1519,6 @@ class WorkspaceSettingsService:
                 if connections and isinstance(connections.value_json, dict)
                 else {}
             )
-            from pandrator.logic import tts_handler
-
             snapshot = snapshots["tts"]
             selection_seed = _merge(
                 snapshot["builtin"],
@@ -1485,48 +1541,11 @@ class WorkspaceSettingsService:
                 override.get("tts", {}),
             )
             if selected:
-                if str(selected.get("id") or "").lower() == "kobold_qwen":
-                    model = tts_handler.resolve_kobold_qwen_model(
-                        resolved["tts"],
-                        fallback=str(selected.get("default_model") or ""),
-                    )
-                else:
-                    model = str(
-                        resolved["tts"].get("model")
-                        or selected.get("default_model")
-                        or ""
-                    )
-                default_voices = selected.get("default_voices")
-                if not isinstance(default_voices, dict):
-                    default_voices = {}
-                language_defaults = selected.get("default_voices_by_language")
-                if not isinstance(language_defaults, dict):
-                    language_defaults = {}
-                model_language_defaults = language_defaults.get(model)
-                if not isinstance(model_language_defaults, dict):
-                    model_language_defaults = {}
-                language = (
-                    str(
-                        resolved["tts"].get("language")
-                        or resolved["tts"].get("target_language")
-                        or ""
-                    )
-                    .strip()
-                    .lower()
-                )
-                if str(selected.get("id") or "").lower() == "kokoro":
-                    language = tts_handler.normalize_kokoro_language_code(language)
-                voice = str(
-                    resolved["tts"].get("voice")
-                    or language_default_voice(model_language_defaults, language)
-                    or default_voices.get(model)
-                    or selected.get("default_voice")
-                    or ""
-                )
-                if model:
-                    resolved["tts"]["model"] = model
-                if voice:
-                    resolved["tts"]["voice"] = voice
+                for key, value in _tts_service_defaults(
+                    resolved["tts"], selected
+                ).items():
+                    if value:
+                        resolved["tts"][key] = value
         if "stt" in resolved:
             connections = workspace_setting_in_workspace(
                 session, workspace_id, "services.stt"

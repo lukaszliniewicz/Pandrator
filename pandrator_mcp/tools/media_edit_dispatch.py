@@ -138,6 +138,20 @@ def _claim(payload: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in payload:
             result[key] = payload[key]
+    batch = result.get("batch")
+    if isinstance(batch, dict):
+        batch = dict(batch)
+        cues = batch.get("cues")
+        if isinstance(cues, list):
+            # Word arrays are private boundary-refinement evidence, so a claim
+            # never carries them even if a response still includes them.
+            batch["cues"] = [
+                {name: value for name, value in cue.items() if name != "words"}
+                if isinstance(cue, dict)
+                else cue
+                for cue in cues
+            ]
+        result["batch"] = batch
     return result
 
 

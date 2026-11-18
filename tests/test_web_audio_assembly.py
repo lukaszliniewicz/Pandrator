@@ -1303,6 +1303,111 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 expected_drift, assembly.settings_json["synchronization"]["timing_drift"]
             )
 
+    def test_merged_segments_count_a_shared_cue_once(self):
+        with self.database.session() as session:
+            document = Document(
+                session_id=self.record.id, stage="translation", language="pl"
+            )
+            session.add(document)
+            session.flush()
+            revision = DocumentRevision(
+                document_id=document.id, revision_number=1, content_hash="shared-cue"
+            )
+            session.add(revision)
+            session.flush()
+            cues = [
+                Segment(
+                    revision_id=revision.id,
+                    ordinal=0,
+                    start_ms=500,
+                    end_ms=1000,
+                    text="Pierwsza część.",
+                ),
+                Segment(
+                    revision_id=revision.id,
+                    ordinal=1,
+                    start_ms=1000,
+                    end_ms=1500,
+                    text="Druga część.",
+                ),
+            ]
+            session.add_all(cues)
+            session.flush()
+            cue_ids = [cue.id for cue in cues]
+            document.active_revision_id = revision.id
+            revision_id = revision.id
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=revision_id,
+            segments=[
+                # The first segment covers both cues, the second repeats the
+                # second one; the merged block must keep each cue once.
+                {
+                    "text": "Pierwsza część. Druga część.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": cue_ids,
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+                {
+                    "text": "Druga część.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [cue_ids[1]],
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+            ],
+        )
+        artifacts = ArtifactService(self.database, self.paths)
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id == plan["active_revision_id"]
+                    )
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            segment_ids = [segment.id for segment in segments]
+        for index, segment_id in enumerate(segment_ids):
+            path = self.session_dir / f"shared-cue-take-{index}.wav"
+            Sine(440 + index * 110).to_audio_segment(duration=100).export(
+                path, format="wav"
+            ).close()
+            artifact = artifacts.register(
+                path, kind="audio", role="generation_take", session_id=self.record.id
+            )
+            with self.database.session() as session:
+                segment = session.get(GenerationSegment, segment_id)
+                segment.status = "completed"
+                session.add(
+                    AudioTake(
+                        generation_segment_id=segment_id,
+                        artifact_id=artifact.id,
+                        kind="tts",
+                        status="completed",
+                        duration_ms=100,
+                        is_active=True,
+                    )
+                )
+
+        queued = self.generation.create_assembly(self.record.id)
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+        artifact, _output_path = artifacts.resolve(result["artifact_id"])
+        details = artifact.metadata_json["synchronization"]["blocks"]
+        self.assertEqual(1, len(details))
+        self.assertEqual("0001-0002", details[0]["block"])
+        self.assertEqual(2, details[0]["cue_count"])
+        self.assertEqual(
+            2, artifact.metadata_json["synchronization"]["timing_drift"]["cues"]
+        )
+
     def test_second_generation_run_still_applies_configured_drift_speedup(self):
         with self.database.session() as session:
             document = Document(
