@@ -516,10 +516,16 @@ def test_repair_generation_timing_registers_preview_and_queue_paths(tmp_path: Pa
     assert [action["tool"] for action in envelope(preview)["next_actions"]] == [
         "pandrator_get_work"
     ]
-    assert (
-        envelope(preview)["next_actions"][0]["arguments"]["job_id"]
-        == "job-3"
-    )
+    get_work = tools["pandrator_get_work"].input_schema
+    for response in (preview, queued):
+        poll = next(
+            action
+            for action in envelope(response)["next_actions"]
+            if action["tool"] == "pandrator_get_work"
+        )
+        assert poll["arguments"] == {"work_id": "job-3", "work_type": "job"}
+        # A next action the tool would reject is a dead end.
+        assert set(poll["arguments"]) <= set(get_work["properties"])
     queued_value = envelope(queued)["result"]
     assert queued_value["job_id"] == "job-3"
     assert queued_value["reused_job"] is False

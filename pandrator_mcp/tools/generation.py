@@ -771,7 +771,7 @@ def repair_generation_timing(
                 [
                     NextAction(
                         tool="pandrator_get_work",
-                        arguments={"job_id": job_id},
+                        arguments={"work_id": job_id, "work_type": "job"},
                         reason=(
                             "Poll the preview job; its result lists the candidate "
                             "blocks and the estimated synthesis calls."
@@ -807,7 +807,7 @@ def repair_generation_timing(
             [
                 NextAction(
                     tool="pandrator_get_work",
-                    arguments={"job_id": payload.get("job_id")},
+                    arguments={"work_id": payload.get("job_id"), "work_type": "job"},
                     reason="Poll the durable repair job, then read its run summary.",
                 )
             ]
