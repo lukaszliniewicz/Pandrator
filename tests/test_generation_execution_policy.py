@@ -623,6 +623,55 @@ def test_timing_repair_job_requires_root_marker_and_valid_parent(case: Any):
         _call(case, actor, claimed, supplied)
 
 
+def test_timing_repair_job_accepts_only_current_repair_thresholds(case: Any):
+    actor = credential(case, "member").actor
+    parent_id = _run(case)
+    thresholds = {
+        "min_shortfall_ms": 1000,
+        "min_shortfall_percent": 20,
+        "min_advance_ms": 1000,
+        "min_child_span_ms": 1000,
+    }
+    child_id, _queued, claimed, supplied = _job(
+        case,
+        actor,
+        kind="generation.repair-existing",
+        stored={
+            "session_id": case.a.id,
+            "generation_run_id": parent_id,
+            "repair_thresholds": thresholds,
+        },
+    )
+    _change(
+        case, GenerationRun, child_id,
+        source_generation_run_id=parent_id,
+        settings_snapshot_json={"early_repair_parent_run_id": parent_id},
+    )
+    supplied["operation"] = "resume"
+    assert _call(case, actor, claimed, supplied).run_id == child_id
+
+    for malformed in (
+        {**thresholds, "min_shortfall_ms": 99},
+        {**thresholds, "min_shortfall_percent": True},
+        {**thresholds, "min_child_span_ms": 60001},
+        {key: value for key, value in thresholds.items() if key != "min_advance_ms"},
+        {**thresholds, "extra": 1000},
+        [],
+    ):
+        _change(
+            case,
+            Job,
+            claimed.id,
+            payload_json={
+                "session_id": case.a.id,
+                "generation_run_id": parent_id,
+                "repair_thresholds": malformed,
+            },
+        )
+        with pytest.raises(AccessDenied):
+            _call(case, actor, claimed, supplied)
+
+
 def test_timing_repair_job_proves_every_staged_lineage_hop(case: Any):
     actor = credential(case, "member").actor
     root_id = _run(case)

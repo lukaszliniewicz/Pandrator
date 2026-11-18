@@ -816,6 +816,40 @@ def validate_tts_retry_settings(value: dict[str, Any]) -> None:
             raise ValueError(f"{key} must be an integer from 1 to {maximum}.")
 
 
+# Suffix, minimum and maximum of the early-finish repair thresholds. Defaults
+# come from BUILTIN_DEFAULTS, so a stored value, a clamped request and a
+# documented default cannot drift apart.
+EARLY_REPAIR_THRESHOLD_BOUNDS: tuple[tuple[str, int, int], ...] = (
+    ("min_shortfall_ms", 100, 60000),
+    ("min_shortfall_percent", 1, 95),
+    ("min_advance_ms", 100, 60000),
+    ("min_child_span_ms", 250, 60000),
+)
+
+
+def repair_thresholds(settings: Any, *, clamp: bool = True) -> dict[str, int]:
+    """Return the four early-finish repair thresholds from one settings mapping.
+
+    ``clamp`` keeps an out-of-range or non-integer stored value inside the
+    accepted bounds instead of failing, so an explicit repair request can use
+    whatever the session resolves today.  Stored settings still go through
+    :func:`validate_voiceover_repair_settings`, which refuses such values on
+    write.
+    """
+
+    source = settings if isinstance(settings, dict) else {}
+    defaults = BUILTIN_DEFAULTS["tts"]
+    resolved: dict[str, int] = {}
+    for suffix, minimum, maximum in EARLY_REPAIR_THRESHOLD_BOUNDS:
+        key = f"speech_block_early_repair_{suffix}"
+        default = int(defaults[key])
+        value = source.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int):
+            value = default
+        resolved[suffix] = max(minimum, min(maximum, value)) if clamp else value
+    return resolved
+
+
 def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
     if "voice_mode_version" in value and (
         type(value["voice_mode_version"]) is not int
@@ -837,12 +871,7 @@ def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
                 "annotation_format": "xml",
                 "purpose": purpose,
             })
-    for suffix, minimum, maximum in (
-        ("min_shortfall_ms", 100, 60000),
-        ("min_shortfall_percent", 1, 95),
-        ("min_advance_ms", 100, 60000),
-        ("min_child_span_ms", 250, 60000),
-    ):
+    for suffix, minimum, maximum in EARLY_REPAIR_THRESHOLD_BOUNDS:
         key = f"speech_block_early_repair_{suffix}"
         if key not in value:
             continue

@@ -47,7 +47,7 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
-    def plan(self, *, enabled=True, previous=False, groups=1):
+    def plan(self, *, enabled=True, previous=False, groups=1, tail=()):
         cues = []
         if previous:
             cues.append((0, 2000, "An earlier complete sentence."))
@@ -62,6 +62,7 @@ class VoiceoverRepairTests(unittest.TestCase):
         cues.append(
             (cues[-1][1] + 2000, cues[-1][1] + 4000, "The unchanged closing sentence.")
         )
+        cues.extend(tail)
         with self.database.session() as session:
             document = Document(
                 session_id=self.record.id, stage="translation", language="en"
@@ -287,7 +288,7 @@ class VoiceoverRepairTests(unittest.TestCase):
             )
 
         def progress(_value, detail=None):
-            if stage == "inspection" and detail == "Checking voiceover timing 1 of 2":
+            if stage == "inspection" and detail == "Repairing timing: 1 of 2 blocks":
                 request_pause()
 
         with patch("pandrator.logic.tts_handler.text_to_audio", side_effect=synth):
@@ -763,8 +764,10 @@ class VoiceoverRepairTests(unittest.TestCase):
             )
             self.assertEqual([take.id], [item.id for item in active_takes])
 
-    def test_context_neighbour_duration_growth_rejects_optional_repair(self):
-        self.plan()
+    def _contextual_plan(self, *, previous: bool = False) -> None:
+        """Frozen 1/1 semantic context, so a split refreshes its neighbours."""
+
+        self.plan(previous=previous)
         with self.database.session() as session:
             run = session.get(GenerationRun, self.run_id)
             run.settings_snapshot_json = {
@@ -778,15 +781,13 @@ class VoiceoverRepairTests(unittest.TestCase):
                 },
             }
 
-        closing_calls = 0
+    def _neighbour_durations(self, calls: dict[str, int], target: str, lengths):
+        """Return a synth that changes one neighbour's take on regeneration."""
 
-        def longer_neighbour(text, *_args, **_kwargs):
-            nonlocal closing_calls
-            if text == "The unchanged closing sentence.":
-                closing_calls += 1
-                # Even one extra millisecond is rejected: the pass does not
-                # attempt to prove that cue slack would absorb the growth.
-                duration = 1000 if closing_calls == 1 else 1001
+        def synth(text, *_args, **_kwargs):
+            if text == target:
+                calls["seen"] = calls.get("seen", 0) + 1
+                duration = lengths[0] if calls["seen"] == 1 else lengths[1]
             else:
                 duration = (
                     2000
@@ -795,15 +796,69 @@ class VoiceoverRepairTests(unittest.TestCase):
                 )
             return Sine(440).to_audio_segment(duration=duration)
 
-        result, calls = self.generate(synth=longer_neighbour)
+        return synth
+
+    def test_following_neighbour_growth_within_its_window_is_applied(self):
+        """A longer refreshed follower that still fits its cue is adopted."""
+
+        self._contextual_plan()
+        result, calls = self.generate(
+            synth=self._neighbour_durations(
+                {}, "The unchanged closing sentence.", (1000, 1500)
+            )
+        )
+        self.assertEqual(5, calls)
+        self.assertEqual(1, result.get("repaired_blocks"))
+        self.assertNotEqual(self.revision_id, self.active())
+        self.assertEqual("applied", self.repairs()[0]["repair_status"])
+
+    def test_following_neighbour_growth_that_pushes_later_speech_is_rejected(self):
+        self._contextual_plan()
+        result, calls = self.generate(
+            synth=self._neighbour_durations(
+                {}, "The unchanged closing sentence.", (1000, 3000)
+            )
+        )
         self.assertEqual(5, calls)
         self.assertEqual(0, result.get("repaired_blocks"))
         self.assertEqual(self.revision_id, self.active())
         history = self.repairs()
         self.assertEqual("not_applied", history[0]["repair_status"])
-        self.assertEqual(
-            "context_neighbour_added_duration", history[0]["repair_reason"]
+        self.assertEqual("context_neighbour_added_delay", history[0]["repair_reason"])
+
+    def test_preceding_neighbour_growth_within_its_window_is_applied(self):
+        """A longer refreshed predecessor that keeps the cue anchor is adopted."""
+
+        self._contextual_plan(previous=True)
+        result, calls = self.generate(
+            synth=self._neighbour_durations(
+                {}, "An earlier complete sentence.", (1000, 2500)
+            )
         )
+        self.assertEqual(1, result.get("repaired_blocks"))
+        self.assertEqual("applied", self.repairs()[0]["repair_status"])
+
+    def test_preceding_neighbour_growth_that_pushes_the_candidate_is_rejected(self):
+        self._contextual_plan(previous=True)
+        result, calls = self.generate(
+            synth=self._neighbour_durations(
+                {}, "An earlier complete sentence.", (1000, 4000)
+            )
+        )
+        self.assertEqual(0, result.get("repaired_blocks"))
+        self.assertEqual(self.revision_id, self.active())
+        history = self.repairs()
+        self.assertEqual("not_applied", history[0]["repair_status"])
+        self.assertEqual("context_neighbour_added_delay", history[0]["repair_reason"])
+
+    def test_unchanged_neighbour_growth_path_takes_no_extra_calls(self):
+        """Without neighbour growth the pass keeps its unchanged measurement."""
+
+        self._contextual_plan()
+        result, calls = self.generate()
+        self.assertEqual(5, calls)
+        self.assertEqual(1, result.get("repaired_blocks"))
+        self.assertEqual("applied", self.repairs()[0]["repair_status"])
 
     def test_german_clause_conjunction_regenerates_children_in_target_language(self):
         self.first = "Wir lassen den ganzen Gedanken zunächst zusammen"
@@ -1340,6 +1395,415 @@ class VoiceoverRepairTests(unittest.TestCase):
             revision.operation_json = operation
         self.assertEqual("automatic", self.repairs()[0]["origin"])
         self.assertEqual("unknown", self.repairs()[0]["repair_status"])
+
+    def run_repair_job(self, job_id: str, synth=None):
+        from pandrator.web.job_execution import current_job_lease
+
+        claimed = self.handlers.jobs.claim("explicit-repair-fixture", lease_seconds=300)
+        self.assertIsNotNone(claimed)
+        self.assertEqual(job_id, claimed.id)
+        lease_token = current_job_lease.set(
+            {
+                "job_id": claimed.id,
+                "owner_id": claimed.lease_owner,
+                "lease_generation": claimed.lease_generation,
+            }
+        )
+        try:
+            with patch(
+                "pandrator.logic.tts_handler.text_to_audio",
+                side_effect=synth
+                or (
+                    lambda _text, *_args, **_kwargs: Sine(440).to_audio_segment(
+                        duration=1000
+                    )
+                ),
+            ) as mocked:
+                result = self.handlers.run_repair_existing_generation(
+                    {
+                        **dict(claimed.payload_json),
+                        "_job_id": claimed.id,
+                        "_lease_generation": claimed.lease_generation,
+                    },
+                    lambda *_args: None,
+                    threading.Event(),
+                )
+        finally:
+            current_job_lease.reset(lease_token)
+        return result, mocked.call_count
+
+    def test_automatic_pass_stays_off_when_the_frozen_flag_is_off(self):
+        self.plan(enabled=False)
+        result, calls = self.generate()
+        self.assertEqual(2, calls)
+        self.assertEqual(0, result.get("repaired_blocks", 0))
+        self.assertNotIn("repair_checked_blocks", result)
+        self.assertEqual(self.revision_id, self.active())
+        self.assertEqual([], self.repairs())
+
+    def test_explicit_repair_uses_current_thresholds_and_frozen_identity(self):
+        self.plan(enabled=False)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    # The frozen thresholds would never select this block.
+                    "speech_block_early_repair_min_shortfall_ms": 7000,
+                },
+            }
+        initial, calls = self.generate()
+        self.assertEqual(2, calls)
+        self.assertEqual(self.revision_id, self.active())
+        with self.database.session() as session:
+            original_hashes = {
+                take.id: take.settings_hash
+                for take in session.scalars(
+                    select(AudioTake).where(
+                        AudioTake.generation_run_id == self.run_id,
+                        AudioTake.status == "completed",
+                    )
+                )
+            }
+        self.assertTrue(original_hashes)
+
+        settings = WorkspaceSettingsService(self.database)
+        current = settings.get(self.record.id, "tts")
+        settings.patch(
+            self.record.id,
+            "tts",
+            current["revision"],
+            {"speech_block_early_repair_min_shortfall_ms": 1200},
+        )
+        service = GenerationService(self.database, self.handlers.jobs, settings)
+        queued = service.request_timing_repair(self.run_id)
+        with self.database.session() as session:
+            job = session.get(Job, queued["job_id"])
+            self.assertEqual(1200, job.payload_json["repair_thresholds"]["min_shortfall_ms"])
+            self.assertEqual(
+                {
+                    "min_shortfall_ms",
+                    "min_shortfall_percent",
+                    "min_advance_ms",
+                    "min_child_span_ms",
+                },
+                set(job.payload_json["repair_thresholds"]),
+            )
+
+        result, repair_calls = self.run_repair_job(queued["job_id"])
+        self.assertEqual(1, result["repaired_blocks"])
+        self.assertGreaterEqual(repair_calls, 2)
+        self.assertNotEqual(self.revision_id, self.active())
+        with self.database.session() as session:
+            child_takes = list(
+                session.scalars(
+                    select(AudioTake).where(
+                        AudioTake.generation_run_id
+                        == result["repaired_generation_run_id"],
+                        AudioTake.status == "completed",
+                    )
+                )
+            )
+        self.assertTrue(child_takes)
+        # Synthesis still uses the run's frozen TTS settings, so a new take's
+        # audio identity matches the original ones.
+        self.assertEqual(
+            set(original_hashes.values()),
+            {take.settings_hash for take in child_takes},
+        )
+
+    def test_preview_lists_candidates_and_call_estimate_without_queueing(self):
+        from pandrator.web.voiceover_repair import preview_early_blocks
+
+        self.plan(enabled=False)
+        self.generate()
+        thresholds = {
+            "min_shortfall_ms": 1000,
+            "min_shortfall_percent": 20,
+            "min_advance_ms": 1000,
+            "min_child_span_ms": 1000,
+        }
+        preview = preview_early_blocks(
+            self.database, self.paths, self.run_id, thresholds=thresholds
+        )
+        self.assertTrue(preview["preview"])
+        self.assertEqual(2, preview["planned_blocks"])
+        self.assertEqual(2, preview["checked_count"])
+        self.assertEqual(1, preview["candidate_count"])
+        candidate = preview["candidates"][0]
+        self.assertEqual(0, candidate["ordinal"])
+        self.assertEqual(self.segment_ids[0], candidate["segment_id"])
+        # The fixture's 2000 ms take renders as 2218 ms at its 1.2 sync speed,
+        # so the 8000 ms cue span leaves 5782 ms of shortfall.
+        self.assertEqual(8000 - 2218, candidate["shortfall_ms"])
+        self.assertEqual(5000, candidate["proposed_split"]["boundary_ms"])
+        # Two halves; no neighbours are regenerated with context off.
+        self.assertEqual(2, candidate["estimated_synthesis_calls"])
+        self.assertEqual(2, preview["estimated_synthesis_calls"])
+        self.assertIsNone(candidate["skipped_reason"])
+
+        with self.database.session() as session:
+            self.assertEqual(
+                0,
+                int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(Job)
+                        .where(
+                            Job.session_id == self.record.id,
+                            Job.kind == "generation.repair-existing",
+                        )
+                    )
+                    or 0
+                ),
+            )
+        self.assertEqual(self.revision_id, self.active())
+
+        # A threshold the current settings exceed hides the candidate.
+        self.assertEqual(
+            0,
+            preview_early_blocks(
+                self.database,
+                self.paths,
+                self.run_id,
+                thresholds={**thresholds, "min_shortfall_ms": 7000},
+            )["candidate_count"],
+        )
+
+    def test_preview_counts_the_neighbour_it_would_regenerate(self):
+        from pandrator.web.voiceover_repair import preview_early_blocks
+
+        self.plan(enabled=False)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                    "tts_context_mode": "both",
+                    "performance_context_before": 1,
+                    "performance_context_after": 1,
+                },
+            }
+        self.generate()
+        preview = preview_early_blocks(self.database, self.paths, self.run_id)
+        self.assertEqual(1, preview["candidate_count"])
+        # Two halves plus the following block whose frozen context changes.
+        self.assertEqual(3, preview["candidates"][0]["estimated_synthesis_calls"])
+        self.assertEqual(3, preview["estimated_synthesis_calls"])
+        self.assertIsNone(preview["candidates"][0]["skipped_reason"])
+
+    def test_neighbour_growth_precheck_skips_a_split_that_cannot_gain(self):
+        """Only the split's own pause makes a candidate a certain loser."""
+
+        self.plan(enabled=False)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "audio": {
+                    **dict(run.settings_snapshot_json.get("audio") or {}),
+                    # The modelled advance (about 3.9 s) cannot cover this
+                    # pause, so the second half could never start earlier.
+                    "synchronization_sentence_gap_ms": 5000,
+                },
+            }
+
+        initial, calls = self.generate()
+        self.assertEqual(2, calls)
+        service = GenerationService(
+            self.database, self.handlers.jobs, WorkspaceSettingsService(self.database)
+        )
+        queued = service.request_timing_repair(self.run_id)
+        result, repair_calls = self.run_repair_job(queued["job_id"])
+        self.assertEqual(0, repair_calls)
+        self.assertEqual(0, result["repaired_blocks"])
+        self.assertEqual(1, result["repair_candidate_blocks"])
+        self.assertEqual(0, result["repair_attempted_blocks"])
+        self.assertEqual(
+            {"neighbour_growth_precheck": 1}, result["repair_rejection_reasons"]
+        )
+        self.assertEqual(self.revision_id, self.active())
+
+    def test_neighbour_growth_precheck_ignores_cue_window_slack(self):
+        from pandrator.web.voiceover_repair import neighbour_growth_precheck
+
+        self.assertIsNone(
+            neighbour_growth_precheck(
+                estimated_advance_ms=3000, sentence_gap_ms=250
+            )
+        )
+        # Growth is verified by placement now, so window slack never skips;
+        # only an advance at or below the pause does.
+        self.assertIsNone(
+            neighbour_growth_precheck(
+                estimated_advance_ms=1000, sentence_gap_ms=999
+            )
+        )
+        self.assertEqual(
+            "neighbour_growth_precheck",
+            neighbour_growth_precheck(
+                estimated_advance_ms=249, sentence_gap_ms=250
+            ),
+        )
+
+    def test_repair_effect_reports_late_cues_before_and_after(self):
+        self.plan()
+        result, _calls = self.generate()
+        self.assertEqual(1, result["repaired_blocks"])
+        effect = result["repair_effect"]
+        self.assertEqual(1, effect["blocks"])
+        # Before the split the second cue starts after the single take ended.
+        self.assertGreater(effect["late_cues_before"], 0)
+        self.assertEqual(0, effect["late_cues_after"])
+        self.assertGreater(effect["worst_lag_ms_before"], 0)
+        self.assertEqual(0, effect["worst_lag_ms_after"])
+
+    def test_accepted_repair_adopts_the_refreshed_take_for_later_measurement(self):
+        from pandrator.web.voiceover_repair import TimingGroup, _adopt_refreshed_takes
+
+        groups = [
+            TimingGroup([], [Path("a.wav")], 0, 1000, [1]),
+            TimingGroup([], [Path("b.wav")], 2000, 3000, [2]),
+        ]
+        # A segment-count mismatch cannot be aligned safely and is ignored.
+        _adopt_refreshed_takes(
+            groups,
+            {1: TimingGroup([], [Path("new.wav"), Path("x.wav")], 2000, 3000, [2])},
+        )
+        self.assertEqual([Path("a.wav")], groups[0].paths)
+        self.assertEqual([Path("b.wav")], groups[1].paths)
+        _adopt_refreshed_takes(
+            groups, {1: TimingGroup([], [Path("new.wav")], 2000, 3000, [2])}
+        )
+        self.assertEqual([Path("a.wav")], groups[0].paths)
+        self.assertEqual([Path("new.wav")], groups[1].paths)
+
+    def _following_overrun_plan(self, *, overrun: bool) -> dict:
+        """Candidate, a non-grown follower, then a follower that grows a little."""
+
+        self.plan(tail=((13000, 15000, "A final single sentence."),))
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            run.settings_snapshot_json = {
+                **run.settings_snapshot_json,
+                "tts": {
+                    **run.settings_snapshot_json["tts"],
+                    "speech_block_generation_mode": "passage",
+                    "tts_context_mode": "both",
+                    # Two units back reaches the split, so both followers are
+                    # refreshed even though only the second one grows.
+                    "performance_context_before": 2,
+                    "performance_context_after": 1,
+                },
+            }
+        seen: dict[str, int] = {}
+
+        def synth(text, *_args, **_kwargs):
+            if text == "The unchanged closing sentence.":
+                # Same length before and after: not grown. Long enough to
+                # overrun its slot and push the next block when entered early.
+                return Sine(440).to_audio_segment(duration=4800 if overrun else 1000)
+            if text == "A final single sentence.":
+                seen["final"] = seen.get("final", 0) + 1
+                # Grows by 800 ms inside a 2000 ms window: below its nominal
+                # 1000 ms slack, but enough to overflow once the follower has
+                # pushed the cursor.
+                return Sine(440).to_audio_segment(
+                    duration=1000 if seen["final"] == 1 else 1800
+                )
+            return Sine(440).to_audio_segment(
+                duration=2000
+                if text.startswith(self.first) and self.second in text
+                else 1000
+            )
+
+        return self.generate(synth=synth)
+
+    def test_grown_follower_is_measured_after_a_non_grown_overrunning_block(self):
+        result, _calls = self._following_overrun_plan(overrun=True)
+        self.assertEqual(0, result.get("repaired_blocks"))
+        self.assertEqual(self.revision_id, self.active())
+        history = self.repairs()
+        self.assertEqual("not_applied", history[0]["repair_status"])
+        self.assertEqual("context_neighbour_added_delay", history[0]["repair_reason"])
+
+    def test_same_followers_without_the_overrun_are_applied(self):
+        result, _calls = self._following_overrun_plan(overrun=False)
+        self.assertEqual(1, result.get("repaired_blocks"))
+        self.assertNotEqual(self.revision_id, self.active())
+        self.assertEqual("applied", self.repairs()[0]["repair_status"])
+
+    def test_repair_usage_counts_rejected_attempts(self):
+        from pandrator.web.models import UsageEvent
+        from pandrator.web.usage_identity import bind_usage_ownership
+
+        self._contextual_plan()
+        result, _calls = self.generate(
+            synth=self._neighbour_durations(
+                {}, "The unchanged closing sentence.", (1000, 3000)
+            )
+        )
+        self.assertEqual(0, result["repaired_blocks"])
+        service = GenerationService(
+            self.database, self.handlers.jobs, WorkspaceSettingsService(self.database)
+        )
+        root = next(
+            item
+            for item in service.list_runs(self.record.id)
+            if item["id"] == self.run_id
+        )
+        rejected_id = root["timing_repair"]["versions"][0]["generation_run_id"]
+        with self.database.session() as session:
+            for run_id, cost in ((self.run_id, 0.73), (rejected_id, 0.14)):
+                event = UsageEvent(
+                    session_id=self.record.id,
+                    generation_run_id=run_id,
+                    provider_key="fixture",
+                    model_id="fixture-model",
+                    input_tokens=1,
+                    cost_usd=cost,
+                )
+                bind_usage_ownership(session, event)
+                session.add(event)
+        root = next(
+            item
+            for item in service.list_runs(self.record.id)
+            if item["id"] == self.run_id
+        )
+        # A rejected attempt's calls belong to the repair pass, not the run.
+        self.assertEqual(1, root["timing_repair"]["usage"]["event_count"])
+        self.assertAlmostEqual(
+            0.14, root["timing_repair"]["usage"]["total_cost_usd"]
+        )
+        self.assertEqual(2, root["timing_repair"]["usage_total"]["event_count"])
+
+    def test_progress_detail_names_each_pass(self):
+        self.plan()
+        details: list[str] = []
+
+        def progress(value, detail=None):
+            details.append(str(detail))
+
+        with patch(
+            "pandrator.logic.tts_handler.text_to_audio",
+            side_effect=lambda *_args, **_kwargs: Sine(440).to_audio_segment(
+                duration=1000
+            ),
+        ):
+            self.handlers.run_generation(
+                {"generation_run_id": self.run_id, "operation": "generate"},
+                progress,
+                threading.Event(),
+            )
+        self.assertTrue(
+            any(item.startswith("Generating speech: ") for item in details), details
+        )
+        self.assertTrue(
+            any(item.startswith("Repairing timing: ") for item in details), details
+        )
 
 
 if __name__ == "__main__":

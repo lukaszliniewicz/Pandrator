@@ -16,6 +16,7 @@ from ..schemas.generation import (
     ListSpeechPlanRevisionsInput,
     PrepareSpeechPlanInput,
     RegenerateSegmentsInput,
+    RepairGenerationTimingInput,
     ReviewSpeechPlanInput,
     ReviseSpeechBlockPlanBatchInput,
     ReviseSpeechBlockPlanInput,
@@ -720,6 +721,13 @@ def regenerate_segments(
             ),
             "segment_count": len(arguments.segment_ids),
             "status": "queued",
+            # A replayed run from another plan revision imposes its frozen TTS
+            # settings; the diff names what that changes against today's.
+            "settings_source_diff": (
+                dict(result.get("settings_source_diff") or {})
+                if isinstance(result, dict)
+                else {}
+            ),
         },
         work=work,
         next_actions=[
@@ -729,6 +737,83 @@ def regenerate_segments(
                 reason="Monitor segment synthesis progress and generated takes.",
             )
         ],
+    )
+
+
+def repair_generation_timing(
+    runtime: McpRuntime,
+    arguments: RepairGenerationTimingInput,
+) -> ToolOutcome:
+    """List repair candidates, or queue the repair a caller has reviewed."""
+
+    application = runtime.require_application()
+    if arguments.preview:
+        payload = application.repair_generation_timing(
+            arguments.generation_run_id,
+            preview=True,
+            idempotency_key=arguments.idempotency_key,
+        )
+        job_id = payload.get("job_id") if isinstance(payload, dict) else None
+        work = application_work_reference(payload) if job_id else None
+        return ToolOutcome(
+            result={
+                "schema_version": "1",
+                "preview": True,
+                "generation_run_id": payload.get("generation_run_id")
+                or arguments.generation_run_id,
+                "session_id": payload.get("session_id"),
+                "job_id": job_id,
+                "status": payload.get("status"),
+                "reused_job": payload.get("reused_job"),
+            },
+            work=work,
+            next_actions=(
+                [
+                    NextAction(
+                        tool="pandrator_get_work",
+                        arguments={"job_id": job_id},
+                        reason=(
+                            "Poll the preview job; its result lists the candidate "
+                            "blocks and the estimated synthesis calls."
+                        ),
+                    )
+                ]
+                if job_id
+                else []
+            ),
+        )
+    payload = application.repair_generation_timing(
+        arguments.generation_run_id,
+        preview=False,
+        idempotency_key=arguments.idempotency_key,
+    )
+    work = (
+        application_work_reference(payload)
+        if isinstance(payload, dict) and (payload.get("job_id") or payload.get("id"))
+        else None
+    )
+    return ToolOutcome(
+        result={
+            "schema_version": "1",
+            "generation_run_id": payload.get("generation_run_id")
+            or arguments.generation_run_id,
+            "session_id": payload.get("session_id"),
+            "job_id": payload.get("job_id"),
+            "status": payload.get("status"),
+            "reused_job": payload.get("reused_job"),
+        },
+        work=work,
+        next_actions=(
+            [
+                NextAction(
+                    tool="pandrator_get_work",
+                    arguments={"job_id": payload.get("job_id")},
+                    reason="Poll the durable repair job, then read its run summary.",
+                )
+            ]
+            if payload.get("job_id")
+            else []
+        ),
     )
 
 

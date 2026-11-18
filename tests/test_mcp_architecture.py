@@ -463,6 +463,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_prepare_speech_plan",
                 "pandrator_propose_media_edit",
                 "pandrator_regenerate_segments",
+                "pandrator_repair_generation_timing",
                 "pandrator_render_media_edit",
                 "pandrator_restore_session",
                 "pandrator_refine_media_edit_boundary",

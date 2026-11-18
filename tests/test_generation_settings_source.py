@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.job_execution import current_job_lease
-from pandrator.web.models import GenerationRun, Job
+from pandrator.web.models import GenerationPlan, GenerationRun, Job
 from pandrator.web.settings_policy import stable_hash
 from pandrator_mcp.schemas.generation import (
     GenerateSpeechPlanInput,
@@ -391,6 +391,160 @@ class GenerationSettingsSourceTests(unittest.TestCase):
                 settings_source="run",
                 settings_source_run_id=source_id,
             )
+
+    def test_settings_source_run_from_a_parent_revision_replays_with_a_diff(self):
+        source_id = self.make_source_run(
+            1,
+            prompt="Old plain delivery.",
+            performance_enabled=False,
+            casting_enabled=False,
+            context_mode="off",
+        )
+        self.set_current_settings()
+        generation = self.services["generation"]
+        # A plan edit moves the active revision on; the run stays on its parent.
+        split = generation.revise_topology(
+            self.session_id,
+            self.revision_id,
+            {
+                "action": "split",
+                "segment_id": self.segment_id,
+                "cursor": 1,
+                "text_layer": "display",
+            },
+        )
+        self.assertEqual(self.revision_id, split["parent_revision_id"])
+        with self.database.session() as session:
+            active_revision_id = session.scalar(
+                select(GenerationPlan.active_revision_id).where(
+                    GenerationPlan.session_id == self.session_id
+                )
+            )
+        self.assertEqual(split["plan_revision_id"], active_revision_id)
+
+        preview = generation.preview_selection(
+            self.session_id,
+            settings_source="run",
+            settings_source_run_id=source_id,
+        )
+        diff = preview["settings_source_diff"]
+        # Only material TTS keys appear: the audio identity's exclusions drop
+        # planning and performance keys that never change synthesized audio.
+        self.assertEqual(
+            {
+                "generation_prompt": {
+                    "run": "Old plain delivery.",
+                    "current": "Speak the revised line in a quiet whisper.",
+                }
+            },
+            diff,
+        )
+
+        prepared = generation.prepare_start(
+            self.session_id,
+            settings_source="run",
+            settings_source_run_id=source_id,
+        )
+        with self.database.immediate_session() as session:
+            started = generation.start_in_session(
+                session, self.session_id, prepared=prepared
+            )
+        run = self.get_run(str(started["id"]))
+        self.assertEqual(
+            "Old plain delivery.", run.settings_snapshot_json["tts"]["generation_prompt"]
+        )
+        self.assertEqual(diff, started["settings_source_diff"])
+        self.assertEqual(
+            source_id, started["settings_source_receipt"]["settings_source_run_id"]
+        )
+
+    def test_settings_source_run_from_the_same_revision_reports_no_diff(self):
+        source_id = self.make_source_run(
+            1,
+            prompt="Frozen source.",
+            performance_enabled=False,
+            casting_enabled=False,
+            context_mode="off",
+        )
+        self.set_current_settings()
+        preview = self.services["generation"].preview_selection(
+            self.session_id,
+            settings_source="run",
+            settings_source_run_id=source_id,
+        )
+        self.assertEqual({}, preview["settings_source_diff"])
+
+    def test_settings_source_run_from_another_plan_is_refused(self):
+        source_id = self.make_source_run(
+            1,
+            prompt="Foreign revision.",
+            performance_enabled=False,
+            casting_enabled=False,
+            context_mode="off",
+        )
+        other_session_id = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Another plan", "workflow_kind": "voiceover"},
+            headers=self.headers,
+        ).get_json()["id"]
+        other_plan = self.services["generation"].create_plan(
+            other_session_id,
+            source_revision_id=None,
+            settings={},
+            segments=[{"text": "A sentence on another plan."}],
+        )
+        # A parent revision from a different plan is not ancestry.
+        with self.database.immediate_session() as session:
+            session.get(GenerationRun, source_id).plan_revision_id = other_plan[
+                "active_revision_id"
+            ]
+        with self.assertRaisesRegex(
+            ValueError, "does not match this session's speech plan"
+        ):
+            self.services["generation"].prepare_start(
+                self.session_id,
+                settings_source="run",
+                settings_source_run_id=source_id,
+            )
+
+    def test_mcp_results_carry_the_settings_source_diff(self):
+        diff = {
+            "generation_prompt": {"run": "Old line.", "current": "New line."}
+        }
+
+        class _DiffApplication:
+            def start_generation_run(self, session_id: str, **kwargs):
+                return {
+                    "id": "run-diff-1",
+                    "job_id": "job-diff-1",
+                    "session_id": session_id,
+                    "settings_source_diff": diff,
+                }
+
+        runtime = SimpleNamespace(require_application=lambda: _DiffApplication())
+        regenerated = regenerate_segments(
+            runtime,
+            RegenerateSegmentsInput(
+                session_id=self.session_id,
+                segment_ids=[self.segment_id],
+                generation_run_id="run-origin-1",
+                settings_source="run",
+                settings_source_run_id="run-source-1",
+                idempotency_key="settings:diff:regen-001",
+            ),
+        )
+        self.assertEqual(diff, regenerated.result["settings_source_diff"])
+        planned = generate_speech_plan(
+            runtime,
+            GenerateSpeechPlanInput(
+                session_id=self.session_id,
+                speech_plan_revision_id=self.revision_id,
+                idempotency_key="settings:diff:plan-001",
+                settings_source="run",
+                settings_source_run_id="run-source-1",
+            ),
+        )
+        self.assertEqual(diff, planned.result["settings_source_diff"])
 
     def test_mcp_input_defaults_and_historical_selector_validation(self):
         regenerate = RegenerateSegmentsInput(

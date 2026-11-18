@@ -37,6 +37,7 @@ from ..models import (
     WorkflowRun,
 )
 from ..projects.models import Project
+from ..settings_policy import EARLY_REPAIR_THRESHOLD_BOUNDS
 from .contracts import AccessDenied, ProjectAction
 from .project_visibility import project_ids_for_user
 
@@ -44,6 +45,23 @@ _INJECTED = frozenset({"_job_id", "_lease_generation"})
 _LEASE_KEYS = frozenset({"job_id", "owner_id", "lease_generation"})
 _BRIDGES = frozenset({"workflow.continue", "audiobook.generate_audio", "dubbing.generate_audio"})
 _BRIDGE_KEYS = frozenset({"generation_run_id", "operation", "segment_ids"}) | _INJECTED
+#: The explicit repair request freezes its four thresholds into the job payload.
+#: Bounds come from the settings policy so admission and storage agree.
+_REPAIR_THRESHOLD_BOUNDS = tuple(
+    (suffix, minimum, maximum)
+    for suffix, minimum, maximum in EARLY_REPAIR_THRESHOLD_BOUNDS
+)
+
+
+def _valid_repair_thresholds(value: Any) -> bool:
+    if type(value) is not dict or set(value) != {
+        name for name, _minimum, _maximum in _REPAIR_THRESHOLD_BOUNDS
+    }:
+        return False
+    return all(
+        type(value[name]) is int and minimum <= value[name] <= maximum
+        for name, minimum, maximum in _REPAIR_THRESHOLD_BOUNDS
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,10 +446,15 @@ def _check_payload(session: Session, payload: Mapping[str, Any], header: _JobHea
             # descendants, not arbitrary generation runs in the session.
             repair_session_id = header.session_id
             if (
-                set(stored) != {"generation_run_id", "session_id"}
+                set(stored) - {"repair_thresholds"}
+                != {"generation_run_id", "session_id"}
                 or not _identifier(stored.get("generation_run_id"))
                 or not _identifier(repair_session_id)
                 or stored.get("session_id") != repair_session_id
+                or (
+                    "repair_thresholds" in stored
+                    and not _valid_repair_thresholds(stored["repair_thresholds"])
+                )
                 or set(supplied) != {"generation_run_id", "operation", "segment_ids"}
                 or supplied.get("operation") != "resume"
                 or type(supplied.get("segment_ids")) is not list

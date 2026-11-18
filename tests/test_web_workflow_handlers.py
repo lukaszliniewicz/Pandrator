@@ -4812,7 +4812,7 @@ A single reviewed cue.
             )
 
         self.assertEqual("completed", result["status"])
-        self.assertEqual(0.0, next(value for value, detail in updates if detail == "Generating segment 1 of 2"))
+        self.assertEqual(0.0, next(value for value, detail in updates if detail == "Generating speech: 1 of 2"))
         self.assertEqual(0.5, next(value for value, detail in updates if detail == "Generated segment 1 of 2"))
         self.assertEqual(1.0, next(value for value, detail in updates if detail == "Generated segment 2 of 2"))
 

@@ -482,6 +482,24 @@ class ApplicationGenerationMethods(ApplicationRequests):
             request_timeout_seconds=max(self.timeout_seconds, 120.0),
         )
 
+    def repair_generation_timing(
+        self,
+        generation_run_id: str,
+        *,
+        preview: bool,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Preview or queue an explicit timing repair for one completed run."""
+        return self._request_json(
+            f"/api/v1/generation-runs/{quote(generation_run_id, safe='')}/repair-timing",
+            method="POST",
+            body={"preview": preview},
+            idempotency_key=idempotency_key,
+            # Candidate selection measures every block's real placement, which
+            # on a long plan takes longer than a metadata read.
+            request_timeout_seconds=max(self.timeout_seconds, 120.0),
+        )
+
     def create_output_assembly(
         self,
         session_id: str,

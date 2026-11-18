@@ -133,6 +133,31 @@ def _settings_source_mode(
     raise ValueError("Unsupported generation settings source.")
 
 
+def _settings_source_revision_ids(
+    session: Session, revision_id: str | None, *, limit: int = 50
+) -> set[str]:
+    """The bound plan revision and its ancestry, for a replayed settings source.
+
+    A generation plan keeps its revision history in ``parent_revision_id``, so
+    a run from before a plan edit is still a legitimate settings source for the
+    current revision as long as it belongs to the same plan in the same
+    session.  The walk is bounded so a corrupt or cyclic chain cannot stall
+    admission.
+    """
+
+    revisions: set[str] = set()
+    current = revision_id
+    steps = 0
+    while current and steps < limit:
+        if current in revisions:
+            break
+        revisions.add(current)
+        revision = session.get(GenerationPlanRevision, current)
+        current = revision.parent_revision_id if revision is not None else None
+        steps += 1
+    return revisions
+
+
 def _settings_source_identity(run: GenerationRun) -> tuple[dict[str, Any], dict[str, Any]]:
     snapshot = deepcopy(run.settings_snapshot_json or {})
     if not isinstance(snapshot, dict):
@@ -1297,12 +1322,14 @@ class GenerationService(GenerationHistoryReader):
                     raise RevisionConflict(
                         "The settings source generation run changed while generation was being prepared."
                     )
-                if (
-                    settings_source_mode == "run"
-                    and settings_source_run.plan_revision_id != settings_revision_id
+                if settings_source_mode == "run" and (
+                    settings_source_run.plan_revision_id != settings_revision_id
+                    and settings_source_run.plan_revision_id
+                    not in _settings_source_revision_ids(session, settings_revision_id)
                 ):
                     raise ValueError(
-                        "The selected settings source generation run does not match the selected speech-plan revision."
+                        "The selected settings source generation run does not match the selected "
+                        "speech-plan revision or its history."
                     )
             elif settings_source_mode == "matching_run":
                 if settings_revision_id is None:
@@ -1646,12 +1673,14 @@ class GenerationService(GenerationHistoryReader):
                 )
                 if source_revision is None or source_revision.plan_id != plan.id:
                     raise ValueError("The selected settings source generation run does not match this session's speech plan.")
-                if (
-                    settings_source_mode == "run"
-                    and settings_source_run.plan_revision_id != bound_revision_id
+                if settings_source_mode == "run" and (
+                    settings_source_run.plan_revision_id != bound_revision_id
+                    and settings_source_run.plan_revision_id
+                    not in _settings_source_revision_ids(session, bound_revision_id)
                 ):
                     raise ValueError(
-                        "The selected settings source generation run does not match the selected speech-plan revision."
+                        "The selected settings source generation run does not match the "
+                        "selected speech-plan revision or its history."
                     )
                 source_snapshot = deepcopy(settings_source_run.settings_snapshot_json or {})
                 if not isinstance(source_snapshot, dict):
@@ -1688,6 +1717,22 @@ class GenerationService(GenerationHistoryReader):
             speaker_plan = missing_speaker_plan(
                 session, bound_revision_id, performance_runtime_settings(resolved)
             )
+            settings_source_diff: dict[str, dict[str, Any]] = {}
+            if (
+                settings_source_mode == "run"
+                and settings_source_run is not None
+                and settings_source_run.plan_revision_id != bound_revision_id
+            ):
+                settings_source_diff = self._settings_source_material_diff(
+                    session,
+                    session_id,
+                    {
+                        "settings_source_snapshot": prepared_source[
+                            "settings_source_snapshot"
+                        ],
+                        "run_override": run_override,
+                    },
+                )
         public = {
             key: selection[key]
             for key in (
@@ -1708,6 +1753,7 @@ class GenerationService(GenerationHistoryReader):
             public["blocked_reason"] = selection["blocked_reason"]
         # A start without allow_without_speaker_plan is refused while this is set.
         public["missing_speaker_plan"] = speaker_plan
+        public["settings_source_diff"] = settings_source_diff
         from .generation_provider_preflight import generation_provider_preflight
 
         public["provider_preflight"] = generation_provider_preflight(
@@ -1861,13 +1907,27 @@ class GenerationService(GenerationHistoryReader):
                     session_id,
                     plan_revision_id,
                 )
-        if settings_source_mode == "run" and (
-            settings_source_run is None
-            or settings_source_run.plan_revision_id != plan_revision_id
-        ):
-            raise ValueError(
-                "The selected settings source generation run does not match the selected speech-plan revision."
-            )
+        if settings_source_mode == "run":
+            if settings_source_run is None:
+                raise ValueError(
+                    "The selected settings source generation run does not match the selected speech-plan revision."
+                )
+            if (
+                settings_source_run.plan_revision_id != plan_revision_id
+                and settings_source_run.plan_revision_id
+                not in _settings_source_revision_ids(session, plan_revision_id)
+            ):
+                raise ValueError(
+                    "The selected settings source generation run does not match the selected "
+                    "speech-plan revision or its history."
+                )
+            if settings_source_run.plan_revision_id != plan_revision_id:
+                # The replay still uses that run's frozen TTS settings, which
+                # may differ from today's. Report the material differences so
+                # the caller sees what the replay imposes.
+                prepared["settings_source_diff"] = self._settings_source_material_diff(
+                    session, session_id, prepared
+                )
         if settings_source_mode == "matching_run":
             _run, source_snapshot, source_identity = _resolve_matching_settings_run(
                 session,
@@ -1878,6 +1938,29 @@ class GenerationService(GenerationHistoryReader):
             prepared["settings_source_identity"] = source_identity
             prepared["settings_source_snapshot"] = source_snapshot
         return plan_revision_id, source_run
+
+    def _settings_source_material_diff(
+        self, session: Session, session_id: str, prepared: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        """Report material TTS differences between a replayed run and today.
+
+        Used only when the settings source run belongs to another revision of
+        the same plan. The comparison reuses the audio identity's exclusions,
+        so credentials, provider catalogues and keys that never change
+        synthesized audio are not disclosed.
+        """
+
+        from .generation_audio_identity import settings_source_material_diff
+
+        source_snapshot = prepared.get("settings_source_snapshot")
+        if not isinstance(source_snapshot, dict):
+            return {}
+        resolved, _hash = self.settings.resolve_in_session(
+            session, session_id, ["tts"], dict(prepared.get("run_override") or {})
+        )
+        return settings_source_material_diff(
+            source_snapshot.get("tts"), resolved.get("tts")
+        )
 
     @staticmethod
     def _start_snapshot(
@@ -2088,22 +2171,28 @@ class GenerationService(GenerationHistoryReader):
                 "settings_hash": run.settings_hash,
                 "source_generation_run_id": run.source_generation_run_id,
                 "settings_source_receipt": settings_source_receipt,
+                "settings_source_diff": dict(prepared.get("settings_source_diff") or {}),
             }
         result = self._run_payload(session, run)
         # Kept for compatibility with clients that used the old response flag.
         result["reused_run"] = False
         result["settings_source_receipt"] = settings_source_receipt
+        result["settings_source_diff"] = dict(prepared.get("settings_source_diff") or {})
         return result
 
-    def request_timing_repair(self, run_id: str) -> dict[str, Any]:
-        """Queue a guarded timing-only pass for an already completed voiceover."""
+    def request_timing_repair(
+        self, run_id: str, *, preview: bool = False
+    ) -> dict[str, Any]:
+        """Queue or preview a timing-only pass for a completed voiceover."""
         with self.database.immediate_session() as session:
-            return self.request_timing_repair_in_session(session, run_id)
+            return self.request_timing_repair_in_session(
+                session, run_id, preview=preview
+            )
 
     def request_timing_repair_in_session(
-        self, session: Session, run_id: str
+        self, session: Session, run_id: str, *, preview: bool = False
     ) -> dict[str, Any]:
-        from pandrator.logic.dubbing.passage_regroup import select_second_pass
+        from .settings_policy import repair_thresholds
 
         require_generation_resource_access(
             session, "run", run_id, ProjectAction.RUN
@@ -2134,15 +2223,55 @@ class GenerationService(GenerationHistoryReader):
                 "This generation is already an automatic second-pass result; "
                 "timing repair runs at most once."
             )
-        if select_second_pass(
-            snapshot,
-            operation=str(run.operation or ""),
-            has_selected_ids=False,
-            workflow_kind=source.workflow_kind,
-        ) != "repair":
-            raise ValueError(
-                "The selected generation was not configured for early-finish repair."
+        # An explicit request is a separate decision from the run's frozen
+        # automatic-pass flag: it uses the thresholds resolved right now, so a
+        # finished voiceover can be repaired without re-synthesising it.
+        resolved, _settings_hash = self.settings.resolve_in_session(
+            session, run.session_id, ["tts"]
+        )
+        thresholds = repair_thresholds(resolved.get("tts") or {})
+        if preview:
+            # Measuring 480 blocks costs about a minute of placement work, so
+            # the preview is a CPU-only job rather than an HTTP response.
+            if self.artifacts is None:
+                raise ValueError(
+                    "Timing repair preview requires managed audio access."
+                )
+            for previous in session.scalars(
+                select(Job)
+                .where(
+                    Job.session_id == run.session_id,
+                    Job.kind == "generation.repair-preview",
+                    Job.status.in_(("queued", "running")),
+                )
+                .order_by(Job.created_at.desc())
+            ).all():
+                if (previous.payload_json or {}).get("generation_run_id") == run_id:
+                    return {
+                        "job_id": previous.id,
+                        "generation_run_id": run_id,
+                        "session_id": run.session_id,
+                        "status": previous.status,
+                        "reused_job": True,
+                    }
+            job = self.jobs.enqueue_in_session(
+                session,
+                "generation.repair-preview",
+                {
+                    "session_id": run.session_id,
+                    "generation_run_id": run_id,
+                    "repair_thresholds": thresholds,
+                },
+                session_id=run.session_id,
+                resource_keys=[f"session:{run.session_id}"],
             )
+            return {
+                "job_id": job.id,
+                "generation_run_id": run_id,
+                "session_id": run.session_id,
+                "status": job.status,
+                "reused_job": False,
+            }
 
         # The exact immutable root can only be checked once successfully.
         # A canceled or failed job can be retried using a fresh job; an active
@@ -2213,7 +2342,11 @@ class GenerationService(GenerationHistoryReader):
         job = self.jobs.enqueue_in_session(
             session,
             "generation.repair-existing",
-            {"session_id": run.session_id, "generation_run_id": run_id},
+            {
+                "session_id": run.session_id,
+                "generation_run_id": run_id,
+                "repair_thresholds": thresholds,
+            },
             session_id=run.session_id,
             resource_keys=generation_resource_keys(run.session_id, snapshot),
         )

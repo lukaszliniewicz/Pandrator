@@ -333,12 +333,14 @@ is a request/streaming throughput preference negotiated with the service;
 voice parameters affect sound, not subtitle or speech-block boundaries.
 
 The optional TTS setting `speech_block_early_repair_enabled` defaults to `false`.
-After a complete voiceover generation run, it checks blocks containing multiple
+It controls the automatic second pass of a full voiceover run. After a complete
+generation run, it checks blocks containing multiple
 whole cues for a shortfall of at least 1000 ms and 20%, including start delay.
 It skips blocks carrying delay from earlier speech. A reliable sentence or
 clause boundary must also offer an estimated improvement of at least 1000 ms
 at a later cue's start. This estimate uses the spoken-text proportions; it does
 not claim word-level alignment. Invalid or stale cue spans are skipped.
+A finished run does not need this flag; see the explicit request below.
 
 The thresholds are available in **Block settings → Repair thresholds**, and in
 the session's `tts` settings through MCP:
@@ -352,6 +354,7 @@ the session's `tts` settings through MCP:
 
 Generation uses its saved settings snapshot. Incoming-delay protection,
 reliable cue mappings, and meaningful text boundaries remain mandatory.
+An explicit request instead uses the thresholds resolved at request time.
 
 At most one boundary is tried per original block. Early-finish repair works
 in legacy or passage-first mode; if both repair and regroup are selected,
@@ -359,8 +362,16 @@ repair wins and only one post-generation pass runs. Passage regroup is also
 unavailable while semantic text context is enabled. With semantic text context
 enabled, both new children receive freshly frozen context from their staged
 revision; unchanged neighbouring takes with different before/after context
-are regenerated as well. A repair is rejected if a refreshed neighbour
-grows in duration, or the split introduces later drift. Performance/casting
+are regenerated as well. Before those neighbours are synthesised, a candidate
+is skipped with `neighbour_growth_precheck` when the split's modelled advance
+does not even cover the pause between the new halves: the second half would
+start no earlier, so the pass would reject the attempt as added delay. Window
+slack is not used for skipping. A longer refreshed neighbour is measured with a
+forward placement instead of being rejected on its raw duration: growth is
+accepted while it does not push later speech, and a rejected attempt reports
+`context_neighbour_added_delay`. A repair is also rejected when the split
+introduces later drift.
+Performance/casting
 plans still require manual review before changing their block IDs.
 New children are generated in an inactive plan version; unaffected takes are
 reused. The version becomes active only if synthesis and timing validation
@@ -368,12 +379,26 @@ succeed and source choices remain unchanged. Original takes and plan versions
 remain available. Cancellation or failure retains the last accepted version.
 Individual selected-take regeneration does not trigger this pass.
 
-A completed voiceover that predates automatic checking can request the same
-non-destructive pass without synthesising its original blocks again:
-`POST /api/v1/generation-runs/{run_id}/repair-timing` with an empty JSON body
-and an optional `Idempotency-Key`. The endpoint requires run permission and
-accepts only a completed source run on the active speech plan whose **frozen
-settings** already enable early-finish repair. Audio-version runs are excluded.
+A completed voiceover can request the same non-destructive pass without
+synthesising its original blocks again:
+`POST /api/v1/generation-runs/{run_id}/repair-timing` with an optional
+`{"preview": bool}` body and an optional `Idempotency-Key`.
+The endpoint requires run permission and accepts a completed source run on the
+active speech plan, whatever its frozen settings said about the automatic pass.
+Audio-version and second-pass child runs are excluded. Repair thresholds come
+from the session's settings as they resolve at request time, clamped to the
+documented ranges, and are frozen into the job payload; synthesis still uses
+the run's frozen TTS settings, so a new take's audio identity matches the run.
+With `preview=true` the request queues a CPU-only `generation.repair-preview`
+job (no TTS resource) and returns 202 with its job receipt; an already running
+preview for the same run is reused with 200. The job's result lists the
+candidate blocks (ordinal, segment ID, shortfall and the proposed split), their
+count and the estimated synthesis calls, which are two takes per candidate plus
+at most one for each neighbouring block whose context a split can change.
+Candidates the neighbour growth pre-check would skip report that reason and
+count no calls. Measuring every block takes about a minute on a 480-block dub,
+which is why it is not a synchronous response. The job stages no revision and
+writes no audio.
 It queues one durable `generation.repair-existing` job per run. Retries reuse an
 active job, or a completed job that finished checking at least one block; a
 failed, canceled or stopped pass, a zero-checked skipped pass, or a partial pass
@@ -400,6 +425,12 @@ and `stopped`, and adds checked, candidate and attempted counts plus
 `pass_completed`. An inactive attempted revision is not evidence of an applied
 split; the completed job's `repaired_blocks` counts accepted repairs. Rejected
 staged revisions and takes remain inspectable and are not removed automatically.
+The summary also splits spending: `usage` is the second pass's own usage and
+`usage_total` is the whole logical run, including first-pass synthesis. For the
+blocks it touched, `effect` reports `late_cues_before`, `late_cues_after`,
+`worst_lag_ms_before`, `worst_lag_ms_after` and `blocks`; a late cue is a
+display cue whose start falls after the end of its block's speech. Job progress
+names the pass (`Generating speech: …` then `Repairing timing: …`).
 
 Passage regroup reports the same run-level status with group counters instead of
 repair counters. A pass that examined every selected group is `completed`

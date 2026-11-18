@@ -332,6 +332,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_video_tail_freeze.py",
         "tests/test_dubbing_audio_sync.py",
         "tests/test_voiceover_natural_timing.py",
+        "tests/test_timing_drift_metrics.py",
         "tests/test_frontend_architecture.py",
         "tests/test_soundtrack_export.py",
         "tests/test_media_edit_video_muxing.py",

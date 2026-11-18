@@ -916,6 +916,12 @@ class OptimizationReviewRequest(StrictModel):
     items: list[OptimizationReviewItem] = Field(min_length=1)
 
 
+class TimingRepairRequest(StrictModel):
+    """An explicit timing repair; ``preview`` lists candidates without queueing."""
+
+    preview: bool = False
+
+
 class OutputAssemblyCreateRequest(StrictModel):
     generation_run_id: str | None = None
     audio_version_side: Literal["before", "after"] = "after"

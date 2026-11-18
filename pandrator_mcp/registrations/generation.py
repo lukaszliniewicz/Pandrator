@@ -18,6 +18,7 @@ from ..schemas import (
     ListSpeechPlanRevisionsInput,
     PrepareSpeechPlanInput,
     RegenerateSegmentsInput,
+    RepairGenerationTimingInput,
     ReviewSpeechPlanInput,
     ReviseSpeechBlockPlanBatchInput,
     ReviseSpeechBlockPlanInput,
@@ -37,6 +38,7 @@ from ..tools import (
     list_speech_plan_revisions,
     prepare_speech_plan,
     regenerate_segments,
+    repair_generation_timing,
     review_speech_plan,
     revise_speech_block_plan,
     revise_speech_block_plan_batch,
@@ -521,6 +523,31 @@ def register_generation_execution_tools(
                 settings_source_run_id=settings_source_run_id,
                 admission=admission,
                 allow_without_speaker_plan=allow_without_speaker_plan,
+            ),
+        ), response_mode)
+
+    @server.tool(
+        name="pandrator_repair_generation_timing",
+        title="Find and repair speech blocks that end before their subtitles",
+        annotations=execute_action,
+    )
+    def generation_repair_timing_tool(
+        generation_run_id: Annotated[str, Field(min_length=1, max_length=80)],
+        preview: bool = True,
+        idempotency_key: Annotated[
+            str | None, Field(min_length=1, max_length=120)
+        ] = None,
+        response_mode: Literal["standard", "structured"] = "standard",
+    ) -> dict[str, Any]:
+        """Find and repair speech blocks that finish well before their subtitles, on a completed voiceover run. preview=true lists the candidates and the estimated synthesis calls; preview=false queues the repair with the current repair thresholds."""
+
+        return response(_call(
+            repair_generation_timing,
+            runtime,
+            RepairGenerationTimingInput(
+                generation_run_id=generation_run_id,
+                preview=preview,
+                idempotency_key=idempotency_key,
             ),
         ), response_mode)
 

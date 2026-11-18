@@ -217,6 +217,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_recast_voices",
                         "pandrator_refine_media_edit_boundary",
                         "pandrator_regenerate_segments",
+                        "pandrator_repair_generation_timing",
                         "pandrator_release_dispatch_batch",
                         "pandrator_release_media_edit_dispatch_batch",
                         "pandrator_release_source_cleaning_dispatch_batch",

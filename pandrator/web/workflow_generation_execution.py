@@ -910,7 +910,7 @@ def _run_generation(
         progress(
             optimization_share
             + (index / len(segment_ids)) * (1.0 - optimization_share),
-            f"Generating segment {index + 1} of {len(segment_ids)}",
+            f"Generating speech: {index + 1} of {len(segment_ids)}",
         )
         take_path: Path | None = None
         take_file_identity: tuple[int, int] | None = None

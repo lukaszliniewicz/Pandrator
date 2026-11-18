@@ -208,19 +208,35 @@ class BackendArchitectureTests(unittest.TestCase):
         body = operation["requestBody"]
         self.assertFalse(body["required"])
         schema = body["content"]["application/json"]["schema"]
-        self.assertFalse(schema["additionalProperties"])
-        self.assertEqual(0, schema["maxProperties"])
+        self.assertEqual(
+            "#/components/schemas/GenerationTimingRepairRequest",
+            schema["$ref"],
+        )
+        request_schema = document["components"]["schemas"][
+            "GenerationTimingRepairRequest"
+        ]
+        self.assertFalse(request_schema["additionalProperties"])
+        self.assertEqual(["preview"], list(request_schema["properties"]))
+        self.assertIs(False, request_schema["properties"]["preview"]["default"])
+        receipt_reference = {
+            "$ref": "#/components/schemas/GenerationTimingRepairReceipt"
+        }
         for status in ("200", "202"):
-            reference = operation["responses"][status]["content"][
-                "application/json"
-            ]["schema"]["$ref"]
             self.assertEqual(
-                "#/components/schemas/GenerationTimingRepairReceipt", reference
+                receipt_reference,
+                operation["responses"][status]["content"]["application/json"][
+                    "schema"
+                ],
             )
         receipt = document["components"]["schemas"]["GenerationTimingRepairReceipt"]
         self.assertEqual(
             ["job_id", "generation_run_id", "session_id", "status", "reused_job"],
             receipt["required"],
+        )
+        # The preview is a job now: its candidates are the job result, not an
+        # HTTP response body.
+        self.assertNotIn(
+            "GenerationTimingRepairPreview", document["components"]["schemas"]
         )
         client = (root / "web/src/lib/api.generated.ts").read_text(encoding="utf-8")
         self.assertIn(
@@ -473,7 +489,7 @@ class BackendArchitectureTests(unittest.TestCase):
     def test_workflow_job_registry_has_domain_ownership_and_late_binding(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         registry = handlers.handler_registry
-        self.assertEqual(49, len(registry))
+        self.assertEqual(50, len(registry))
         self.assertIn("generation.admit", registry)
         self.assertIn("voice.google_design", registry)
         self.assertEqual(

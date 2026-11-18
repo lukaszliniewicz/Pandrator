@@ -304,6 +304,34 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
     return values
 
 
+def settings_source_material_diff(
+    run_tts: Any, current_tts: Any
+) -> dict[str, dict[str, Any]]:
+    """Material TTS differences a replayed run would impose on current settings.
+
+    Compares both sections through :func:`_material_settings`, so the diff uses
+    the same exclusions as a take's audio identity: credentials, provider
+    catalogues and derived keys that never change synthesized audio stay out.
+    Only keys literally present in one of the two ``tts`` sections are
+    reported, so derived identity inputs never appear as if they were settings.
+    """
+
+    run_section = run_tts if isinstance(run_tts, dict) else {}
+    current_section = current_tts if isinstance(current_tts, dict) else {}
+    run_material = _material_settings({"tts": run_section})
+    current_material = _material_settings({"tts": current_section})
+    keys = (set(run_section) | set(current_section)) & (
+        set(run_material) | set(current_material)
+    )
+    diff: dict[str, dict[str, Any]] = {}
+    for key in sorted(keys):
+        run_value = run_material.get(key)
+        current_value = current_material.get(key)
+        if run_value != current_value:
+            diff[key] = {"run": run_value, "current": current_value}
+    return diff
+
+
 class AudioIdentityContext:
     """Resolve one settings snapshot and managed voice inventory per inspection."""
 

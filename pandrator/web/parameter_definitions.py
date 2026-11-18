@@ -348,7 +348,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "speech_block_merge_threshold": "Sets the largest source pause across which Pandrator's deterministic speech planner may pack compatible same-speaker utterances when their combined display and speech text fits the character cap. It is not sent to a model and does not change subtitle cues.",
         "speech_block_continuation_threshold_ms": "Sets the outer pause allowance for unfinished same-speaker phrases. Above the normal silence limit, only a non-clausal hesitation may be bridged, within a cumulative pause budget and a 30-second phrase window. Zero disables continuation across positive gaps.",
         "speech_block_max_internal_gap_ms": "Sets the normal silence limit inside a speech block. Natural clause and sentence pauses retain this guard; an unfinished same-speaker phrase may use the larger continuation allowance rather than split mid-phrase. Zero retains a strict no-positive-gap limit.",
-        "speech_block_early_repair_enabled": "After voiceover generation, splits and regenerates substantially short multi-cue blocks at suitable cue boundaries. Uses the configured early-finish and timing-improvement thresholds; blocks carrying playback delay stay together to preserve catch-up. Original plan versions remain available.",
+        "speech_block_early_repair_enabled": "Controls the automatic second pass of a full voiceover run: after generation, substantially short multi-cue blocks are split and regenerated at suitable cue boundaries using the configured early-finish and timing-improvement thresholds. Blocks carrying playback delay stay together to preserve catch-up, and original plan versions remain available. A finished run does not need this flag: repair-timing checks it with the current thresholds.",
         "speech_block_early_repair_min_shortfall_ms": "Minimum spare time after accounting for audio duration and start delay. This and the percentage threshold must both be met before a combined block is considered for splitting.",
         "speech_block_early_repair_min_shortfall_percent": "Minimum percentage of the source cue span left unused by speech and start delay. Both early-finish thresholds must be met.",
         "speech_block_early_repair_min_advance_ms": "Minimum estimated improvement at a later cue boundary. The estimate uses spoken-text proportions rather than word timestamps.",
@@ -1001,7 +1001,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "applicability": "Optional voiceover timing repair only.",
         },
         "speech_block_early_repair_enabled": {
-            "applicability": "Subtitle-timed voiceover generation only.",
+            "applicability": "The automatic second pass of a full subtitle-timed voiceover run. A completed run can be checked separately with repair-timing.",
             "caveat": "Optional and off by default. Repair generates additional speech takes.",
         },
         "speech_block_generation_mode": {

@@ -35,6 +35,7 @@ from .schemas import (
     GenerationStartRequest,
     OutputAssemblyCreateRequest,
     OutputMixPreviewRequest,
+    TimingRepairRequest,
 )
 from .settings_policy import RevisionConflict as WorkspaceRevisionConflict
 
@@ -858,12 +859,22 @@ def register_generation_routes(
     @require_auth
     @require_session_action(context, ProjectAction.RUN, resource="run")
     def generation_run_repair_timing(run_id: str):
-        """Admit a durable timing-only repair job for completed voiceover audio."""
-        body = request.get_json(silent=True)
-        if body not in (None, {}):
-            return error_response(
-                "validation_error", "Timing repair accepts no body parameters.", 422
-            )
+        """Preview or admit a durable timing-only repair for completed voiceover audio."""
+        payload = TimingRepairRequest.model_validate(request.get_json(silent=True) or {})
+        if payload.preview:
+            try:
+                with database.immediate_session() as db_session:
+                    require_generation_resource_access(
+                        db_session, "run", run_id, ProjectAction.RUN
+                    )
+                    result = generation.request_timing_repair_in_session(
+                        db_session, run_id, preview=True
+                    )
+            except KeyError:
+                return error_response("not_found", "Generation run not found.", 404)
+            except ValueError as error:
+                return error_response("invalid_state", str(error), 409)
+            return public_response(result), 200 if result["reused_job"] else 202
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error

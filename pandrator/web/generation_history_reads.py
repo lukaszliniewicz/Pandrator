@@ -135,6 +135,17 @@ _REPAIR_RECEIPT_KEYS = (
     "repair_completed",
 )
 
+#: Keys that identify a job result as the optional pass receipt. Regroup
+#: receipts use group counters but live in the same place, including inside a
+#: workflow continuation's stage list.
+_PASS_RECEIPT_KEYS = (
+    *_REPAIR_RECEIPT_KEYS,
+    "repair_effect",
+    "regrouped_groups",
+    "regroup_status",
+    "regroup_attempted_groups",
+)
+
 
 #: Regroup statuses that inspected no group at all. Each carries an explicit
 #: reason in the receipt; the fallback keeps older receipts readable.
@@ -155,6 +166,35 @@ class _RegroupReceiptOutcome:
     status: str
     reason: str | None = None
     completed: bool | None = None
+
+
+def _repair_receipt(result: Any) -> dict[str, Any]:
+    """Return the optional-pass receipt carried by one job result.
+
+    A generation job stores the pass counters at the top level. A workflow
+    continuation (``workflow.continue``) instead appends each stage's result to
+    ``artifacts`` as ``{"stage": key, **stage_result}``, so the pass counters
+    sit one level down. Both shapes describe the same pass, and reading only
+    the top level reported zero checked and zero candidate blocks for a
+    workflow-driven run. The last matching stage wins because later stages
+    cannot rewrite the generation stage's counters.
+    """
+
+    if not isinstance(result, dict):
+        return {}
+    if any(key in result for key in _PASS_RECEIPT_KEYS):
+        return result
+    artifacts = result.get("artifacts")
+    if isinstance(artifacts, list):
+        for entry in reversed(artifacts):
+            if not isinstance(entry, dict):
+                continue
+            receipt = _repair_receipt(
+                {key: value for key, value in entry.items() if key != "artifacts"}
+            )
+            if receipt:
+                return receipt
+    return {}
 
 
 def _regroup_receipt_outcome(
@@ -913,11 +953,15 @@ class GenerationHistoryReader:
             root, history, root_job, repair_job
         )
         receipt_job = repair_job or root_job
-        receipt = (
-            receipt_job.result_json
-            if receipt_job is not None and isinstance(receipt_job.result_json, dict)
-            else {}
+        # A workflow continuation stores the generation stage's result inside
+        # its own receipt, so read the counters where that job put them.
+        receipt = _repair_receipt(
+            receipt_job.result_json if receipt_job is not None else None
         )
+        if not receipt and repair_job is not None and root_job is not None:
+            # A post-run repair job without its own receipt cannot hide the
+            # inline pass receipt that the generation job already wrote.
+            receipt = _repair_receipt(root_job.result_json)
         attempt_children = GenerationHistoryReader._repair_attempt_children(
             history, root_job, repair_job
         )
@@ -1065,6 +1109,17 @@ class GenerationHistoryReader:
         else:
             kind = "unknown"
         usage_events = self._logical_usage_events(context, history)
+        # The pass owns the usage of its staged children only. Everything the
+        # logical run spent stays available as usage_total so neither figure
+        # can be mistaken for the other.
+        repair_events = [
+            event
+            for child in history.repair_children
+            for event in context["usage_by_run_id"].get(child.id, ())
+        ]
+        effect = receipt.get("repair_effect")
+        if not isinstance(effect, dict):
+            effect = None
         from .usage import usage_summary
 
         summary = {
@@ -1097,7 +1152,11 @@ class GenerationHistoryReader:
             ),
             "repair_rejection_reasons": rejections if isinstance(rejections, dict) else {},
             "versions": versions,
-            "usage": usage_summary(usage_events),
+            # The second pass's own spending.
+            "usage": usage_summary(repair_events),
+            # The whole logical run, including first-pass synthesis.
+            "usage_total": usage_summary(usage_events),
+            "effect": effect,
         }
         return summary, active
 
@@ -1300,7 +1359,9 @@ class GenerationHistoryReader:
             and job is not None
             and job.status in {"succeeded", "failed", "canceled"}
         ):
-            receipt = job.result_json if isinstance(job.result_json, dict) else {}
+            # Read the receipt where the job put it: top level for a plain
+            # generation job, a stage entry for a workflow continuation.
+            receipt = _repair_receipt(job.result_json)
             if (
                 second_pass == "repair"
                 and not history.repair_children
@@ -1329,8 +1390,7 @@ class GenerationHistoryReader:
             and repair_job is None
             and job is not None
             and job.status in {"succeeded", "failed", "canceled"}
-            and isinstance(job.result_json, dict)
-            and "regrouped_groups" in job.result_json
+            and "regrouped_groups" in _repair_receipt(job.result_json)
         )
         if (
             is_original_root

@@ -1044,6 +1044,18 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_repair_generation_timing",
+            "Find and repair speech blocks that end before their subtitles",
+            "RepairGenerationTimingInput",
+            RiskClass.RUN,
+            "app.run",
+            "repairExistingGenerationTiming",
+            "POST",
+            "/api/v1/generation-runs/{runId}/repair-timing",
+            True,
+            True,
+        ),
+        ActionSpec(
             "pandrator_assemble_generation_run",
             "Queue output mix assembly for a generation run",
             "AssembleGenerationRunInput",

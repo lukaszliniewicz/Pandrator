@@ -3198,18 +3198,24 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         cancel_event: threading.Event,
         *,
         stage_job_id: str | None = None,
+        thresholds: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         from .voiceover_repair import repair_early_blocks
 
-        kwargs = {"stage_job_id": stage_job_id} if stage_job_id is not None else {}
-        return repair_early_blocks(self, run_id, progress, cancel_event, **kwargs)
+        # Omitted keys stay absent so the facade call keeps its exact shape.
+        repair_kwargs: dict[str, Any] = {}
+        if stage_job_id is not None:
+            repair_kwargs["stage_job_id"] = stage_job_id
+        if thresholds is not None:
+            repair_kwargs["thresholds"] = thresholds
+        return repair_early_blocks(
+            self, run_id, progress, cancel_event, **repair_kwargs
+        )
 
     def run_repair_existing_generation(
         self, payload: dict[str, Any], progress: Progress, cancel_event: threading.Event
     ) -> dict[str, Any]:
-        """Run the optional passage timing check without redoing source synthesis."""
-        from pandrator.logic.dubbing.passage_regroup import select_second_pass
-
+        """Run an explicit passage timing check without redoing source synthesis."""
         from .access.contracts import ProjectAction
         from .access.generation_resource_policy import require_generation_resource_access
 
@@ -3227,20 +3233,40 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 or plan.active_revision_id != run.plan_revision_id
             ):
                 raise ValueError("Completed run is no longer on the active speech plan.")
-            if select_second_pass(
-                run.settings_snapshot_json or {},
-                operation=str(run.operation or ""),
-                has_selected_ids=False,
-                workflow_kind=self._session_record(session_id).workflow_kind,
-            ) != "repair":
-                raise ValueError("The frozen generation did not enable timing repair.")
+        # An explicit request does not consult the frozen automatic-pass flag:
+        # it was admitted with the thresholds resolved at request time.
+        thresholds = payload.get("repair_thresholds")
         result = self._repair_early_generation_blocks(
             run_id,
             progress,
             cancel_event,
             stage_job_id=str(payload.get("_job_id") or "") or None,
+            thresholds=thresholds if isinstance(thresholds, dict) else None,
         )
         return {"source_generation_run_id": run_id, **result}
+
+    def run_repair_preview(
+        self, payload: dict[str, Any], progress: Progress, cancel_event: threading.Event
+    ) -> dict[str, Any]:
+        """Measure the repair preview; CPU only, never synthesises or stages."""
+        from .access.contracts import ProjectAction
+        from .access.generation_resource_policy import require_generation_resource_access
+        from .voiceover_repair import preview_early_blocks
+
+        run_id = str(payload.get("generation_run_id") or "")
+        with self.database.session() as session:
+            require_generation_resource_access(session, "run", run_id, ProjectAction.RUN)
+        thresholds = payload.get("repair_thresholds")
+        progress(0.05, "Measuring speech placement")
+        result = preview_early_blocks(
+            self.database,
+            self.paths,
+            run_id,
+            thresholds=thresholds if isinstance(thresholds, dict) else None,
+            cancel_event=cancel_event,
+        )
+        progress(1.0, "Timing preview complete")
+        return result
 
     def _regroup_generation_blocks(
         self, run_id: str, progress: Progress, cancel_event: threading.Event

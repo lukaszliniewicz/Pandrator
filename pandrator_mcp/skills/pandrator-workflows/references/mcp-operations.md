@@ -127,6 +127,12 @@ including reused audio. Current active audio is a separate selection.
 `settings_source_run_id` to reproduce frozen settings, or
 `settings_source="matching_run"` for the latest compatible snapshot.
 `settings_source_run_id` is valid only with `settings_source="run"`.
+The named run may come from an earlier revision of the same speech plan in the
+same session (its frozen TTS settings are replayed and each take's identity is
+still checked). When it does, the result carries `settings_source_diff`: the
+material `tts` keys whose run value differs from today's resolved value, as
+`{key: {"run": …, "current": …}}`. Credentials and keys that never change the
+audio are left out.
 `generation_run_id` identifies the audio origin;
 it does not select historical settings. A missing historical snapshot fails
 instead of substituting current settings. Returned origins make this explicit.
@@ -178,6 +184,11 @@ Use the returned artifact IDs with the checked downloader for delivery.
 For voiceovers, an enabled early-finish check may run **one** automatic pass after
 synthesis. It can split an early speech block at a whole-cue boundary while
 reusing unaffected takes; changed semantic-context neighbours may be refreshed.
+A candidate whose split gain cannot cover the pause between the new halves is
+skipped as `neighbour_growth_precheck` before any call. A refreshed
+neighbour whose take comes out longer is accepted while a forward placement
+shows it does not push later speech; otherwise the attempt is rejected as
+`context_neighbour_added_delay`.
 A rejected change leaves the original selected audio active. Applied repairs
 may activate a new plan revision, while the original takes remain available.
 Repair takes precedence over passage regroup, and regroup is also disabled
@@ -195,15 +206,24 @@ a fail-closed pass with no checked blocks, not proof that timing was reviewed.
 Inspect checked, candidate,
 attempted, applied and rejected counts, plus `pass_completed` and skip reason;
 a successful synthesis job alone does not establish repair completion.
+`timing_repair.usage` is the second pass's own spending and `usage_total` is the
+whole run; `effect` reports late cues and worst lag before and after for the
+blocks the pass touched.
 
-An explicit check of an older completed voiceover is available through the
-application's `POST /api/v1/generation-runs/{run_id}/repair-timing` with an
-empty JSON body and optional idempotency key, **not** through a dedicated MCP
-tool. It requires run permission, frozen settings that enabled repair, an active
-original speech plan and a run that is **not** an assembled/recast audio version.
-Second-pass child runs are ineligible. Do not invent an MCP repair call
-or silently make a raw HTTP mutation; explain the limitation and use an
-authorized browser/application route when available. Retain history and
+An explicit check of a completed voiceover is available through
+`pandrator_repair_generation_timing`. `preview=true` (the default) queues a
+read-only `generation.repair-preview` job and returns its work handle; poll it
+with `pandrator_get_work` to read the candidate blocks, the thresholds in force
+and the estimated synthesis calls. Measuring a full dub takes about a minute,
+so previews are jobs rather than synchronous replies. `preview=false` with an
+`idempotency_key` queues the repair with the thresholds the session resolves
+now, then returns a work handle to poll with `pandrator_get_work`. The frozen
+`speech_block_early_repair_enabled` flag decides only whether the automatic
+second pass of a full run happens; it does not gate this request. It requires
+run permission, an active original speech plan and a run that is **not** an
+assembled/recast audio version. Second-pass child runs are ineligible. The same
+route exists as `POST /api/v1/generation-runs/{run_id}/repair-timing` on the
+application. Retain history and
 selection identity on retries. See [recovery](recovery.md).
 
 ## Recording edits

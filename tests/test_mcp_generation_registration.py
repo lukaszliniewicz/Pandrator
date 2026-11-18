@@ -318,6 +318,15 @@ PAYLOADS = {
     "update_generation_segments": {"items": [SEGMENT], "updated_count": 1, "private": "omit"},
     "select_generation_take": SEGMENT,
     "create_output_assembly": {"id": "assembly-1", "job_id": "job-2", "status": "queued"},
+    "repair_generation_timing": {
+        # The preview is a job now; its candidates are the job result.
+        "preview": True,
+        "generation_run_id": "run-1",
+        "session_id": SESSION,
+        "job_id": "job-3",
+        "status": "queued",
+        "reused_job": False,
+    },
 }
 
 
@@ -466,6 +475,56 @@ async def capture_contract(root: Path) -> dict[str, Any]:
     invalid = [await invoke_case(root, case, invalid=True) for case in CASES]
     timeouts = [await invoke_case(root, case, timeout=True) for case in [CASES[6], CASES[7]]]
     return {"metadata": metadata, "records": records, "invalid": invalid, "timeouts": timeouts}
+
+
+def test_repair_generation_timing_registers_preview_and_queue_paths(tmp_path: Path) -> None:
+    """The repair tool previews by default and queues only with an identity key."""
+
+    async def run() -> tuple[Any, Any, list[dict[str, Any]], dict[str, Any]]:
+        runtime, calls = fixture_runtime(tmp_path)
+        async with Client(build_server(runtime), mode="auto", raise_exceptions=False) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            preview = await client.call_tool(
+                "pandrator_repair_generation_timing", {"generation_run_id": "run-1"}
+            )
+            queued = await client.call_tool(
+                "pandrator_repair_generation_timing",
+                {
+                    "generation_run_id": "run-1",
+                    "preview": False,
+                    "idempotency_key": KEY,
+                },
+            )
+            missing_key = await client.call_tool(
+                "pandrator_repair_generation_timing",
+                {"generation_run_id": "run-1", "preview": False},
+            )
+        return preview, queued, calls, {"tools": tools, "missing_key": missing_key}
+
+    preview, queued, calls, extra = asyncio.run(run())
+    tools = extra["tools"]
+    assert "pandrator_repair_generation_timing" in tools
+    schema = tools["pandrator_repair_generation_timing"].input_schema
+    assert schema["properties"]["preview"]["default"] is True
+    assert schema["required"] == ["generation_run_id"]
+    assert extra["missing_key"].is_error
+
+    preview_value = envelope(preview)["result"]
+    assert preview_value["preview"] is True
+    assert preview_value["job_id"] == "job-3"
+    # The preview is a CPU-only job; the caller polls it with get_work.
+    assert [action["tool"] for action in envelope(preview)["next_actions"]] == [
+        "pandrator_get_work"
+    ]
+    assert (
+        envelope(preview)["next_actions"][0]["arguments"]["job_id"]
+        == "job-3"
+    )
+    queued_value = envelope(queued)["result"]
+    assert queued_value["job_id"] == "job-3"
+    assert queued_value["reused_job"] is False
+    assert calls[0]["kwargs"] == {"preview": True, "idempotency_key": None}
+    assert calls[1]["kwargs"] == {"preview": False, "idempotency_key": KEY}
 
 
 def test_registered_generation_admission_schema_defaults_true(tmp_path: Path) -> None:
