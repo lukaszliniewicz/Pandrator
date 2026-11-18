@@ -2180,7 +2180,9 @@ class WorkflowExecutionPlanService:
                 )
             record.consumed_at = utcnow()
             record.resulting_job_id = job.id
-            response = self.work.project_job(job).model_dump(mode="json")
+            response = self.work.project_job(
+                job, context=self._context(principal)
+            ).model_dump(mode="json")
             self.idempotency.complete(
                 db_session,
                 reservation,

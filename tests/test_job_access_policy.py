@@ -828,3 +828,55 @@ def test_purge_jobs_require_retained_project_shape_and_keep_history(case: Any, k
         session.delete(member)
         session.flush()
         assert require_job_access(session, context, valid).id == valid
+
+
+def test_a_queue_receipt_names_only_blockers_the_caller_may_see(case: Any) -> None:
+    from pandrator.web.jobs import JobQueue
+    from pandrator.web.credentials import SecretRedactor
+    from pandrator.web.work import WorkService
+
+    context = _context(case, case.user, projects=(case.a,))
+    work = WorkService(JobQueue(case.database), SecretRedactor(case.database))
+    with case.database.session() as session:
+        own_session = SessionRecord(id=new_id(), project_id=case.a, name="Own")
+        hidden_session = SessionRecord(id=new_id(), project_id=case.b, name="Hidden")
+        session.add_all([own_session, hidden_session])
+        session.flush()
+        hidden = _job(
+            session,
+            case.team,
+            author=case.other,
+            kind="generation.run",
+            project_id=case.b,
+            session_id=hidden_session.id,
+        )
+        session.execute(
+            update(Job)
+            .where(Job.id == hidden)
+            .values(
+                status="running",
+                progress_detail="Hidden project block 4 of 9",
+                lease_expires_at=utcnow() + timedelta(minutes=5),
+            )
+        )
+        waiting_id = _job(
+            session,
+            case.team,
+            author=case.user,
+            kind="generation.run",
+            project_id=case.a,
+            session_id=own_session.id,
+        )
+        session.flush()
+        waiting = session.get(Job, waiting_id)
+        assert waiting is not None
+
+        trusted = work.project_job(waiting)
+        assert trusted.queue is not None and trusted.queue.blocked_by is not None
+        assert trusted.queue.blocked_by.work_id == hidden
+
+        receipt = work.project_job(waiting, context=context)
+        assert receipt.queue is not None
+        assert receipt.queue.blocked_by is None
+        assert hidden not in receipt.model_dump_json()
+        assert hidden_session.id not in receipt.model_dump_json()

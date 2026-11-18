@@ -9,6 +9,7 @@ from sqlalchemy.orm import load_only
 
 from pandrator.runtime import DataPaths, PathBoundaryError
 
+from .access.contracts import AccessContext
 from .database import Database
 from .generation_audio_versions import audio_version_take_ids
 from .generation_run_selection import resolve_generation_run_take_ids
@@ -439,8 +440,13 @@ def get_generation_operation(
     operation_id: str,
     *,
     include_coverage: bool = True,
+    context: AccessContext | None = None,
 ) -> dict[str, Any]:
-    """Read one stable admission operation or a direct generation job."""
+    """Read one stable admission operation or a direct generation job.
+
+    ``context`` is the caller's, so a queued job names only blockers that
+    caller may see.
+    """
 
     normalized_id = _valid_id(operation_id)
     if normalized_id is None:
@@ -460,7 +466,7 @@ def get_generation_operation(
         if root is None:
             raise KeyError(operation_id)
 
-        root_view = work.project_job(root)
+        root_view = work.project_job(root, context=context)
         run: GenerationRun | None = None
         child: Job | None = None
         child_view: WorkView | None = None
@@ -469,7 +475,7 @@ def get_generation_operation(
         if root.kind == "generation.admit":
             run, child, linkage_diagnostic = _validated_admission_link(session, root)
             if child is not None:
-                child_view = work.project_job(child)
+                child_view = work.project_job(child, context=context)
                 current_view = child_view
                 phase = "complete" if child_view.state in TERMINAL_STATES else "synthesis"
                 state = child_view.state

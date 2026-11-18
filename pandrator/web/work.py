@@ -808,21 +808,30 @@ class WorkService:
         view.cancellable = view.cancellable and bool(may_cancel)
         return view
 
-    def project_job(self, job: Job) -> WorkView:
-        """Project a job already loaded in the caller's transaction."""
+    def project_job(
+        self, job: Job, *, context: AccessContext | None = None
+    ) -> WorkView:
+        """Project a job already loaded in the caller's transaction.
 
-        return self._project(job, queue=self._queue_for_job(job))
+        A receipt returned to a caller must pass that caller's ``context``, so
+        the queue names only blockers the caller may see. Without one the
+        projection is the trusted internal view.
+        """
 
-    def _queue_for_job(self, job: Job) -> WorkQueueView | None:
+        return self._project(job, queue=self._queue_for_job(job, context=context))
+
+    def _queue_for_job(
+        self, job: Job, *, context: AccessContext | None = None
+    ) -> WorkQueueView | None:
         if _work_state(job.status) != "queued":
             return None
         # Read in the caller's transaction when the job came from one, so a job
         # it has just enqueued is part of the queue it is placed in.
         owner = object_session(job)
         if owner is not None:
-            return self._queue_views(owner, [job]).get(job.id)
+            return self._queue_views(owner, [job], context=context).get(job.id)
         with self.queue.database.snapshot_session() as session:
-            return self._queue_views(session, [job]).get(job.id)
+            return self._queue_views(session, [job], context=context).get(job.id)
 
     def project_job_in_session(
         self, session: Session, job: Job, *, context: AccessContext | None = None
