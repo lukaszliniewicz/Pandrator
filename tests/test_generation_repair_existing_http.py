@@ -860,3 +860,133 @@ def test_timing_repair_request_waits_for_cancellation_then_starts_fresh(design):
         )
         assert len(jobs) == 2
         assert session.get(Job, created["job_id"]).status == "canceled"
+
+
+def test_timing_repair_rejects_a_malformed_body_before_any_job(design):
+    """Truncated JSON is a bad request, not an empty body admitting a repair."""
+
+    p = _ready(design)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    malformed = design.users.owner.post(
+        url,
+        data='{"preview": tru',
+        content_type="application/json",
+        headers=design.users.oh,
+    )
+    assert malformed.status_code == 400
+    error = malformed.get_json()["error"]
+    assert error["code"] == "invalid_request"
+    assert error["message"] == "Request body must be valid JSON."
+    with design.case.database.snapshot_session() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(Job)
+                .where(
+                    Job.session_id == p.source["id"],
+                    Job.kind.in_(
+                        ("generation.repair-existing", "generation.repair-preview")
+                    ),
+                )
+            )
+            == 0
+        )
+
+    # An empty body still means the documented default of no preview.
+    empty = body(
+        design.users.owner.post(url, data="", headers=design.users.oh), 202
+    )
+    assert empty["reused_job"] is False
+    with design.case.database.snapshot_session() as session:
+        job = session.get(Job, empty["job_id"])
+        assert job is not None and job.kind == "generation.repair-existing"
+
+
+def test_timing_repair_preview_replays_the_same_idempotency_key(design):
+    """A retried preview must replay its receipt, not queue a second job."""
+
+    p = _ready(design)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    headers = {**design.users.oh, "Idempotency-Key": "timing-preview-replay-v1"}
+    first = design.users.owner.post(url, json={"preview": True}, headers=headers)
+    created = body(first, 202)
+    repeated = design.users.owner.post(url, json={"preview": True}, headers=headers)
+    assert repeated.status_code == 202
+    assert body(repeated, 202) == created
+    assert repeated.headers.get("Idempotency-Replayed") == "true"
+    with design.case.database.snapshot_session() as session:
+        jobs = list(
+            session.scalars(
+                select(Job).where(
+                    Job.session_id == p.source["id"],
+                    Job.kind == "generation.repair-preview",
+                )
+            )
+        )
+        assert [job.id for job in jobs] == [created["job_id"]]
+
+
+def test_timing_repair_preview_reuses_a_job_only_for_the_same_thresholds(design):
+    """A queued preview measured with other thresholds cannot answer a new one."""
+
+    p = _ready(design)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    created = body(
+        design.users.owner.post(url, json={"preview": True}, headers=design.users.oh),
+        202,
+    )
+    with design.case.database.snapshot_session() as session:
+        assert session.get(Job, created["job_id"]).payload_json["repair_thresholds"] == {
+            "min_shortfall_ms": 1000,
+            "min_shortfall_percent": 20,
+            "min_advance_ms": 1000,
+            "min_child_span_ms": 1000,
+        }
+
+    changed = design.users.owner.put(
+        f"/api/v1/sessions/{p.source['id']}/settings/tts",
+        json={"value": {"speech_block_early_repair_min_shortfall_ms": 750}},
+        headers={**design.users.oh, "If-Match": '"0"'},
+    )
+    body(changed, 200)
+
+    fresh = body(
+        design.users.owner.post(url, json={"preview": True}, headers=design.users.oh),
+        202,
+    )
+    assert fresh["reused_job"] is False
+    assert fresh["job_id"] != created["job_id"]
+    with design.case.database.snapshot_session() as session:
+        job = session.get(Job, fresh["job_id"])
+        assert job is not None
+        assert job.payload_json["repair_thresholds"]["min_shortfall_ms"] == 750
+
+    # The same thresholds are reusable again.
+    again = body(
+        design.users.owner.post(url, json={"preview": True}, headers=design.users.oh),
+        200,
+    )
+    assert again["reused_job"] is True
+    assert again["job_id"] == fresh["job_id"]
+
+
+def test_active_repair_does_not_report_the_root_jobs_inline_pass(design):
+    """The root receipt belongs to the first pass, not to a repair in flight."""
+
+    p = _ready(design)
+    _install_completed_root_job(design, p)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    created = body(design.users.owner.post(url, json={}, headers=design.users.oh), 202)
+
+    detail = body(
+        design.users.owner.get(f"/api/v1/generation-runs/{p.run_id}"), 200
+    )
+    repair = detail["timing_repair"]
+    assert detail["status"] == "running"
+    assert repair["status"] == "running"
+    # The inline pass checked two blocks; the repair has written nothing yet.
+    assert repair["checked_count"] is None
+    assert repair["candidate_count"] is None
+    assert repair["attempted_count"] is None
+    assert repair["pass_completed"] is False
+    assert detail["job_id"] != created["job_id"]

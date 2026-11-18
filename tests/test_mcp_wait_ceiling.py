@@ -129,7 +129,17 @@ def test_a_small_configured_ceiling_is_honoured(monkeypatch):
 
 def test_get_generation_operation_clamps_and_suggests_within_the_ceiling(monkeypatch):
     class Application:
-        def get_generation_operation(self, operation_id, *, include_coverage=True):
+        def __init__(self):
+            self.poll_timeouts = []
+
+        def get_generation_operation(
+            self,
+            operation_id,
+            *,
+            include_coverage=True,
+            request_timeout_seconds=None,
+        ):
+            self.poll_timeouts.append(request_timeout_seconds)
             return {
                 "id": operation_id,
                 "session_id": "session-1",
@@ -145,7 +155,8 @@ def test_get_generation_operation_clamps_and_suggests_within_the_ceiling(monkeyp
                 },
             }
 
-    runtime = settings_runtime(Application())
+    application = Application()
+    runtime = settings_runtime(application)
     elapsed, _sleeps = clock(monkeypatch, generation_operations)
 
     outcome = generation_operations.get_generation_operation(
@@ -157,6 +168,12 @@ def test_get_generation_operation_clamps_and_suggests_within_the_ceiling(monkeyp
     assert outcome.result["wait_requested_seconds"] == 60
     assert outcome.result["wait_effective_seconds"] == 25
     assert outcome.result["timed_out"] is True
+    # No single poll waits past the ceiling or past what is left of it.
+    timeouts = application.poll_timeouts
+    assert timeouts and all(
+        timeout is not None and 1.0 <= timeout <= 25.0 for timeout in timeouts
+    )
+    assert timeouts[0] == 25.0
     assert outcome.next_actions[0].tool == "pandrator_get_generation_operation"
     assert outcome.next_actions[0].arguments["wait_seconds"] == 25
 

@@ -962,10 +962,10 @@ class GenerationHistoryReader:
         receipt = _repair_receipt(
             receipt_job.result_json if receipt_job is not None else None
         )
-        if not receipt and repair_job is not None and root_job is not None:
-            # A post-run repair job without its own receipt cannot hide the
-            # inline pass receipt that the generation job already wrote.
-            receipt = _repair_receipt(root_job.result_json)
+        # A post-run repair job owns its own evidence. The root job's receipt
+        # belongs to the inline first-pass, so borrowing it while the repair
+        # has not written anything would report someone else's progress.
+        awaiting_receipt = repair_job is not None and not receipt
         attempt_children = GenerationHistoryReader._repair_attempt_children(
             history, root_job, repair_job
         )
@@ -1010,7 +1010,7 @@ class GenerationHistoryReader:
         )
         regroup_outcome = _regroup_receipt_outcome(receipt)
         skip_reason = None
-        if status == "completed":
+        if status == "completed" and not awaiting_receipt:
             if regroup_outcome is not None:
                 # Regroup receipts use group counters, not repair counters, so
                 # the repair branches below must not reinterpret them.
@@ -1047,6 +1047,10 @@ class GenerationHistoryReader:
                     # none needed a split. The check itself completed.
                     status = "no_effect"
         reported_pass_completed = pass_completed
+        if awaiting_receipt and active:
+            # The repair is still running with nothing written yet: it has not
+            # completed the pass, and no counter may claim it inspected blocks.
+            reported_pass_completed = False
         if (
             not isinstance(reported_pass_completed, bool)
             and regroup_outcome is not None
@@ -1133,10 +1137,12 @@ class GenerationHistoryReader:
             "applied_count": len(history.applied_children),
             "attempt_count": len(history.repair_children),
             # Additive diagnostics: the current attempt's receipt is the
-            # authoritative evidence for a truthful status.
-            "checked_count": checked,
-            "candidate_count": candidates,
-            "attempted_count": attempted,
+            # authoritative evidence for a truthful status. A repair that has
+            # written no receipt has inspected nothing it can report, so its
+            # counters stay unknown rather than borrowing the inline pass.
+            "checked_count": None if awaiting_receipt else checked,
+            "candidate_count": None if awaiting_receipt else candidates,
+            "attempted_count": None if awaiting_receipt else attempted,
             "pass_completed": reported_pass_completed
             if isinstance(reported_pass_completed, bool)
             else None,

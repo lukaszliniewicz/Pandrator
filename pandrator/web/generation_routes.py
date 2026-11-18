@@ -860,24 +860,28 @@ def register_generation_routes(
     @require_session_action(context, ProjectAction.RUN, resource="run")
     def generation_run_repair_timing(run_id: str):
         """Preview or admit a durable timing-only repair for completed voiceover audio."""
-        payload = TimingRepairRequest.model_validate(request.get_json(silent=True) or {})
-        if payload.preview:
-            try:
-                with database.immediate_session() as db_session:
-                    require_generation_resource_access(
-                        db_session, "run", run_id, ProjectAction.RUN
-                    )
-                    result = generation.request_timing_repair_in_session(
-                        db_session, run_id, preview=True
-                    )
-            except KeyError:
-                return error_response("not_found", "Generation run not found.", 404)
-            except ValueError as error:
-                return error_response("invalid_state", str(error), 409)
-            return public_response(result), 200 if result["reused_job"] else 202
+        body = request.get_json(silent=True)
+        if body is None and request.get_data(cache=True):
+            # Malformed JSON must not be read as an empty body: that would
+            # admit a real repair from a request the client never completed.
+            return error_response(
+                "invalid_request", "Request body must be valid JSON.", 400
+            )
+        payload = TimingRepairRequest.model_validate(
+            body if body is not None else {}
+        )
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
-            return idempotency_error
+            if not payload.preview:
+                return idempotency_error
+            # A preview without retry identity keeps reading the queue state
+            # and admitting its job, as it did before replay was supported.
+            idempotency_key = None
+        operation_id = (
+            "previewGenerationTimingRepair"
+            if payload.preview
+            else "repairExistingGenerationTiming"
+        )
         try:
             with database.immediate_session() as db_session:
                 require_generation_resource_access(
@@ -889,7 +893,7 @@ def register_generation_routes(
                     reservation = services.idempotency.begin(
                         db_session,
                         principal=principal,
-                        operation_id="repairExistingGenerationTiming",
+                        operation_id=operation_id,
                         idempotency_key=idempotency_key,
                         payload={"generation_run_id": run_id},
                     )
@@ -900,7 +904,7 @@ def register_generation_routes(
                         response.headers["Idempotency-Replayed"] = "true"
                         return response
                 result = generation.request_timing_repair_in_session(
-                    db_session, run_id
+                    db_session, run_id, preview=payload.preview
                 )
                 status_code = 200 if result["reused_job"] else 202
                 if reservation is not None:

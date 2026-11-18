@@ -541,14 +541,15 @@ def register_generation_execution_tools(
     ) -> dict[str, Any]:
         """Find and repair speech blocks that finish well before their subtitles, on a completed voiceover run. preview=true lists the candidates and the estimated synthesis calls; preview=false queues the repair with the current repair thresholds."""
 
-        return response(_call(
+        return response(_call_with_validated_input(
             repair_generation_timing,
             runtime,
-            RepairGenerationTimingInput(
-                generation_run_id=generation_run_id,
-                preview=preview,
-                idempotency_key=idempotency_key,
-            ),
+            RepairGenerationTimingInput,
+            {
+                key: value
+                for key, value in locals().items()
+                if key in RepairGenerationTimingInput.model_fields
+            },
         ), response_mode)
 
     @server.tool(

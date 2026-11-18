@@ -60,10 +60,18 @@ class FakeApplication:
         self.operations = list(operations or [])
         self.coverage = coverage or {}
         self.operation_calls = []
+        self.poll_timeouts = []
         self.coverage_calls = []
 
-    def get_generation_operation(self, operation_id, include_coverage=True):
+    def get_generation_operation(
+        self,
+        operation_id,
+        include_coverage=True,
+        *,
+        request_timeout_seconds=None,
+    ):
         self.operation_calls.append((operation_id, include_coverage))
+        self.poll_timeouts.append(request_timeout_seconds)
         if not self.operations:
             raise AssertionError("No operation response remains.")
         return self.operations.pop(0)
@@ -157,7 +165,11 @@ def test_generation_operation_client_uses_only_quoted_fixed_routes():
     assert client.calls == [
         (
             "/api/v1/generation-operations/root%2Fa%20%3F%23",
-            {"parameters": {"include_coverage": "false"}, "read_only_operation": True},
+            {
+                "parameters": {"include_coverage": "false"},
+                "read_only_operation": True,
+                "request_timeout_seconds": None,
+            },
         ),
         (
             "/api/v1/generation-runs/run%2Fa%20%3F%23/coverage",
@@ -166,6 +178,21 @@ def test_generation_operation_client_uses_only_quoted_fixed_routes():
     ]
     with pytest.raises(ValueError, match="Audio version side"):
         cast(Any, client).get_generation_run_coverage("run-id", "latest")
+
+
+def test_generation_operation_client_forwards_the_remaining_wait():
+    client = RequestProbe()
+    client.get_generation_operation("root", request_timeout_seconds=2.5)
+    assert client.calls == [
+        (
+            "/api/v1/generation-operations/root",
+            {
+                "parameters": {"include_coverage": "true"},
+                "read_only_operation": True,
+                "request_timeout_seconds": 2.5,
+            },
+        )
+    ]
 
 
 def test_generation_operation_accepts_the_id_name_other_tools_return():
@@ -228,7 +255,9 @@ def test_wait_polls_to_terminal_and_does_not_sleep_after_terminal(monkeypatch):
     )
     sleeps = Mock()
     monkeypatch.setattr("pandrator_mcp.tools.generation_operations.time.sleep", sleeps)
-    clock_values = iter([0.0, 0.0, 0.2, 0.3])
+    # started_at, then the remaining-budget read and the deadline check of
+    # each of the three polls, then the elapsed read.
+    clock_values = iter([0.0, 0.0, 0.0, 0.1, 0.1, 0.2, 0.2])
     monkeypatch.setattr(
         "pandrator_mcp.tools.generation_operations.time.monotonic",
         lambda: next(clock_values),
@@ -249,6 +278,46 @@ def test_wait_polls_to_terminal_and_does_not_sleep_after_terminal(monkeypatch):
         "generation_run_id": "run-id",
         "audio_version_side": "after",
     }
+
+
+def test_each_operation_poll_is_bounded_by_the_remaining_wait(monkeypatch):
+    """A hung poll must not outlive the wait this call promised."""
+
+    application = FakeApplication(
+        [operation_payload(state="running") for _ in range(40)]
+    )
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(
+        "pandrator_mcp.tools.generation_operations.time.monotonic",
+        lambda: clock[0],
+    )
+    monkeypatch.setattr(
+        "pandrator_mcp.tools.generation_operations.time.sleep", sleep
+    )
+
+    outcome = get_generation_operation(
+        make_runtime(application),
+        GetGenerationOperationInput(operation_id="stable-root-id", wait_seconds=2),
+    )
+
+    budget = 2.0
+    assert outcome.result["timed_out"] is True
+    assert outcome.result["poll_count"] == len(application.poll_timeouts)
+    elapsed = 0.0
+    for index, timeout in enumerate(application.poll_timeouts):
+        assert timeout is not None
+        # Never more than the budget in hand, never below the client's floor.
+        assert timeout <= max(1.0, budget - elapsed)
+        assert timeout >= 1.0
+        if index < len(sleeps):
+            elapsed += sleeps[index]
+    assert sleeps
 
 
 def test_terminal_export_action_preserves_selected_before_audio_version():

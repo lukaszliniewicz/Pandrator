@@ -2267,14 +2267,20 @@ class GenerationService(GenerationHistoryReader):
                 )
                 .order_by(Job.created_at.desc())
             ).all():
-                if (previous.payload_json or {}).get("generation_run_id") == run_id:
-                    return {
-                        "job_id": previous.id,
-                        "generation_run_id": run_id,
-                        "session_id": run.session_id,
-                        "status": previous.status,
-                        "reused_job": True,
-                    }
+                previous_payload = previous.payload_json or {}
+                if previous_payload.get("generation_run_id") != run_id:
+                    continue
+                # The preview reports the thresholds in force, so a queued job
+                # measured with other thresholds cannot answer this request.
+                if previous_payload.get("repair_thresholds") != thresholds:
+                    continue
+                return {
+                    "job_id": previous.id,
+                    "generation_run_id": run_id,
+                    "session_id": run.session_id,
+                    "status": previous.status,
+                    "reused_job": True,
+                }
             job = self.jobs.enqueue_in_session(
                 session,
                 "generation.repair-preview",

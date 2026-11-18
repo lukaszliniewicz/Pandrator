@@ -917,9 +917,17 @@ class OptimizationReviewRequest(StrictModel):
 
 
 class TimingRepairRequest(StrictModel):
-    """An explicit timing repair; ``preview`` lists candidates without queueing."""
+    """An explicit timing repair; ``preview`` queues a read-only planning job."""
 
-    preview: bool = False
+    preview: bool = Field(
+        default=False,
+        description=(
+            "When true, queue a CPU-only `generation.repair-preview` job that "
+            "lists the candidates, thresholds and synthesis calls a repair "
+            "would make, without synthesising audio or changing the plan. "
+            "Poll the returned job."
+        ),
+    )
 
 
 class OutputAssemblyCreateRequest(StrictModel):

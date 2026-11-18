@@ -41,6 +41,8 @@ class _GenerationOperationApplication(Protocol):
         self,
         operation_id: str,
         include_coverage: bool = True,
+        *,
+        request_timeout_seconds: float | None = None,
     ) -> dict[str, Any]: ...
 
     def get_generation_run_coverage(
@@ -232,9 +234,14 @@ def get_generation_operation(
     poll_count = 0
 
     while True:
+        # A hung request must not outlive the wait this call promised, so each
+        # poll is bounded by the budget that is still left (at least 1 second,
+        # the smallest timeout the client accepts).
+        remaining_seconds = max(1.0, deadline - time.monotonic())
         payload = application.get_generation_operation(
             arguments.resolved_operation_id,
             include_coverage=arguments.include_coverage,
+            request_timeout_seconds=remaining_seconds,
         )
         poll_count += 1
         summary = _operation_summary(payload, arguments.resolved_operation_id)

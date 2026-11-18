@@ -1691,9 +1691,9 @@ export type GenerationRun = {
     result_sequence_number: number;
     applied_count: number;
     attempt_count: number;
-    checked_count?: number;
-    candidate_count?: number;
-    attempted_count?: number;
+    checked_count?: number | null;
+    candidate_count?: number | null;
+    attempted_count?: number | null;
     pass_completed?: boolean | null;
     no_effect?: boolean | null;
     usage?: UsageSummary;
