@@ -30,6 +30,43 @@ from .workflow_fingerprints import (
 )
 from .workflow_inputs import workflow_transformations
 
+# Saved reviews of one stage form a chain; a longer one is not plausible.
+_REVISION_CHAIN_LIMIT = 50
+
+
+def _derives_from(session: Session, source_id: str, artifact_id: str, role: str) -> bool:
+    """Whether an artifact descends from the source, through its own stage.
+
+    A saved review stores a new revision derived from the previous revision
+    of its stage, so the link to the stage's input sits on the first revision
+    of the chain, not on the reviewed one.
+    """
+
+    current_id = artifact_id
+    seen = {artifact_id}
+    for _ in range(_REVISION_CHAIN_LIMIT):
+        if session.get(ArtifactEdge, (source_id, current_id)) is not None:
+            return True
+        parent = session.scalar(
+            select(Artifact)
+            .join(ArtifactEdge, ArtifactEdge.parent_artifact_id == Artifact.id)
+            .where(
+                ArtifactEdge.child_artifact_id == current_id,
+                Artifact.role == role,
+                Artifact.id.not_in(seen),
+            )
+            .order_by(Artifact.created_at.desc(), Artifact.id)
+            .limit(1)
+        )
+        if parent is None:
+            return False
+        metadata = parent.metadata_json if isinstance(parent.metadata_json, dict) else {}
+        if str(metadata.get("source_artifact_id") or "") == source_id:
+            return True
+        seen.add(parent.id)
+        current_id = parent.id
+    return False
+
 
 class WorkflowPrerequisiteService:
     """Read prerequisite state using only a borrowed database and data paths."""
@@ -371,6 +408,30 @@ class WorkflowPrerequisiteService:
                             for key in set(stored_fingerprint) | set(current)
                             if stored_fingerprint.get(key) != current.get(key)
                         )
+        if (
+            not settings_match
+            and settings_reason is None
+            and stage_key in {"correct", "translate"}
+            and metadata.get("reviewed") is True
+        ):
+            # A saved review (a passage or cue edit, or its copy in a language
+            # branch) is deliberate work, like an accepted dispatch result:
+            # running the stage again would discard it, so only rerun_stages
+            # replaces it. A translation must still be in today's language.
+            expected_language = (
+                self._current_target_language(session_id, settings)
+                if stage_key == "translate"
+                else ""
+            )
+            stored_language = str(metadata.get("language") or "").strip().casefold()
+            if not expected_language or stored_language == expected_language:
+                settings_match = True
+                settings_evidence = "reviewed_revision"
+            else:
+                settings_reason = "settings_changed"
+                changed_fields = ["target_language"]
+                stored = {"target_language": stored_language}
+                current = {"target_language": expected_language}
         if not settings_match and settings_reason is None:
             # A legacy artifact can still be safely reused when its exact raw
             # hash matches. Without that evidence, continuation will rerun it.
@@ -386,7 +447,9 @@ class WorkflowPrerequisiteService:
             )
             if not source_match:
                 with self.database.session() as session:
-                    source_match = session.get(ArtifactEdge, (source.id, existing.id)) is not None
+                    source_match = _derives_from(
+                        session, source.id, existing.id, existing.role
+                    )
         reasons = [reason for reason in (settings_reason,) if reason]
         if not source_match:
             reasons.append("source_lineage_changed")

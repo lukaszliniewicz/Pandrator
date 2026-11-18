@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.pool import Pool
 
 from pandrator.runtime import DataPaths
@@ -490,6 +491,84 @@ def test_dispatch_correction_result_is_reused(owner: Any, graph: Graph) -> None:
         assert owner.settings_mismatches("voice") == []
         entry = freshness_entry(owner, "correct")
     assert entry["settings_evidence"] == "dispatch_result"
+
+
+def select_reviewed_revision(
+    graph: Graph, *, language: str = "pl", reviewed: bool = True
+) -> None:
+    """Select a saved review of the translation, as subtitle_review stores it.
+
+    It records no fingerprint and no source: its edge leads to the revision
+    it was saved from, and only that one links to the stage's input.
+    """
+
+    with graph.database.session() as session:
+        session.add(
+            artifact(
+                session,
+                "reviewed",
+                "translation",
+                metadata={"language": language, "reviewed": reviewed},
+            )
+        )
+        session.flush()
+        session.add(ArtifactEdge(parent_artifact_id="translated", child_artifact_id="reviewed"))
+        selection = session.scalar(
+            select(SessionStageSelection).where(
+                SessionStageSelection.session_id == "voice",
+                SessionStageSelection.stage_key == "translate",
+            )
+        )
+        assert selection is not None
+        selection.artifact_id = "reviewed"
+    (graph.paths.uploads / "reviewed.srt").write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\nFixture\n", encoding="utf-8"
+    )
+
+
+def test_reviewed_translation_is_reused(owner: Any, graph: Graph) -> None:
+    select_reviewed_revision(graph)
+    with graph.unmodified():
+        assert owner.settings_mismatches("voice") == []
+        entry = freshness_entry(owner, "translate")
+    assert entry["settings_match"] is True
+    assert entry["settings_evidence"] == "reviewed_revision"
+
+
+def test_reviewed_translation_in_another_language_reruns(owner: Any, graph: Graph) -> None:
+    select_reviewed_revision(graph, language="de")
+    with graph.unmodified():
+        assert owner.settings_mismatches("voice") == mismatch(
+            stored={"target_language": "de"},
+            current={"target_language": "pl"},
+            reasons=["settings_changed"],
+            fields=["target_language"],
+        )
+
+
+def test_reviewed_translation_of_a_replaced_source_reruns(owner: Any, graph: Graph) -> None:
+    select_reviewed_revision(graph)
+    with graph.database.session() as session:
+        session.add(artifact(session, "replacement", "upload"))
+        session.flush()
+        session.add(
+            SessionSetting(
+                session_id="voice",
+                section="translation",
+                value_json={"source_artifact_id": "replacement"},
+            )
+        )
+    with graph.unmodified():
+        entry = freshness_entry(owner, "translate")
+    assert entry["reasons"] == ["source_lineage_changed"]
+
+
+def test_unreviewed_artifact_without_evidence_still_reruns(owner: Any, graph: Graph) -> None:
+    select_reviewed_revision(graph, reviewed=False)
+    with graph.unmodified():
+        entry = freshness_entry(owner, "translate")
+    assert entry["settings_match"] is False
+    assert entry["reasons"] == ["settings_unverifiable"]
 
 
 def test_dispatch_evidence_for_another_stage_is_ignored(owner: Any, graph: Graph) -> None:
