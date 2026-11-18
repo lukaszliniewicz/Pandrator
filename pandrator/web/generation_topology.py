@@ -1586,6 +1586,7 @@ class GenerationTopologyService:
         return {
             "id": plan.id,
             "lineage": lineage,
+            "unchanged_segment_ids": [source for source, _target in take_copy_pairs],
             "plan_revision_id": revision.id,
             "revision_number": revision.revision_number,
             "parent_revision_id": revision.parent_revision_id,
@@ -1766,6 +1767,7 @@ class TopologyBatch:
             "parent_revision_id": revision.parent_revision_id,
             "active_plan_revision_id": self.plan.active_revision_id,
             "lineage": lineage,
+            "unchanged_segment_ids": [source for source, _target in take_copy_pairs],
             "saved_ids": saved,
             "affected_segment_ids": affected,
             "segment_count": len(new_segments),

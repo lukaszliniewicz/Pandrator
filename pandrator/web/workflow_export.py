@@ -17,6 +17,7 @@ from .export_inputs import (
 )
 from .export_subtitles import (
     subtitle_file_diagnostics,
+    subtitle_issue_summary,
     subtitle_track_details,
     subtitle_track_language_origin,
 )
@@ -99,13 +100,20 @@ def export(
     subtitle_diagnostic_results: list[dict[str, Any]] = []
     subtitle_provenance = payload.get("subtitle_settings_provenance")
 
-    def track_diagnostics(item: Artifact, source: Path, final: Path, language: str) -> dict[str, Any]:
+    def track_diagnostics(
+        item: Artifact,
+        source: Path,
+        final: Path,
+        language: str,
+        clamp_report: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
         check_output_io(context)
         return subtitle_file_diagnostics(
             source, final, settings,
             subtitle_provenance if isinstance(subtitle_provenance, dict) else None,
             language=language,
             language_origin=subtitle_track_language_origin(item, record=record, settings=settings),
+            clamp_report=clamp_report,
         )
 
     def record_diagnostics(item: Artifact, diagnostics: dict[str, Any]) -> None:
@@ -268,8 +276,16 @@ def export(
                     scratch = _finalize_track_scratch(track_name)
                     try:
                         check_output_io(context)
-                        finalize_srt_file(subtitle_path, scratch, {**settings, "subtitle_language": track_details(item)[1]})
-                        diagnostics = track_diagnostics(item, subtitle_path, scratch, language)
+                        clamp_report: dict[str, int] = {}
+                        finalize_srt_file(
+                            subtitle_path,
+                            scratch,
+                            {**settings, "subtitle_language": track_details(item)[1]},
+                            report=clamp_report,
+                        )
+                        diagnostics = track_diagnostics(
+                            item, subtitle_path, scratch, language, clamp_report
+                        )
                         if export_mode == "text":
                             destination = context.artifacts.next_available_path(
                                 subtitle_dir / f"{export_name}_{track_name}.txt"
@@ -321,8 +337,16 @@ def export(
                         subtitle_dir / f"{export_name}_{track_name}.srt"
                     )
                     check_output_io(context)
-                    finalize_srt_file(subtitle_path, destination, {**settings, "subtitle_language": language})
-                    diagnostics = track_diagnostics(item, subtitle_path, destination, language)
+                    clamp_report = {}
+                    finalize_srt_file(
+                        subtitle_path,
+                        destination,
+                        {**settings, "subtitle_language": language},
+                        report=clamp_report,
+                    )
+                    diagnostics = track_diagnostics(
+                        item, subtitle_path, destination, language, clamp_report
+                    )
                     kind = subtitle_format
                     role = f"export_subtitle_{track_name}"
                     exported = publish_output(context,
@@ -395,8 +419,16 @@ def export(
                     subtitle_dir / f"{export_name}_{track_name}.srt"
                 )
                 check_output_io(context)
-                finalize_srt_file(subtitle_path, destination, {**settings, "subtitle_language": language})
-                diagnostics = track_diagnostics(item, subtitle_path, destination, language)
+                clamp_report = {}
+                finalize_srt_file(
+                    subtitle_path,
+                    destination,
+                    {**settings, "subtitle_language": language},
+                    report=clamp_report,
+                )
+                diagnostics = track_diagnostics(
+                    item, subtitle_path, destination, language, clamp_report
+                )
                 exported = publish_output(context,
                         destination,
                         kind="srt",
@@ -531,15 +563,22 @@ def export(
         f"Registered {len(produced)} export artifact{'s' if len(produced) != 1 else ''}",
     )
     progress(1.0, "Export ready")
-    return {
+    compact_results = subtitle_diagnostic_results + [
+        {
+            "artifact_id": item.id,
+            "subtitle_tracks": (item.metadata_json or {}).get("subtitle_tracks", []),
+        }
+        for item in produced
+        if (item.metadata_json or {}).get("subtitle_tracks")
+    ]
+    result: dict[str, Any] = {
         "artifact_ids": [item.id for item in produced],
         "paths": [item.relative_path for item in produced],
-        "subtitle_diagnostics": subtitle_diagnostic_results + [
-            {
-                "artifact_id": item.id,
-                "subtitle_tracks": (item.metadata_json or {}).get("subtitle_tracks", []),
-            }
-            for item in produced
-            if (item.metadata_json or {}).get("subtitle_tracks")
-        ],
+        "subtitle_diagnostics": compact_results,
     }
+    # The nested diagnostics sit at the work projection's depth limit, so the
+    # affected cues are repeated once as flat rows.
+    subtitle_issues = subtitle_issue_summary(compact_results)
+    if subtitle_issues is not None:
+        result["subtitle_issues"] = subtitle_issues
+    return result

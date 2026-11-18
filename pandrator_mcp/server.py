@@ -1190,6 +1190,7 @@ def build_server(runtime: McpRuntime):
             Field(ge=1, le=60),
         ] = 30,
         continuation: bool = True,
+        view: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Create an immutable plan snapshot. Use continuation=false for export-only work."""
@@ -1203,6 +1204,7 @@ def build_server(runtime: McpRuntime):
                 overrides=overrides or {},
                 expires_in_minutes=expires_in_minutes,
                 continuation=continuation,
+                view=view,
             ),
         )
         return _response(envelope, response_mode)
@@ -1288,6 +1290,7 @@ def build_server(runtime: McpRuntime):
         subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None,
         subtitle_format: Literal["srt", "vtt"] = "srt",
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
+        view: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Plan rendering from existing inputs/audio without upstream language or synthesis stages."""
@@ -1306,6 +1309,7 @@ def build_server(runtime: McpRuntime):
                 subtitle_selection=subtitle_selection,
                 subtitle_format=subtitle_format,
                 expires_in_minutes=expires_in_minutes,
+                view=view,
             ),
         )
         return _response(envelope, response_mode)

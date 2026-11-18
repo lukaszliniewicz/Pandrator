@@ -676,7 +676,7 @@ def plan_workflow(
         reuse_stages=arguments.reuse_stages,
         rerun_stages=arguments.rerun_stages,
     )
-    return workflow_plan_outcome(plan)
+    return workflow_plan_outcome(plan, view=arguments.view)
 
 
 def execute_workflow_plan(

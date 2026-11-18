@@ -214,7 +214,7 @@ class VideoExportCleanupTests(unittest.TestCase):
     def test_subtitle_finalization_failure_removes_all_scratch(self):
         self.add_subtitle()
 
-        def fail_finalization(_source, destination, _settings):
+        def fail_finalization(_source, destination, _settings, **_kwargs):
             destination.write_text("partial subtitle", encoding="utf-8")
             raise ValueError("subtitle finalization failed")
 

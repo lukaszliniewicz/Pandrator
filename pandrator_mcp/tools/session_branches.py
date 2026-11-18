@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..context import McpRuntime
 from ..errors import NextAction
 from ..results import ToolOutcome
@@ -51,15 +53,122 @@ def fork_session(runtime: McpRuntime, arguments: ForkSessionInput) -> ToolOutcom
     )
 
 
+_SUMMARY_BRANCH_BLOCK_KEYS = (
+    "translation",
+    "review",
+    "speech_plan",
+    "voice",
+    "generation",
+    "exports",
+)
+_SUMMARY_PROJECT_OMISSIONS = ("branches", "source_settings")
+
+
+def _branch_summary(branch: dict[str, Any]) -> dict[str, Any]:
+    """Reduce one language branch to identity, readiness and current IDs."""
+
+    readiness = branch.get("readiness")
+    blocks: dict[str, Any] = {}
+    if isinstance(readiness, dict):
+        for key in _SUMMARY_BRANCH_BLOCK_KEYS:
+            block = readiness.get(key)
+            if not isinstance(block, dict):
+                continue
+            if key == "exports":
+                blocks[key] = {
+                    name: {
+                        "status": item.get("status"),
+                        "reasons": list(item.get("reasons") or []),
+                    }
+                    for name, item in block.items()
+                    if isinstance(item, dict)
+                }
+                continue
+            blocks[key] = {
+                "status": block.get("status"),
+                "reasons": list(block.get("reasons") or []),
+            }
+    result: dict[str, Any] = {
+        key: branch.get(key)
+        for key in (
+            "id",
+            "session_id",
+            "name",
+            "workflow_kind",
+            "target_language",
+            "status",
+            "translation_status",
+            "target_language_matches_settings",
+            "effective_target_language",
+        )
+        if key in branch
+    }
+    if isinstance(readiness, dict):
+        result["readiness"] = blocks
+    readiness_blocks = readiness if isinstance(readiness, dict) else {}
+    review = readiness_blocks.get("review")
+    review = review if isinstance(review, dict) else {}
+    speech_plan = readiness_blocks.get("speech_plan")
+    speech_plan = speech_plan if isinstance(speech_plan, dict) else {}
+    generation = readiness_blocks.get("generation")
+    generation = generation if isinstance(generation, dict) else {}
+    current_ids = {
+        "subtitle_artifact_id": branch.get("translation_artifact_id")
+        or review.get("artifact_id"),
+        "active_translation_run_id": branch.get("active_translation_run_id"),
+        "speech_plan_revision_id": speech_plan.get("revision_id"),
+        "generation_run_id": generation.get("generation_run_id"),
+    }
+    result.update({key: value for key, value in current_ids.items() if value})
+    return result
+
+
+def _translation_project_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project a multilingual project without every branch's settings provenance."""
+
+    result = {key: value for key, value in payload.items() if key not in {"project", "setup"}}
+    omitted = ["setup"] if "setup" in payload else []
+    project = payload.get("project")
+    if not isinstance(project, dict):
+        if "project" in payload:
+            result["project"] = project
+        result["view"] = "summary"
+        result["omitted"] = omitted
+        return result
+    summary = {
+        key: value
+        for key, value in project.items()
+        if key not in {*_SUMMARY_PROJECT_OMISSIONS, "source_status"}
+    }
+    omitted.extend(f"project.{key}" for key in _SUMMARY_PROJECT_OMISSIONS if key in project)
+    source_status = project.get("source_status")
+    if isinstance(source_status, dict):
+        summary["source_changed"] = bool(source_status.get("source_changed"))
+        summary["source_reasons"] = list(source_status.get("reasons") or [])
+        omitted.append("project.source_status")
+    branches = project.get("branches")
+    if isinstance(branches, list):
+        summary["branch_count"] = len(branches)
+        summary["branches"] = [
+            _branch_summary(branch) for branch in branches[:100] if isinstance(branch, dict)
+        ]
+        omitted.append("project.branches[].settings")
+        omitted.append("project.branches[].readiness ids and progress")
+    result["project"] = summary
+    result["view"] = "summary"
+    result["omitted"] = omitted
+    return result
+
+
 def get_translation_project(
     runtime: McpRuntime,
     arguments: GetTranslationProjectInput,
 ) -> ToolOutcome:
+    payload = runtime.require_application().get_translation_project(arguments.session_id)
+    if arguments.view == "full":
+        return ToolOutcome(result={"schema_version": "1", **payload})
     return ToolOutcome(
-        result={
-            "schema_version": "1",
-            **runtime.require_application().get_translation_project(arguments.session_id),
-        }
+        result={"schema_version": "1", **_translation_project_summary(payload)}
     )
 
 

@@ -250,6 +250,7 @@ def register_media_edit_tools(
             ),
         ],
         force: bool = False,
+        view: Literal["summary", "full"] = "summary",
     ) -> dict[str, Any]:
         """Prepare or explicitly refresh the media-edit plan for a session."""
 
@@ -260,6 +261,7 @@ def register_media_edit_tools(
             {
                 "session_id": session_id,
                 "force": force,
+                "view": view,
                 "idempotency_key": idempotency_key,
             },
         )
@@ -283,6 +285,7 @@ def register_media_edit_tools(
         ],
         instructions: Annotated[NativeNullableString, Field(max_length=10_000)] = None,
         reviewed: bool | None = None,
+        view: Literal["summary", "full"] = "summary",
     ) -> dict[str, Any]:
         """Apply keep ranges only when the supplied media-edit revision is current."""
 
@@ -297,6 +300,7 @@ def register_media_edit_tools(
                 "idempotency_key": idempotency_key,
                 "instructions": instructions,
                 "reviewed": reviewed,
+                "view": view,
             },
         )
 

@@ -73,6 +73,7 @@ class RefineMediaEditBoundaryArguments(ToolInput):
 class PrepareMediaEditArguments(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     force: bool = False
+    view: Literal["summary", "full"] = "summary"
     idempotency_key: str = Field(**_IDEMPOTENCY_KEY)
 
 
@@ -82,6 +83,7 @@ class UpdateMediaEditArguments(ToolInput):
     keep_ranges: list[MediaEditKeepRange] = Field(min_length=1, max_length=1000)
     instructions: str | None = Field(default=None, max_length=10_000)
     reviewed: bool | None = None
+    view: Literal["summary", "full"] = "summary"
     idempotency_key: str = Field(**_IDEMPOTENCY_KEY)
 
 

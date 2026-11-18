@@ -9,10 +9,31 @@ from .results import ToolOutcome
 from .schemas.common import WarningMessage
 
 
-def workflow_plan_outcome(plan: dict[str, Any]) -> ToolOutcome:
+def _plan_summary(plan: dict[str, Any]) -> dict[str, Any]:
+    """Drop the bulky resolved settings snapshot; keep the plan digest intact.
+
+    Execution is decided by the stored plan and the digest, so the receipt may be
+    smaller without changing what ``pandrator_execute_workflow_plan`` accepts.
+    """
+
+    result = dict(plan)
+    settings = plan.get("settings")
+    omitted: list[str] = []
+    if isinstance(settings, dict):
+        kept = {key: value for key, value in settings.items() if key != "resolved_snapshot"}
+        if "resolved_snapshot" in settings:
+            omitted.append("settings.resolved_snapshot")
+        result["settings"] = kept
+    result["view"] = "summary"
+    result["omitted"] = omitted
+    return result
+
+
+def workflow_plan_outcome(plan: dict[str, Any], *, view: str = "summary") -> ToolOutcome:
+    result = plan if view == "full" else _plan_summary(plan)
     plan_id = str(plan.get("plan_id") or "")
     return ToolOutcome(
-        result=plan,
+        result=result,
         warnings=[
             WarningMessage(code="prerequisite_rerun", message=str(value))
             for value in (plan.get("warnings") or [])

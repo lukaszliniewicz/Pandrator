@@ -395,6 +395,13 @@ def assert_projection(case: Case, value: dict[str, Any]) -> None:
                     "keep_range_count": 1,
                     "kept_duration_ms": 1000,
                 },
+                "view": "summary",
+                "omitted": [
+                    "plan.cues",
+                    "plan.evidence",
+                    "plan.instructions",
+                    "plan.keep_ranges",
+                ],
             }
     if case.name in {
         "pandrator_create_media_edit_dispatch_run",

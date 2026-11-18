@@ -225,6 +225,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "phrase_gap_ms": "Sets Pandrator's deterministic subtitle-grouping gap. Adjacent same-speaker word-timed cues separated by less than this are regrouped when their combined text fits the display, duration, and reading-rate limits; this value is not sent to a model.",
         "hard_gap_ms": "Sets a hard pause boundary for Pandrator's deterministic word-timed subtitle composer. It will never create a cue across a gap this long; this value is not sent to a model.",
         "sentence_boundary_threshold": "Sets the sentence-boundary probability threshold used by subtitle finalization when scoring semantic cue breaks; the compositor bounds it to 0.01 through 0.99.",
+        "clamp_overlaps": "Trims each finalized cue's end to the next cue's start minus min_gap_ms when the source timing overlaps, so a browser never stacks two cues. A cue that would fall below min_duration_ms is left as it is and counted as overlap_unresolved. Off by default; the text is never changed.",
         "boundary_correction_enabled": "Would enable a boundary-correction pass for subtitle timings, but this setting currently has no consumer in the finalization or workflow runtime.",
     },
     "source_passages": {
@@ -673,6 +674,9 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "phrase_gap_ms": {"minimum": 100, "maximum": 3000, "unit": "milliseconds"},
         "hard_gap_ms": {"minimum": 250, "maximum": 5000, "unit": "milliseconds"},
         "sentence_boundary_threshold": {"minimum": 0.01, "maximum": 0.99},
+        "clamp_overlaps": {
+            "applicability": "Subtitle export finalization only; it changes cue end times, never text."
+        },
         "boundary_correction_enabled": {
             "caveat": "No current consumer is wired for this setting; changing it does not currently run boundary correction."
         },

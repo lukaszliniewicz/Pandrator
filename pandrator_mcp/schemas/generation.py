@@ -197,6 +197,7 @@ class ReviseSpeechBlockPlanInput(ToolInput):
     left_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     right_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     target_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
+    view: Literal["summary", "full"] = "summary"
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,
@@ -307,6 +308,7 @@ class GenerationPlanBatchRequest(ToolInput):
 
 class ReviseSpeechBlockPlanBatchInput(GenerationPlanBatchRequest):
     session_id: str = Field(min_length=1, max_length=80)
+    view: Literal["summary", "full"] = "summary"
     idempotency_key: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
 
 

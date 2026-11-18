@@ -416,6 +416,11 @@ async def invoke_case(
             expected_replay.setdefault("view", "compact")
             expected_replay.setdefault("admission", True)
             expected_replay.setdefault("allow_without_speaker_plan", False)
+        if case.name in {
+            "pandrator_revise_speech_block_plan",
+            "pandrator_revise_speech_block_plan_batch",
+        }:
+            expected_replay.setdefault("view", "summary")
         assert value["next_actions"][-1]["arguments"] == expected_replay
     else:
         value = envelope(result)

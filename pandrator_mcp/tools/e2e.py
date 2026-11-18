@@ -1172,7 +1172,7 @@ def plan_export_variant(
         expires_in_minutes=arguments.expires_in_minutes,
         continuation=False,
     )
-    return workflow_plan_outcome(plan)
+    return workflow_plan_outcome(plan, view=arguments.view)
 
 
 def _safe_filename(value: str) -> str:

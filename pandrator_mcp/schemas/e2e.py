@@ -266,6 +266,7 @@ class PlanExportVariantInput(ToolInput):
     subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None
     subtitle_format: Literal["srt", "vtt"] = "srt"
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
+    view: Literal["summary", "full"] = "summary"
 
 
 class DownloadArtifactInput(ToolInput):

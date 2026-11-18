@@ -120,6 +120,14 @@ class PlanWorkflowInput(ToolInput):
         max_length=20,
         description="Prerequisite stages to run again even if their results are current.",
     )
+    view: Literal["summary", "full"] = Field(
+        default="summary",
+        description=(
+            "Summary keeps the steps, warnings, confirmations, digest, expiry and "
+            "effective settings; full also returns settings.resolved_snapshot. "
+            "Execution accepts either view."
+        ),
+    )
 
     @field_validator("overrides")
     @classmethod

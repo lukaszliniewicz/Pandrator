@@ -254,6 +254,74 @@ def list_generation_segments(
     }
 
 
+_SUMMARY_LINEAGE_LIMIT = 500
+_SUMMARY_ID_LIST_LIMIT = 50
+
+
+def _topology_receipt(receipt: dict[str, Any], view: str) -> dict[str, Any]:
+    """Project one topology receipt so a large plan does not overflow the host.
+
+    The full receipt maps every block of the plan to its new IDs. A summary keeps
+    only the blocks whose mapping or text actually changed, names the counts it
+    dropped, and preserves every reference a later tool call needs.
+    """
+
+    if view == "full":
+        return receipt
+    result: dict[str, Any] = {}
+    omitted: list[str] = []
+    unchanged = {str(value) for value in receipt.get("unchanged_segment_ids") or []}
+    if "unchanged_segment_ids" in receipt:
+        omitted.append("unchanged_segment_ids")
+    lineage = receipt.get("lineage")
+    if isinstance(lineage, dict):
+        kept: dict[str, list[str]] = {}
+        unchanged_count = 0
+        for source, targets in lineage.items():
+            normalized = [str(target) for target in targets or []]
+            # A block is unchanged when its copy carries the same ID, or when the
+            # service reported that the copy reuses its take byte for byte.
+            if normalized == [str(source)] or str(source) in unchanged:
+                unchanged_count += 1
+                continue
+            if len(kept) < _SUMMARY_LINEAGE_LIMIT:
+                kept[str(source)] = normalized
+        result["lineage"] = kept
+        result["unchanged_count"] = unchanged_count
+        if len(kept) < len(lineage) - unchanged_count:
+            result["lineage_truncated"] = len(lineage) - unchanged_count - len(kept)
+    elif "lineage" in receipt:
+        result["lineage"] = lineage
+    for key, value in receipt.items():
+        if key in {"lineage", "unchanged_segment_ids", "segment_ids", "saved_ids"}:
+            continue
+        if key == "affected_segment_ids" and isinstance(value, list):
+            result["affected_segment_count"] = len(value)
+            if len(value) <= _SUMMARY_ID_LIST_LIMIT:
+                result[key] = value
+            else:
+                omitted.append(key)
+            continue
+        if key == "operation_json" and isinstance(value, dict) and "mapping" in value:
+            mapping = value.get("mapping")
+            result[key] = {name: item for name, item in value.items() if name != "mapping"}
+            result["operation_mapping_count"] = (
+                len(mapping) if isinstance(mapping, list) else 0
+            )
+            omitted.append("operation_json.mapping")
+            continue
+        result[key] = value
+    if "segment_ids" in receipt and isinstance(receipt["segment_ids"], list):
+        result["segment_count"] = len(receipt["segment_ids"])
+        omitted.append("segment_ids")
+    if "saved_ids" in receipt and isinstance(receipt["saved_ids"], dict):
+        result["saved_id_count"] = len(receipt["saved_ids"])
+        omitted.append("saved_ids")
+    result["view"] = "summary"
+    result["omitted"] = omitted
+    return result
+
+
 def revise_speech_block_plan(
     runtime: McpRuntime,
     arguments: ReviseSpeechBlockPlanInput,
@@ -273,7 +341,7 @@ def revise_speech_block_plan(
         idempotency_key=arguments.idempotency_key,
     )
     return ToolOutcome(
-        result=result,
+        result=_topology_receipt(result, arguments.view),
         next_actions=[
             NextAction(
                 tool="pandrator_list_generation_segments",
@@ -436,10 +504,13 @@ def revise_speech_block_plan_batch(runtime: McpRuntime, arguments: ReviseSpeechB
             ),
         ]
         raise
-    return ToolOutcome(result=result, next_actions=[NextAction(
+    return ToolOutcome(result=_topology_receipt(result, arguments.view), next_actions=[NextAction(
         tool="pandrator_list_generation_segments",
         arguments={"session_id": arguments.session_id, "plan_revision_id": result.get("plan_revision_id"), "view": "compact"},
-        reason="Review the final revision; original-to-final block IDs and named results are in the batch receipt.",
+        reason=(
+            "Review the final revision. The receipt names the changed blocks and the "
+            "labelled result references; use view=\"full\" for every block mapping."
+        ),
     )])
 
 

@@ -1489,6 +1489,24 @@ class DispatchBatchClaimResponse(StrictModel):
     lease_expires_at: str | None
 
 
+class DispatchFillerCheckPassage(StrictModel):
+    """One finalised passage that still contains a filler token."""
+
+    cue_id: int | str | None = None
+    passage_id: int | str | None = None
+    text: str = ""
+
+
+class DispatchFillerCheck(StrictModel):
+    """Post-correction scan of the declared filler-removal policy."""
+
+    status: Literal["clean", "fillers_remaining", "not_checked"]
+    policy: str
+    count: int = Field(ge=0)
+    passages: list[DispatchFillerCheckPassage] = Field(default_factory=list)
+    reason: str | None = None
+
+
 class DispatchBatchSubmitResponse(StrictModel):
     run_id: str
     batch_id: str
@@ -1506,6 +1524,7 @@ class DispatchBatchSubmitResponse(StrictModel):
     final_artifact_id: str | None = None
     finalized: bool
     result_revision_id: str | None = None
+    filler_check: DispatchFillerCheck | None = None
     error_code: str | None = None
     error_message: str | None = None
 

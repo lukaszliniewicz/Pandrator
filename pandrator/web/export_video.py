@@ -504,13 +504,20 @@ def render_video_export(
             )
             scratch = _finalize_track_scratch(track_name)
             check_output_io(context)
-            finalize_srt_file(subtitle_path, scratch, {**settings, "subtitle_language": track_details(item)[1]})
+            clamp_report: dict[str, int] = {}
+            finalize_srt_file(
+                subtitle_path,
+                scratch,
+                {**settings, "subtitle_language": track_details(item)[1]},
+                report=clamp_report,
+            )
             finalized_subtitle_paths[item.id] = scratch
             check_output_io(context)
             finalized_subtitle_diagnostics[item.id] = subtitle_file_diagnostics(
                 subtitle_path, scratch, settings, subtitle_settings_provenance,
                 language=track_details(item)[1],
                 language_origin=subtitle_track_language_origin(item, record=record, settings=settings),
+                clamp_report=clamp_report,
             )
         if subtitle_mode == "soft" and selected_subtitles:
             tracks = []

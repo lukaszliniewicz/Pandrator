@@ -59,6 +59,7 @@ from .dispatch_context import (
     wave_bounds,
 )
 from .export_subtitles import subtitle_export_diagnostics
+from .filler_check import filler_check
 from .logical_passages import (
     attach_passages,
     load_timing_reference,
@@ -405,9 +406,27 @@ class DispatchRunService:
                     .order_by(DispatchBatch.ordinal)
                 ).all()
             )
-            return self._run_detail_payload(run, batches)
+            return self._with_filler_check(
+                db_session, run, self._run_detail_payload(run, batches)
+            )
         with self.database.session() as session:
             return self.get(run_id, db_session=session)
+
+    @staticmethod
+    def _with_filler_check(
+        session: Session, run: DispatchRun, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Attach the stored post-correction filler scan, when the run has one."""
+
+        if run.kind != "correction" or not run.result_artifact_id:
+            return payload
+        artifact = session.get(Artifact, run.result_artifact_id)
+        if artifact is None:
+            return payload
+        check = (artifact.metadata_json or {}).get("filler_check")
+        if isinstance(check, dict):
+            payload["filler_check"] = dict(check)
+        return payload
 
     def terminate_in_session(
         self,
@@ -2074,9 +2093,12 @@ class DispatchRunService:
             if batch.submission_key == submission_key and batch.output_hash == raw_hash:
                 if run.status == "finalizing" and not defer_finalization:
                     self._retry_finalize(session, run)
-                return self._submit_payload(
-                    run, batch
-                ), 200 if run.status == "completed" else 202
+                return (
+                    self._with_filler_check(
+                        session, run, self._submit_payload(run, batch)
+                    ),
+                    200 if run.status == "completed" else 202,
+                )
             raise DispatchError(
                 "batch_completed",
                 "The dispatch batch already has a different accepted submission.",
@@ -2196,7 +2218,9 @@ class DispatchRunService:
             run.updated_at = now
             status = 200
         session.flush()
-        return self._submit_payload(run, batch), status
+        return self._with_filler_check(
+            session, run, self._submit_payload(run, batch)
+        ), status
 
     def _retry_finalize(self, session: Session, run: DispatchRun) -> None:
         if run.status in TERMINAL_DISPATCH_RUN_STATUSES:
@@ -2240,9 +2264,10 @@ class DispatchRunService:
         )
         if batch is None:
             raise DispatchError("not_found", "Dispatch batch not found.", 404)
-        return self._submit_payload(
-            run, batch
-        ), 200 if run.status == "completed" else 202
+        return (
+            self._with_filler_check(session, run, self._submit_payload(run, batch)),
+            200 if run.status == "completed" else 202,
+        )
 
     @staticmethod
     def _timing_reference(
@@ -2682,6 +2707,12 @@ class DispatchRunService:
                 for sequence, parent_index in enumerate(indexes)
             ]
         )
+        filler = filler_check(
+            values,
+            kind=run.kind,
+            document_language=str(document.language or ""),
+            settings=run.settings_json,
+        )
         artifact = self.artifacts.register_in_session(
             session,
             prepared.destination,
@@ -2709,6 +2740,7 @@ class DispatchRunService:
                 ),
                 "language": document.language,
                 **prepared.metadata,
+                **({"filler_check": filler} if filler is not None else {}),
                 **(
                     {
                         "logical_passages": {
@@ -2748,7 +2780,10 @@ class DispatchRunService:
         )
         if batch is None:
             raise DispatchError("not_found", "Dispatch batch not found.", 404)
-        return self._submit_payload(run, batch), 200 if run.status == "completed" else 202
+        return (
+            self._with_filler_check(session, run, self._submit_payload(run, batch)),
+            200 if run.status == "completed" else 202,
+        )
 
     def finalize_pending(
         self,

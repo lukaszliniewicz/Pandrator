@@ -128,6 +128,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "phrase_gap_ms": 900,
         "hard_gap_ms": 1500,
         "sentence_boundary_threshold": 0.25,
+        "clamp_overlaps": False,
         "boundary_correction_enabled": False,
     },
     "source_passages": dict(_SOURCE_PASSAGE_DEFAULTS),

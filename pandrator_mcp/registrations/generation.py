@@ -240,6 +240,7 @@ def register_generation_plan_tools(
             list[GenerationTopologyEdit], Field(min_length=1, max_length=50)
         ],
         idempotency_key: str,
+        view: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Apply up to 50 ordered split/merge edits atomically.
@@ -359,6 +360,7 @@ def register_generation_execution_tools(
         segment_ids: list[str] | None = None,
         boundaries: list[int] | None = None,
         max_chars: int | None = None,
+        view: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Split/merge/restore a plan, or draft a bounded audiobook resegmentation. Select contiguous segment_ids and exact joined-text boundaries or max_chars. Inspect the returned preview, then restore the draft to adopt it."""
@@ -381,6 +383,7 @@ def register_generation_execution_tools(
                 "segment_ids": segment_ids,
                 "boundaries": boundaries,
                 "max_chars": max_chars,
+                "view": view,
             },
         ), response_mode)
 
