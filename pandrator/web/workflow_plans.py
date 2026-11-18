@@ -22,7 +22,10 @@ from .artifact_selection import canonical_stage_key
 from .auth import Principal
 from .credentials import contains_inline_secret, is_sensitive_field
 from .database import Database
-from .export_contract import export_requires_generation_assembly
+from .export_contract import (
+    export_requires_generation_assembly,
+    export_uses_generated_audio,
+)
 from .idempotency import IdempotencyService
 from .jobs import JobQueue
 from .models import (
@@ -1068,11 +1071,14 @@ class WorkflowExecutionPlanService:
 
         The figures appear once an assembly exists: an assembly is the only
         place placement is measured against the source recording's timeline.
+        A plan that names a run reuses that run's matching assembly; one that
+        names none exports the session's current assembly.
         """
 
         settings = resolved.payload.get("settings")
         settings = settings if isinstance(settings, dict) else {}
-        if not export_requires_generation_assembly(
+        run_id = str(settings.get("generation_run_id") or "").strip()
+        if not export_uses_generated_audio(
             workflow_kind=resolved.workflow_kind, settings=settings
         ):
             return None
@@ -1080,7 +1086,6 @@ class WorkflowExecutionPlanService:
 
         from .source_resolution import resolve_media_source
 
-        run_id = str(settings.get("generation_run_id") or "").strip()
         resolved_snapshot = resolved.payload.get("resolved_settings_snapshot")
         resolved_snapshot = (
             resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
@@ -1091,20 +1096,23 @@ class WorkflowExecutionPlanService:
         source_id = ""
         try:
             with self.database.snapshot_session() as db_session:
-                run = db_session.get(GenerationRun, run_id)
-                if run is None or run.session_id != session_id:
-                    return None
-                from .workspace import find_matching_output_assembly
+                if run_id:
+                    run = db_session.get(GenerationRun, run_id)
+                    if run is None or run.session_id != session_id:
+                        return None
+                    from .workspace import find_matching_output_assembly
 
-                assembly, _snapshot, _hash = find_matching_output_assembly(
-                    db_session,
-                    session_id=session_id,
-                    run=run,
-                    resolved_settings_snapshot=resolved_snapshot,
-                    audio_version_side=str(
-                        settings.get("audio_version_side") or "after"
-                    ),
-                )
+                    assembly, _snapshot, _hash = find_matching_output_assembly(
+                        db_session,
+                        session_id=session_id,
+                        run=run,
+                        resolved_settings_snapshot=resolved_snapshot,
+                        audio_version_side=str(
+                            settings.get("audio_version_side") or "after"
+                        ),
+                    )
+                else:
+                    assembly = self._current_session_assembly(db_session, session_id)
                 if assembly is None:
                     return None
                 assembly_id = assembly.id
@@ -1121,8 +1129,18 @@ class WorkflowExecutionPlanService:
                         timing_drift = dict(summary)
                     elif isinstance(synchronization.get("blocks"), list):
                         timing_drift = block_lag_metrics(synchronization["blocks"])
-                source = resolve_media_source(db_session, session_id).artifact
-                source_id = source.id if source is not None else ""
+                # Measure against the recording the export will render: the
+                # contract binds the edited render when the session was cut,
+                # and the attached source would be the longer, uncut one.
+                contract = resolved.payload.get("export_contract")
+                source_id = (
+                    str(contract.get("source_artifact_id") or "")
+                    if isinstance(contract, dict)
+                    else ""
+                )
+                if not source_id:
+                    source = resolve_media_source(db_session, session_id).artifact
+                    source_id = source.id if source is not None else ""
         except Exception:
             # A plan is a preview. A hint must never stop an otherwise valid
             # export plan from being prepared and reviewed.
@@ -1144,6 +1162,40 @@ class WorkflowExecutionPlanService:
                 generated_duration_ms=duration_ms,
             ),
         }
+
+    @staticmethod
+    def _current_session_assembly(
+        db_session: Session, session_id: str
+    ) -> OutputAssembly | None:
+        """The assembly an export that names no run would use, if it is one."""
+
+        from .export_inputs import active_plan_assemblies
+
+        candidates = active_plan_assemblies(
+            db_session,
+            session_id,
+            tuple(
+                db_session.scalars(
+                    select(Artifact).where(
+                        Artifact.session_id == session_id,
+                        Artifact.role == "assembled_audio",
+                        Artifact.state == "current",
+                    )
+                )
+            ),
+        )
+        if len(candidates) != 1:
+            return None
+        return db_session.scalar(
+            select(OutputAssembly)
+            .where(
+                OutputAssembly.session_id == session_id,
+                OutputAssembly.artifact_id == candidates[0].id,
+                OutputAssembly.status == "completed",
+            )
+            .order_by(OutputAssembly.created_at.desc())
+            .limit(1)
+        )
 
     def _export_tail_projection(
         self,
@@ -1237,6 +1289,58 @@ class WorkflowExecutionPlanService:
             "extension_ms": extension_ms,
             "outcome": outcome,
         }
+
+    def _reusable_takes_warnings(
+        self,
+        steps: list[dict[str, Any]],
+        session_id: str,
+        supplied: dict[str, Any],
+    ) -> list[str]:
+        """Say when a run would synthesise takes the speech plan already holds.
+
+        Preparing the plan again after a timing-only subtitle change keeps
+        every take, but a new run synthesises every block. Assembling the
+        current takes keeps them. Reuse is counted against the saved settings,
+        so a plan that overrides speech settings is not judged by it.
+        """
+
+        if supplied.get("tts") or not any(
+            step["stage"] == "generate_audio" and step.get("decision") == "run"
+            for step in steps
+        ):
+            return []
+        from .generation_review import revision_history
+
+        try:
+            with self.database.snapshot_session() as db_session:
+                active_revision_id = db_session.scalar(
+                    select(GenerationPlan.active_revision_id).where(
+                        GenerationPlan.session_id == session_id
+                    )
+                )
+            if not active_revision_id:
+                return []
+            history = revision_history(
+                self.database, session_id, revision_ids=[active_revision_id], limit=1
+            )
+        except Exception:
+            # A plan is a preview; a hint must never stop it.
+            logger.warning(
+                "Take reuse could not be checked for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return []
+        item = next(iter(history.get("items") or []), {})
+        active = int(item.get("active_segment_count") or 0)
+        if not active or item.get("reusable_segment_count") != active:
+            return []
+        return [
+            f"Every block of the current speech plan ({active}) already has a "
+            "reusable take, and generating synthesises them all again. To keep "
+            "them, assemble the current takes without naming a generation run, "
+            "then export without one."
+        ]
 
     def _apply_generation_estimate(
         self,
@@ -1725,6 +1829,10 @@ class WorkflowExecutionPlanService:
                 resolved=resolved,
                 supplied=supplied,
             )
+            with execution_actor_scope(context.actor):
+                warnings.extend(
+                    self._reusable_takes_warnings(steps, session_id, supplied)
+                )
         effective_stage: dict[str, dict[str, Any]] = {}
         stage_support: dict[str, Any] | None = None
         with execution_actor_scope(context.actor):

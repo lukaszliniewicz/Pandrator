@@ -975,6 +975,64 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         self.assertIsNone(step["estimated_seconds"])
         self.assertEqual("no_history", step["estimate_basis"])
 
+    def test_generate_audio_plan_warns_when_every_take_is_reusable(self):
+        """A plan prepared again after a timing-only edit keeps every take."""
+
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover", suffix="srt"
+        )
+        with self.extension["database"].session() as db_session:
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash=f"prepared-again-{session_id}",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            revision_id = revision.id
+        calls = []
+
+        def tally(reusable):
+            def history(_database, _session_id, *, revision_ids, limit):
+                calls.append(revision_ids)
+                return {
+                    "items": [
+                        {"active_segment_count": 21, "reusable_segment_count": reusable}
+                    ]
+                }
+
+            return history
+
+        def warnings_for(reusable, overrides=None):
+            with patch(
+                "pandrator.web.generation_review.revision_history", tally(reusable)
+            ):
+                plan = self._plan(
+                    session_id, target_stage="generate_audio", overrides=overrides
+                )
+            self.assertEqual("run", plan["ordered_steps"][-1]["decision"])
+            return [item for item in plan["warnings"] if "reusable take" in item]
+
+        self.assertEqual(
+            [
+                "Every block of the current speech plan (21) already has a reusable "
+                "take, and generating synthesises them all again. To keep them, "
+                "assemble the current takes without naming a generation run, then "
+                "export without one."
+            ],
+            warnings_for(21),
+        )
+        self.assertEqual([], warnings_for(20))
+        self.assertEqual([[revision_id], [revision_id]], calls)
+        # Reuse is counted against saved settings; a speech override is not.
+        self.assertEqual([], warnings_for(21, {"tts": {"voice": "Other voice"}}))
+        self.assertEqual([[revision_id], [revision_id]], calls)
+
     def test_generate_audio_plan_warns_about_an_inherited_unverified_route(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
             workflow_kind="voiceover",
@@ -1424,6 +1482,136 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                         ],
                         tail_warnings,
                     )
+
+    def test_export_plan_measures_the_tail_against_the_rendered_recording(self):
+        """A cut session renders its edited media, which is shorter than the source."""
+
+        from pandrator.web import workflows as workflows_module
+
+        session_id, source_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        edited_path = Path(self.temporary.name) / "edited-render.mp4"
+        edited_path.write_bytes(b"edited render fixture")
+        edited = ArtifactService(
+            self.extension["database"],
+            self.extension["paths"],
+        ).register(
+            edited_path,
+            kind="video",
+            role="media_edit_media",
+            session_id=session_id,
+        )
+        build_contract = workflows_module.build_export_contract
+
+        def contract_for_the_render(*, workflow_kind, settings, source):
+            contract = build_contract(
+                workflow_kind=workflow_kind, settings=settings, source=source
+            )
+            return {**contract, "source_artifact_id": edited.id}
+
+        def probe(path):
+            edited_render = Path(path).read_bytes() == b"edited render fixture"
+            seconds = 1.5 if edited_render else 2.0
+            return {"video_duration": seconds, "duration": seconds, "fps": 25.0}
+
+        output = {
+            "export_mode": "media",
+            "audio_mode": "mixed",
+            "video_tail_extension_policy": "ask",
+        }
+        with patch.object(
+            workflows_module, "build_export_contract", contract_for_the_render
+        ):
+            run_id = self._assembly_for_plan(session_id, output, duration_ms=1_900)
+            with patch(
+                "pandrator.web.soundtrack_export.probe_soundtrack_media",
+                side_effect=probe,
+            ):
+                plan = self._plan(
+                    session_id,
+                    target_stage="export",
+                    overrides={"output": {**output, "generation_run_id": run_id}},
+                    continuation=False,
+                )
+
+        tail = plan["speech_timing"]["tail"]
+        self.assertNotEqual(source_id, edited.id)
+        # The uncut source (2.0 s) would say the speech fits.
+        self.assertEqual(1_500, tail["source_duration_ms"])
+        self.assertEqual(400, tail["overrun_ms"])
+        self.assertEqual("stops", tail["outcome"])
+
+    def test_export_plan_without_a_run_reports_the_active_plan_assembly(self):
+        """After a timing-only edit the plan is assembled again without a run."""
+
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        self._assembly_for_plan(
+            session_id,
+            output,
+            timing_drift={"worst_block_lag_ms": 9_000, "blocks": 2},
+        )
+        database = self.extension["database"]
+        with database.session() as db_session:
+            generation_plan = db_session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            )
+            prepared = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=2,
+                settings_json={},
+                content_hash=f"timing-only-prepare-{session_id}",
+            )
+            db_session.add(prepared)
+            db_session.flush()
+            generation_plan.active_revision_id = prepared.id
+            ownership = resolve_artifact_ownership(db_session, session_id=session_id)
+            artifact = Artifact(
+                session_id=session_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
+                kind="audio",
+                role="assembled_audio",
+                relative_path=f"current-takes-{session_id}.wav",
+                content_hash=hashlib.sha256(session_id.encode()).hexdigest(),
+                state="current",
+            )
+            db_session.add(artifact)
+            db_session.flush()
+            current = OutputAssembly(
+                session_id=session_id,
+                generation_run_id=None,
+                status="completed",
+                artifact_id=artifact.id,
+                settings_json={
+                    "plan_revision_id": prepared.id,
+                    "duration_ms": 2_000,
+                    "synchronization": {
+                        "mode": "subtitle_timed",
+                        "timing_drift": {"worst_block_lag_ms": 400, "blocks": 2},
+                    },
+                },
+            )
+            db_session.add(current)
+            db_session.flush()
+            current_id = current.id
+
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={"output": output},
+            continuation=False,
+        )
+
+        self.assertEqual(current_id, plan["speech_timing"]["assembly_id"])
+        self.assertEqual(
+            400, plan["speech_timing"]["timing_drift"]["worst_block_lag_ms"]
+        )
 
     def test_export_plan_skips_the_tail_when_the_timeline_is_not_matched(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
