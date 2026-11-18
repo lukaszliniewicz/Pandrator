@@ -276,6 +276,30 @@ def _route_consumes_language(record: Mapping[str, Any]) -> bool:
     }
 
 
+def tts_language_support_decision(
+    settings: Mapping[str, Any],
+    endpoint: Mapping[str, Any] | None = None,
+    _service_config_cache: dict | None = None,
+) -> dict[str, Any]:
+    """Report the route's language and its support decision without raising.
+
+    Readiness, plans and receipts disclose the decision; only generation enforces
+    it through ``validate_tts_language``.
+    """
+    language = canonical_language_tag(
+        settings.get("language") or settings.get("target_language"), allow_auto=True
+    )
+    support = resolve_tts_language_support(
+        settings,
+        endpoint=endpoint,
+        _service_config_cache=_service_config_cache,
+    )
+    return {
+        "language": language,
+        "decision": language_decision(support, language) if support else "unverified",
+    }
+
+
 def validate_tts_language(
     settings: Mapping[str, Any],
     endpoint: Mapping[str, Any] | None = None,

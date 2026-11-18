@@ -203,7 +203,23 @@ class _Application:
 
     def update_session_settings(self, session_id, **kwargs):
         self.calls.append(("update_session_settings", {"session_id": session_id, **kwargs}))
-        return {"revision": 5}
+        value = kwargs.get("value") or {}
+        return {
+            "revision": 5,
+            # The backend's post-change read, which the receipt passes through.
+            "tts_route": {
+                "service": value.get("service"),
+                "model": value.get("model"),
+                "voice": value.get("voice"),
+                "language": value.get("language"),
+                "origin": {
+                    key: "session_override"
+                    for key in ("service", "model", "voice", "language")
+                },
+                "language_support": "unverified",
+                "language_support_language": "ja",
+            },
+        }
 
     def list_generation_runs(self, session_id, **kwargs):
         return {
@@ -335,6 +351,43 @@ class McpEndToEndToolTests(unittest.TestCase):
                         self.assertNotIn("subtitle_selection", output)
                     else:
                         self.assertEqual(selection, output["subtitle_selection"])
+
+    def test_configure_tts_receipt_carries_the_backend_route_and_origins(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, application = _runtime(Path(directory))
+            application.services = [{
+                "id": "gemini", "adapter": "gemini", "available": True,
+                "models": ["gemini-tts"], "default_model": "gemini-tts",
+                "voices": ["Aoede"], "default_voice": "Aoede",
+            }]
+            outcome = configure_tts(
+                runtime,
+                ConfigureTtsInput(
+                    session_id="session-1",
+                    service_id="gemini",
+                    model="gemini-tts",
+                    voice="Aoede",
+                    language="ja",
+                    expected_revision=4,
+                    idempotency_key="configure-route-1",
+                ),
+            )
+            route = outcome.result["tts_route"]
+            self.assertEqual("gemini", route["service"])
+            self.assertEqual("gemini-tts", route["model"])
+            self.assertEqual("Aoede", route["voice"])
+            self.assertEqual("ja", route["language"])
+            self.assertEqual(
+                {
+                    "service": "session_override",
+                    "model": "session_override",
+                    "voice": "session_override",
+                    "language": "session_override",
+                },
+                route["origin"],
+            )
+            self.assertEqual("unverified", route["language_support"])
+            self.assertEqual("ja", route["language_support_language"])
 
     def test_configure_tts_registered_schema_and_mcp_transport(self):
         from mcp import Client

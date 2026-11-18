@@ -47,7 +47,8 @@ def register_session_settings_read_tools(
             "output",
         ],
     ) -> dict[str, Any]:
-        """Inspect one settings section, its effective values, and revision."""
+        """Inspect one settings section, its effective values, where each key came
+        from, and its revision."""
 
         return _call_with_input_factory(
             get_session_settings,

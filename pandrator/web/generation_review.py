@@ -17,6 +17,7 @@ from .models import (
     AudioTake,
     GenerationPlan,
     GenerationPlanRevision,
+    GenerationRun,
     GenerationSegment,
     SessionRecord,
 )
@@ -93,7 +94,46 @@ def project_segments(payload: dict[str, Any], *, view: str = "full", fields: lis
     return {**payload, "items": rows, "view": view, "fields": selected}
 
 
-def revision_history(database, session_id: str, *, limit: int = 50, before_revision_number: int | None = None, revision_ids: list[str] | None = None, include_audio_reuse: bool = True) -> dict[str, Any]:
+def _reuse_counts() -> dict[str, int]:
+    """One revision's reuse tally, one bucket per block."""
+    return {
+        "total": 0,
+        "active": 0,
+        "reusable": 0,
+        "generation_settings_changed": 0,
+        "voice_reference_changed": 0,
+        "performance_changed": 0,
+        "not_generated": 0,
+        "identity_unknown": 0,
+    }
+
+
+# take_reuse_reason values -> the bucket a block is counted in. Anything else is
+# reported as unproven rather than as a settings change.
+_REUSE_BUCKET_BY_REASON = {
+    "reusable": "reusable",
+    "generation_settings_changed": "generation_settings_changed",
+    "voice_reference_changed": "voice_reference_changed",
+    "performance_changed": "performance_changed",
+    "not_completed": "not_generated",
+    "audio_unavailable": "not_generated",
+    "audio_identity_unknown": "identity_unknown",
+}
+
+
+def revision_history(database, session_id: str, *, limit: int = 50, before_revision_number: int | None = None, revision_ids: list[str] | None = None, include_audio_reuse: bool = True, generation_run_id: str | None = None) -> dict[str, Any]:
+    """List speech-plan revisions with their reuse tally.
+
+    Pass ``generation_run_id`` to count against the snapshot that run froze, the
+    same basis its segment rows use; otherwise the session's current settings are
+    the basis. ``reuse_basis`` says which one was used.
+
+    ``stale_segment_count`` means "not reusable for any reason": it counts every
+    active block that is not reusable, and the four buckets beside it
+    (settings changed, not generated, identity unknown, and reusable) add up to
+    the active block count. A block that was never generated is *not* a settings
+    change.
+    """
     from .workspace_settings import WorkspaceSettingsService
 
     limit = max(1, min(int(limit), 100))
@@ -106,9 +146,17 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
         require_current_session_access(session, session_id, ProjectAction.READ)
         if session.get(SessionRecord, session_id) is None:
             raise KeyError(session_id)
+        selected_run = None
+        if generation_run_id:
+            selected_run = session.get(GenerationRun, generation_run_id)
+            if selected_run is None or selected_run.session_id != session_id:
+                raise KeyError(generation_run_id)
+        from .generation_audio_identity import reuse_identity_basis
+
+        _identity_snapshot, reuse_basis = reuse_identity_basis(selected_run, snapshot)
         plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
         if plan is None:
-            return {"items": [], "active_revision_id": None, "total": 0, "next_before_revision_number": None}
+            return {"items": [], "active_revision_id": None, "total": 0, "next_before_revision_number": None, "reuse_basis": reuse_basis}
         query = select(GenerationPlanRevision).where(GenerationPlanRevision.plan_id == plan.id)
         # Internal grouped-history callers request only visible checkpoints;
         # expensive block/audio identity inspection must not visit hidden attempts.
@@ -125,7 +173,7 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
             for revision_id, removed, count in session.execute(select(
                 GenerationSegment.plan_revision_id, GenerationSegment.removed, func.count(GenerationSegment.id),
             ).where(GenerationSegment.plan_revision_id.in_(ids)).group_by(GenerationSegment.plan_revision_id, GenerationSegment.removed)):
-                values = counts.setdefault(revision_id, {"total": 0, "active": 0, "reusable": 0})
+                values = counts.setdefault(revision_id, _reuse_counts())
                 values["total"] += count
                 if not removed:
                     values["active"] += count
@@ -135,7 +183,7 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                     take_reuse_reason,
                 )
 
-                audio_identity = AudioIdentityContext(session, snapshot)
+                audio_identity = AudioIdentityContext(session, _identity_snapshot)
                 # Drive from the visible revision IDs: the three-table join lets
                 # SQLite lead with audio_takes via its status index and scan takes
                 # cross-session before filtering to these revisions. Segment-first
@@ -160,18 +208,15 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 ).where(
                     GenerationSegment.plan_revision_id.in_(ids),
                     GenerationSegment.removed.is_(False),
-                    GenerationSegment.status == "completed",
                 )).all())
-                segments_by_id = {segment.id: segment for segment in segments}
+                segment_ids = [segment.id for segment in segments]
                 takes: list[AudioTake] = []
-                segment_ids = list(segments_by_id)
                 for offset in range(0, len(segment_ids), 500):
                     takes.extend(session.scalars(select(AudioTake).where(
                         AudioTake.generation_segment_id.in_(
                             segment_ids[offset:offset + 500]
                         ),
                         AudioTake.is_active.is_(True),
-                        AudioTake.status == "completed",
                     )).all())
                 artifact_ids = list(
                     {take.artifact_id for take in takes if take.artifact_id}
@@ -183,19 +228,33 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                         Artifact.state != "deleted",
                     )).all():
                         artifacts_by_id[artifact.id] = artifact
-                for take in takes:
-                    segment = segments_by_id.get(take.generation_segment_id)
+                active_take_by_segment = {
+                    take.generation_segment_id: take for take in takes
+                }
+                for segment in segments:
+                    take = active_take_by_segment.get(segment.id)
                     artifact = (
                         artifacts_by_id.get(take.artifact_id)
-                        if take.artifact_id
+                        if take is not None and take.artifact_id
                         else None
                     )
-                    if segment is None or artifact is None:
-                        continue
+                    # The identity is only needed where it can change the answer;
+                    # an unfinished block is "not generated" whatever its settings.
+                    complete = (
+                        segment.status == "completed"
+                        and take is not None
+                        and take.status == "completed"
+                        and artifact is not None
+                    )
+                    reason = take_reuse_reason(
+                        segment,
+                        take,
+                        artifact,
+                        audio_identity.for_segment(segment) if complete else {},
+                    )
                     values = counts[segment.plan_revision_id]
-                    reason = take_reuse_reason(segment, take, artifact, audio_identity.for_segment(segment))
-                    key = "reusable" if reason == "reusable" else "unknown" if reason == "audio_identity_unknown" else "settings_stale"
-                    values[key] = values.get(key, 0) + 1
+                    bucket = _REUSE_BUCKET_BY_REASON.get(reason, "identity_unknown")
+                    values[bucket] = values.get(bucket, 0) + 1
         items = []
         for revision in revisions:
             operation = dict(revision.operation_json or {})
@@ -213,14 +272,30 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 summary = "Editable copy of reviewed or historical speech plan"
             if batch:
                 summary += f" (batch {batch.get('index')}/{batch.get('count')})"
-            values = counts.get(revision.id, {"total": 0, "active": 0, "reusable": 0})
+            values = counts.get(revision.id, _reuse_counts())
             if include_audio_reuse:
+                settings_changed = (
+                    values["generation_settings_changed"]
+                    + values["voice_reference_changed"]
+                    + values["performance_changed"]
+                )
                 reuse_fields: dict[str, Any] = {
                     "reusable_segment_count": values["reusable"],
+                    # Not reusable for any reason. It counts no block twice and
+                    # never counts a block that was never generated as changed.
                     "stale_segment_count": values["active"] - values["reusable"],
-                    "audio_settings_stale_segment_count": values.get("settings_stale", 0),
-                    "audio_identity_unknown_segment_count": values.get("unknown", 0),
+                    "settings_changed_segment_count": settings_changed,
+                    "generation_settings_changed_segment_count": values["generation_settings_changed"],
+                    "voice_reference_changed_segment_count": values["voice_reference_changed"],
+                    "performance_changed_segment_count": values["performance_changed"],
+                    "not_generated_segment_count": values["not_generated"],
+                    "identity_unknown_segment_count": values["identity_unknown"],
+                    # Alias of settings_changed_segment_count, kept for clients
+                    # that still read the older, ambiguous name.
+                    "audio_settings_stale_segment_count": settings_changed,
+                    "audio_identity_unknown_segment_count": values["identity_unknown"],
                     "audio_reuse_checked": True,
+                    "reuse_basis": reuse_basis,
                 }
             else:
                 # Summary mode: reuse was not inspected. Emit nulls (never 0)
@@ -228,9 +303,16 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 reuse_fields = {
                     "reusable_segment_count": None,
                     "stale_segment_count": None,
+                    "settings_changed_segment_count": None,
+                    "generation_settings_changed_segment_count": None,
+                    "voice_reference_changed_segment_count": None,
+                    "performance_changed_segment_count": None,
+                    "not_generated_segment_count": None,
+                    "identity_unknown_segment_count": None,
                     "audio_settings_stale_segment_count": None,
                     "audio_identity_unknown_segment_count": None,
                     "audio_reuse_checked": False,
+                    "reuse_basis": reuse_basis,
                 }
             items.append({
                 "id": revision.id, "revision_number": revision.revision_number,
@@ -256,6 +338,7 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
             "total": int(session.scalar(select(func.count()).select_from(GenerationPlanRevision).where(GenerationPlanRevision.plan_id == plan.id)) or 0),
             "next_before_revision_number": revisions[-1].revision_number if revisions and has_more else None,
             "audio_reuse_checked": include_audio_reuse,
+            "reuse_basis": reuse_basis,
         }
 
 

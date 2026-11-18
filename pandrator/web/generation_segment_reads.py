@@ -634,6 +634,7 @@ class GenerationSegmentReader:
                 session, plan_revision_id, rows, selected_run
             ) if view == "full" and fields is None else {}
 
+            from .generation_audio_identity import reuse_identity_basis
             from .generation_performance_snapshot import performance_runtime_settings
             from .project_segment_speech import (
                 SegmentSpeechReferenceIndex,
@@ -641,7 +642,11 @@ class GenerationSegmentReader:
                 uses_segment_speech_references,
             )
 
-            identity_snapshot = selected_run.settings_snapshot_json if selected_run else audio_snapshot
+            # One basis helper keeps these rows and the revision review counters
+            # comparing against the same settings for the same request.
+            identity_snapshot, _reuse_basis = reuse_identity_basis(
+                selected_run, audio_snapshot
+            )
             segment_reference_index = SegmentSpeechReferenceIndex(session)
             project_saved_voice = (view == "full" and fields is None) or (
                 fields is not None and "retained_voice" in fields

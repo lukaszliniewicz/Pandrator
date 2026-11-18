@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -931,6 +931,24 @@ def take_reuse_reason(
     return stored_take_reuse_reason(
         segment.status, take.status, artifact.state, artifact.metadata_json, expected,
     )
+
+
+def reuse_identity_basis(
+    selected_run: Any, current_snapshot: Mapping[str, Any] | None
+) -> tuple[dict[str, Any], str]:
+    """Return the settings snapshot an expected audio identity is built from.
+
+    The segment rows and the revision review counters ask the same question:
+    reusable against which settings? A selected run answers with the snapshot it
+    froze at start, so a run review agrees with its own rows; without one, both
+    use the session's current settings. One helper keeps the two from drifting
+    apart again.
+    """
+    if selected_run is not None:
+        frozen = getattr(selected_run, "settings_snapshot_json", None)
+        if isinstance(frozen, Mapping):
+            return dict(frozen), "selected_run"
+    return dict(current_snapshot or {}), "current_settings"
 
 
 def settings_hash_matches(expected: dict[str, Any], stored_hash: Any) -> bool:

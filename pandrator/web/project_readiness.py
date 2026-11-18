@@ -11,7 +11,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from pandrator.logic.language_capabilities import language_decision
+from pandrator.logic.language_capabilities import (
+    canonical_language_tag,
+    language_decision,
+)
 from pandrator.logic.tts_language_preflight import (
     resolve_tts_language_support,
     validate_tts_language,
@@ -517,6 +520,8 @@ def enrich_project_payload(
             wants_voice = branch["workflow_kind"] != "subtitles"
             speech = _state("not_requested")
             voice = _state("not_requested")
+            route_warning: str | None = None
+            tts_route: dict[str, Any] | None = None
             generation = _state("not_requested")
             run = None
             if wants_voice:
@@ -597,6 +602,46 @@ def enrich_project_payload(
                             "decision": language_decision(support, resolved["tts"].get("language")),
                             "language_support": support,
                         }
+                # An inherited route can be "ready" for a language nobody checked;
+                # report it with its origin so the branch is chosen or confirmed.
+                from .workspace_settings import (
+                    TTS_ROUTE_KEYS,
+                    inherited_tts_route_warning,
+                    settings_provenance,
+                )
+
+                route_language = canonical_language_tag(
+                    resolved["tts"].get("language")
+                    or resolved["tts"].get("target_language"),
+                    allow_auto=True,
+                )
+                route_decision = (
+                    language_decision(support, route_language)
+                    if support
+                    else "unverified"
+                )
+                route_fields = settings_provenance(
+                    snapshots["tts"],
+                    TTS_ROUTE_KEYS,
+                    effective=resolved["tts"],
+                )
+                tts_route = {
+                    **{key: resolved["tts"].get(key) for key in TTS_ROUTE_KEYS},
+                    "origin": {
+                        key: field["origin"] for key, field in route_fields.items()
+                    },
+                    "language_support": route_decision,
+                    "language_support_language": route_language,
+                }
+                route_warning = inherited_tts_route_warning(
+                    {key: resolved["tts"].get(key) for key in TTS_ROUTE_KEYS},
+                    {
+                        key: field["origin"]
+                        for key, field in route_fields.items()
+                    },
+                    language_support=route_decision,
+                    language=route_language,
+                )
                 generation = _stage_state(stages.get("generate_audio"))
                 run = next(
                     (
@@ -664,5 +709,8 @@ def enrich_project_payload(
                 "voice": voice,
                 "generation": generation,
                 "exports": exports,
+                # Advice only: an inherited route still generates when chosen.
+                "warnings": [route_warning] if route_warning else [],
+                **({"tts_route": tts_route} if tts_route else {}),
             }
     return _service(services, "redactor").redact_value(result)

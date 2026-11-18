@@ -149,5 +149,61 @@ def test_an_unsupplied_key_falls_back_to_the_effective_value():
     }
 
 
+def test_service_and_provider_layers_sit_between_global_and_the_session():
+    snapshot = _snapshot(
+        builtin={"service": "audio_cpp"},
+        global_value={"service": "openai"},
+        context={"service": "context"},
+        override={"service": "override"},
+        effective={"service": "override"},
+    )
+    snapshot["service"] = {"service": "vertex_ai"}
+    snapshot["provider"] = {"voice": "Algenib"}
+
+    assert settings_provenance(snapshot, ["service"])["service"]["origin"] == (
+        "session_override"
+    )
+    without_override = {
+        **snapshot,
+        "override": {},
+        "session_context": {},
+        "effective": {"service": "vertex_ai"},
+    }
+    assert settings_provenance(without_override, ["service"])["service"] == {
+        "effective": "vertex_ai",
+        "origin": "service",
+    }
+
+
+def test_a_provider_default_wins_over_the_global_layer():
+    snapshot = _snapshot(
+        builtin={"voice": "alloy"},
+        global_value={"voice": "alloy"},
+        effective={"voice": "Algenib"},
+    )
+    snapshot["service"] = {}
+    snapshot["provider"] = {"voice": "Algenib"}
+
+    assert settings_provenance(snapshot, ["voice"])["voice"] == {
+        "effective": "Algenib",
+        "origin": "provider",
+    }
+
+
+def test_a_key_the_resolver_added_reports_derived():
+    snapshot = _snapshot(
+        builtin={"max_chars_per_line": 42},
+        effective={"max_chars_per_line": 42, "language_defaults": False},
+    )
+
+    assert settings_provenance(snapshot, ["language_defaults"]) == {
+        "language_defaults": {"effective": False, "origin": "derived"}
+    }
+    # A key absent everywhere, including the effective section, stays builtin.
+    assert settings_provenance(snapshot, ["max_cps"]) == {
+        "max_cps": {"effective": None, "origin": "builtin"}
+    }
+
+
 def test_builtin_synchronization_speed_is_1_15():
     assert BUILTIN_DEFAULTS["audio"]["synchronization_speed"] == 1.15

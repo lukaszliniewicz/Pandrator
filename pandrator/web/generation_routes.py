@@ -189,9 +189,12 @@ def register_generation_routes(
                 if "before_revision_number" in request.args
                 else None,
                 include_audio_reuse=not parse_summary_flag(request.args.get("summary")),
+                generation_run_id=request.args.get("generation_run_id") or None,
             )
         except KeyError:
-            return error_response("not_found", "Session not found.", 404)
+            return error_response(
+                "not_found", "Session or generation run not found.", 404
+            )
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         return public_response(result)

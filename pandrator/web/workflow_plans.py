@@ -167,6 +167,17 @@ _EXPORT_OUTPUT_KEYS = (
     "video_tail_extension_policy",
 )
 _EXPORT_AUDIO_KEYS = ("synchronization_speed",)
+# The keys that decide what the transcription and speech stages will do. A plan
+# reports them with their origin so an inherited engine or voice route cannot
+# pass unseen.
+_STT_DECISION_KEYS = ("stt_engine", "stt_model_quantization", "stt_language")
+_TTS_DECISION_KEYS = (
+    "service",
+    "model",
+    "voice",
+    "language",
+    "tts_concurrent_requests",
+)
 
 
 def _resolved_section(
@@ -934,6 +945,113 @@ class WorkflowExecutionPlanService:
         }
         return effective, context
 
+    def _stage_effective_settings(
+        self,
+        session_id: str,
+        overrides: dict[str, Any],
+        resolved: ResolvedWorkflowStage,
+        stages: set[str],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+        """Report the decisive keys of the stages this plan runs, with origins.
+
+        The values are read from the plan's resolved snapshot, as the export
+        block does, so a run override is reflected; the layers come from the
+        session settings read, which is the only place that knows the service
+        connection and provider default layers.
+        """
+
+        from .workspace_settings import WorkspaceSettingsService, settings_provenance
+
+        wanted: list[tuple[str, tuple[str, ...]]] = []
+        if "transcribe" in stages:
+            wanted.append(("stt", _STT_DECISION_KEYS))
+        if "generate_audio" in stages:
+            wanted.append(("tts", _TTS_DECISION_KEYS))
+        if not wanted:
+            return {}, None
+        resolved_snapshot = resolved.payload.get("resolved_settings_snapshot")
+        resolved_snapshot = (
+            resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        )
+        service = WorkspaceSettingsService(self.database)
+        effective: dict[str, dict[str, Any]] = {}
+        fallbacks: dict[str, dict[str, Any]] = {}
+        with self.database.snapshot_session() as db_session:
+            for section, keys in wanted:
+                snapshot = service.get_in_session(db_session, session_id, section)
+                fallbacks[section] = dict(snapshot.get("effective") or {})
+                override = overrides.get(section)
+                effective.update(
+                    settings_provenance(
+                        snapshot,
+                        keys,
+                        override if isinstance(override, dict) else None,
+                        _resolved_section(resolved_snapshot, section, keys),
+                    )
+                )
+        support: dict[str, Any] | None = None
+        if "generate_audio" in stages:
+            from pandrator.logic.tts_language_preflight import (
+                tts_language_support_decision,
+            )
+
+            resolved_tts = resolved_snapshot.get("tts")
+            route = dict(fallbacks.get("tts", {}))
+            if isinstance(resolved_tts, dict):
+                route.update(resolved_tts)
+            support = tts_language_support_decision(route)
+            effective["language_support"] = {
+                "effective": support["decision"],
+                "origin": "derived",
+                "language": support["language"],
+            }
+        return effective, support
+
+    @staticmethod
+    def _stage_disclosure_warnings(
+        effective: dict[str, dict[str, Any]],
+        language_support: dict[str, Any] | None,
+    ) -> list[str]:
+        """Warn about an inherited engine or voice route without blocking it."""
+
+        from .settings_policy import BUILTIN_DEFAULTS
+
+        warnings: list[str] = []
+        engine = effective.get("stt_engine") or {}
+        engine_origin = str(engine.get("origin") or "")
+        engine_value = str(engine.get("effective") or "").strip()
+        builtin_engine = str(BUILTIN_DEFAULTS["stt"].get("stt_engine") or "auto")
+        if (
+            engine_origin in {"global", "service", "provider"}
+            and engine_value
+            and engine_value.casefold() != builtin_engine.casefold()
+        ):
+            warnings.append(
+                f"Speech recognition will use {engine_value}, inherited from the "
+                f"{engine_origin} settings; the built-in default is "
+                f"{builtin_engine}. Set stt.stt_engine on this session to choose "
+                "explicitly."
+            )
+        if language_support is None or language_support.get("decision") != "unverified":
+            return warnings
+        from .workspace_settings import TTS_ROUTE_KEYS, inherited_tts_route_warning
+
+        language = str(language_support.get("language") or "").strip() or str(
+            (effective.get("language") or {}).get("effective") or ""
+        ).strip()
+        warning = inherited_tts_route_warning(
+            {key: (effective.get(key) or {}).get("effective") for key in TTS_ROUTE_KEYS},
+            {
+                key: str((effective.get(key) or {}).get("origin") or "")
+                for key in TTS_ROUTE_KEYS
+            },
+            language_support="unverified",
+            language=language,
+        )
+        if warning:
+            warnings.append(warning)
+        return warnings
+
     @staticmethod
     def _effective_export_warnings(
         *,
@@ -1201,6 +1319,20 @@ class WorkflowExecutionPlanService:
                     context=export_context,
                 )
             )
+        effective_stage: dict[str, dict[str, Any]] = {}
+        stage_support: dict[str, Any] | None = None
+        with execution_actor_scope(context.actor):
+            effective_stage, stage_support = self._stage_effective_settings(
+                session_id,
+                supplied,
+                resolved,
+                {str(step.get("stage") or "") for step in steps},
+            )
+        if effective_stage:
+            warnings.extend(
+                self._stage_disclosure_warnings(effective_stage, stage_support)
+            )
+        effective_settings = {**effective_stage, **(effective_export or {})}
         public_plan = {
             "schema_version": PLAN_SCHEMA_VERSION,
             "plan_id": plan_id,
@@ -1230,8 +1362,8 @@ class WorkflowExecutionPlanService:
                     resolved.payload.get("resolved_settings_snapshot") or {}
                 ),
                 **(
-                    {"effective": effective_export}
-                    if effective_export is not None
+                    {"effective": effective_settings}
+                    if effective_settings
                     else {}
                 ),
             },

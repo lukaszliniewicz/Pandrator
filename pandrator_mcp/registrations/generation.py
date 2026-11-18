@@ -216,7 +216,7 @@ def register_generation_plan_tools(
     def speech_plan_revisions_tool(
         session_id: str, limit: int = 50, before_revision_number: int | None = None
     , response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
-        """Inspect automatic/manual revision history and ancestry as summaries; reusable/stale take counts are checked for the active revision only, when it is on the returned page. Read each item's audio_reuse_checked; the top-level flag describes the summary and stays false. If the active revision's counts time out or it is gone, its item stays unchecked and a warning names the code."""
+        """Inspect automatic/manual revision history and ancestry as summaries; reusable and stale take counts are checked for the active revision only, when it is on the returned page, and are split by reason (settings changed, not generated, identity unknown). Read each item's audio_reuse_checked; the top-level flag describes the summary and stays false. If the active revision's counts time out or it is gone, its item stays unchecked and a warning names the code."""
         return response(_call_with_validated_input(
             list_speech_plan_revisions,
             runtime,

@@ -1163,6 +1163,163 @@ class GenerationAudioIdentityTests(unittest.TestCase):
                     ),
                 )
 
+    def _persist_tts(self, session_id, values):
+        """Persist a TTS selection so the current settings match the seeded run."""
+        current = self.client.get(
+            f"/api/v1/sessions/{session_id}/settings/tts", headers=self.headers
+        ).get_json()
+        saved = self.client.put(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={"value": {**current["override"], **values}},
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+
+    def test_review_counts_each_reuse_bucket_separately(self):
+        from pandrator.web.generation_audio_identity import IDENTITY_KEY as key
+
+        session_id, _revision_id, segment_ids = self._create_case(
+            [{"text": f"Block {index}"} for index in range(7)]
+        )
+        self._persist_tts(session_id, self._override()["tts"])
+        seeded = self._seed_takes(session_id, segment_ids[:6], self._override())
+        artifacts = {}
+        with self.database.session() as session:
+            for segment_id in segment_ids[:6]:
+                take = session.get(AudioTake, seeded[segment_id])
+                artifacts[segment_id] = session.get(Artifact, take.artifact_id)
+            # One take of each settings-changed kind, one unknown identity, and
+            # one take that never completed. The seventh block has no take.
+            changes = {
+                segment_ids[1]: ("settings_hash", "different-model-or-delivery"),
+                segment_ids[2]: ("voice_reference_hash", "different-voice-reference"),
+                segment_ids[3]: ("performance_request_hash", "different-context"),
+            }
+            for segment_id, (field, value) in changes.items():
+                metadata = dict(artifacts[segment_id].metadata_json or {})
+                metadata[key] = {**metadata[key], field: value}
+                artifacts[segment_id].metadata_json = metadata
+            unknown = dict(artifacts[segment_ids[4]].metadata_json or {})
+            unknown.pop(key)
+            artifacts[segment_ids[4]].metadata_json = unknown
+            session.get(AudioTake, seeded[segment_ids[5]]).status = "failed"
+
+        history = self.client.get(
+            f"/api/v1/sessions/{session_id}/generation-plan/revisions",
+            headers=self.headers,
+        ).get_json()
+        item = history["items"][0]
+
+        self.assertEqual("current_settings", history["reuse_basis"])
+        self.assertEqual("current_settings", item["reuse_basis"])
+        self.assertEqual(7, item["active_segment_count"])
+        self.assertEqual(1, item["reusable_segment_count"])
+        self.assertEqual(1, item["generation_settings_changed_segment_count"])
+        self.assertEqual(1, item["voice_reference_changed_segment_count"])
+        self.assertEqual(1, item["performance_changed_segment_count"])
+        self.assertEqual(3, item["settings_changed_segment_count"])
+        # The alias still means "settings changed", not "everything stale".
+        self.assertEqual(
+            item["settings_changed_segment_count"],
+            item["audio_settings_stale_segment_count"],
+        )
+        self.assertEqual(2, item["not_generated_segment_count"])
+        self.assertEqual(1, item["identity_unknown_segment_count"])
+        self.assertEqual(
+            item["identity_unknown_segment_count"],
+            item["audio_identity_unknown_segment_count"],
+        )
+        self.assertEqual(6, item["stale_segment_count"])
+        self.assertEqual(
+            item["active_segment_count"] - item["reusable_segment_count"],
+            item["settings_changed_segment_count"]
+            + item["not_generated_segment_count"]
+            + item["identity_unknown_segment_count"],
+        )
+
+    def test_selected_run_review_agrees_with_its_segment_rows(self):
+        from pandrator.web.generation_audio_identity import IDENTITY_KEY as key
+        from pandrator.web.generation_review import revision_history
+
+        session_id, revision_id, segment_ids = self._create_case(
+            [{"text": f"Block {index}"} for index in range(3)]
+        )
+        override = self._override()
+        self._persist_tts(session_id, override["tts"])
+        seeded = self._seed_takes(session_id, segment_ids, override)
+        frozen = self._resolved(session_id, override)
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=revision_id,
+                status="completed",
+                sequence_number=1,
+                settings_snapshot_json=frozen,
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+            # The seeded takes belong to the run, as a real run's takes do.
+            for take_id in seeded.values():
+                session.get(AudioTake, take_id).generation_run_id = run_id
+            take = session.get(AudioTake, seeded[segment_ids[1]])
+            artifact = session.get(Artifact, take.artifact_id)
+            metadata = dict(artifact.metadata_json or {})
+            metadata[key] = {**metadata[key], "settings_hash": "different-take"}
+            artifact.metadata_json = metadata
+        # Current settings drift after the run froze; only the run's own basis
+        # may decide reuse for a run review.
+        current = self.client.get(
+            f"/api/v1/sessions/{session_id}/settings/tts", headers=self.headers
+        ).get_json()
+        saved = self.client.put(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={"value": {**current["effective"], "model": "model-b"}},
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+
+        history = revision_history(
+            self.database, session_id, generation_run_id=run_id
+        )
+        item = history["items"][0]
+        self.assertEqual("selected_run", history["reuse_basis"])
+        self.assertEqual("selected_run", item["reuse_basis"])
+        self.assertEqual(2, item["reusable_segment_count"])
+        self.assertEqual(1, item["generation_settings_changed_segment_count"])
+        self.assertEqual(1, item["stale_segment_count"])
+
+        rows = self.client.get(
+            f"/api/v1/sessions/{session_id}/generation-segments",
+            query_string={
+                "generation_run_id": run_id,
+                "plan_revision_id": revision_id,
+            },
+            headers=self.headers,
+        ).get_json()
+        reasons = {row["id"]: row["audio_reuse_reason"] for row in rows["items"]}
+        self.assertEqual(3, len(reasons))
+        self.assertEqual("generation_settings_changed", reasons[segment_ids[1]])
+        self.assertEqual(
+            item["reusable_segment_count"],
+            sum(1 for reason in reasons.values() if reason == "reusable"),
+        )
+        self.assertEqual(
+            item["generation_settings_changed_segment_count"],
+            sum(
+                1
+                for reason in reasons.values()
+                if reason == "generation_settings_changed"
+            ),
+        )
+        self.assertEqual(
+            item["stale_segment_count"],
+            sum(1 for reason in reasons.values() if reason != "reusable"),
+        )
+        # Without a selected run the same review reports current settings.
+        current_basis = revision_history(self.database, session_id)
+        self.assertEqual("current_settings", current_basis["reuse_basis"])
+
     def test_cast_reassignment_stales_frozen_takes(self):
         from copy import deepcopy
 

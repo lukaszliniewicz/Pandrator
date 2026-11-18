@@ -348,6 +348,65 @@ class MediaEditWorkflowPlannerTests(unittest.TestCase):
         self.assertEqual("preserve", action["arguments"]["value"]["unrelated"])
         self.assertEqual("moss", action["arguments"]["value"]["stt_engine"])
 
+    def test_transcription_phase_reports_the_inherited_stt_engine(self):
+        media = _state(timing=False)
+        settings = {
+            "effective": {
+                "stt_engine": "moss",
+                "stt_model_quantization": "q8_0",
+                "stt_language": "en",
+            },
+            "origins": {
+                "stt_engine": "global",
+                "stt_model_quantization": "global",
+                "stt_language": "session_context",
+            },
+            "override": {},
+            "revision": 3,
+        }
+        application = _Application(media=media, settings=settings)
+
+        result = _plan(application)
+
+        phase = result.result["phases"][2]
+        self.assertEqual("transcribe", phase["phase"])
+        self.assertEqual(
+            {"effective": "moss", "origin": "global"},
+            phase["stt"]["stt_engine"],
+        )
+        self.assertEqual(
+            {"effective": "q8_0", "origin": "global"},
+            phase["stt"]["stt_model_quantization"],
+        )
+        self.assertIn(
+            "Speech recognition will use moss, inherited from the global settings; ",
+            phase["stt"]["warning"],
+        )
+        self.assertIn(
+            "Set stt.stt_engine on this session to choose explicitly.",
+            phase["stt"]["warning"],
+        )
+
+    def test_transcription_phase_keeps_quiet_when_the_session_chooses_the_engine(self):
+        media = _state(timing=False)
+        settings = {
+            "effective": {"stt_engine": "parakeet"},
+            "origins": {"stt_engine": "session_override"},
+            "override": {"stt_engine": "parakeet"},
+            "revision": 4,
+        }
+        application = _Application(media=media, settings=settings)
+
+        result = _plan(application)
+
+        phase = result.result["phases"][2]
+        self.assertEqual(
+            {"effective": "parakeet", "origin": "session_override"},
+            phase["stt"]["stt_engine"],
+        )
+        self.assertNotIn("warning", phase["stt"])
+        self.assertIsNone(phase["stt"]["stt_language"]["origin"])
+
     def test_ctc_and_asr_execution_needed_return_native_transcribe_plan(self):
         media = _state(timing=False)
         application = _Application(media=media)

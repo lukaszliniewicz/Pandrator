@@ -499,9 +499,16 @@ def test_registered_generation_admission_schema_defaults_true(tmp_path: Path) ->
 REUSE = {
     "reusable_segment_count": 7,
     "stale_segment_count": 2,
+    "settings_changed_segment_count": 1,
+    "generation_settings_changed_segment_count": 0,
+    "voice_reference_changed_segment_count": 1,
+    "performance_changed_segment_count": 0,
+    "not_generated_segment_count": 1,
+    "identity_unknown_segment_count": 0,
     "audio_settings_stale_segment_count": 1,
     "audio_identity_unknown_segment_count": 0,
     "audio_reuse_checked": True,
+    "reuse_basis": "current_settings",
 }
 
 
@@ -510,9 +517,16 @@ def _unchecked(revision_id: str) -> dict[str, Any]:
         "id": revision_id,
         "reusable_segment_count": None,
         "stale_segment_count": None,
+        "settings_changed_segment_count": None,
+        "generation_settings_changed_segment_count": None,
+        "voice_reference_changed_segment_count": None,
+        "performance_changed_segment_count": None,
+        "not_generated_segment_count": None,
+        "identity_unknown_segment_count": None,
         "audio_settings_stale_segment_count": None,
         "audio_identity_unknown_segment_count": None,
         "audio_reuse_checked": False,
+        "reuse_basis": "current_settings",
     }
 
 

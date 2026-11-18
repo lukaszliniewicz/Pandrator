@@ -355,9 +355,16 @@ def revise_speech_block_plan(
 _REUSE_FIELDS = (
     "reusable_segment_count",
     "stale_segment_count",
+    "settings_changed_segment_count",
+    "generation_settings_changed_segment_count",
+    "voice_reference_changed_segment_count",
+    "performance_changed_segment_count",
+    "not_generated_segment_count",
+    "identity_unknown_segment_count",
     "audio_settings_stale_segment_count",
     "audio_identity_unknown_segment_count",
     "audio_reuse_checked",
+    "reuse_basis",
 )
 # The summary already succeeded; these failures of the optional detail read only
 # leave the active item unchecked. Access and authentication failures still raise.
@@ -407,8 +414,8 @@ def _with_active_reuse_counts(
         ]
     revision = detail.get("revision") if isinstance(detail, dict) else None
     if not isinstance(revision, dict) or not all(key in revision for key in _REUSE_FIELDS):
-        # Merge all five fields or none, so a partial answer never marks the
-        # active item checked with counts it did not return.
+        # Merge the whole reuse block or none, so a partial answer never marks
+        # the active item checked with counts it did not return.
         return payload, [
             WarningMessage(
                 code=_INCOMPLETE_DETAIL_CODE,

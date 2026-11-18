@@ -199,6 +199,7 @@ def backend_payload(section: str) -> dict[str, Any]:
         },
         "effective": {"enabled": True, "access_token": PRIVATE},
         "session_context": {"target_language": "ja", "secret": PRIVATE},
+        "origins": {"enabled": "session_override"},
         "revision": 3,
         "global_revision": 7,
         "private_fixture": PRIVATE,
@@ -299,6 +300,7 @@ def expected_projection(case: Case) -> dict[str, Any]:
             {
                 "effective": {"enabled": True},
                 "session_context": {"target_language": "ja"},
+                "origins": {"enabled": "session_override"},
                 "global_revision": 7,
                 **(SUBTITLE_FIELDS if section == "subtitles" else {}),
             }

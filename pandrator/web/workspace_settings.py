@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -197,9 +197,14 @@ def settings_provenance(
 
     ``snapshot`` is a layered section snapshot as returned by ``get_in_session``.
     The origin is the last layer that supplies the key, from the built-in
-    defaults up to the run override. A value the resolver changed afterwards,
-    such as the voiceover clamps, reports ``clamped`` so a caller never mistakes
-    a rewritten value for the one somebody chose.
+    defaults up to the run override: ``builtin``, ``global``, ``service``,
+    ``provider``, ``session_context``, ``session_override``, ``run_override``.
+    Only ``tts`` and ``stt`` have the service-connection and provider-default
+    layers; every other section reports them as empty dicts. A value the
+    resolver changed afterwards, such as the voiceover clamps, reports
+    ``clamped`` so a caller never mistakes a rewritten value for the one
+    somebody chose. A key no layer supplies but the effective section carries,
+    such as the automatic subtitle profile, reports ``derived``.
 
     Pass ``effective`` when the caller already holds the resolved section, so the
     reported value is the one the run really uses. Without it the helper merges
@@ -210,6 +215,8 @@ def settings_provenance(
     layers = (
         ("builtin", snapshot.get("builtin")),
         ("global", snapshot.get("global")),
+        ("service", snapshot.get("service")),
+        ("provider", snapshot.get("provider")),
         ("session_context", snapshot.get("session_context")),
         ("session_override", snapshot.get("override")),
         ("run_override", run_override),
@@ -225,17 +232,131 @@ def settings_provenance(
         resolved_effective = dict(effective)
     fields: dict[str, dict[str, Any]] = {}
     for key in keys:
-        origin = "builtin"
-        supplied = resolved_effective.get(key)
+        origin: str | None = None
+        supplied: Any = None
         for name, values in layers:
             if isinstance(values, dict) and key in values:
                 origin, supplied = name, values[key]
         value = resolved_effective.get(key)
+        if origin is None:
+            # A layer-less key can only come from the resolver itself, which
+            # adds it to the effective section after the layers are merged.
+            normalized = "derived" if key in resolved_effective else "builtin"
+        else:
+            normalized = "clamped" if value != supplied else origin
         fields[key] = {
             "effective": value,
-            "origin": "clamped" if value != supplied else origin,
+            "origin": normalized,
         }
     return fields
+
+
+# The service connection and the provider defaults are the two layers the run
+# resolver merges between ``global`` and ``session_context``, for ``tts`` and
+# ``stt`` only. ``provider_configs`` is the connection catalogue rather than a
+# setting, so the exposed layer leaves it out and the read stays small.
+_HIDDEN_LAYER_CATALOGUE_KEYS = frozenset({"provider_configs"})
+
+# The keys that decide which voice route a run takes, reported with their origin
+# by the tts settings read, branch readiness and plans.
+TTS_ROUTE_KEYS = ("service", "model", "voice", "language")
+# Origins that mean "nobody chose this for the session".
+INHERITED_SETTING_ORIGINS = frozenset({"builtin", "global", "service", "provider"})
+
+
+def inherited_tts_route_warning(
+    route: Mapping[str, Any],
+    origins: Mapping[str, str],
+    *,
+    language_support: str | None,
+    language: str = "",
+) -> str | None:
+    """Name an inherited voice route that is not verified for its language.
+
+    Warnings never block; an ``unsupported`` decision still stops generation.
+    """
+    if language_support != "unverified":
+        return None
+    origin = next(
+        (
+            str(origins.get(key) or "")
+            for key in ("service", "voice")
+            if origins.get(key) in INHERITED_SETTING_ORIGINS
+        ),
+        "",
+    )
+    if not origin:
+        return None
+    names = "/".join(str(route.get(key) or "") for key in ("service", "model", "voice"))
+    source = "built-in defaults" if origin == "builtin" else f"{origin} settings"
+    return (
+        f"The speech route {names} was inherited from the {source} and is "
+        f"not verified for {language or 'this language'}. Choose a voice for this "
+        "language, or confirm this one."
+    )
+
+
+def _setting_layer(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Copy one hidden layer without its provider catalogue."""
+    return {
+        key: deepcopy(item)
+        for key, item in (value or {}).items()
+        if str(key) not in _HIDDEN_LAYER_CATALOGUE_KEYS
+    }
+
+
+def _stt_provider_record(
+    connection_value: Mapping[str, Any], engine: str
+) -> dict[str, Any] | None:
+    selected = next(
+        (
+            item
+            for item in connection_value.get("provider_configs") or []
+            if isinstance(item, Mapping)
+            and str(item.get("id") or "").strip().lower().replace("-", "_") == engine
+        ),
+        None,
+    )
+    return dict(selected) if isinstance(selected, Mapping) else None
+
+
+def _selected_service(
+    section: str,
+    seed: Mapping[str, Any],
+    connection_value: Mapping[str, Any],
+    *,
+    cache: dict | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Return the route's service record and the defaults that record supplies.
+
+    This is the one place that reads the service connection layers for ``tts``
+    and ``stt``. ``resolve_in_session`` merges the returned defaults as the
+    ``provider`` layer and the read exposes the ``service`` layer beside it, so
+    the two can never choose different providers. Pass the caller's
+    request-local ``cache`` so one request builds the provider catalogue once.
+    """
+    selected: dict[str, Any] | None
+    if section == "tts":
+        from pandrator.logic import tts_handler
+
+        selected = tts_handler.get_service_config(
+            dict(seed), str(seed.get("service") or "XTTS"), _cache=cache
+        )
+    elif section == "stt":
+        engine = (
+            str(seed.get("stt_engine") or seed.get("stt_backend") or "whisper")
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
+        selected = _stt_provider_record(connection_value, engine)
+    else:
+        return None, {}
+    defaults = selected.get("settings") if isinstance(selected, Mapping) else None
+    return (
+        dict(selected) if isinstance(selected, Mapping) else None,
+        dict(defaults) if isinstance(defaults, Mapping) else {},
+    )
 
 
 @dataclass(slots=True)
@@ -420,6 +541,104 @@ class WorkspaceSettingsService:
             "applicable_groups": applicable_groups,
         }
 
+    def _hidden_layers_in_session(
+        self,
+        session: Session,
+        section: str,
+        workspace_id: str,
+        *,
+        builtin: Mapping[str, Any],
+        global_value: Mapping[str, Any],
+        session_context: Mapping[str, Any],
+        override_value: Mapping[str, Any],
+        service_config_cache: dict | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+        """Resolve the service connection and provider default layers.
+
+        They sit between ``global`` and ``session_context`` and only ``tts`` and
+        ``stt`` have them. The returned service and provider copies leave the
+        provider catalogue out; the selected service record is returned whole so
+        a caller can ask about this route without resolving it again.
+        """
+        if section not in {"tts", "stt"}:
+            return {}, {}, None
+        row = workspace_setting_in_workspace(
+            session, workspace_id, f"services.{section}"
+        )
+        connection_value = (
+            dict(row.value_json)
+            if row is not None and isinstance(row.value_json, dict)
+            else {}
+        )
+        seed = _merge(
+            dict(builtin),
+            dict(global_value),
+            connection_value,
+            dict(session_context),
+            dict(override_value),
+        )
+        selected, provider_defaults = _selected_service(
+            section, seed, connection_value, cache=service_config_cache
+        )
+        return (
+            _setting_layer(connection_value),
+            _setting_layer(provider_defaults),
+            selected,
+        )
+
+    @staticmethod
+    def _tts_route(
+        *,
+        global_value: dict[str, Any],
+        service_layer: dict[str, Any],
+        provider_layer: dict[str, Any],
+        session_context: dict[str, Any],
+        override_value: dict[str, Any],
+        selected: Mapping[str, Any] | None,
+        service_config_cache: dict | None = None,
+    ) -> dict[str, Any]:
+        """Report the voice route this session resolves, with each origin.
+
+        This is the session's route: a run override can still change it, and the
+        plan and receipt routes are read from the resolved section, which does
+        include one.
+        """
+        from pandrator.logic.tts_language_preflight import (
+            tts_language_support_decision,
+        )
+
+        route_effective = _merge(
+            BUILTIN_DEFAULTS["tts"],
+            normalize_tts_voice_aliases(global_value),
+            service_layer,
+            provider_layer,
+            session_context,
+            normalize_tts_voice_aliases(override_value),
+        )
+        origins = settings_provenance(
+            {
+                "builtin": BUILTIN_DEFAULTS["tts"],
+                "global": normalize_tts_voice_aliases(global_value),
+                "service": service_layer,
+                "provider": provider_layer,
+                "session_context": session_context,
+                "override": normalize_tts_voice_aliases(override_value),
+                "effective": route_effective,
+            },
+            TTS_ROUTE_KEYS,
+        )
+        support = tts_language_support_decision(
+            route_effective,
+            endpoint=dict(selected) if selected is not None else None,
+            _service_config_cache=service_config_cache,
+        )
+        return {
+            **{key: route_effective.get(key) for key in TTS_ROUTE_KEYS},
+            "origin": {key: field["origin"] for key, field in origins.items()},
+            "language_support": support["decision"],
+            "language_support_language": support["language"],
+        }
+
     def get(self, session_id: str, section: str) -> dict[str, Any]:
         section = self._validate_section(section)
         with self.database.snapshot_session() as session:
@@ -437,7 +656,11 @@ class WorkspaceSettingsService:
         require_current_session_access(session, session_id)
         actual_workspace_id = _session_workspace_id(session, session_id)
         return self._get_in_workspace(
-            session, session_id, section, actual_workspace_id
+            session,
+            session_id,
+            section,
+            actual_workspace_id,
+            _service_config_cache={},
         )
 
     def _prepare_read_context(
@@ -503,6 +726,7 @@ class WorkspaceSettingsService:
         workspace_id: str,
         *,
         _read_context: _SettingsReadContext | None = None,
+        _service_config_cache: dict | None = None,
     ) -> dict[str, Any]:
         """Resolve one section inside an already validated workspace."""
         section = self._validate_section(section)
@@ -736,6 +960,37 @@ class WorkspaceSettingsService:
             "revision": override.revision if override else 0,
             "global_revision": global_record.revision if global_record else 0,
         }
+        service_layer, provider_layer, selected_service = self._hidden_layers_in_session(
+            session,
+            section,
+            workspace_id,
+            builtin=result["builtin"],
+            global_value=global_value,
+            session_context=session_context,
+            override_value=override_value,
+            service_config_cache=_service_config_cache,
+        )
+        result["service"] = service_layer
+        result["provider"] = provider_layer
+        # Origins name the highest layer that supplies each key of the effective
+        # section this read returns, including the service and provider layers
+        # for tts and stt. Where the session layers resolve a different value
+        # than the layer supplies, the helper reports ``clamped``; the resolved
+        # route with its exact origins is reported separately as ``tts_route``.
+        result["origins"] = {
+            key: field["origin"]
+            for key, field in settings_provenance(result, list(effective)).items()
+        }
+        if section == "tts":
+            result["tts_route"] = self._tts_route(
+                global_value=global_value,
+                service_layer=service_layer,
+                provider_layer=provider_layer,
+                session_context=session_context,
+                override_value=override_value,
+                selected=selected_service,
+                service_config_cache=_service_config_cache,
+            )
         if section == "subtitles":
             from .export_subtitles import subtitle_profile
             from .settings_policy import adapt_runtime_settings
@@ -995,7 +1250,11 @@ class WorkspaceSettingsService:
             )
         if section == "tts":
             previous = self._get_in_workspace(
-                session, session_id, section, workspace_id
+                session,
+                session_id,
+                section,
+                workspace_id,
+                _service_config_cache={},
             )["effective"]
             value = self._prepare_tts_value(previous, value)
         if section == "output":
@@ -1153,6 +1412,10 @@ class WorkspaceSettingsService:
         workspace_id = _session_workspace_id(session, session_id)
         requested = sections or list(SETTING_SECTIONS)
         override = run_override or {}
+        # One request-local catalogue cache: the read resolves the service
+        # connection layers and the merge below picks the same provider, so the
+        # provider catalogue is built once per request, not twice.
+        service_config_cache: dict = {}
         read_context = (
             self._prepare_read_context(session, session_id, workspace_id, requested)
             if len(requested) > 1
@@ -1165,6 +1428,7 @@ class WorkspaceSettingsService:
                 section,
                 workspace_id,
                 _read_context=read_context,
+                _service_config_cache=service_config_cache,
             )
             for section in requested
         }
@@ -1176,6 +1440,10 @@ class WorkspaceSettingsService:
                 current_tts["builtin"], current_tts["global"],
                 current_tts.get("session_context", {}), candidate,
             )
+            # The layers no longer describe the candidate, so its origin report
+            # is dropped rather than left naming the stored selection.
+            current_tts.pop("origins", None)
+            current_tts.pop("tts_route", None)
         resolved = {
             section: _merge(
                 snapshots[section]["effective"],
@@ -1204,12 +1472,9 @@ class WorkspaceSettingsService:
                 snapshot["override"],
                 override.get("tts", {}),
             )
-            selected = tts_handler.get_service_config(
-                selection_seed, str(selection_seed.get("service") or "XTTS")
+            selected, provider_defaults = _selected_service(
+                "tts", selection_seed, connection_value, cache=service_config_cache
             )
-            provider_defaults = selected.get("settings") if selected else None
-            if not isinstance(provider_defaults, dict):
-                provider_defaults = {}
             resolved["tts"] = _merge(
                 snapshot["builtin"],
                 snapshot["global"],
@@ -1280,29 +1545,9 @@ class WorkspaceSettingsService:
                 snapshot["override"],
                 override.get("stt", {}),
             )
-            selected_id = (
-                str(
-                    selection_seed.get("stt_engine")
-                    or selection_seed.get("stt_backend")
-                    or "whisper"
-                )
-                .strip()
-                .lower()
-                .replace("-", "_")
+            _selected, provider_defaults = _selected_service(
+                "stt", selection_seed, connection_value
             )
-            selected = next(
-                (
-                    item
-                    for item in connection_value.get("provider_configs", [])
-                    if isinstance(item, dict)
-                    and str(item.get("id") or "").strip().lower().replace("-", "_")
-                    == selected_id
-                ),
-                None,
-            )
-            provider_defaults = selected.get("settings") if selected else None
-            if not isinstance(provider_defaults, dict):
-                provider_defaults = {}
             resolved["stt"] = _merge(
                 snapshot["builtin"],
                 snapshot["global"],

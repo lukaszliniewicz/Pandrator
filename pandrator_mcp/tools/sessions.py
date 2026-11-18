@@ -371,6 +371,10 @@ def get_session_settings(
         ),
         "revision": payload.get("revision"),
         "global_revision": payload.get("global_revision"),
+        # Origins only, never the raw layers, so the reply stays small.
+        "origins": (
+            payload.get("origins") if isinstance(payload.get("origins"), dict) else {}
+        ),
         **(
             {
                 "subtitle_settings_provenance": payload.get("subtitle_settings_provenance"),

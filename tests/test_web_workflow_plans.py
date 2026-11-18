@@ -277,7 +277,8 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         changed = False
 
         def replace_after_settings(
-            service, db_session, target, section, workspace_id, *, _read_context=None
+            service, db_session, target, section, workspace_id, *,
+            _read_context=None, _service_config_cache=None,
         ):
             nonlocal changed
             result = original_get(
@@ -287,6 +288,7 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                 section,
                 workspace_id,
                 _read_context=_read_context,
+                _service_config_cache=_service_config_cache,
             )
             if target == session_id and section == last_section and not changed:
                 changed = True
@@ -381,11 +383,13 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             ))
 
         def replace_after_text(
-            service, db_session, target, section, workspace_id, *, _read_context=None
+            service, db_session, target, section, workspace_id, *,
+            _read_context=None, _service_config_cache=None,
         ):
             result = original_get(
                 service, db_session, target, section, workspace_id,
                 _read_context=_read_context,
+                _service_config_cache=_service_config_cache,
             )
             if target == session_id and section == "text":
                 with database.session() as writer:
@@ -448,7 +452,8 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         changed = False
 
         def update_once(
-            service, db_session, target, section, workspace_id, *, _read_context=None
+            service, db_session, target, section, workspace_id, *,
+            _read_context=None, _service_config_cache=None,
         ):
             nonlocal changed
             result = original_get(
@@ -458,6 +463,7 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                 section,
                 workspace_id,
                 _read_context=_read_context,
+                _service_config_cache=_service_config_cache,
             )
             if target == session_id and not changed:
                 changed = True
@@ -883,6 +889,146 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                     ],
                     [item for item in plan["warnings"] if "rushed" in item],
                 )
+
+    def _set_global_setting(self, key, value):
+        with self.extension["database"].session() as db_session:
+            workspace_id = initial_personal_workspace(db_session).id
+            record = db_session.get(WorkspaceSetting, (workspace_id, key))
+            if record is None:
+                db_session.add(
+                    WorkspaceSetting(
+                        workspace_id=workspace_id,
+                        key=key,
+                        value_json=value,
+                        revision=1,
+                    )
+                )
+            else:
+                record.value_json = value
+                record.revision += 1
+
+    def test_transcribe_plan_names_an_inherited_stt_engine(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="wav",
+        )
+        self._set_global_setting(
+            "defaults.stt",
+            {"stt_engine": "moss", "stt_model_quantization": "q8_0"},
+        )
+
+        plan = self._plan(session_id, target_stage="transcribe")
+        effective = plan["settings"]["effective"]
+
+        self.assertEqual(
+            {"effective": "moss", "origin": "global"}, effective["stt_engine"]
+        )
+        self.assertEqual("global", effective["stt_model_quantization"]["origin"])
+        self.assertIn("stt_language", effective)
+        self.assertTrue(
+            [
+                item
+                for item in plan["warnings"]
+                if item.startswith("Speech recognition will use moss, inherited from "
+                                   "the global settings")
+            ],
+            plan["warnings"],
+        )
+
+    def test_transcribe_plan_keeps_quiet_when_the_session_chooses_an_engine(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="wav",
+        )
+        self._set_global_setting("defaults.stt", {"stt_engine": "moss"})
+        current = self.client.get(
+            f"/api/v1/sessions/{session_id}/settings/stt", headers=self.headers
+        ).get_json()
+        saved = self.client.put(
+            f"/api/v1/sessions/{session_id}/settings/stt",
+            json={"value": {**current["effective"], "stt_engine": "parakeet"}},
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+
+        plan = self._plan(session_id, target_stage="transcribe")
+
+        self.assertEqual(
+            {"effective": "parakeet", "origin": "session_override"},
+            plan["settings"]["effective"]["stt_engine"],
+        )
+        self.assertFalse(
+            [item for item in plan["warnings"] if "Speech recognition" in item]
+        )
+
+    def test_generate_audio_plan_warns_about_an_inherited_unverified_route(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        self._set_global_setting(
+            "defaults.tts",
+            {
+                "service": "vertex_ai",
+                "model": "gemini-2.5-flash-preview-tts",
+                "voice": "Algenib",
+                "language": "ja",
+            },
+        )
+
+        plan = self._plan(session_id, target_stage="generate_audio")
+        effective = plan["settings"]["effective"]
+
+        self.assertEqual("global", effective["service"]["origin"])
+        self.assertEqual(
+            {"effective": "unverified", "origin": "derived", "language": "ja"},
+            effective["language_support"],
+        )
+        self.assertTrue(
+            [
+                item
+                for item in plan["warnings"]
+                if "was inherited from the global settings and is not verified for ja"
+                in item
+            ],
+            plan["warnings"],
+        )
+
+    def test_generate_audio_plan_keeps_quiet_when_the_session_chooses_the_route(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        self._set_global_setting(
+            "defaults.tts",
+            {"service": "vertex_ai", "model": "gemini-2.5-flash-preview-tts"},
+        )
+        current = self.client.get(
+            f"/api/v1/sessions/{session_id}/settings/tts", headers=self.headers
+        ).get_json()
+        saved = self.client.put(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={
+                "value": {
+                    **current["effective"],
+                    "service": "vertex_ai",
+                    "model": "gemini-2.5-flash-preview-tts",
+                    "voice": "Algenib",
+                    "language": "ja",
+                }
+            },
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+        )
+        self.assertEqual(200, saved.status_code, saved.get_json())
+
+        plan = self._plan(session_id, target_stage="generate_audio")
+        effective = plan["settings"]["effective"]
+
+        self.assertEqual("session_override", effective["service"]["origin"])
+        self.assertEqual("unverified", effective["language_support"]["effective"])
+        self.assertFalse(
+            [item for item in plan["warnings"] if "speech route" in item]
+        )
 
     def test_export_plan_does_not_warn_about_dubbing_without_source_audio(self):
         session_id, _artifact_id, _asset_id = self._ready_session(

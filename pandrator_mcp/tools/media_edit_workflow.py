@@ -273,6 +273,34 @@ def _next_action(tool: str, arguments: dict[str, Any], reason: str) -> NextActio
     return NextAction(tool=tool, arguments=arguments, reason=reason)
 
 
+_STT_DISCLOSURE_KEYS = ("stt_engine", "stt_model_quantization", "stt_language")
+
+
+def _stt_disclosure(settings: dict[str, Any]) -> dict[str, Any]:
+    """Report the effective STT engine and where each value came from.
+
+    The origins arrive with the session settings read; this tool does not
+    resolve provenance itself. The warning repeats the backend's plan-time
+    wording so the two routes say the same thing before transcription starts.
+    """
+
+    effective = _mapping(settings.get("effective"))
+    origins = _mapping(settings.get("origins"))
+    block: dict[str, Any] = {
+        key: {"effective": effective.get(key), "origin": origins.get(key)}
+        for key in _STT_DISCLOSURE_KEYS
+    }
+    engine = str(block["stt_engine"]["effective"] or "").strip()
+    origin = str(block["stt_engine"]["origin"] or "")
+    if origin in {"global", "service", "provider"} and engine and engine.casefold() != "auto":
+        block["warning"] = (
+            f"Speech recognition will use {engine}, inherited from the {origin} "
+            "settings; the built-in default is auto. Set stt.stt_engine on this "
+            "session to choose explicitly."
+        )
+    return block
+
+
 def _source_action(
     source: MediaEditSourceReference,
     *,
@@ -874,6 +902,7 @@ def plan_media_edit_workflow(
                                 pass
 
     if blocking_reason:
+        phases[2]["stt"] = _stt_disclosure(settings)
         result = {
             "schema_version": "1",
             "plan_type": "media_edit_workflow",
@@ -889,6 +918,7 @@ def plan_media_edit_workflow(
         }
         return ToolOutcome(result=result)
 
+    phases[2]["stt"] = _stt_disclosure(settings)
     result = {
         "schema_version": "1",
         "plan_type": "media_edit_workflow",

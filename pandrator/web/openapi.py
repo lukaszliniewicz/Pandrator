@@ -3223,7 +3223,8 @@ def build_openapi_document() -> dict:
             },
             "/api/v1/sessions/{sessionId}/settings/{section}": {
                 "get": operation(
-                    "getSessionSettings", "Effective settings and inheritance"
+                    "getSessionSettings",
+                    "Effective settings, each key's origin, and inheritance",
                 ),
                 "put": operation(
                     "putSessionSettings",
@@ -4380,6 +4381,7 @@ def build_openapi_document() -> dict:
         {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
         {"name": "before_revision_number", "in": "query", "schema": {"type": "integer", "minimum": 1}},
         {"name": "summary", "in": "query", "description": "When true, skip audio-reuse inspection: reuse counts are null with audio_reuse_checked=false. Default full preserves the legacy payload.", "schema": {"type": "boolean", "default": False}},
+        {"name": "generation_run_id", "in": "query", "description": "Count reuse against this run's frozen settings snapshot, the same basis its segment rows use. Without it the session's current settings are the basis; reuse_basis names the one used.", "schema": {"type": "string", "minLength": 1, "maxLength": 80}},
     ]
     plan_status = paths["/api/v1/sessions/{sessionId}/generation-plan/status"]["get"]
     plan_status.setdefault("parameters", []).append(

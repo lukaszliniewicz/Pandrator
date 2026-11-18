@@ -1103,6 +1103,9 @@ def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutc
                 ),
             },
             "settings_revision": result.get("revision"),
+            # The backend's post-change read names the route and its origins;
+            # this tool never resolves provenance itself.
+            "tts_route": result.get("tts_route"),
         },
         next_actions=[
             NextAction(
