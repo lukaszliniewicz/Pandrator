@@ -58,7 +58,8 @@ def freeze_speech_snapshot(
     """Freeze plan metadata and language bindings for all or selected segments.
 
     ``segment_ids=None`` validates every active segment; an explicit collection
-    restricts only the language-binding records to those requested for synthesis.
+    restricts the frozen boundaries and the language-binding records to those
+    requested for synthesis.
     ``cast_segment_ids`` restricts cast resolution while retaining whole-plan metadata.
     A segment in ``segment_ids`` (every segment when ``None``) that its adopted
     speaker plan no longer fits refuses the freeze, naming the block.
@@ -109,8 +110,22 @@ def freeze_speech_snapshot(
     )
     if defer_root and not snapshot.get("generation_control_snapshot"):
         snapshot["tts"] = bind_root(session, tts, True)
+    segment_query = select(m.GenerationSegment).where(
+        m.GenerationSegment.plan_revision_id == revision_id,
+        m.GenerationSegment.removed.is_(False),
+    )
+    if segment_ids is not None:
+        segment_query = segment_query.where(
+            m.GenerationSegment.id.in_(tuple(segment_ids))
+        )
+    segments = list(
+        session.scalars(segment_query.order_by(m.GenerationSegment.ordinal))
+    )
     from .speech_boundaries import freeze_boundaries
-    freeze_boundaries(session, revision_id, snapshot)
+    # A run limited to selected blocks freezes their boundaries alone: a review
+    # block left out of the run may name a character removed since, which it
+    # would otherwise fail on.
+    freeze_boundaries(session, revision_id, snapshot, segments=segments)
     if revision is not None and (
         explicit or performance_frozen or session.get(m.SpeechPlanReview, revision_id)
         or (revision.settings_json or {}).get("_prepared_for_review")
@@ -145,15 +160,6 @@ def freeze_speech_snapshot(
         records: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         bindings: dict[str, dict[str, Any]] = {}
         service_config_cache: dict = {}
-        segment_query = select(m.GenerationSegment).where(
-            m.GenerationSegment.plan_revision_id == revision_id,
-            m.GenerationSegment.removed.is_(False),
-        )
-        if segment_ids is not None:
-            segment_query = segment_query.where(
-                m.GenerationSegment.id.in_(tuple(segment_ids))
-            )
-        segments = session.scalars(segment_query.order_by(m.GenerationSegment.ordinal))
         for segment in segments:
             segment_text = segment.optimized_text or segment.text
             segment_settings = segment_performance_settings(

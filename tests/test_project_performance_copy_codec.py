@@ -1057,7 +1057,8 @@ def test_judged_rows_remap_with_ids_and_the_review_signature_on_the_destination(
     assert set(destination["manual_annotations_json"]) == set(expected)
     for key, record in destination["manual_annotations_json"].items():
         assert f'id="{key}"' in record["_speech_xml"]
-    assert 'id="segment-' not in json.dumps(destination)
+    for record in destination["manual_annotations_json"].values():
+        assert 'id="segment-' not in record["_speech_xml"]
     mapped["performance_plans"] = [destination]
     validate_performance_copy_graph(mapped, allow_performance=True)
 
@@ -1090,8 +1091,11 @@ def test_forged_judged_rows_fail_their_own_round_trip(defect):
     elif defect == "review_with_plain_signature":
         frozen["base_signature"] = signature
     elif defect == "annotation_for_dropped_segment":
-        frozen["manual_annotations_json"]["segment-0"] = deepcopy(
-            frozen["manual_annotations_json"]["segment-1"]
+        frozen["manual_annotations_json"]["segment-0"] = normalized_record(
+            "Go on now!",
+            "segment-0",
+            {"speech_xml": '<segment id="segment-0">Go on now!</segment>'},
+            CHARACTERS,
         )
     elif defect == "unit_on_old_text":
         unit.update(text="Go on now.", spoken_text="Go on now.", text_hash=content_hash("Go on now."))

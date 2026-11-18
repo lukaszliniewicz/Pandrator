@@ -72,8 +72,19 @@ _UNSPACED_SCRIPTS = (
 _DIALOGUE_DASHES = frozenset("\u2014\u2013\u2015")
 # What ``str.splitlines`` breaks a line at.
 _LINE_BREAKS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
-# A word, for telling whether an edit adds words beside an event or control.
-_WORD = re.compile(r"\S+")
+# A word, or each character of a script written without spaces between words
+# (CJK, Kana and Hangul), for telling whether an edit adds words beside an event
+# or control: a spaceless sentence then aligns character by character.
+_WORD = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]"
+    r"|[^\s\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+"
+)
+# Past this many tokens an alignment can go quadratic on repeated words, so the
+# edit needs review rather than a proof that no words were added beside an event.
+_MAX_ALIGNED_TOKENS = 2_000
+# The same bound for the character diff: past it, a quotation mark cannot be
+# shown unchanged, so the edit needs review.
+_MAX_DIFFED_CHARS = 10_000
 
 REVIEW_MESSAGE = (
     "This block changed after its speaker plan was adopted and its speaker markup "
@@ -143,6 +154,24 @@ def _spaced_letter(char: str) -> bool:
     return char.isalpha() and not unicodedata.name(char, "").startswith(_UNSPACED_SCRIPTS)
 
 
+def _unspaced_letter(char: str) -> bool:
+    """Whether ``char`` is a letter of a script written without spaces between words."""
+
+    return char.isalpha() and unicodedata.name(char, "").startswith(_UNSPACED_SCRIPTS)
+
+
+def _unspaced_run(text: str, offset: int) -> tuple[int, int] | None:
+    """The run of spaceless-script letters touching ``offset``, if any."""
+
+    start = offset
+    while start > 0 and _unspaced_letter(text[start - 1]):
+        start -= 1
+    end = offset
+    while end < len(text) and _unspaced_letter(text[end]):
+        end += 1
+    return (start, end) if end > start else None
+
+
 def _line_start(text: str, index: int) -> bool:
     """Whether only whitespace stands before ``text[index]`` on its line."""
 
@@ -209,22 +238,35 @@ def _quote_role_changes(old: str, new: str, start: int, end: int, length: int) -
     return False
 
 
-def _quote_changed(old: str, new: str, start: int, end: int, replacement: str) -> bool:
-    """Whether replacing ``old[start:end]`` with ``replacement`` touches a quote.
+def _quote_changed(old: str, new: str) -> bool:
+    """Whether the edit adds, removes or replaces a quotation mark.
 
-    A quotation mark added, removed or replaced, or an apostrophe or dash beside
-    the change turned into one or back, moves where speech starts or ends: in
-    any block, narration may now hold dialogue, or a spoken line an attribution
-    ("“Go,” he said, “now.”"). A dash that opens a line counts as a quotation
-    mark ("— Go — she said."). An apostrophe that stays inside a word ("didn't"
-    to "couldn't") and a dash inside narration are not one.
+    Each part of the character diff is inspected on its own: an edit either
+    side of an unchanged mark leaves it alone, while a mark inserted, deleted or
+    replaced, or an apostrophe or dash beside a changed part turned into one or
+    back, moves where speech starts or ends. In any block, narration may now
+    hold dialogue, or a spoken line an attribution ("“Go,” he said, “now.”"). A
+    dash that opens a line counts as a quotation mark ("— Go — she said."). An
+    apostrophe that stays inside a word ("didn't" to "couldn't") and a dash
+    inside narration are not one.
     """
 
-    return (
-        _quotation_marks(old, start, end)
-        or _quotation_marks(new, start, start + len(replacement))
-        or _quote_role_changes(old, new, start, end, len(replacement))
-    )
+    start, end, replacement = _changed_range(old, new)
+    # A long region of repeated text would make the diff quadratic; without it
+    # the marks cannot be shown unchanged.
+    if max(end - start, len(replacement)) > _MAX_DIFFED_CHARS:
+        return True
+    matcher = SequenceMatcher(None, old[start:end], replacement, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if (
+            _quotation_marks(old, start + i1, start + i2)
+            or _quotation_marks(new, start + j1, start + j2)
+            or _quote_role_changes(old, new, start + i1, start + i2, j2 - j1)
+        ):
+            return True
+    return False
 
 
 def _words_added_beside(old: str, new: str, offsets: Set[int]) -> bool:
@@ -245,6 +287,10 @@ def _words_added_beside(old: str, new: str, offsets: Set[int]) -> bool:
     old_tokens = [old[start:end] for start, end in old_words]
     new_tokens = _WORD.findall(new)
     old_count, new_count = len(old_tokens), len(new_tokens)
+    # Only an alignment can show where added words sit, and a long one can go
+    # quadratic on repeated words; past the limit the edit needs review.
+    if max(old_count, new_count) > _MAX_ALIGNED_TOKENS:
+        return True
     alignments = [SequenceMatcher(None, old_tokens, new_tokens, autojunk=False).get_opcodes()]
     reverse = SequenceMatcher(None, old_tokens[::-1], new_tokens[::-1], autojunk=False)
     alignments.append(
@@ -253,15 +299,23 @@ def _words_added_beside(old: str, new: str, offsets: Set[int]) -> bool:
             for tag, i1, i2, j1, j2 in reverse.get_opcodes()
         ]
     )
+    # Text written without spaces has no word boundary to place new words by:
+    # any change inside the run of such letters that holds an event or control
+    # may have moved words across it, so it needs review.
+    runs = [run for run in (_unspaced_run(old, offset) for offset in offsets) if run]
     for opcodes in alignments:
         for tag, i1, i2, j1, j2 in opcodes:
-            if tag == "equal" or j2 - j1 <= i2 - i1:
+            if tag == "equal":
                 continue
             if i2 > i1:
                 left, right = old_words[i1][0], old_words[i2 - 1][1]
             else:
                 left = old_words[i1 - 1][1] if i1 else 0
                 right = old_words[i1][0] if i1 < old_count else len(old)
+            if any(start <= right and left <= end for start, end in runs):
+                return True
+            if j2 - j1 <= i2 - i1:
+                continue
             if any(left <= offset <= right for offset in offsets):
                 return True
     return False
@@ -329,6 +383,7 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
     if _words_added_beside(old, new, markers):
         return None
     chosen: int | None = None
+    quotes = _quote_changed(old, new)
     # Both extreme placements of the change must fit the same string, so text
     # that repeats the characters beside an edge cannot slip across it.
     for start, end, replacement in _change_placements(old, new):
@@ -354,7 +409,7 @@ def _fit_markup(xml: str, old: str, new: str, segment_id: str) -> str | None:
             return None
         # A quotation mark added, removed or replaced moves where speech
         # starts or ends, with or without a spoken line in the block.
-        if _quote_changed(old, new, start, end, replacement):
+        if quotes:
             return None
     if chosen is None:
         return None
@@ -452,11 +507,7 @@ def fit_entry(
             fitted = validate_annotation(spoken_text, annotation)
             if not _legacy_anchors_hold(annotation, old, spoken_text):
                 return None
-            # Wherever repeated characters let the change sit.
-            if any(
-                _quote_changed(old, spoken_text, start, end, replacement)
-                for start, end, replacement in _change_placements(old, spoken_text)
-            ):
+            if _quote_changed(old, spoken_text):
                 return None
         except ValueError:
             return None

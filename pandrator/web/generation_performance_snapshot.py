@@ -196,7 +196,8 @@ def segment_performance_settings(
     )
     result.pop("_performance", None)
     result.pop("_semantic_context", None)
-    if bool(settings.get("performance_enabled")):
+    if bool(settings.get("performance_enabled")) and text.strip():
+        # A blank block is silent to the plan judge and holds no snapshot entry.
         from .performance_plans import performance_for_segment
 
         annotation = performance_for_segment(snapshot, segment_id, text)
