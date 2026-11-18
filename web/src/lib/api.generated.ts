@@ -7278,7 +7278,7 @@ export interface components {
         };
         GenerationTimingRepairRequest: {
             /**
-             * @description List the candidate blocks, the thresholds in force and the estimated synthesis calls without queueing a job.
+             * @description When true, queue a CPU-only `generation.repair-preview` job that lists the candidates, thresholds and synthesis calls a repair would make, without synthesising audio or changing the plan. Poll the returned job.
              * @default false
              */
             preview?: boolean;
