@@ -11,6 +11,7 @@ from .access.contracts import ProjectAction
 from .access.current_session_policy import require_current_session_access
 from .access.source_ingress_policy import require_source_ingress_access
 from .access.source_library_policy import require_source_asset_access
+from .accounts.model_acquisition import require_model_acquisition
 from .domain_blueprints import DomainBlueprints
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
@@ -428,8 +429,12 @@ def register_source_ingestion_routes(app: DomainBlueprints, context: RouteContex
     @require_auth
     @ingress_guard("source.download_url")
     def source_download_url(session_id: str):
+        # The host performs the fetch with yt-dlp, so the same authority that may
+        # acquire models is required; a non-Administrator is refused here and
+        # the download job refuses again before its first network access.
+        require_model_acquisition(database)
         payload = SourceUrlRequest.model_validate(request.get_json(silent=True) or {})
-        # Reject an unusable scheme or host before any job exists; the job
+        # Reject an unusable scheme, host or port before any job exists; the job
         # repeats this check and resolves the host at download time.
         try:
             source_url = parse_source_url(payload.url).geturl()

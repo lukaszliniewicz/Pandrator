@@ -42,7 +42,7 @@ These change what existing setups do:
 
 ## Subtitles and transcription
 
-- Transcription no longer produces overlapping cues. Each cue's end is trimmed to the next cue's start minus the minimum gap; starts and word timings never move. The result counts `overlaps_clamped` and `overlaps_unresolved`.
+- Transcription no longer produces overlapping cues. Each cue's end is trimmed to the next cue's start minus the minimum gap; starts and word timings never move. A cue that cannot keep the minimum duration, including one that shares its start with the next cue, stays overlapping and counts as `overlaps_unresolved`; trimmed cues count as `overlaps_clamped`.
 - For subtitles made earlier, the subtitle setting `clamp_overlaps` (off by default) trims overlaps at export without changing the text.
 - Parakeet output that glues a number to the word before it ("for16", "in1900", "know,70") gets a space. Other engines keep their text.
 - Export diagnostics list subtitle issues as flat rows with cue numbers (overlaps as cue pairs), instead of strings truncated to `[TRUNCATED]`.
@@ -62,7 +62,7 @@ These change what existing setups do:
 - Waits stop at 25 seconds by default (`PANDRATOR_MCP_MAX_WAIT_SECONDS` or `--max-wait-seconds`) and report `timed_out`, so a host's request timeout no longer cuts them off.
 - `pandrator_create_translation_project` queues the creation and returns a work handle; creating four branches took 45 to 80 seconds inside one request. The web UI is unchanged.
 - Media-edit prepare, get and update, speech-plan topology receipts, translation projects (read and branch creation) and structured workflow plans return a summary by default, with `view="full"` for the complete response. Topology receipts list changed blocks only. A branch summary includes its `source_checkpoint_artifact_id`.
-- New `pandrator_import_source_url` downloads a source from a public URL on the Pandrator host. Non-http(s) URLs, URLs without a host and URLs with credentials are refused before any job exists.
+- New `pandrator_import_source_url` downloads a source from a public URL on the Pandrator host. Only an Administrator may use it, because the host fetches the URL. Non-http(s) URLs, URLs without a host, URLs with credentials and URLs with an unusable port are refused before any job exists.
 - Errors name the way out. Cue tools used on passage-based subtitles point to `pandrator_patch_subtitle_passages`. The media-edit planner, given a session of another kind, says to cut the recording in a `media_edit` session. Submitting while evidence is still running is a 409 `evidence_pending`, not `invalid_model_response`. Other refusals keep the application's reason (`state_conflict`, above). Downloading without a local output root names the operator command that sets one. Blank context-capsule values are ignored.
 - Render and caption-alignment receipts no longer include internal storage paths.
 - The packaged guidance describes the multilingual route (edit, correct the edited subtitles, check fillers, then the translation project), the checks before a voiceover export, the queue fields, and that hotwords do not fix names with Parakeet. `pandrator_recommend_next_steps` no longer sends voiceover goals to voice casting, and points multilingual goals to the translation project.

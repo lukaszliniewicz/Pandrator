@@ -27,7 +27,8 @@ requires its current revision. Import streams through Pandrator's resumable
 upload API and attaches the source; file bytes never enter model context.
 
 For a public video page or media URL, `pandrator_import_source_url` downloads
-the source on the Pandrator host and attaches it; it returns a work handle.
+the source on the Pandrator host and attaches it; it returns a work handle. Only
+an Administrator may use it, because the host fetches the URL.
 
 Plan transcription and execute only the exact reviewed plan. The plan names the
 effective speech-recognition engine and warns about a voice-activity model that
