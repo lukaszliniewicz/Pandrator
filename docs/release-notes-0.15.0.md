@@ -10,7 +10,7 @@
 - **Cleaner subtitles.** Transcription no longer produces overlapping cues, Parakeet's glued numbers ("for16") get their space back, and export diagnostics name the affected cues.
 - **A queue you can read.** Waiting work says why and behind what, retries show at any concurrency, generation estimates the time left, and subtitle evidence no longer waits for a whole render.
 - **MCP for long jobs.** Waits are capped at 25 seconds, responses are compact by default, translation projects are created as durable work, sources can be imported from a URL, and the guidance covers the multilingual route end to end.
-- **Speaker plans survive more edits.** An edit now affects only the blocks it touches in an adopted speaker plan (#167, Patrick Nadeau).
+- **Speaker plans survive more edits.** In a speaker plan made with 0.15, an edit now affects only the blocks it touches (#167, Patrick Nadeau).
 
 Some defaults change: read the upgrade notes in the [detailed changes](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.15.0/docs/release-changes-0.15.0.md) before updating scripted MCP workflows.
 

@@ -12,6 +12,7 @@ These change what existing setups do:
 - **Assemblies are rebuilt once.** Assembly fitting changed (algorithm 2, below), so an assembly made before 0.15 is rebuilt at the next export. Takes are reused; only the assembly is redone.
 - **Timing repair keeps more.** A regenerated neighbour that comes out longer is now kept when it pushes no later speech.
 - **MCP, for scripted callers.** `pandrator_create_translation_project` returns a work handle instead of the project. Waits stop at 25 seconds. Several tools return a summary unless `view="full"` is passed. The MCP contract revision is now `2026-11-18.1`, so reconnect MCP clients after upgrading.
+- **Older speaker plans.** Judging a speaker plan block by block needs each block's speaker, language, node kind and section, which plans record from 0.15 onwards. After any change to its revision, every block of a plan adopted earlier needs review, as the whole plan did in 0.14.5.
 - **Database.** Migration `0089_job_progress_state` adds one nullable column to `jobs`.
 
 ## Dubbed output
@@ -68,7 +69,9 @@ These change what existing setups do:
 
 ## Speaker plans
 
-An adopted speaker plan is judged block by block after an edit ([#167](https://github.com/lukaszliniewicz/Pandrator/pull/167), Patrick Nadeau). Unchanged blocks keep their directions, and so does an edited block whose change fits its markup. Only a block whose markup no longer fits needs review. A run that includes it is refused naming it; a run without it can start. Project copies keep an adopted plan with changed blocks.
+An adopted speaker plan is judged block by block after an edit ([#167](https://github.com/lukaszliniewicz/Pandrator/pull/167), Patrick Nadeau). Unchanged blocks keep their directions, and so does an edited block whose change fits its markup. Only a block whose markup no longer fits needs review. A run that includes it is refused naming it; a run without it can start, and the block preview gives the review message. Project copies keep an adopted plan with changed blocks.
+
+An edit that adds, removes or replaces a quotation mark sends its block to review, in narration as well as dialogue and in both annotation formats, since narration that gains one may now hold a spoken line. A dash that opens a line of dialogue ("— Idę do domu — powiedziała.") counts as a quotation mark, and a single quote between Chinese, Japanese or Thai characters is not taken for an apostrophe.
 
 ## Components
 
