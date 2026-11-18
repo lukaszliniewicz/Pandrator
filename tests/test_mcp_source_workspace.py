@@ -260,8 +260,9 @@ def test_url_import_tool_returns_the_queued_work_handle(tmp_path):
 
 def test_url_import_tool_calls_the_authenticated_route_through_the_client(case, monkeypatch):
     u = team(case, monkeypatch)
-    record = project(u.alice, u.ah, u.workspace_id)
-    application = SourceHttpClient(u.alice, u.ah)
+    # URL import needs an Administrator; the workspace owner has the role.
+    record = project(u.owner, u.oh, u.workspace_id)
+    application = SourceHttpClient(u.owner, u.oh)
     runtime = cast(McpRuntime, SimpleNamespace(require_application=lambda: application))
     url = "https://video.example.invalid/watch?v=fixture"
     outcome = import_source_url_tool(
@@ -294,6 +295,11 @@ def test_url_import_tool_is_registered_with_the_source_write_scope(tmp_path):
             assert set(schema["required"]) == {"session_id", "url"}
             assert schema["properties"]["url"]["minLength"] == 8
             assert schema["properties"]["url"]["maxLength"] == 4_096
-            assert "yt-dlp" in tools["pandrator_import_source_url"].description
+            tool = tools["pandrator_import_source_url"]
+            assert "yt-dlp" in tool.description
+            assert "Administrator" in tool.description
+            # Every accepted call queues another download, so it is not retried
+            # blindly on transport failure.
+            assert tool.annotations.idempotent_hint is False
 
     asyncio.run(exercise())

@@ -11,6 +11,10 @@ from flask.wrappers import Request
 from sqlalchemy import event, func, select
 
 from pandrator.web import models as m
+from pandrator.web.accounts.auth_contracts import USER_BROWSER_SCOPES
+from pandrator.web.accounts.auth_models import UserCredential
+from pandrator.web.accounts.browser_sessions import BrowserSessionStore
+from pandrator.web.accounts.execution_actor import UserActor, execution_actor_scope
 from pandrator.web.jobs import Worker
 from pandrator.web.source_library import SourceLibraryService
 from tests.test_account_authentication_integration import case as case  # noqa: F401
@@ -45,6 +49,34 @@ def execute(f, receipt):
         f.services.jobs, "named-source-ingress", f.services.workflow_handlers.handlers()
     ).run_once()
     return f.services.jobs.get(receipt["id"])
+
+
+def member_actor(f, user_id):
+    """A real, non-Administrator browser credential for a job attribution row."""
+
+    with f.case.database.snapshot_session() as unit:
+        revision = unit.get_one(UserCredential, user_id).auth_revision
+    issued = BrowserSessionStore(f.case.database).issue(
+        user_id,
+        revision,
+        subject=f"member:{user_id}",
+        principal_kind="owner_session",
+        scopes=USER_BROWSER_SCOPES,
+        idle_seconds=3600,
+        absolute_seconds=7200,
+    )
+    principal = BrowserSessionStore(f.case.database).resolve(issued.raw_token)
+    assert principal is not None
+    return UserActor(
+        user_id=principal.user_id,
+        auth_revision=principal.auth_revision,
+        subject=principal.subject,
+        principal_kind=principal.kind,
+        scopes=principal.scopes,
+        token_id=None,
+        browser_session_id=principal.session_id,
+        client_id=principal.client_id,
+    )
 
 
 def downloader(monkeypatch):
@@ -146,7 +178,7 @@ def test_cross_workspace_reuse_denies_before_artifact_body_or_queue(library, mon
     assert counts(f) == before
 
 
-@pytest.mark.parametrize("operation", ["url", "reuse"])
+@pytest.mark.parametrize("operation", ["reuse"])
 def test_enqueue_writer_rechecks_run_scope_after_json(library, monkeypatch, operation):
     f, u = library, library.u
     record = project(u.alice, u.ah, u.workspace_id)
@@ -171,15 +203,64 @@ def test_enqueue_writer_rechecks_run_scope_after_json(library, monkeypatch, oper
     assert counts(f) == before
 
 
+def test_url_import_refuses_a_non_administrator_before_json_and_any_job(library, monkeypatch):
+    f, u = library, library.u
+    record = project(u.alice, u.ah, u.workspace_id)
+    before = counts(f)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("A refused URL import reached the request body")
+
+    monkeypatch.setattr(Request, "get_json", forbidden)
+    response = u.alice.post(
+        f"/api/v1/sessions/{record['id']}/sources/url", json={"url": URL}, headers=u.ah
+    )
+    assert response.status_code == 403, response.get_json()
+    assert response.get_json()["error"]["code"] == "administrator_required"
+    assert counts(f) == before
+
+
+def test_url_import_job_refuses_a_non_administrator_before_any_download(library, monkeypatch):
+    f, u = library, library.u
+    record = project(u.alice, u.ah, u.workspace_id)
+    values = {"session_id": record["id"], "url": URL}
+    with execution_actor_scope(member_actor(f, u.alice_id)):
+        with f.case.database.immediate_session() as unit:
+            job = f.services.jobs.enqueue_in_session(
+                unit,
+                "source.download_url",
+                values,
+                session_id=record["id"],
+                resource_keys=[f"session:{record['id']}"],
+            )
+            job_id = job.id
+            storage_key = unit.get_one(m.SessionRecord, record["id"]).storage_key
+    before = counts(f)
+    network = Mock(side_effect=AssertionError("A refused URL job reached the network"))
+    monkeypatch.setattr(
+        "pandrator.web.workflow_handlers.WorkflowHandlers._validate_download_url",
+        staticmethod(network),
+    )
+    monkeypatch.setattr("yt_dlp.YoutubeDL", network)
+    completed = execute(f, {"id": job_id})
+    assert completed.status == "failed"
+    assert "requires an Administrator" in completed.error_message
+    network.assert_not_called()
+    assert not (f.services.paths.sessions / storage_key / "sources").exists()
+    assert counts(f) == before
+
+
 def test_members_download_and_reuse_after_creator_departure_preserving_original_bytes(
     library, monkeypatch
 ):
     f, u = library, library.u
     calls = downloader(monkeypatch)
     first = project(u.alice, u.ah, u.workspace_id)
+    # Only an Administrator may import from a URL; the workspace member still
+    # gets the shared source, and reuse keeps working after she leaves.
     admitted = body(
-        u.alice.post(
-            f"/api/v1/sessions/{first['id']}/sources/url", json={"url": URL}, headers=u.ah
+        u.owner.post(
+            f"/api/v1/sessions/{first['id']}/sources/url", json={"url": URL}, headers=u.oh
         ),
         202,
     )
@@ -237,7 +318,7 @@ def test_members_download_and_reuse_after_creator_departure_preserving_original_
     assert u.alice.get(f"/api/v1/artifacts/{output_id}/content").status_code == 404
 
 
-@pytest.mark.parametrize("operation", ["url", "reuse"])
+@pytest.mark.parametrize("operation", ["reuse"])
 def test_revoked_queued_member_does_no_dns_input_copy_or_publication(
     library, monkeypatch, operation
 ):
@@ -302,8 +383,8 @@ def test_url_scheme_and_host_are_refused_before_any_job_exists(library, url, mes
     f, u = library, library.u
     record = project(u.alice, u.ah, u.workspace_id)
     before = counts(f)
-    response = u.alice.post(
-        f"/api/v1/sessions/{record['id']}/sources/url", json={"url": url}, headers=u.ah
+    response = u.owner.post(
+        f"/api/v1/sessions/{record['id']}/sources/url", json={"url": url}, headers=u.oh
     )
     assert response.status_code == 422, response.get_json()
     error = response.get_json()["error"]

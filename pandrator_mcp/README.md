@@ -121,9 +121,12 @@ batch order before the next wave. A parent model can populate the initial
 capsule itself or delegate that extraction first. Serial mode additionally
 hands accepted boundary output to the next worker.
 
-`pandrator_get_work` accepts an optional bounded `wait_seconds`. Every
-server-side wait is capped by `maximum_wait_seconds`, 25 seconds by default, so
-long schema maxima no longer outlive a host's own request timeout. Waits poll
+`pandrator_get_work` accepts an optional bounded `wait_seconds`. The
+`maximum_wait_seconds` ceiling, 25 seconds by default, limits the server-side
+wait a caller may request: a longer request is clamped and reported, so it no
+longer outlives a host's own request timeout. A host with a shorter deadline
+should lower the ceiling, as described in
+[Process settings](#process-settings). Waits poll
 according to the application's `poll_after_ms` hint, clamped to a safe
 250 ms–10 s interval, and return `wait_requested_seconds`,
 `wait_effective_seconds`, `elapsed_seconds`, `poll_count` and `timed_out`.
@@ -238,10 +241,8 @@ workflow planning can then continue with narration preparation.
 
 The source must already be managed and attached. Use
 `pandrator_import_local_source` for a file beneath an operator-approved named
-root, `pandrator_import_source_url` for a public http(s) page that the Pandrator
-host downloads with yt-dlp, or attach a source returned by
-`pandrator_list_sources`. The cleanup tools themselves never accept an
-arbitrary filesystem path.
+root, or attach a source returned by `pandrator_list_sources`. The cleanup tools
+themselves never accept an arbitrary filesystem path.
 
 ### Speech-optimization dispatch
 
@@ -454,10 +455,11 @@ and completion results are replayable, so an interrupted model turn can safely
 continue.
 
 `pandrator_import_source_url` is the alternative when the media is already
-published somewhere public, such as a video page. The route refuses any scheme
-other than http(s) and any URL without a host before a job exists; the download
-job then rejects private, loopback and other non-public addresses at download
-time. It returns a work handle, so poll it with `pandrator_get_work`.
+published somewhere public, such as a video page. It needs an Administrator,
+because the host fetches the URL. The route refuses any scheme other than
+http(s), any URL without a host and any unusable port before a job exists; the
+download job then rejects private, loopback and other non-public addresses at
+download time. It returns a work handle, so poll it with `pandrator_get_work`.
 
 For text already present in the conversation, `pandrator_create_text_source`
 creates and attaches a bounded UTF-8 source directly. This avoids manufacturing

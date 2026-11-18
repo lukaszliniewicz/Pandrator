@@ -162,6 +162,21 @@ class SourceHttpContractTests(unittest.TestCase):
             self.assertEqual(job.payload_json, {"session_id": self.session_id, "url": url})
         self.assertEqual(self.job_count(), 1)
 
+    def test_url_admission_refuses_an_unusable_port_before_any_job(self):
+        base = f"/api/v1/sessions/{self.session_id}/sources/url"
+        before = self.job_count()
+        for url in ("https://example.com:99999/video", "https://example.com:abc/video"):
+            with self.subTest(url=url):
+                rejected = self.client.post(base, json={"url": url}, headers=self.headers)
+                self.assertEqual(rejected.status_code, 422, rejected.get_json())
+                self.assertEqual(rejected.get_json()["error"]["code"], "validation_error")
+                self.assertIn("port", rejected.get_json()["error"]["message"])
+        self.assertEqual(self.job_count(), before)
+        for url in ("https://example.org:8443/video", "https://example.org/video"):
+            with self.subTest(url=url):
+                admitted = self.client.post(base, json={"url": url}, headers=self.headers)
+                self.assertEqual(admitted.status_code, 202, admitted.get_json())
+
     def test_reuse_admission_accepts_managed_sources_from_another_session(self):
         owner = self.create_session("Reusable owner")
         uploaded = self.client.post(

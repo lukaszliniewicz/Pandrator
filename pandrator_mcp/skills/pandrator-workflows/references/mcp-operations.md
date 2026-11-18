@@ -15,7 +15,8 @@ an operation is unfamiliar or the server differs from this reference.
   returned relative path to `pandrator_import_local_source`. The sidecar
   transfers bytes and attaches the source without exposing them to the model.
   For a public video page or media URL, `pandrator_import_source_url` downloads
-  on the Pandrator host and returns a work handle.
+  on the Pandrator host and returns a work handle; only an Administrator may
+  use it, because the host fetches the URL.
 - A transcription plan names the effective recognition engine, which may be
   inherited from saved settings. Hotwords do not reliably fix names (with
   Parakeet they made no visible difference in testing); plan to correct names.
@@ -79,7 +80,8 @@ revision conflicts, expiry, or a stale digest.
 ## Several languages
 
 One source session feeds a translation project; each language is a branch,
-itself a voiceover session with pinned copies of the source text and timeline.
+itself a voiceover session when the project generates voiceover and otherwise a
+subtitles session, with pinned copies of the source text and timeline.
 
 1. If the recording is cut, the source is a `media_edit` session (its branches
    are still voiceover sessions). Render the reviewed media edit first

@@ -3523,11 +3523,15 @@ A single reviewed cue.
             def prepare_filename(self, _information):
                 return str(captured["destination"])
 
-        with mock.patch.object(
-            self.handlers,
-            "_validate_download_url",
-            return_value="https://example.com/watch?v=fixture",
-        ), mock.patch("yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with (
+            execution_actor_scope(HostActor("pandrator-cli")),
+            mock.patch.object(
+                self.handlers,
+                "_validate_download_url",
+                return_value="https://example.com/watch?v=fixture",
+            ),
+            mock.patch("yt_dlp.YoutubeDL", FakeYoutubeDL),
+        ):
             result = self.handlers.download_source_url(
                 {"session_id": self.session.id, "url": "https://example.com/watch?v=fixture"},
                 lambda value, detail=None: progress_updates.append((value, detail)),

@@ -974,13 +974,13 @@ def build_server(runtime: McpRuntime):
     @server.tool(
         name="pandrator_import_source_url",
         title="Import and attach a source from a public URL",
-        annotations=write_action,
+        annotations=revisioned_write_action,
     )
     def source_url_import_tool(
         session_id: Annotated[str, Field(min_length=1, max_length=80)],
         url: Annotated[str, Field(min_length=8, max_length=4_096)],
     ) -> dict[str, Any]:
-        """Download a source from a public http(s) URL, such as a video page, on the Pandrator host with yt-dlp. Returns a work handle; poll it with pandrator_get_work."""
+        """Download a source from a public http(s) URL, such as a video page, on the Pandrator host with yt-dlp. Requires an Administrator, because the host fetches the URL. Every call queues a new download. Returns a work handle; poll it with pandrator_get_work."""
 
         return _call_with_input_factory(
             import_source_url,
