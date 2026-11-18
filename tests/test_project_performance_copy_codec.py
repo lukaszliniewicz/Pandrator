@@ -989,14 +989,46 @@ def test_judged_units_still_need_their_other_fields(missing):
         freeze(rows, raw, annotations)
 
 
-def test_a_fresh_adopted_unit_still_needs_every_field():
+def test_a_fresh_adopted_unit_still_needs_its_other_fields():
     rows = judged_rows()
     raw, annotations = stale_adopted(rows)
     raw["base_signature"] = current_signature(rows)
     freeze(rows, deepcopy(raw), deepcopy(annotations))
-    del raw["units_json"][1]["section_id"]
+    del raw["units_json"][1]["voice"]
     with pytest.raises(ValueError):
         freeze(rows, raw, annotations)
+
+
+def test_a_current_plan_keeps_units_made_before_structure_fields():
+    # The capture knows the plan is current from the live signature, which the
+    # copied rows (signed without lineage) cannot reproduce. Its units are
+    # rebuilt from the current blocks, whose structure the signature covers.
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    raw["base_signature"] = "the-live-signature"
+    for unit in raw["units_json"]:
+        for field in STRUCTURE_FIELDS:
+            del unit[field]
+    (current,) = freeze_performance_plan_rows(
+        [raw],
+        rows=rows,
+        annotations={raw["id"]: annotations},
+        base_adopted_plan_ids={raw["id"]: None},
+        current_plan_ids={raw["id"]},
+    )
+    assert unit_ids(current) == ["segment-0", "segment-1", "segment-4"]
+    assert set(current["manual_annotations_json"]) == set(unit_ids(current))
+    assert all(set(STRUCTURE_FIELDS) <= set(unit) for unit in current["units_json"])
+    assert current["base_signature"] == current_signature(rows)
+    round_trip(rows, current)
+    # Judged by the copied rows alone, the same plan needs review throughout.
+    (judged_copy,) = freeze_performance_plan_rows(
+        [raw],
+        rows=rows,
+        annotations={raw["id"]: annotations},
+        base_adopted_plan_ids={raw["id"]: None},
+    )
+    assert unit_ids(judged_copy) == []
 
 
 @pytest.mark.parametrize("edited", [{"s0": "Go on right now."}, {"s0": "Go on now!"}])

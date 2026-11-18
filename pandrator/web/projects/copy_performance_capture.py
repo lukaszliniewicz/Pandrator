@@ -165,8 +165,12 @@ def capture_current_performance(
         values.append({**header, "settings_json": settings[identifier], "units_json": body["units_json"]})
         baselines[identifier] = current["id"] if current is not None and header["status"] == "draft" else None
     try:
+        # The live signatures decide which plans are current: the copied rows
+        # carry no lineage, so their own signature cannot.
+        current = {header["id"] for header in candidates
+            if header["base_signature"] == signatures[header["plan_revision_id"]]}
         return freeze_performance_plan_rows(values, rows=rows, annotations=annotations,
-            base_adopted_plan_ids=baselines), 0
+            base_adopted_plan_ids=baselines, current_plan_ids=current), 0
     except (ValueError, TypeError, KeyError) as error:
         raise project_copy_error("copy_graph_invalid") from error
 

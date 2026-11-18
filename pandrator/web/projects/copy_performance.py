@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -297,17 +297,18 @@ def _record(value: Any, unit: dict[str, Any], characters: list[dict[str, Any]]) 
     return result
 
 
-def _source_unit(raw: Any, *, judged: bool = False) -> bool:
+def _source_unit(raw: Any) -> bool:
     """A raw source unit's shape; its block's ``source_hash`` is read past.
 
-    A judged unit may lack structure fields, as units made before those fields
-    were recorded do, so the copy does not fail on it. ``judge_block`` then
-    sends its block to review, as a plan read in the app does: the copy's unit
-    is rebuilt from the current block and records its current speaker, so an
-    entry kept there would hide a speaker or language change the old unit
-    cannot show.
+    A unit may lack structure fields, as units made before those fields were
+    recorded do, so the copy does not fail on it. The copy's unit is always
+    rebuilt from the current block. For a current plan that is exact: its
+    signature covers every structure field, so none changed. A judged unit
+    without them is sent to review by ``judge_block``, as a plan read in the
+    app is, since an entry kept there would hide a speaker or language change
+    the old unit cannot show.
     """
-    required = _UNIT_FIELDS - set(STRUCTURE_FIELDS) if judged else _UNIT_FIELDS
+    required = _UNIT_FIELDS - set(STRUCTURE_FIELDS)
     return (
         type(raw) is dict
         and required <= set(raw)
@@ -344,7 +345,7 @@ def _judged_entries(
     by_id: dict[str, dict[str, Any]] = {}
     for raw in raw_units:
         if (
-            not _source_unit(raw, judged=True)
+            not _source_unit(raw)
             or type(raw["id"]) is not str
             or raw["id"] in by_id
             or raw["id"] not in segment_ids
@@ -391,6 +392,8 @@ def _freeze(
     graph: tuple[
         dict[str, dict[str, Any]], dict[str, str], dict[str, list[dict[str, Any]]], dict[str, str]
     ],
+    *,
+    current: bool | None = None,
 ) -> dict[str, Any]:
     if not isinstance(row, Mapping):
         raise _invalid()
@@ -426,7 +429,11 @@ def _freeze(
     characters = settings["character_dictionary"]
     # An adopted plan whose signature no longer matches is judged per block,
     # as the destination judges it; a draft or a fresh plan is never judged.
-    judged = status == "adopted" and row.get("base_signature") != signatures[rid]
+    # The capture passes the live decision: the copy signs rows without their
+    # lineage, so its own signature can differ for a plan that is current.
+    if current is None:
+        current = row.get("base_signature") == signatures[rid]
+    judged = status == "adopted" and not current
     review = False
     if judged:
         entries, review = _judged_entries(
@@ -535,8 +542,14 @@ def freeze_performance_plan_rows(
     rows: Mapping[str, Any],
     annotations: Mapping[str, Any],
     base_adopted_plan_ids: Mapping[str, str | None],
+    current_plan_ids: Collection[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Freeze the included family with one call-local ownership/signature context."""
+    """Freeze the included family with one call-local ownership/signature context.
+
+    ``current_plan_ids`` names the plans whose signature matched the live plan
+    when they were captured. Without it, each plan is compared with the
+    signature of the copied rows.
+    """
     try:
         _raw_unit_budget(values)
         if not values:
@@ -554,7 +567,13 @@ def freeze_performance_plan_rows(
             raise _invalid()
         graph = _graph(rows)
         return [
-            _freeze(row, annotations[row["id"]], base_adopted_plan_ids[row["id"]], graph)
+            _freeze(
+                row,
+                annotations[row["id"]],
+                base_adopted_plan_ids[row["id"]],
+                graph,
+                current=None if current_plan_ids is None else row["id"] in current_plan_ids,
+            )
             for row in values
         ]
     except (TypeError, ValueError, KeyError, RecursionError, OverflowError) as error:

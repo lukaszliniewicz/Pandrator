@@ -17,6 +17,7 @@ from pandrator.web import models as m
 from pandrator.web.accounts.execution_actor import actor_from_principal, execution_actor_scope
 from pandrator.web.generation_audio_identity import AudioIdentityContext
 from pandrator.web.jobs import Worker
+from pandrator.web.performance_validity import STRUCTURE_FIELDS
 from pandrator.web.projects import copy_publication
 from pandrator.web.projects.copy_contracts import ProjectCopyError
 from pandrator.web.projects.copy_performance_capture import capture_current_performance
@@ -267,6 +268,33 @@ def test_signature_only_change_is_captured_with_every_entry(performance):
     assert row["base_signature"] == current
     # The adopted plan plus both fresh drafts.
     assert len(json.loads(snapshot.state_json)["rows"]["performance_plans"]) == 3
+
+
+def test_a_current_plan_with_units_from_before_structure_fields_keeps_every_entry(
+    performance,
+):
+    # The fixture's first block records the revision it came from; the copy
+    # signs its rows without that lineage, so only the live signature can say
+    # the plan is current. Judged by the copy's own signature, units recorded
+    # before structure fields existed would all be sent to review.
+    p, f = performance, performance.f
+    with f.case.database.immediate_session() as unit:
+        plan = unit.get_one(m.PerformancePlan, p.adopted["id"])
+        assert plan.base_signature == plan_signature(unit, plan.plan_revision_id)
+        plan.units_json = [
+            {key: value for key, value in item.items() if key not in STRUCTURE_FIELDS}
+            for item in plan.units_json
+        ]
+    snapshot = capture_source(f, p.source)
+    assert snapshot.ready, snapshot.blockers
+    (row,) = adopted_rows(snapshot)
+    rows = json.loads(snapshot.state_json)["rows"]
+    assert [unit["id"] for unit in row["units_json"]] == p.ids
+    assert set(row["manual_annotations_json"]) == set(p.ids)
+    assert all(set(STRUCTURE_FIELDS) <= set(unit) for unit in row["units_json"])
+    assert row["base_signature"] == speech_plan_signature(
+        rows["generation_segments"], references=segment_copy_references(rows)
+    )
 
 
 def enable_performance(f, session_id):
