@@ -9,6 +9,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
@@ -115,6 +116,17 @@ def canonical_json(value: Any) -> str:
 
 def canonical_digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+# Step decisions whose work the executor performs rather than reusing a
+# stored artifact.
+_RUN_DECISIONS = frozenset({"run", "rerun_explicit"})
+
+
+def _step_will_run(step: dict[str, Any]) -> bool:
+    """Return whether the plan will perform this step instead of reusing."""
+
+    return str(step.get("decision") or "") in _RUN_DECISIONS
 
 
 def _aware(value: datetime) -> datetime:
@@ -1243,6 +1255,15 @@ class WorkflowExecutionPlanService:
                 "checked": False,
                 "reason": "The source recording could not be resolved.",
             }
+        from .source_resolution import VIDEO_EXTENSIONS
+
+        # A media export only renders video when an attached source is a video
+        # file; otherwise the worker copies the generated speech as audio and
+        # nothing is extended or cut. This mirrors the renderer's media choice.
+        audio_only_media = (
+            export_mode == "media"
+            and Path(source_path).suffix.lower() not in VIDEO_EXTENSIONS
+        )
         try:
             probed = probe_soundtrack_media(source_path)
         except Exception:
@@ -1277,11 +1298,15 @@ class WorkflowExecutionPlanService:
         elif export_mode == "audio":
             # An audio export never cuts speech, so it cannot extend or stop.
             outcome = "fails"
+        elif audio_only_media:
+            # The worker copies the whole speech file, so an overrun makes the
+            # exported audio longer and never stops the export.
+            outcome = "extend"
         elif policy == "extend":
             outcome = "extend"
         else:
             outcome = "stops"
-        return {
+        tail = {
             "checked": True,
             "source_duration_ms": round(source_duration * 1000),
             "overrun_ms": round(overrun_seconds * 1000),
@@ -1289,6 +1314,9 @@ class WorkflowExecutionPlanService:
             "extension_ms": extension_ms,
             "outcome": outcome,
         }
+        if audio_only_media:
+            tail["audio_only"] = True
+        return tail
 
     def _reusable_takes_warnings(
         self,
@@ -1305,7 +1333,7 @@ class WorkflowExecutionPlanService:
         """
 
         if supplied.get("tts") or not any(
-            step["stage"] == "generate_audio" and step.get("decision") == "run"
+            step["stage"] == "generate_audio" and _step_will_run(step)
             for step in steps
         ):
             return []
@@ -1379,7 +1407,7 @@ class WorkflowExecutionPlanService:
                 blocks=blocks,
             )
         for step in steps:
-            if step["stage"] == "generate_audio":
+            if step["stage"] == "generate_audio" and _step_will_run(step):
                 step["estimated_seconds"] = estimate["estimated_seconds"]
                 step["estimate_basis"] = estimate["estimate_basis"]
 
@@ -1406,10 +1434,16 @@ class WorkflowExecutionPlanService:
         extension = float(tail.get("extension_ms") or 0) / 1000
         outcome = str(tail.get("outcome") or "")
         if outcome == "extend":
-            warnings.append(
-                f"The video will be {extension:.2f} s longer: its last frame is held "
-                "so the speech can finish. Usually only that tail is encoded."
-            )
+            if tail.get("audio_only"):
+                warnings.append(
+                    f"Speech runs {overrun:.2f} s past the end of the source audio; "
+                    "the exported audio is that much longer."
+                )
+            else:
+                warnings.append(
+                    f"The video will be {extension:.2f} s longer: its last frame is "
+                    "held so the speech can finish. Usually only that tail is encoded."
+                )
         elif outcome == "stops":
             warnings.append(
                 f"Speech runs {overrun:.2f} s past the end of the video, so this export "
@@ -1773,6 +1807,25 @@ class WorkflowExecutionPlanService:
                     mismatched_stages=mismatched_stages,
                     stage_freshness=stage_freshness,
                 )
+            unusable_reuse = sorted(
+                stage
+                for stage in planned_reuse_stages
+                if not any(
+                    step.get("stage") == stage
+                    and str(step.get("decision") or "").startswith("reuse")
+                    and step.get("artifact_id")
+                    for step in steps
+                )
+            )
+            if unusable_reuse:
+                # The queued payload only carries reuse for stages that have an
+                # artifact, so an honoured request would vanish silently.
+                raise WorkflowPlanError(
+                    "reuse_unavailable",
+                    f"Nothing from {unusable_reuse[0]} can be reused here; "
+                    "remove it from reuse_stages or let it run.",
+                    422,
+                )
             execution_job_kind = resolved.job_kind
         else:
             steps, execution_job_kind = self._direct_steps(
@@ -1818,7 +1871,11 @@ class WorkflowExecutionPlanService:
             )
         if speech_timing is not None:
             tail = speech_timing.get("tail")
-            if isinstance(tail, dict) and tail.get("outcome") == "extend":
+            if (
+                isinstance(tail, dict)
+                and tail.get("outcome") == "extend"
+                and not tail.get("audio_only")
+            ):
                 for step in steps:
                     if step["stage"] == target_stage:
                         step["tail_extension"] = tail
@@ -1840,7 +1897,11 @@ class WorkflowExecutionPlanService:
                 session_id,
                 supplied,
                 resolved,
-                {str(step.get("stage") or "") for step in steps},
+                {
+                    str(step.get("stage") or "")
+                    for step in steps
+                    if _step_will_run(step)
+                },
             )
         if effective_stage:
             warnings.extend(
@@ -1924,7 +1985,7 @@ class WorkflowExecutionPlanService:
             "expires_at": _iso(expires_at),
         }
         if any(
-            step.get("stage") == "transcribe" and step.get("decision") == "run"
+            step.get("stage") == "transcribe" and _step_will_run(step)
             for step in steps
         ):
             from pandrator.logic.dubbing.transcription_readiness import (
