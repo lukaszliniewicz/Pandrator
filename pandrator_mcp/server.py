@@ -1190,6 +1190,19 @@ def build_server(runtime: McpRuntime):
             Field(ge=1, le=60),
         ] = 30,
         continuation: bool = True,
+        reuse_stages: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Prerequisite stages to keep even if their settings or source "
+                    "changed, such as an accepted passive correction or translation."
+                )
+            ),
+        ] = None,
+        rerun_stages: Annotated[
+            list[str] | None,
+            Field(description="Prerequisite stages to run again even if their results are current."),
+        ] = None,
         view: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
@@ -1204,6 +1217,8 @@ def build_server(runtime: McpRuntime):
                 overrides=overrides or {},
                 expires_in_minutes=expires_in_minutes,
                 continuation=continuation,
+                reuse_stages=reuse_stages or [],
+                rerun_stages=rerun_stages or [],
                 view=view,
             ),
         )
