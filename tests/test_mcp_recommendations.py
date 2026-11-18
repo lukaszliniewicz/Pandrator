@@ -166,3 +166,71 @@ def test_a_multilingual_session_goal_creates_a_project_not_an_in_session_transla
     )
     # Generation and export happen per branch, so no source-session plan step.
     assert "pandrator_plan_workflow" not in tools
+
+
+def _branch_recommendation(goal: str, session, project=None) -> dict:
+    class _Branch(_Application):
+        def get_session(self, session_id):
+            return {
+                **super().get_session(session_id),
+                "workflow_kind": "voiceover",
+                **session,
+            }
+
+        def get_translation_project(self, _session_id):
+            return project if project is not None else {"project": None}
+
+    runtime = cast(
+        McpRuntime,
+        SimpleNamespace(require_application=lambda: _Branch(None)),
+    )
+    return recommend_next_steps(
+        runtime,
+        RecommendNextStepsInput(session_id="session-1", goal=goal),
+    )
+
+
+def test_a_translation_branch_plans_its_export_instead_of_a_new_project():
+    result = _branch_recommendation(
+        "Export the French branch of my multilingual project",
+        {
+            "translation_project": {
+                "id": "project-1",
+                "role": "branch",
+                "target_language": "fr",
+            }
+        },
+        {"project": {"id": "project-1", "name": "Four languages"}},
+    )
+
+    tools = [step["tool"] for step in result["steps"]]
+    assert "pandrator_create_translation_project" not in tools
+    export = next(
+        step
+        for step in result["steps"]
+        if step["tool"] == "pandrator_plan_export_variant"
+    )
+    assert export["arguments"] == {"session_id": "session-1"}
+
+
+def test_a_session_outside_a_project_still_creates_one():
+    result = _branch_recommendation(
+        "Export the French branch of my multilingual project",
+        {"translation_project": None},
+    )
+
+    tools = [step["tool"] for step in result["steps"]]
+    assert "pandrator_create_translation_project" in tools
+    assert "pandrator_plan_export_variant" not in tools
+
+
+def test_a_session_read_without_membership_asks_the_project_link():
+    result = _branch_recommendation(
+        "Export the French branch of my multilingual project",
+        {},
+        {"project": {"id": "project-1", "name": "Four languages"}},
+    )
+
+    tools = [step["tool"] for step in result["steps"]]
+    assert "pandrator_create_translation_project" not in tools
+    assert "pandrator_plan_export_variant" in tools

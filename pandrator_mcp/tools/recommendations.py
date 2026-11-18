@@ -18,6 +18,34 @@ _MULTILINGUAL_REASON = (
 )
 
 
+def _session_translation_project(
+    application: Any,
+    session: dict[str, Any],
+    session_id: str,
+) -> bool:
+    """Return whether this session is already a project source or branch.
+
+    A recommendation is a hint, so an unknown or unreadable link reads as no
+    project rather than breaking the answer.
+    """
+
+    membership = session.get("translation_project")
+    if isinstance(membership, dict) and membership.get("id"):
+        return True
+    if "translation_project" in session:
+        # The session read already answered: it belongs to no project.
+        return False
+    reader = getattr(application, "get_translation_project", None)
+    if reader is None:
+        return False
+    try:
+        payload = reader(session_id)
+    except Exception:
+        return False
+    project = payload.get("project") if isinstance(payload, dict) else None
+    return isinstance(project, dict) and bool(project.get("id"))
+
+
 def recommend_next_steps(
     runtime: McpRuntime,
     arguments: RecommendNextStepsInput,
@@ -161,6 +189,11 @@ def recommend_next_steps(
     application = runtime.require_application()
     session = application.get_session(arguments.session_id)
     workflow = application.get_workflow(arguments.session_id)
+    # A session already inside a translation project works in its own branch;
+    # only a session outside one needs a project created first.
+    in_translation_project = multilingual and _session_translation_project(
+        application, session, arguments.session_id
+    )
     stages = workflow.get("stages")
     incomplete: list[str] = []
     if isinstance(stages, list):
@@ -268,7 +301,7 @@ def recommend_next_steps(
                 ),
             }
         )
-    if multilingual:
+    if multilingual and not in_translation_project:
         steps.append(
             {
                 "tool": "pandrator_create_translation_project",
@@ -297,8 +330,9 @@ def recommend_next_steps(
                 },
             ]
         )
-    # Several languages are generated and exported per branch, not here.
-    if not media_edit_session and not multilingual:
+    # Several languages are generated and exported per branch, not here. A
+    # branch or project source plans its own generation and export instead.
+    if not media_edit_session and (not multilingual or in_translation_project):
         final_tool = (
             "pandrator_plan_export_variant"
             if any(word in goal for word in ("export", "burn", "deliver", "final product"))

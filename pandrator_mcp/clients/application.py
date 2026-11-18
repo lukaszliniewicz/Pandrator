@@ -111,6 +111,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "plan_stale",
         "precondition_required",
         "preparation_conflict",
+        "reuse_unavailable",
         "revision_conflict",
         "evidence_revision_conflict",
         "response_too_large",

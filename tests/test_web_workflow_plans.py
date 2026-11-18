@@ -77,13 +77,17 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         *,
         workflow_kind="audiobook",
         suffix="txt",
+        included_stages=None,
     ):
+        body = {
+            "name": f"Plan fixture {self.source_counter}",
+            "workflow_kind": workflow_kind,
+        }
+        if included_stages is not None:
+            body["included_stages"] = list(included_stages)
         created = self.client.post(
             "/api/v1/sessions",
-            json={
-                "name": f"Plan fixture {self.source_counter}",
-                "workflow_kind": workflow_kind,
-            },
+            json=body,
             headers=self.headers,
         )
         self.assertEqual(201, created.status_code, created.get_json())
@@ -232,6 +236,62 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             else:
                 selection.artifact_id = translation.id
         return session_id, translation.id
+
+    def _selected_transcription(self, session_id, source_id):
+        """Register a finished transcription and select it for its stage."""
+
+        path = (
+            Path(self.temporary.name)
+            / f"plan-transcription-{self.source_counter}.srt"
+        )
+        self.source_counter += 1
+        path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+            encoding="utf-8",
+        )
+        transcription = ArtifactService(
+            self.extension["database"],
+            self.extension["paths"],
+        ).register(
+            path,
+            kind="srt",
+            role="transcription",
+            session_id=session_id,
+            parent_ids=[source_id],
+        )
+        with self.extension["database"].session() as db_session:
+            selection = db_session.get(
+                SessionStageSelection, (session_id, "transcribe")
+            )
+            if selection is None:
+                db_session.add(
+                    SessionStageSelection(
+                        session_id=session_id,
+                        stage_key="transcribe",
+                        artifact_id=transcription.id,
+                    )
+                )
+            else:
+                selection.artifact_id = transcription.id
+        return transcription.id
+
+    def _prepared_generation_plan(self, session_id):
+        """Record an active generation plan so take reuse can be read."""
+
+        with self.extension["database"].session() as db_session:
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash=f"plan-fixture-{session_id}",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            return revision.id
 
     def _plan_error(self, session_id, **payload):
         response = self.client.post(
@@ -744,6 +804,34 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         self.assertEqual("validation_error", unavailable["code"])
         self.assertIn("cannot run in this plan", unavailable["message"])
 
+    def test_reuse_request_without_an_artifact_is_refused(self):
+        """A reuse request that cannot be honoured must not vanish from the plan."""
+
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="wav",
+        )
+
+        transcription = self._plan_error(
+            session_id,
+            target_stage="generate_audio",
+            reuse_stages=["transcribe"],
+        )
+        self.assertEqual("reuse_unavailable", transcription["code"])
+        self.assertEqual(
+            "Nothing from transcribe can be reused here; remove it from "
+            "reuse_stages or let it run.",
+            transcription["message"],
+        )
+
+        generation = self._plan_error(
+            session_id,
+            target_stage="export",
+            reuse_stages=["generate_audio"],
+        )
+        self.assertEqual("reuse_unavailable", generation["code"])
+        self.assertIn("Nothing from generate_audio can be reused here", generation["message"])
+
     def test_freshness_failure_is_reported_in_the_plan(self):
         session_id, _translation_id = self._voiceover_session_with_translation(
             dispatch_kind="translation",
@@ -964,6 +1052,72 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             [item for item in plan["warnings"] if "Speech recognition" in item]
         )
 
+    def test_transcribe_readiness_also_covers_an_explicit_rerun(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="wav",
+        )
+        missing = {
+            "schema_version": "1",
+            "scope": "local_model_files",
+            "status": "missing",
+            "ready": False,
+            "engine": "crispasr",
+            "runtime_check_required": False,
+            "assets": [
+                {
+                    "kind": "vad",
+                    "id": "silero",
+                    "status": "missing",
+                    "download": "administrator_required",
+                }
+            ],
+        }
+
+        with patch(
+            "pandrator.logic.dubbing.transcription_readiness."
+            "diagnose_transcription_readiness",
+            return_value=missing,
+        ):
+            plan = self._plan(
+                session_id,
+                target_stage="export",
+                rerun_stages=["transcribe"],
+            )
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("rerun_explicit", by_stage["transcribe"]["decision"])
+        self.assertEqual("missing", plan["transcription_readiness"]["status"])
+        self.assertIn(
+            "The Silero VAD model is not cached, and only an Administrator can "
+            "download it. Ask one to prepare it, or transcription will fail.",
+            plan["warnings"],
+        )
+
+    def test_reused_transcription_is_not_disclosed_as_current_settings(self):
+        session_id, source_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="wav",
+        )
+        self._selected_transcription(session_id, source_id)
+        self._set_global_setting("defaults.stt", {"stt_engine": "moss"})
+
+        plan = self._plan(
+            session_id,
+            target_stage="generate_audio",
+            reuse_stages=["transcribe"],
+        )
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("reuse_explicit", by_stage["transcribe"]["decision"])
+        effective = plan["settings"]["effective"]
+        self.assertNotIn("stt_engine", effective)
+        self.assertIn("model", effective)
+        self.assertFalse(
+            [item for item in plan["warnings"] if "Speech recognition" in item],
+            plan["warnings"],
+        )
+
     def test_generate_audio_plan_reports_no_history_without_a_measured_pace(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
             workflow_kind="voiceover", suffix="srt"
@@ -974,6 +1128,50 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         # No prepared speech plan and no completed run: nothing to measure.
         self.assertIsNone(step["estimated_seconds"])
         self.assertEqual("no_history", step["estimate_basis"])
+
+    def test_export_plan_withholds_the_estimate_from_a_reused_generation(self):
+        """A continuation that reuses generation predicts no synthesis time."""
+
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="wav",
+            included_stages=["generate_audio", "export"],
+        )
+        snapshot = self.extension["services"].workflows.snapshot(session_id)
+        stages = [
+            {
+                **stage,
+                "status": (
+                    "completed"
+                    if stage["key"] == "generate_audio"
+                    else stage["status"]
+                ),
+                "selected_artifact_id": (
+                    "ready-generation"
+                    if stage["key"] == "generate_audio"
+                    else stage.get("selected_artifact_id")
+                ),
+            }
+            for stage in snapshot["stages"]
+        ]
+
+        with patch.object(
+            self.extension["services"].workflows,
+            "snapshot",
+            return_value={"stages": stages},
+        ):
+            plan = self._plan(session_id, target_stage="export")
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual(
+            "reuse_if_unchanged", by_stage["generate_audio"]["decision"]
+        )
+        self.assertNotIn("estimated_seconds", by_stage["generate_audio"])
+        self.assertNotIn("estimate_basis", by_stage["generate_audio"])
+        self.assertIn(
+            "generate_audio",
+            [item["stage"] for item in plan["reuse_decisions"]],
+        )
 
     def test_generate_audio_plan_warns_when_every_take_is_reusable(self):
         """A plan prepared again after a timing-only edit keeps every take."""
@@ -1032,6 +1230,39 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         # Reuse is counted against saved settings; a speech override is not.
         self.assertEqual([], warnings_for(21, {"tts": {"voice": "Other voice"}}))
         self.assertEqual([[revision_id], [revision_id]], calls)
+
+    def test_generate_audio_plan_warns_when_an_explicit_rerun_repeats_every_take(self):
+        """Rerunning generation explicitly still synthesises every block."""
+
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="wav",
+            included_stages=["generate_audio", "export"],
+        )
+        self._prepared_generation_plan(session_id)
+
+        with patch(
+            "pandrator.web.generation_review.revision_history",
+            return_value={
+                "items": [{"active_segment_count": 12, "reusable_segment_count": 12}]
+            },
+        ):
+            plan = self._plan(
+                session_id,
+                target_stage="export",
+                rerun_stages=["generate_audio"],
+            )
+
+        by_stage = {step["stage"]: step for step in plan["ordered_steps"]}
+        self.assertEqual("rerun_explicit", by_stage["generate_audio"]["decision"])
+        self.assertTrue(
+            [
+                warning
+                for warning in plan["warnings"]
+                if "(12) already has a reusable take" in warning
+            ],
+            plan["warnings"],
+        )
 
     def test_generate_audio_plan_warns_about_an_inherited_unverified_route(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
@@ -1483,6 +1714,56 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                         tail_warnings,
                     )
 
+    def test_export_plan_predicts_no_video_tail_for_an_audio_only_source(self):
+        """A 2 s recording with 2.6 s of speech exports longer audio, not video."""
+
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="wav",
+        )
+        output = {
+            "export_mode": "media",
+            "audio_mode": "dubbing_only",
+            "video_tail_extension_policy": "ask",
+        }
+        run_id = self._assembly_for_plan(session_id, output, duration_ms=2_600)
+        with patch(
+            "pandrator.web.soundtrack_export.probe_soundtrack_media",
+            return_value={
+                "duration": 2.0,
+                "video_duration": None,
+                "audio_duration": 2.0,
+                "fps": None,
+                "has_audio": True,
+                "has_video": False,
+            },
+        ):
+            plan = self._plan(
+                session_id,
+                target_stage="export",
+                overrides={"output": {**output, "generation_run_id": run_id}},
+                continuation=False,
+            )
+
+        tail = plan["speech_timing"]["tail"]
+        self.assertTrue(tail["checked"])
+        self.assertTrue(tail["audio_only"])
+        self.assertEqual(2_000, tail["source_duration_ms"])
+        self.assertEqual(600, tail["overrun_ms"])
+        self.assertEqual("extend", tail["outcome"])
+        self.assertEqual(
+            [
+                "Speech runs 0.60 s past the end of the source audio; the "
+                "exported audio is that much longer."
+            ],
+            [warning for warning in plan["warnings"] if "past the end" in warning],
+        )
+        export_step = next(
+            step for step in plan["ordered_steps"] if step["stage"] == "export"
+        )
+        # No frame is held, so the plan promises no frozen tail.
+        self.assertNotIn("tail_extension", export_step)
+
     def test_export_plan_measures_the_tail_against_the_rendered_recording(self):
         """A cut session renders its edited media, which is shorter than the source."""
 
@@ -1787,18 +2068,30 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             suffix="mp4",
         )
 
-        first = self._plan(session_id, target_stage="export", continuation=False)
-        second = self._plan(
-            session_id,
-            target_stage="export",
-            overrides={"output": {"audio_mode": "preserve"}},
-            continuation=False,
-        )
+        plan = self._plan(session_id, target_stage="export", continuation=False)
+        public_plan = {
+            key: value for key, value in plan.items() if key != "plan_digest"
+        }
 
+        self.assertIn("effective", public_plan["settings"])
+        # One plan response: its digest covers the block it returns.
+        self.assertEqual(plan["plan_digest"], canonical_digest(public_plan))
+
+        edited = {
+            **public_plan,
+            "settings": {
+                **public_plan["settings"],
+                "effective": {
+                    **public_plan["settings"]["effective"],
+                    "export_mode": {"effective": "audio", "origin": "override"},
+                },
+            },
+        }
         self.assertNotEqual(
-            first["settings"]["effective"], second["settings"]["effective"]
+            public_plan["settings"]["effective"]["export_mode"],
+            edited["settings"]["effective"]["export_mode"],
         )
-        self.assertNotEqual(first["plan_digest"], second["plan_digest"])
+        self.assertNotEqual(plan["plan_digest"], canonical_digest(edited))
 
     def test_direct_export_plan_does_not_wrap_in_workflow_continuation(self):
         session_id, _artifact_id, _asset_id = self._ready_session(

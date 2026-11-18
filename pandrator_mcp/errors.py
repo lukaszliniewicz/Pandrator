@@ -58,6 +58,7 @@ FailureCode = Literal[
     "plan_expired",
     "plan_invalid",
     "confirmation_required",
+    "reuse_unavailable",
     "batch_completed",
     "batch_not_ready",
     "dispatch_busy",

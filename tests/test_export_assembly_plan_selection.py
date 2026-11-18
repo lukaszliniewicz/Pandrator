@@ -30,8 +30,10 @@ from pandrator.web.models import (
 )
 from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
 from pandrator.web.sessions import SessionService
+from pandrator.web.settings_policy import stable_hash
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import (
+    LEGACY_OUTPUT_ASSEMBLY_ALGORITHM_VERSION,
     OUTPUT_ASSEMBLY_ALGORITHM_VERSION,
     output_assembly_settings_hash,
 )
@@ -206,6 +208,8 @@ class ExportAssemblyPlanSelectionTests(unittest.TestCase):
     def test_assembly_stored_with_the_previous_snapshot_is_not_reused(self):
         # Shape of the stored snapshot before silence trimming was added: the
         # audio section has no trim key and the algorithm is not recorded.
+        # Store the historical row as it was written then: its own resolved
+        # settings and the hash of those settings, not the current snapshot.
         previous = {
             "audio": {"synchronization_speed": 1.15},
             "output": {"format": "wav", "export_mode": "audio"},
@@ -215,12 +219,18 @@ class ExportAssemblyPlanSelectionTests(unittest.TestCase):
             "audio": {**previous["audio"], "synchronization_trim_silence": True},
         }
         with self.database.session() as session:
-            self._assembly(
-                session,
-                self.run_old_id,
-                self.revision_p1,
-                previous,
-                self.artifact_old_id,
+            session.add(
+                OutputAssembly(
+                    session_id=self.record.id,
+                    generation_run_id=self.run_old_id,
+                    status="completed",
+                    artifact_id=self.artifact_old_id,
+                    settings_json={
+                        "resolved": previous,
+                        "plan_revision_id": self.revision_p1,
+                    },
+                    settings_hash=stable_hash(previous),
+                )
             )
 
         # The old assembly must not be reused; the export chain builds one from
@@ -236,6 +246,50 @@ class ExportAssemblyPlanSelectionTests(unittest.TestCase):
                     OutputAssembly.generation_run_id == self.run_old_id,
                     OutputAssembly.settings_hash
                     == output_assembly_settings_hash(current),
+                )
+                .order_by(OutputAssembly.created_at.desc())
+            ).first()
+            assert created is not None
+            self.assertNotEqual(self.artifact_old_id, created.artifact_id)
+
+    def test_assembly_stored_with_an_older_algorithm_is_not_reused(self):
+        # Identical audio and output settings: only the assembly algorithm
+        # differs, so the hash alone would match and reuse the older render.
+        stored = {
+            "audio": {"synchronization_speed": 1.15},
+            "output": {"format": "wav", "export_mode": "audio"},
+        }
+        historical = {
+            **stored,
+            "assembly_algorithm": LEGACY_OUTPUT_ASSEMBLY_ALGORITHM_VERSION,
+        }
+        with self.database.session() as session:
+            session.add(
+                OutputAssembly(
+                    session_id=self.record.id,
+                    generation_run_id=self.run_old_id,
+                    status="completed",
+                    artifact_id=self.artifact_old_id,
+                    settings_json={
+                        "resolved": historical,
+                        "plan_revision_id": self.revision_p1,
+                    },
+                    # The hash of the settings the current snapshot produces,
+                    # so only the recorded algorithm can refuse the reuse.
+                    settings_hash=output_assembly_settings_hash(stored),
+                )
+            )
+
+        with self.assertRaises(ValueError):
+            self._ensure(self.run_old_id, stored)
+        with self.database.session() as session:
+            created = session.scalars(
+                select(OutputAssembly)
+                .where(
+                    OutputAssembly.session_id == self.record.id,
+                    OutputAssembly.generation_run_id == self.run_old_id,
+                    OutputAssembly.settings_hash
+                    == output_assembly_settings_hash(stored),
                 )
                 .order_by(OutputAssembly.created_at.desc())
             ).first()
