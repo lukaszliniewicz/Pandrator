@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_REASON
 from pandrator.logic.dubbing.text_units import fragment_separator
 
 from .access.generation_resource_policy import require_generation_content_write
@@ -907,10 +908,10 @@ class GenerationTopologyService:
             },
             "source_references": source_references,
         }
-        if operation.get("reason") == "early_timing_repair":
+        if operation.get("reason") == EARLY_REPAIR_REASON:
             event.update(
                 action="automatic_split",
-                reason_code="early_timing_repair",
+                reason_code=EARLY_REPAIR_REASON,
                 summary="Short voiceover block split at a source cue boundary to reduce early speech.",
             )
         left_provenance, right_provenance = self._split_provenance(

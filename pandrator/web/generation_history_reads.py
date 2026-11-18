@@ -12,13 +12,17 @@ from sqlalchemy import Select, case, func, select
 from sqlalchemy.orm import Session, defer
 from sqlalchemy.orm.attributes import set_committed_value
 
+from pandrator.logic.dubbing.repair_markers import (
+    EARLY_REPAIR_MARKER_KEY,
+    EARLY_REPAIR_REASON,
+    MIXED_REASON,
+    REGROUP_MARKER_KEY,
+    REGROUP_REASON,
+)
+
 from .access.current_session_policy import require_current_session_access
 from .database import Database
 from .generation_run_history import (
-    EARLY_REPAIR_MARKER_KEY,
-    EARLY_REPAIR_REASON,
-    REGROUP_MARKER_KEY,
-    REGROUP_REASON,
     GenerationRunHistory,
     build_generation_run_history,
 )
@@ -114,7 +118,7 @@ def _select_narrow_assemblies(query: Select[Any], session: Session) -> list[Outp
 
 def _snapshot_enables_early_repair(snapshot: object) -> bool:
     """Mirror the effective-settings merge used to select the repair pass."""
-    if not isinstance(snapshot, dict) or snapshot.get("early_repair_parent_run_id"):
+    if not isinstance(snapshot, dict) or snapshot.get(EARLY_REPAIR_MARKER_KEY):
         return False
     sections = [snapshot.get("audio"), snapshot.get("tts")]
     override = snapshot.get("selected_segment_override")
@@ -1074,7 +1078,7 @@ class GenerationHistoryReader:
             for child in history.repair_children
         }
         if REGROUP_REASON in reasons and EARLY_REPAIR_REASON in reasons:
-            kind = "mixed"
+            kind = MIXED_REASON
         elif REGROUP_REASON in reasons:
             kind = "regroup"
         elif EARLY_REPAIR_REASON in reasons:

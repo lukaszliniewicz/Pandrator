@@ -9,6 +9,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import load_only
 
+from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_REASON, UNDO_REPAIR_REASON
+
 from .access.contracts import ProjectAction
 from .access.current_session_policy import require_current_session_access
 from .access.generation_resource_policy import require_generation_content_write
@@ -264,9 +266,9 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
             if action == "batch":
                 count = len(operation.get("operations") or [])
                 summary = f"Batch of {count} speech-block edit{'' if count == 1 else 's'}"
-            if operation.get("reason") == "early_timing_repair":
+            if operation.get("reason") == EARLY_REPAIR_REASON:
                 summary = "Repair speech running ahead of its cues"
-            if operation.get("reason") == "undo_timing_repairs":
+            if operation.get("reason") == UNDO_REPAIR_REASON:
                 summary = "Undo automatic timing repairs"
             if operation.get("reason") == "edit_copy":
                 summary = "Editable copy of reviewed or historical speech plan"
@@ -320,10 +322,10 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 "source_revision_id": revision.source_revision_id,
                 "source_artifact_id": (revision.settings_json or {}).get("_source_artifact_id"),
                 "is_active": revision.id == plan.active_revision_id,
-                "origin": "automatic" if action == "automatic" or operation.get("reason") == "early_timing_repair" else "manual",
+                "origin": "automatic" if action == "automatic" or operation.get("reason") == EARLY_REPAIR_REASON else "manual",
                 "action": action, "summary": summary,
                 "reason": operation.get("reason"),
-                "repair_status": operation.get("repair_status", "unknown") if operation.get("reason") == "early_timing_repair" else None,
+                "repair_status": operation.get("repair_status", "unknown") if operation.get("reason") == EARLY_REPAIR_REASON else None,
                 "repair_reason": operation.get("repair_reason"),
                 "source_generation_run_id": operation.get("source_generation_run_id"),
                 "source_block_ordinal": operation.get("source_block_ordinal"),

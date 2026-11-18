@@ -503,6 +503,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_passage_regroup.py",
         "tests/test_regroup_history_batches.py",
         "tests/test_repair_batches.py",
+        "tests/test_repair_markers.py",
         "tests/test_source_passage_backend.py",
         "tests/test_source_provisional_sentence_policy.py",
         "tests/test_speech_plan_history_summary.py",

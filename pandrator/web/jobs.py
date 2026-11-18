@@ -20,6 +20,7 @@ from sqlalchemy import and_, delete, false, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 
+from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_MARKER_KEY
 from pandrator.logic.tts_service_identity import normalize_service_id
 
 from .access.contracts import AccessDenied
@@ -369,7 +370,7 @@ class JobQueue:
                 and root_id
                 and run.id != root_id
                 and run.source_generation_run_id is not None
-                and snapshot.get("early_repair_parent_run_id") == root_id
+                and snapshot.get(EARLY_REPAIR_MARKER_KEY) == root_id
             )
         return False
 

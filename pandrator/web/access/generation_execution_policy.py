@@ -15,6 +15,8 @@ from typing import Any, NamedTuple, NoReturn, TypeGuard
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_MARKER_KEY
+
 from ..accounts.credential_resources import credential_project_clause
 from ..accounts.execution_actor import (
     HostActor,
@@ -421,7 +423,7 @@ def _require_repair_child_lineage(
             run_job_id != job_id
             or run_session_id != session_id
             or not isinstance(snapshot, dict)
-            or snapshot.get("early_repair_parent_run_id") != root_id
+            or snapshot.get(EARLY_REPAIR_MARKER_KEY) != root_id
             or not _identifier(source_id)
         ):
             _deny()
@@ -470,7 +472,7 @@ def _check_payload(session: Session, payload: Mapping[str, Any], header: _JobHea
                 or child.job_id != header.id
                 or child.source_generation_run_id is None
                 or not isinstance(child.settings_snapshot_json, dict)
-                or child.settings_snapshot_json.get("early_repair_parent_run_id")
+                or child.settings_snapshot_json.get(EARLY_REPAIR_MARKER_KEY)
                 != root.id
             ):
                 _deny()

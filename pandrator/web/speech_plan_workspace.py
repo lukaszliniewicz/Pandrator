@@ -644,6 +644,8 @@ def prepare_speech_plan(
     audio_reuse = {
         "reused_audio_count": 0,
         "new_audio_needed_count": len(segment_ids),
+        "revisions_checked": 0,
+        "reused_from_older_revisions": 0,
         "reason_counts": (
             {"source_revision_unavailable": len(segment_ids)}
             if segment_ids

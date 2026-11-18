@@ -76,7 +76,17 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
         target_refs=None,
         changed_text_indexes=(),
         timing_only=False,
+        extra_ancestors=0,
+        extra_takes=True,
+        extra_settings=None,
     ):
+        """One plan with a taking revision, optional older copies of it, a target.
+
+        ``extra_ancestors`` inserts that many further revisions between the
+        taking revision and the target, so the taking revision becomes the
+        target's grandparent or older. The extras mirror its segments and, by
+        default, carry their own copy of every take.
+        """
         session_id = self._new_session()
         case = {"session_id": session_id, "artifact_ids": [], "paths": []}
         with self.database.session() as session:
@@ -159,10 +169,29 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
             )
             session.add(source_revision)
             session.flush()
+            extra_revisions = []
+            ancestor_parent = source_revision
+            for index in range(extra_ancestors):
+                extra_revision = m.GenerationPlanRevision(
+                    plan_id=plan.id,
+                    parent_revision_id=ancestor_parent.id,
+                    revision_number=2 + index,
+                    settings_json=(
+                        copy.deepcopy(source_settings)
+                        if extra_settings is None
+                        else copy.deepcopy(extra_settings)
+                    ),
+                    content_hash=f"extra-plan-{index}",
+                    source_revision_id=source_document_revision_id,
+                )
+                session.add(extra_revision)
+                session.flush()
+                extra_revisions.append(extra_revision)
+                ancestor_parent = extra_revision
             target_revision = m.GenerationPlanRevision(
                 plan_id=plan.id,
-                parent_revision_id=source_revision.id,
-                revision_number=2,
+                parent_revision_id=ancestor_parent.id,
+                revision_number=2 + extra_ancestors,
                 settings_json=target_settings,
                 content_hash="target-plan",
                 source_revision_id=target_document_revision_id,
@@ -219,14 +248,37 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
             session.add_all([*source_segments, *target_segments])
             session.flush()
 
+            extra_segments = []
+            extra_segments_by_revision: dict[str, list[m.GenerationSegment]] = {}
+            for extra_revision in extra_revisions:
+                copies = []
+                for source_segment in source_segments:
+                    copy_of_source = m.GenerationSegment(
+                        plan_revision_id=extra_revision.id,
+                        ordinal=source_segment.ordinal,
+                        source_segment_ids_json=list(source_segment.source_segment_ids_json),
+                        alignment_group=source_segment.alignment_group,
+                        node_kind=source_segment.node_kind,
+                        text=source_segment.text,
+                        optimized_text=source_segment.optimized_text,
+                        voice=source_segment.voice,
+                        language=source_segment.language,
+                        status="completed",
+                    )
+                    copies.append(copy_of_source)
+                    extra_segments.append((extra_revision, copy_of_source))
+                extra_segments_by_revision[extra_revision.id] = copies
+                session.add_all(copies)
+            session.flush()
+
             snapshot, _ = self.services["workspace_settings"].resolve_in_session(
                 session, session_id
             )
             ownership = resolve_artifact_ownership(session, session_id=session_id)
             audio_context = AudioIdentityContext(session, snapshot)
-            source_takes = []
-            for index, source_segment in enumerate(source_segments):
-                identity = audio_context.for_segment(source_segment)
+
+            def stamp_take(segment, ordinal):
+                identity = audio_context.for_segment(segment)
                 relative_path = f"artifacts/audio-{uuid.uuid4().hex}.wav"
                 path = self.root / relative_path
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,31 +294,50 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
                     state="current",
                     metadata_json={
                         IDENTITY_KEY: identity,
-                        "synthesized_text": source_segment.optimized_text or source_segment.text,
+                        "synthesized_text": segment.optimized_text or segment.text,
                     },
                 )
                 session.add(artifact)
                 session.flush()
                 take = m.AudioTake(
-                    generation_segment_id=source_segment.id,
+                    generation_segment_id=segment.id,
                     generation_run_id=None,
                     artifact_id=artifact.id,
                     kind="tts",
                     status="completed",
                     settings_hash=identity["settings_hash"],
-                    duration_ms=1234 + index,
+                    duration_ms=1234 + ordinal,
                     is_active=True,
                     revision=7,
                 )
                 session.add(take)
-                source_takes.append(take)
+                session.flush()
                 case["artifact_ids"].append(artifact.id)
                 case["paths"].append(path)
+                return take
+
+            source_takes = [
+                stamp_take(segment, index)
+                for index, segment in enumerate(source_segments)
+            ]
+            extra_take_ids: dict[str, list[str]] = {}
+            if extra_takes:
+                for extra_revision, extra_segment in extra_segments:
+                    extra_take_ids.setdefault(extra_revision.id, []).append(
+                        stamp_take(extra_segment, extra_segment.ordinal).id
+                    )
             session.flush()
             case.update(
                 plan_id=plan.id,
                 source_revision_id=source_revision.id,
+                parent_revision_id=ancestor_parent.id,
                 target_revision_id=target_revision.id,
+                ancestor_revision_ids=[revision.id for revision in extra_revisions],
+                ancestor_segment_ids={
+                    revision_id: [segment.id for segment in segments]
+                    for revision_id, segments in extra_segments_by_revision.items()
+                },
+                ancestor_take_ids=extra_take_ids,
                 source_segment_ids=[segment.id for segment in source_segments],
                 target_segment_ids=[segment.id for segment in target_segments],
                 source_take_ids=[take.id for take in source_takes],
@@ -282,7 +353,7 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
         with self.database.session() as session:
             return inherit_rebuilt_plan_audio(
                 session,
-                source_revision_id or case["source_revision_id"],
+                source_revision_id or case["parent_revision_id"],
                 case["target_revision_id"],
                 snapshot or self._snapshot(session, case["session_id"]),
             )
@@ -763,6 +834,180 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
         receipt = self._inherit(missing_refs)
         self.assertEqual({"provenance_unavailable": 1}, receipt["reason_counts"])
 
+    def test_take_only_in_the_grandparent_is_reused(self):
+        case = self._make_case(extra_ancestors=1, extra_takes=False)
+        receipt = self._inherit(case)
+        self.assertEqual(
+            (1, 0, {}, "exact_bounds", 2, 1),
+            (
+                receipt["reused_audio_count"],
+                receipt["new_audio_needed_count"],
+                receipt["reason_counts"],
+                receipt["matching"],
+                receipt["revisions_checked"],
+                receipt["reused_from_older_revisions"],
+            ),
+        )
+        with self.database.session() as session:
+            inherited = session.scalar(
+                select(m.AudioTake).where(
+                    m.AudioTake.generation_segment_id == case["target_segment_ids"][0]
+                )
+            )
+            source_take = session.get(m.AudioTake, case["source_take_ids"][0])
+            self.assertEqual(source_take.id, inherited.parent_take_id)
+            self.assertEqual(source_take.artifact_id, inherited.artifact_id)
+
+    def test_nearest_ancestor_take_wins(self):
+        case = self._make_case(extra_ancestors=1, extra_takes=True)
+        receipt = self._inherit(case)
+        self.assertEqual(1, receipt["reused_audio_count"])
+        self.assertEqual({}, receipt["reason_counts"])
+        self.assertEqual(0, receipt["reused_from_older_revisions"])
+        # The immediate parent settled the only block, so the walk stopped there.
+        self.assertEqual(1, receipt["revisions_checked"])
+        with self.database.session() as session:
+            inherited = session.scalar(
+                select(m.AudioTake).where(
+                    m.AudioTake.generation_segment_id == case["target_segment_ids"][0]
+                )
+            )
+            parent_take = session.get(
+                m.AudioTake, case["ancestor_take_ids"][case["ancestor_revision_ids"][0]][0]
+            )
+            self.assertEqual(parent_take.id, inherited.parent_take_id)
+            self.assertEqual(parent_take.artifact_id, inherited.artifact_id)
+
+    def test_parent_take_with_another_identity_defers_to_the_grandparent(self):
+        case = self._make_case(extra_ancestors=1, extra_takes=True)
+        with self.database.session() as session:
+            parent_take = session.get(
+                m.AudioTake, case["ancestor_take_ids"][case["ancestor_revision_ids"][0]][0]
+            )
+            parent_artifact = session.get(m.Artifact, parent_take.artifact_id)
+            parent_artifact.metadata_json = {
+                **parent_artifact.metadata_json,
+                IDENTITY_KEY: {
+                    **parent_artifact.metadata_json[IDENTITY_KEY],
+                    "settings_hash": "different-model-or-delivery",
+                },
+            }
+            session.flush()
+        receipt = self._inherit(case)
+        self.assertEqual(1, receipt["reused_audio_count"])
+        self.assertEqual({}, receipt["reason_counts"])
+        self.assertEqual(1, receipt["reused_from_older_revisions"])
+        with self.database.session() as session:
+            inherited = session.scalar(
+                select(m.AudioTake).where(
+                    m.AudioTake.generation_segment_id == case["target_segment_ids"][0]
+                )
+            )
+            source_take = session.get(m.AudioTake, case["source_take_ids"][0])
+            self.assertEqual(source_take.id, inherited.parent_take_id)
+
+    def test_ambiguous_parent_block_does_not_hide_the_grandparent(self):
+        case = self._make_case(extra_ancestors=1, extra_takes=True)
+        with self.database.session() as session:
+            parent_segment = session.get(
+                m.GenerationSegment,
+                case["ancestor_segment_ids"][case["ancestor_revision_ids"][0]][0],
+            )
+            session.add(
+                m.GenerationSegment(
+                    plan_revision_id=parent_segment.plan_revision_id,
+                    ordinal=parent_segment.ordinal + 1,
+                    source_segment_ids_json=list(parent_segment.source_segment_ids_json),
+                    alignment_group=parent_segment.alignment_group,
+                    node_kind=parent_segment.node_kind,
+                    text="Duplicate parent block",
+                    optimized_text=parent_segment.optimized_text,
+                    voice=parent_segment.voice,
+                    language=parent_segment.language,
+                    status="completed",
+                )
+            )
+            session.flush()
+        receipt = self._inherit(case)
+        self.assertEqual(1, receipt["reused_audio_count"])
+        self.assertEqual({}, receipt["reason_counts"])
+        self.assertEqual(1, receipt["reused_from_older_revisions"])
+        with self.database.session() as session:
+            inherited = session.scalar(
+                select(m.AudioTake).where(
+                    m.AudioTake.generation_segment_id == case["target_segment_ids"][0]
+                )
+            )
+            source_take = session.get(m.AudioTake, case["source_take_ids"][0])
+            self.assertEqual(source_take.id, inherited.parent_take_id)
+
+    def test_walk_stops_at_an_ancestor_from_another_plan(self):
+        case = self._make_case(extra_ancestors=2, extra_takes=False)
+        other_session_id = self._new_session("another plan")
+        with self.database.session() as session:
+            other_plan = m.GenerationPlan(session_id=other_session_id)
+            session.add(other_plan)
+            session.flush()
+            foreign_ancestor = session.get(
+                m.GenerationPlanRevision, case["ancestor_revision_ids"][0]
+            )
+            foreign_ancestor.plan_id = other_plan.id
+            session.flush()
+        receipt = self._inherit(case)
+        self.assertEqual(0, receipt["reused_audio_count"])
+        # The foreign ancestor is rejected on its plan and never examined.
+        self.assertEqual(1, receipt["revisions_checked"])
+        self.assertEqual({"audio_unavailable": 1}, receipt["reason_counts"])
+        with self.database.session() as session:
+            self.assertIsNone(
+                session.scalar(
+                    select(m.AudioTake).where(
+                        m.AudioTake.generation_segment_id
+                        == case["target_segment_ids"][0]
+                    )
+                )
+            )
+
+    def test_walk_stops_after_twenty_ancestors(self):
+        case = self._make_case(extra_ancestors=20, extra_takes=False)
+        receipt = self._inherit(case)
+        self.assertEqual(0, receipt["reused_audio_count"])
+        self.assertEqual(20, receipt["revisions_checked"])
+        self.assertEqual(0, receipt["reused_from_older_revisions"])
+        # The only take sits in the twenty-first ancestor, out of reach.
+        with self.database.session() as session:
+            self.assertIsNotNone(session.get(m.AudioTake, case["source_take_ids"][0]))
+
+    def test_rvc_refuses_takes_from_any_ancestor(self):
+        case = self._make_case(extra_ancestors=1, extra_takes=True)
+        with self.database.session() as session:
+            snapshot = {
+                **self._snapshot(session, case["session_id"]),
+                "rvc": {"enabled": True},
+            }
+        receipt = self._inherit(case, snapshot=snapshot)
+        self.assertEqual(0, receipt["reused_audio_count"])
+        self.assertEqual(0, receipt["reused_from_older_revisions"])
+        self.assertEqual({"rvc_enabled": 1}, receipt["reason_counts"])
+
+    def test_timing_only_grandparent_is_matched_in_timing_tolerant_mode(self):
+        case = self._make_case(
+            count=2,
+            timing_change=True,
+            different_document=True,
+            timing_only=True,
+            extra_ancestors=1,
+            extra_takes=False,
+            extra_settings={},
+        )
+        receipt = self._inherit(case)
+        # The immediate parent's mode is unchanged, and it could not serve.
+        self.assertEqual("exact_bounds", receipt["matching"])
+        self.assertEqual(2, receipt["reused_audio_count"])
+        self.assertEqual(2, receipt["reused_from_older_revisions"])
+        self.assertEqual({}, receipt["reason_counts"])
+        self.assertEqual(2, receipt["revisions_checked"])
+
     def test_prepare_response_reports_reuse_and_stale_only_start_preserves_baseline(self):
         session_id = self._new_session("prepare integration")
         with self.database.session() as session:
@@ -898,6 +1143,8 @@ class SpeechPlanAudioReuseTests(unittest.TestCase):
                 "reused_audio_count": 1,
                 "new_audio_needed_count": 1,
                 "matching": "exact_bounds",
+                "revisions_checked": 1,
+                "reused_from_older_revisions": 0,
                 "reason_counts": {"synthesized_text_changed": 1},
             },
             prepared["audio_reuse"],

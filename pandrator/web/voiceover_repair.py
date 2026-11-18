@@ -31,6 +31,7 @@ from pandrator.logic.dubbing.audio_sync import (
     trim_silence_enabled_from_settings,
 )
 from pandrator.logic.dubbing.early_repair import find_repair_boundary
+from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_MARKER_KEY, EARLY_REPAIR_REASON
 from pandrator.logic.dubbing.timing_drift import PlacedSpeechBlock, late_cue_metrics
 
 from .audio_assembly import (
@@ -838,7 +839,7 @@ def repair_early_blocks(
                             "segment_id": current_ids[segment.id],
                             "text_layer": "display",
                             "cursor": boundary.display_cursor,
-                            "reason": "early_timing_repair",
+                            "reason": EARLY_REPAIR_REASON,
                             "source_generation_run_id": run_id,
                             GUARD_KEY: deepcopy(batch_snapshot),
                             "source_block_ordinal": segment.ordinal,
@@ -880,7 +881,7 @@ def repair_early_blocks(
                     child_snapshot["speech_plan_revision_id"] = proposal[
                         "plan_revision_id"
                     ]
-                    child_snapshot["early_repair_parent_run_id"] = run_id
+                    child_snapshot[EARLY_REPAIR_MARKER_KEY] = run_id
                     freeze_speech_snapshot(
                         session,
                         proposal["plan_revision_id"],

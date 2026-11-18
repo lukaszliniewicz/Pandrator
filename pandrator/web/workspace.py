@@ -12,6 +12,8 @@ from typing import Any, cast
 from sqlalchemy import Table, func, insert, select, update
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_MARKER_KEY, REGROUP_MARKER_KEY
+
 from .access.contracts import ProjectAction
 from .access.current_session_policy import require_current_session_access
 from .access.generation_resource_policy import (
@@ -2233,8 +2235,8 @@ class GenerationService(GenerationHistoryReader):
                 "Timing repair requires a completed voiceover on its active speech plan."
             )
         snapshot = dict(run.settings_snapshot_json or {})
-        if snapshot.get("early_repair_parent_run_id") or snapshot.get(
-            "regroup_parent_run_id"
+        if snapshot.get(EARLY_REPAIR_MARKER_KEY) or snapshot.get(
+            REGROUP_MARKER_KEY
         ):
             # The optional second pass is intentionally single-pass. A staged
             # child must not start another automatic repair/regroup cycle.
@@ -2393,7 +2395,7 @@ class GenerationService(GenerationHistoryReader):
             if isinstance(run.settings_snapshot_json, dict)
             else {}
         )
-        parent = snapshot.get("early_repair_parent_run_id")
+        parent = snapshot.get(EARLY_REPAIR_MARKER_KEY)
         root_id = parent if isinstance(parent, str) and parent else run.id
         if run.id != root_id and (
             run.job_id is None or run.source_generation_run_id is None

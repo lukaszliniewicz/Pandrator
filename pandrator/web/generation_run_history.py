@@ -14,13 +14,14 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Any, Mapping, Sequence
 
-EARLY_REPAIR_MARKER_KEY = "early_repair_parent_run_id"
-REGROUP_MARKER_KEY = "regroup_parent_run_id"
-SECOND_PASS_MARKER_KEYS = (EARLY_REPAIR_MARKER_KEY, REGROUP_MARKER_KEY)
-
-EARLY_REPAIR_REASON = "early_timing_repair"
-REGROUP_REASON = "passage_regroup"
-SECOND_PASS_REASONS = frozenset({EARLY_REPAIR_REASON, REGROUP_REASON})
+from pandrator.logic.dubbing.repair_markers import (
+    EARLY_REPAIR_MARKER_KEY,
+    EARLY_REPAIR_REASON,
+    REGROUP_MARKER_KEY,
+    REGROUP_REASON,
+    SECOND_PASS_MARKER_KEYS,
+    SECOND_PASS_REASONS,
+)
 
 
 @dataclass(frozen=True)
