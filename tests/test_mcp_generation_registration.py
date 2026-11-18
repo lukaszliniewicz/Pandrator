@@ -533,6 +533,35 @@ def test_repair_generation_timing_registers_preview_and_queue_paths(tmp_path: Pa
     assert calls[1]["kwargs"] == {"preview": False, "idempotency_key": KEY}
 
 
+def test_repair_generation_timing_reports_a_typed_validation_error(
+    tmp_path: Path,
+) -> None:
+    """Queueing without a retry identity is a typed refusal, not a raw crash."""
+
+    async def run() -> tuple[Any, list[dict[str, Any]]]:
+        runtime, calls = fixture_runtime(tmp_path)
+        async with Client(
+            build_server(runtime), mode="auto", raise_exceptions=False
+        ) as client:
+            result = await client.call_tool(
+                "pandrator_repair_generation_timing",
+                {"generation_run_id": "run-1", "preview": False},
+            )
+        return result, calls
+
+    result, calls = asyncio.run(run())
+    assert calls == []
+    assert result.is_error
+    block = next(item for item in result.content if isinstance(item, TextContent))
+    prefix = "Error executing tool pandrator_repair_generation_timing: "
+    assert block.text.startswith(prefix), block.text
+    failure = json.loads(block.text[len(prefix) :])
+    assert failure["code"] == "validation_error"
+    assert failure["request_id"]
+    assert failure["retryable"] is False
+    assert "idempotency_key" in json.dumps(failure["details"])
+
+
 def test_registered_generation_admission_schema_defaults_true(tmp_path: Path) -> None:
     async def capture() -> dict[str, Any]:
         runtime, _ = fixture_runtime(tmp_path)

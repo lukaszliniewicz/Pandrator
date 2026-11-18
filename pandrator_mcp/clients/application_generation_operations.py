@@ -13,6 +13,8 @@ class ApplicationGenerationOperationMethods(ApplicationRequests):
         self,
         operation_id: str,
         include_coverage: bool = True,
+        *,
+        request_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Read one stable operation ID through the fixed lifecycle endpoint."""
 
@@ -20,6 +22,7 @@ class ApplicationGenerationOperationMethods(ApplicationRequests):
             f"/api/v1/generation-operations/{quote(str(operation_id), safe='')}",
             parameters={"include_coverage": "true" if include_coverage else "false"},
             read_only_operation=True,
+            request_timeout_seconds=request_timeout_seconds,
         )
 
     def get_generation_run_coverage(

@@ -208,8 +208,10 @@ def build_openapi_document() -> dict:
                 "type": "boolean",
                 "default": False,
                 "description": (
-                    "List the candidate blocks, the thresholds in force and the "
-                    "estimated synthesis calls without queueing a job."
+                    "When true, queue a CPU-only `generation.repair-preview` job "
+                    "that lists the candidates, thresholds and synthesis calls a "
+                    "repair would make, without synthesising audio or changing "
+                    "the plan. Poll the returned job."
                 ),
             },
         },
