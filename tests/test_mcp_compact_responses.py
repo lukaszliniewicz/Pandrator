@@ -411,6 +411,12 @@ class WorkflowPlanSummaryTests(unittest.TestCase):
             },
             "ordered_steps": [{"stage": "export", "decision": "run"}],
             "warnings": ["Reused stage."],
+            "speech_timing": {
+                "assembly_id": "assembly-1",
+                "assembly_duration_ms": 2_000,
+                "timing_drift": {"worst_block_lag_ms": 14_500, "blocks": 522},
+                "tail": {"checked": True, "outcome": "fits"},
+            },
             "required_confirmations": ["provider"],
             "expires_at": "2026-11-18T12:00:00+00:00",
         }
@@ -435,6 +441,8 @@ class WorkflowPlanSummaryTests(unittest.TestCase):
         self.assertEqual("2026-11-18T12:00:00+00:00", plan["expires_at"])
         self.assertEqual("summary", plan["view"])
         self.assertEqual(["settings.resolved_snapshot"], plan["omitted"])
+        # The timing figures are aggregates, so the compact view keeps them.
+        self.assertEqual(522, plan["speech_timing"]["timing_drift"]["blocks"])
         self.assertEqual(
             "pandrator_execute_workflow_plan", outcome.next_actions[0].tool
         )

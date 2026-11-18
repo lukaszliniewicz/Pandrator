@@ -1141,6 +1141,168 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             [item["alignment_group"] for item in artifact.metadata_json["takes"]],
         )
 
+    def test_subtitle_generation_assembly_reports_speech_timing_and_late_cues(self):
+        with self.database.session() as session:
+            session.get(SessionRecord, self.record.id).workflow_kind = "voiceover"
+            document = Document(
+                session_id=self.record.id, stage="translation", language="nl"
+            )
+            session.add(document)
+            session.flush()
+            revision = DocumentRevision(
+                document_id=document.id, revision_number=1, content_hash="timing-drift"
+            )
+            session.add(revision)
+            session.flush()
+            session.add_all(
+                [
+                    Segment(
+                        revision_id=revision.id,
+                        ordinal=0,
+                        start_ms=500,
+                        end_ms=1000,
+                        text="Eerste deel.",
+                    ),
+                    # The pause between these two cues cannot survive one
+                    # continuous take, so the second cue can only appear late.
+                    Segment(
+                        revision_id=revision.id,
+                        ordinal=1,
+                        start_ms=5000,
+                        end_ms=5500,
+                        text="Tweede deel.",
+                    ),
+                    Segment(
+                        revision_id=revision.id,
+                        ordinal=2,
+                        start_ms=6000,
+                        end_ms=6500,
+                        text="Derde deel.",
+                    ),
+                ]
+            )
+            document.active_revision_id = revision.id
+            revision_id = revision.id
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=revision_id,
+            segments=[
+                {
+                    "text": "Eerste deel.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [1],
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+                {
+                    "text": "Tweede deel.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [2],
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+                {
+                    "text": "Derde deel.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [3],
+                    "silence_after_ms": 0,
+                },
+            ],
+        )
+        artifacts = ArtifactService(self.database, self.paths)
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id == plan["active_revision_id"]
+                    )
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            segment_ids = [segment.id for segment in segments]
+        for index, segment_id in enumerate(segment_ids):
+            path = self.session_dir / f"timing-drift-take-{index}.wav"
+            Sine(440 + index * 110).to_audio_segment(duration=100).export(
+                path, format="wav"
+            ).close()
+            artifact = artifacts.register(
+                path, kind="audio", role="generation_take", session_id=self.record.id
+            )
+            with self.database.session() as session:
+                segment = session.get(GenerationSegment, segment_id)
+                segment.status = "completed"
+                session.add(
+                    AudioTake(
+                        generation_segment_id=segment_id,
+                        artifact_id=artifact.id,
+                        kind="tts",
+                        status="completed",
+                        duration_ms=100,
+                        is_active=True,
+                    )
+                )
+
+        queued = self.generation.create_assembly(self.record.id)
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+        self.assertEqual("subtitle_timed", result["synchronization"]["mode"])
+        artifact, _output_path = artifacts.resolve(result["artifact_id"])
+        details = artifact.metadata_json["synchronization"]["blocks"]
+        merged, separate = details
+        # Two segments in one alignment group merge into one numbered block,
+        # and the merged block keeps both cue windows.
+        self.assertEqual("0001-0002", merged["block"])
+        # The first block starts at its own cue with no accumulated drift, so
+        # its speech simply follows the configured start delay.
+        self.assertEqual(0, merged["drift_before_ms"])
+        self.assertEqual(
+            500 + merged["start_delay_ms"], merged["speech_start_ms"]
+        )
+        self.assertEqual(
+            merged["speech_start_ms"] + merged["processed_audio_ms"],
+            merged["speech_end_ms"],
+        )
+        self.assertGreaterEqual(separate["speech_start_ms"], 6000)
+        self.assertEqual(2, merged["cue_count"])
+        self.assertEqual(1, merged["late_cue_count"])
+        self.assertEqual(5000 - merged["speech_end_ms"], merged["worst_cue_lag_ms"])
+        self.assertEqual("0003", separate["block"])
+        self.assertEqual(1, separate["cue_count"])
+        self.assertEqual(0, separate["late_cue_count"])
+        self.assertEqual(0, separate["worst_cue_lag_ms"])
+        # The cue windows themselves never reach the metadata.
+        self.assertNotIn("cues", merged)
+
+        expected_drift = {
+            "worst_block_lag_ms": 0,
+            "worst_block": None,
+            "blocks_late_over_1s": 0,
+            "blocks_late_over_3s": 0,
+            "blocks_late_over_10s": 0,
+            "final_drift_ms": 0,
+            "blocks": 2,
+            "late_cues": 1,
+            "worst_cue_lag_ms": 5000 - merged["speech_end_ms"],
+            "cues": 3,
+        }
+        self.assertEqual(
+            expected_drift, artifact.metadata_json["synchronization"]["timing_drift"]
+        )
+        self.assertEqual(
+            expected_drift, result["synchronization"]["timing_drift"]
+        )
+        self.assertNotIn("blocks", result["synchronization"])
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, queued["id"])
+            self.assertEqual(
+                expected_drift, assembly.settings_json["synchronization"]["timing_drift"]
+            )
+
     def test_second_generation_run_still_applies_configured_drift_speedup(self):
         with self.database.session() as session:
             document = Document(

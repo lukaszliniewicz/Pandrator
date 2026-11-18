@@ -779,7 +779,11 @@ def _align_audio_blocks_streaming(
                     processed_duration = original_audio_duration
 
             silence_before_ms = initial_silence_ms + adjustment.start_delay_ms
+            # Absolute placement of this block's processed speech in the
+            # output timeline, after start delay and accumulated drift.
+            speech_start_ms = current_time + adjustment.start_delay_ms
             current_time += adjustment.start_delay_ms + processed_duration
+            speech_end_ms = current_time
             silence_after_ms = max(effective_gap, slot_end_ms - current_time)
             current_time += silence_after_ms
             drift_after_ms = max(0, current_time - slot_end_ms)
@@ -806,6 +810,8 @@ def _align_audio_blocks_streaming(
                     "start_delay_ms": adjustment.start_delay_ms,
                     "drift_before_ms": drift_at_start,
                     "drift_after_ms": drift_after_ms,
+                    "speech_start_ms": speech_start_ms,
+                    "speech_end_ms": speech_end_ms,
                     "min_block_gap_ms": effective_gap,
                     "silence_after_ms": silence_after_ms,
                     "trimmed_lead_ms": trimmed_lead_ms,
@@ -1038,8 +1044,12 @@ def align_audio_blocks(
         if adjustment.start_delay_ms > 0:
             final_audio += AudioSegment.silent(duration=adjustment.start_delay_ms)
             current_time += adjustment.start_delay_ms
+        # Absolute placement of this block's processed speech in the output
+        # timeline, after start delay and accumulated drift.
+        speech_start_ms = current_time
         final_audio += processed_audio
         current_time += len(processed_audio)
+        speech_end_ms = current_time
         silence_after_ms = max(effective_gap, slot_end_ms - current_time)
         if silence_after_ms:
             final_audio += AudioSegment.silent(duration=silence_after_ms)
@@ -1060,6 +1070,8 @@ def align_audio_blocks(
                 "start_delay_ms": adjustment.start_delay_ms,
                 "drift_before_ms": drift_at_start,
                 "drift_after_ms": drift_after_ms,
+                "speech_start_ms": speech_start_ms,
+                "speech_end_ms": speech_end_ms,
                 "min_block_gap_ms": effective_gap,
                 "silence_after_ms": silence_after_ms,
                 "trimmed_lead_ms": trimmed_lead_ms,

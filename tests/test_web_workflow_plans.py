@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import unittest
 from datetime import timedelta
@@ -1125,6 +1126,411 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             "Mixing source audio requires an attached audio or video source",
             response.get_json()["error"]["message"],
         )
+
+    def _assembly_for_plan(
+        self,
+        session_id,
+        output_override,
+        *,
+        duration_ms=2_000,
+        blocks=None,
+        timing_drift=None,
+    ):
+        """Create a completed run plus the assembly an export plan will reuse."""
+
+        from pandrator.web.workspace import expected_output_assembly_snapshot
+
+        database = self.extension["database"]
+        with database.session() as db_session:
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash=f"timing-assembly-plan-{session_id}",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status="completed",
+            )
+            db_session.add(run)
+            db_session.flush()
+            run_id = run.id
+        resolved = self.extension["services"].workflows.resolve_stage(
+            session_id,
+            "export",
+            {
+                "output": {**output_override, "generation_run_id": run_id},
+            },
+            continuation=False,
+        )
+        snapshot = resolved.payload["resolved_settings_snapshot"]
+        synchronization = {"mode": "subtitle_timed"}
+        if timing_drift is not None:
+            synchronization["timing_drift"] = timing_drift
+        if blocks is not None:
+            synchronization["blocks"] = blocks
+        with database.session() as db_session:
+            run = db_session.get(GenerationRun, run_id)
+            ownership = resolve_artifact_ownership(db_session, session_id=session_id)
+            artifact = Artifact(
+                session_id=session_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
+                kind="audio",
+                role="assembled_audio",
+                relative_path=f"timing-assembly-{run_id}.wav",
+                content_hash=hashlib.sha256(
+                    f"timing-assembly-{run_id}".encode()
+                ).hexdigest(),
+                state="current",
+            )
+            db_session.add(artifact)
+            db_session.flush()
+            db_session.add(
+                OutputAssembly(
+                    session_id=session_id,
+                    generation_run_id=run_id,
+                    status="completed",
+                    artifact_id=artifact.id,
+                    settings_json={
+                        "resolved": expected_output_assembly_snapshot(
+                            db_session, run, snapshot
+                        ),
+                        "plan_revision_id": run.plan_revision_id,
+                        "duration_ms": duration_ms,
+                        "synchronization": synchronization,
+                    },
+                    settings_hash=output_assembly_settings_hash(snapshot),
+                )
+            )
+        return run_id
+
+    def test_export_plan_reports_speech_timing_from_the_reused_assembly(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        stored_drift = {
+            "worst_block_lag_ms": 14_500,
+            "worst_block": "0417",
+            "blocks_late_over_1s": 151,
+            "blocks_late_over_3s": 64,
+            "blocks_late_over_10s": 8,
+            "final_drift_ms": 4_200,
+            "blocks": 522,
+            "late_cues": 1,
+            "worst_cue_lag_ms": 5_700,
+            "cues": 10,
+        }
+        run_id = self._assembly_for_plan(
+            session_id,
+            {"export_mode": "media", "audio_mode": "mixed"},
+            duration_ms=2_000,
+            timing_drift=stored_drift,
+        )
+        plan = self._plan(            session_id,
+            target_stage="export",
+            overrides={
+                "output": {
+                    "export_mode": "media",
+                    "audio_mode": "mixed",
+                    "generation_run_id": run_id,
+                }
+            },
+            continuation=False,
+        )
+
+        speech_timing = plan["speech_timing"]
+        self.assertEqual(2_000, speech_timing["assembly_duration_ms"])
+        self.assertEqual(stored_drift, speech_timing["timing_drift"])
+        self.assertEqual(
+            "reuse_if_unchanged",
+            next(
+                step
+                for step in plan["ordered_steps"]
+                if step["stage"] == "assemble_audio"
+            )["decision"],
+        )
+        self.assertEqual(
+            [
+                "Speech drifts behind the subtitles: the worst block starts 14.5 s "
+                "late, and 64 of 522 blocks start more than 3 s late. Raising "
+                "synchronization_speed (now 1.15) helps; above 1.2 speech may sound "
+                "rushed, so for drift this large, condensing the text is the better fix.",
+                "1 of 10 subtitle cues appear after their speech has ended (worst 5.7 s), "
+                "inside speech blocks that merge several cues. Timing repair "
+                "(repair-timing) splits and regenerates such blocks.",
+            ],
+            [warning for warning in plan["warnings"] if warning.startswith("Speech drifts") or "subtitle cues appear" in warning],
+        )
+
+    def test_export_plan_computes_metrics_for_an_older_assembly(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        run_id = self._assembly_for_plan(
+            session_id,
+            {"export_mode": "media", "audio_mode": "mixed"},
+            duration_ms=2_000,
+            blocks=[
+                {"block": "0001", "drift_before_ms": 0, "drift_after_ms": 0},
+                {"block": "0002", "drift_before_ms": 12_000, "drift_after_ms": 6_000},
+            ],
+        )
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={
+                "output": {
+                    "export_mode": "media",
+                    "audio_mode": "mixed",
+                    "generation_run_id": run_id,
+                }
+            },
+            continuation=False,
+        )
+
+        drift = plan["speech_timing"]["timing_drift"]
+        self.assertEqual(12_000, drift["worst_block_lag_ms"])
+        self.assertEqual("0002", drift["worst_block"])
+        self.assertEqual(1, drift["blocks_late_over_10s"])
+        self.assertEqual(6_000, drift["final_drift_ms"])
+        self.assertEqual(2, drift["blocks"])
+        # An assembly from before the late-cue pass cannot report cues at all.
+        self.assertIsNone(drift["late_cues"])
+        self.assertIsNone(drift["worst_cue_lag_ms"])
+        self.assertIsNone(drift["cues"])
+        self.assertTrue(
+            any(warning.startswith("Speech drifts") for warning in plan["warnings"])
+        )
+
+    def test_export_plan_predicts_the_tail_outcome(self):
+        cases = [
+            ("fits", "media", "ask", 2_000),
+            ("extend", "media", "extend", 2_600),
+            ("stops", "media", "ask", 2_600),
+            ("fails", "audio", "ask", 2_600),
+        ]
+        for outcome, export_mode, policy, duration_ms in cases:
+            with self.subTest(outcome=outcome):
+                session_id, _artifact_id, _asset_id = self._ready_session(
+                    workflow_kind="voiceover",
+                    suffix="mp4",
+                )
+                run_id = self._assembly_for_plan(
+                    session_id,
+                    {
+                        "export_mode": export_mode,
+                        "audio_mode": "mixed",
+                        "video_tail_extension_policy": policy,
+                    },
+                    duration_ms=duration_ms,
+                )
+                with patch(
+                    "pandrator.web.soundtrack_export.probe_soundtrack_media",
+                    return_value={
+                        "video_duration": 2.0,
+                        "duration": 2.0,
+                        "fps": 25.0,
+                    },
+                ):
+                    plan = self._plan(
+                        session_id,
+                        target_stage="export",
+                        overrides={
+                            "output": {
+                                "export_mode": export_mode,
+                                "audio_mode": "mixed",
+                                "video_tail_extension_policy": policy,
+                                "generation_run_id": run_id,
+                            }
+                        },
+                        continuation=False,
+                    )
+
+                tail = plan["speech_timing"]["tail"]
+                self.assertTrue(tail["checked"])
+                self.assertEqual(outcome, tail["outcome"])
+                self.assertEqual(2_000, tail["source_duration_ms"])
+                self.assertEqual(policy, tail["policy"])
+                self.assertEqual(duration_ms - 2_000, tail["overrun_ms"])
+                export_step = next(
+                    step for step in plan["ordered_steps"] if step["stage"] == "export"
+                )
+                tail_warnings = [
+                    warning
+                    for warning in plan["warnings"]
+                    if "last frame" in warning or "never cuts speech" in warning
+                ]
+                if outcome == "fits":
+                    self.assertEqual(0, tail["extension_ms"])
+                    self.assertEqual([], tail_warnings)
+                    self.assertNotIn("tail_extension", export_step)
+                elif outcome == "extend":
+                    # 0.60 s overrun at 25 fps: ceil(15) + 1 frame = 0.64 s,
+                    # and the float difference rounds up to a 17th frame.
+                    self.assertEqual(680, tail["extension_ms"])
+                    self.assertEqual(
+                        [
+                            "The video will be 0.68 s longer: its last frame is held "
+                            "so the speech can finish. Usually only that tail is encoded."
+                        ],
+                        tail_warnings,
+                    )
+                    self.assertEqual(tail, export_step["tail_extension"])
+                elif outcome == "stops":
+                    self.assertEqual(680, tail["extension_ms"])
+                    self.assertEqual(
+                        [
+                            "Speech runs 0.60 s past the end of the video, so this "
+                            "export will stop before rendering. Set "
+                            "video_tail_extension_policy=extend to hold the last frame "
+                            "(usually only that tail is encoded), or raise "
+                            "synchronization_speed."
+                        ],
+                        tail_warnings,
+                    )
+                    self.assertNotIn("tail_extension", export_step)
+                else:
+                    self.assertEqual(
+                        [
+                            "Speech runs 0.60 s past the end of the recording, and an "
+                            "audio export never cuts speech, so this export will fail. "
+                            "Turn off audio_match_source_duration to export the full "
+                            "speech, or export media with "
+                            "video_tail_extension_policy=extend."
+                        ],
+                        tail_warnings,
+                    )
+
+    def test_export_plan_skips_the_tail_when_the_timeline_is_not_matched(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        run_id = self._assembly_for_plan(
+            session_id,
+            {"export_mode": "media", "audio_mode": "mixed"},
+            duration_ms=30_000,
+        )
+        with patch(
+            "pandrator.web.soundtrack_export.probe_soundtrack_media",
+            side_effect=AssertionError("an unmatched timeline is not measured"),
+        ):
+            plan = self._plan(
+                session_id,
+                target_stage="export",
+                overrides={
+                    "output": {
+                        "export_mode": "media",
+                        "audio_mode": "mixed",
+                        "generation_run_id": run_id,
+                        "audio_match_source_duration": False,
+                    },
+                },
+                continuation=False,
+            )
+
+        self.assertIsNone(plan["speech_timing"]["tail"])
+        self.assertEqual([], [w for w in plan["warnings"] if "last frame" in w])
+
+    def test_export_plan_reports_an_unprobeable_source_without_a_warning(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        run_id = self._assembly_for_plan(
+            session_id,
+            {"export_mode": "media", "audio_mode": "mixed"},
+            duration_ms=30_000,
+        )
+        with patch(
+            "pandrator.web.soundtrack_export.probe_soundtrack_media",
+            side_effect=ValueError("The recording duration could not be determined."),
+        ):
+            plan = self._plan(
+                session_id,
+                target_stage="export",
+                overrides={
+                    "output": {
+                        "export_mode": "media",
+                        "audio_mode": "mixed",
+                        "generation_run_id": run_id,
+                    }
+                },
+                continuation=False,
+            )
+
+        tail = plan["speech_timing"]["tail"]
+        self.assertFalse(tail["checked"])
+        self.assertEqual(
+            "The source recording's duration could not be probed.", tail["reason"]
+        )
+        self.assertEqual(
+            [],
+            [
+                warning
+                for warning in plan["warnings"]
+                if "last frame" in warning or "never cuts speech" in warning
+            ],
+        )
+
+    def test_export_plan_reports_null_speech_timing_without_an_assembly(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        with self.extension["database"].session() as db_session:
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash="unassembled-run",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status="completed",
+            )
+            db_session.add(run)
+            db_session.flush()
+            run_id = run.id
+
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={
+                "output": {
+                    "generation_run_id": run_id,
+                    "export_mode": "media",
+                    "audio_mode": "mixed",
+                }
+            },
+            continuation=False,
+        )
+
+        self.assertIn("speech_timing", plan)
+        self.assertIsNone(plan["speech_timing"])
+        export_step = next(
+            step for step in plan["ordered_steps"] if step["stage"] == "export"
+        )
+        self.assertNotIn("tail_extension", export_step)
 
     def test_export_plan_fingerprints_the_effective_settings_block(self):
         session_id, _artifact_id, _asset_id = self._ready_session(

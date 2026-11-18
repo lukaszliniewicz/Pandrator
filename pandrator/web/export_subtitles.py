@@ -225,3 +225,29 @@ def subtitle_track_language_origin(
         settings.get("original_language") or settings.get("source_language")
     )
     return "run_language" if _effective_subtitle_language(run_language) != "und" else "text_inference"
+
+
+def speech_track_language(
+    record: SessionRecord, settings: dict[str, Any]
+) -> tuple[str, str]:
+    """Return the language of the generated speech track, and where it came from.
+
+    A translation branch keeps its language on the session record rather than in
+    the export settings, so the dubbed track is named from the session when the
+    run itself does not say. No usable value means no tag, as before.
+    """
+
+    candidates = (
+        (
+            "output_language",
+            settings.get("output_language") or settings.get("language"),
+        ),
+        ("session_target_language", record.target_language),
+        ("session_source_language", record.source_language),
+        ("run_language", settings.get("target_language")),
+    )
+    for origin, candidate in candidates:
+        language = _effective_subtitle_language(candidate)
+        if language != "und":
+            return language, origin
+    return "", "none"

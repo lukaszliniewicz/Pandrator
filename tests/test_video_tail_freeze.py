@@ -28,7 +28,9 @@ class TailMathTests(unittest.TestCase):
         with self.assertRaisesRegex(
             VideoTailExtensionRequired,
             r"Generated speech is 5\.00 seconds longer than the video\. "
-            r"Freeze the last frame and extend the video by 5\.04 seconds",
+            r"Freeze the last frame to keep all speech: set "
+            r"video_tail_extension_policy=extend to hold the last frame for "
+            r"5\.04 seconds; usually only that tail is encoded\.",
         ):
             resolve_video_tail_extension_ms(
                 reference_duration=3.0,
@@ -528,7 +530,7 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
         self._register_speech(sid, 5.0)
         with self.assertRaisesRegex(
             VideoTailExtensionRequired,
-            "This requires reencoding the video",
+            "usually only that tail is encoded",
         ):
             self.handlers.export(
                 {
@@ -565,7 +567,7 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
         self._register_speech(sid, 2.6)
         with self.assertRaisesRegex(
             VideoTailExtensionRequired,
-            r"Generated speech is .* longer than the video\. .*This requires reencoding",
+            r"Generated speech is .* longer than the video\. .*usually only that tail is encoded",
         ):
             self.handlers.export(
                 {

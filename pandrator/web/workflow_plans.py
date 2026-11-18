@@ -196,6 +196,27 @@ def _resolved_section(
     return selected or None
 
 
+def _effective_output_flag(
+    resolved_snapshot: dict[str, Any],
+    snapshot: dict[str, Any],
+    key: str,
+    default: bool,
+) -> bool:
+    """Read a boolean output setting the plan did not project.
+
+    The plan's own resolution wins over the layered session snapshot, which in
+    turn wins over the built-in default the resolver starts from.
+    """
+
+    resolved_output = resolved_snapshot.get("output")
+    if isinstance(resolved_output, dict) and key in resolved_output:
+        return bool(resolved_output[key])
+    for candidate in (snapshot.get("effective"), snapshot.get("builtin")):
+        if isinstance(candidate, dict) and key in candidate:
+            return bool(candidate[key])
+    return default
+
+
 def _synchronization_multiplier(value: Any) -> float | None:
     """Interpret a stored speed the way alignment does: multiplier or percent."""
 
@@ -908,8 +929,12 @@ class WorkflowExecutionPlanService:
         session_id: str,
         overrides: dict[str, Any],
         resolved: ResolvedWorkflowStage,
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-        """Report the export settings this plan resolved, and where each came from."""
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, Any], dict[str, Any]]:
+        """Report the export settings this plan resolved, and their raw snapshot.
+
+        The third value is the layered output snapshot, which carries values
+        this report does not project, such as ``audio_match_source_duration``.
+        """
 
         from .workspace_settings import WorkspaceSettingsService, settings_provenance
 
@@ -943,7 +968,231 @@ class WorkflowExecutionPlanService:
                 _resolved_section(resolved_snapshot, "audio", _EXPORT_AUDIO_KEYS),
             ),
         }
-        return effective, context
+        return effective, context, output
+
+    def _export_speech_timing(
+        self,
+        session_id: str,
+        resolved: ResolvedWorkflowStage,
+        effective: dict[str, dict[str, Any]],
+        output_snapshot: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Report the measured speech timing of the assembly this plan reuses.
+
+        The figures appear once an assembly exists: an assembly is the only
+        place placement is measured against the source recording's timeline.
+        """
+
+        settings = resolved.payload.get("settings")
+        settings = settings if isinstance(settings, dict) else {}
+        if not export_requires_generation_assembly(
+            workflow_kind=resolved.workflow_kind, settings=settings
+        ):
+            return None
+        from pandrator.logic.dubbing.timing_drift import block_lag_metrics
+
+        from .source_resolution import resolve_media_source
+
+        run_id = str(settings.get("generation_run_id") or "").strip()
+        resolved_snapshot = resolved.payload.get("resolved_settings_snapshot")
+        resolved_snapshot = (
+            resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        )
+        assembly_id = ""
+        duration_ms = 0
+        timing_drift: dict[str, Any] | None = None
+        source_id = ""
+        try:
+            with self.database.snapshot_session() as db_session:
+                run = db_session.get(GenerationRun, run_id)
+                if run is None or run.session_id != session_id:
+                    return None
+                from .workspace import find_matching_output_assembly
+
+                assembly, _snapshot, _hash = find_matching_output_assembly(
+                    db_session,
+                    session_id=session_id,
+                    run=run,
+                    resolved_settings_snapshot=resolved_snapshot,
+                    audio_version_side=str(
+                        settings.get("audio_version_side") or "after"
+                    ),
+                )
+                if assembly is None:
+                    return None
+                assembly_id = assembly.id
+                stored = (
+                    assembly.settings_json
+                    if isinstance(assembly.settings_json, dict)
+                    else {}
+                )
+                duration_ms = int(stored.get("duration_ms") or 0)
+                synchronization = stored.get("synchronization")
+                if isinstance(synchronization, dict):
+                    summary = synchronization.get("timing_drift")
+                    if isinstance(summary, dict):
+                        timing_drift = dict(summary)
+                    elif isinstance(synchronization.get("blocks"), list):
+                        timing_drift = block_lag_metrics(synchronization["blocks"])
+                source = resolve_media_source(db_session, session_id).artifact
+                source_id = source.id if source is not None else ""
+        except Exception:
+            # A plan is a preview. A hint must never stop an otherwise valid
+            # export plan from being prepared and reviewed.
+            logger.warning(
+                "Speech timing could not be reported for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return None
+        return {
+            "assembly_id": assembly_id,
+            "assembly_duration_ms": duration_ms,
+            "timing_drift": timing_drift,
+            "tail": self._export_tail_projection(
+                effective=effective,
+                resolved_snapshot=resolved_snapshot,
+                output_snapshot=output_snapshot,
+                source_id=source_id,
+                generated_duration_ms=duration_ms,
+            ),
+        }
+
+    def _export_tail_projection(
+        self,
+        *,
+        effective: dict[str, dict[str, Any]],
+        resolved_snapshot: dict[str, Any],
+        output_snapshot: dict[str, Any],
+        source_id: str,
+        generated_duration_ms: int,
+    ) -> dict[str, Any] | None:
+        """Predict the export's own tail decision, or say why it cannot."""
+
+        export_mode = str(
+            (effective.get("export_mode") or {}).get("effective") or ""
+        ).lower()
+        if export_mode not in {"media", "audio"}:
+            return None
+        if not _effective_output_flag(
+            resolved_snapshot,
+            output_snapshot,
+            "audio_match_source_duration",
+            True,
+        ):
+            return None
+        if not source_id:
+            return {
+                "checked": False,
+                "reason": "This session has no source recording to measure against.",
+            }
+        if self.handlers is None:
+            return {
+                "checked": False,
+                "reason": "The source recording could not be resolved.",
+            }
+        from .soundtrack_export import (
+            OVERRUN_TOLERANCE_SECONDS,
+            ceil_tail_extension_seconds,
+            probe_soundtrack_media,
+        )
+
+        try:
+            _artifact, source_path = self.handlers._resolve_input(source_id)
+        except Exception:
+            return {
+                "checked": False,
+                "reason": "The source recording could not be resolved.",
+            }
+        try:
+            probed = probe_soundtrack_media(source_path)
+        except Exception:
+            return {
+                "checked": False,
+                "reason": "The source recording's duration could not be probed.",
+            }
+        try:
+            # The export measures against the video stream first.
+            source_duration = float(
+                probed.get("video_duration") or probed.get("duration") or 0
+            )
+        except (TypeError, ValueError):
+            source_duration = 0.0
+        if source_duration <= 0:
+            return {
+                "checked": False,
+                "reason": "The source recording's duration could not be probed.",
+            }
+        overrun_seconds = generated_duration_ms / 1000 - source_duration
+        extension_ms = 0
+        if overrun_seconds > OVERRUN_TOLERANCE_SECONDS:
+            extension_ms = round(
+                ceil_tail_extension_seconds(overrun_seconds, probed.get("fps")) * 1000
+            )
+        policy = str(
+            (effective.get("video_tail_extension_policy") or {}).get("effective")
+            or "ask"
+        )
+        if overrun_seconds <= OVERRUN_TOLERANCE_SECONDS:
+            outcome = "fits"
+        elif export_mode == "audio":
+            # An audio export never cuts speech, so it cannot extend or stop.
+            outcome = "fails"
+        elif policy == "extend":
+            outcome = "extend"
+        else:
+            outcome = "stops"
+        return {
+            "checked": True,
+            "source_duration_ms": round(source_duration * 1000),
+            "overrun_ms": round(overrun_seconds * 1000),
+            "policy": policy,
+            "extension_ms": extension_ms,
+            "outcome": outcome,
+        }
+
+    @staticmethod
+    def _speech_timing_warnings(
+        speech_timing: dict[str, Any] | None,
+        effective: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        """Name a measured drift or tail overrun before the export is queued."""
+
+        if not isinstance(speech_timing, dict):
+            return []
+        from pandrator.logic.dubbing.timing_drift import drift_warnings
+
+        warnings: list[str] = []
+        metrics = speech_timing.get("timing_drift")
+        if isinstance(metrics, dict):
+            speed = (effective.get("synchronization_speed") or {}).get("effective")
+            warnings.extend(drift_warnings(metrics, speed=speed))
+        tail = speech_timing.get("tail")
+        if not isinstance(tail, dict) or not tail.get("checked"):
+            return warnings
+        overrun = float(tail.get("overrun_ms") or 0) / 1000
+        extension = float(tail.get("extension_ms") or 0) / 1000
+        outcome = str(tail.get("outcome") or "")
+        if outcome == "extend":
+            warnings.append(
+                f"The video will be {extension:.2f} s longer: its last frame is held "
+                "so the speech can finish. Usually only that tail is encoded."
+            )
+        elif outcome == "stops":
+            warnings.append(
+                f"Speech runs {overrun:.2f} s past the end of the video, so this export "
+                "will stop before rendering. Set video_tail_extension_policy=extend to "
+                "hold the last frame (usually only that tail is encoded), or raise "
+                "synchronization_speed."
+            )
+        elif outcome == "fails":
+            warnings.append(
+                f"Speech runs {overrun:.2f} s past the end of the recording, and an "
+                "audio export never cuts speech, so this export will fail. Turn off "
+                "audio_match_source_duration to export the full speech, or export media "
+                "with video_tail_extension_policy=extend."
+            )
+        return warnings
 
     def _stage_effective_settings(
         self,
@@ -1197,12 +1446,23 @@ class WorkflowExecutionPlanService:
             )
         effective_export: dict[str, dict[str, Any]] | None = None
         export_context: dict[str, Any] = {}
+        export_output_snapshot: dict[str, Any] = {}
+        speech_timing: dict[str, Any] | None = None
         if target_stage == "export":
             # Settings reads check access against the execution actor, so read
             # them as the plan's principal, not as an ambient caller.
             with execution_actor_scope(context.actor):
-                effective_export, export_context = self._export_effective_settings(
+                (
+                    effective_export,
+                    export_context,
+                    export_output_snapshot,
+                ) = self._export_effective_settings(
                     session_id, supplied, resolved
+                )
+                # The measured figures appear once an assembly exists; before
+                # that, a plan has nothing placed to report.
+                speech_timing = self._export_speech_timing(
+                    session_id, resolved, effective_export, export_output_snapshot
                 )
         disclosures = self._provider_disclosures(resolved)
         external = [item for item in disclosures if self._is_external(item)]
@@ -1319,6 +1579,15 @@ class WorkflowExecutionPlanService:
                     context=export_context,
                 )
             )
+            warnings.extend(
+                self._speech_timing_warnings(speech_timing, effective_export)
+            )
+        if speech_timing is not None:
+            tail = speech_timing.get("tail")
+            if isinstance(tail, dict) and tail.get("outcome") == "extend":
+                for step in steps:
+                    if step["stage"] == target_stage:
+                        step["tail_extension"] = tail
         effective_stage: dict[str, dict[str, Any]] = {}
         stage_support: dict[str, Any] | None = None
         with execution_actor_scope(context.actor):
@@ -1373,6 +1642,11 @@ class WorkflowExecutionPlanService:
                 "profile_scope": resolved.payload.get("subtitle_profile_scope", "source_target_alternatives"),
                 "counts_status": "available_after_render",
             }} if target_stage == "export" else {}),
+            **(
+                {"speech_timing": speech_timing}
+                if target_stage == "export"
+                else {}
+            ),
             "ordered_steps": steps,
             "reuse_decisions": [
                 {

@@ -487,6 +487,7 @@ Wrong.
                 audio_sync.AudioAlignmentBlock("third", "Third", 5000, 6000, [sources[2]], [3]),
             ]
 
+            placements: dict[str, list[tuple[int, int]]] = {}
             for backend in ("pydub", "streaming"):
                 with self.subTest(backend=backend):
                     diagnostics = {}
@@ -528,6 +529,17 @@ Wrong.
                     self.assertEqual(1.0, second["requested_speed_factor"])
                     self.assertEqual(0, diagnostics["slowed_block_count"])
                     self.assertEqual(6000, len(AudioSegment.from_wav(output)))
+                    placements[backend] = [
+                        (item["speech_start_ms"], item["speech_end_ms"])
+                        for item in diagnostics["blocks"]
+                    ]
+
+        # Both backends place the same speech on the same timeline, with the
+        # first block's overrun pushing the second one late.
+        self.assertEqual(
+            [(0, 1200), (1200, 2200), (5000, 6000)], placements["streaming"]
+        )
+        self.assertEqual(placements["streaming"], placements["pydub"])
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
     def test_optional_slowdown_keeps_long_block_speedups_and_recovers_final_drift(self):

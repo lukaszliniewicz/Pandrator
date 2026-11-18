@@ -15,6 +15,7 @@ from typing import Callable
 from .export_inputs import ExportInputs, MediaExportSelection
 from .export_publication import publish_video_export
 from .export_subtitles import (
+    speech_track_language,
     subtitle_file_diagnostics,
     subtitle_track_details,
     subtitle_track_language_origin,
@@ -258,8 +259,12 @@ def _prepare_video_audio(
         from .sound_workflow_outputs import has_output_sounds, render_output_sounds
 
         with_sounds = has_output_sounds(context, session_id, settings)
-        # The new track carries generated speech in the target language.
-        speech_language = str(settings.get("target_language") or "")
+        # The new track carries generated speech in the target language. A
+        # translation branch keeps that language on the session record, not in
+        # the export settings, so the session answers when the run is silent.
+        speech_language, _speech_language_origin = speech_track_language(
+            record, settings
+        )
         if audio_mode == "dubbed" and not with_sounds:
             command = build_replace_video_audio_command(
                 str(working_video),
@@ -677,6 +682,13 @@ def render_video_export(
             }
             for item in selected_subtitles
         ]
+        # Name the dubbed track's language the same way the subtitle tracks do,
+        # so a player never shows the generated speech as "unknown".
+        audio_language, audio_language_origin = (
+            speech_track_language(record, settings)
+            if audio_mode in {"dubbed", "mixed"} and selection.dubbing_audio is not None
+            else ("", "none")
+        )
         return publish_video_export(
             context, render_destination, requested_destination,
             cancel_event=cancel_event, job_id=job_id, lease_generation=lease_generation,
@@ -692,6 +704,8 @@ def render_video_export(
                 "chapter_policy": "omit",
                 "output_settings": inputs.output_settings_snapshot,
                 "audio_mode": audio_mode,
+                "audio_language": audio_language or None,
+                "audio_language_origin": audio_language_origin,
                 "subtitle_mode": subtitle_mode,
                 "video_resolution": output_video_resolution,
                 "video_transcoded": video_transcode,

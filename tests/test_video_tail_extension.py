@@ -397,7 +397,7 @@ class TailExportTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(
             VideoTailExtensionRequired,
-            "This requires reencoding the video",
+            "usually only that tail is encoded",
         ):
             self.handlers.export(
                 {"session_id": self.sid, "settings": settings},
