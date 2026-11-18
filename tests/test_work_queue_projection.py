@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import io
 import json
+import sqlite3
+import time
 import wave
 from datetime import timedelta
 from types import SimpleNamespace
@@ -33,7 +35,11 @@ from pandrator.web.models import (
 )
 from pandrator.web.sessions import SessionService
 from pandrator.web.settings_identity import settings_workspace_id
-from pandrator.web.tts_providers import TtsBatchItem, TtsProviderRegistry
+from pandrator.web.tts_providers import (
+    LegacyTtsAdapter,
+    TtsBatchItem,
+    TtsProviderRegistry,
+)
 from pandrator.web.work import WorkService
 from pandrator.web.workflow_plans import WorkflowExecutionPlanService
 from pandrator_mcp.schemas.work import GetWorkInput, ListWorkInput
@@ -292,6 +298,88 @@ def test_retry_detail_is_written_when_its_progress_value_does_not_move(case):
     assert case.jobs.get(job.id).status == "succeeded"
 
 
+def test_an_expired_retry_detail_is_cleared_with_its_structured_state(case, monkeypatch):
+    # Only this handler drives heartbeats, so the expiry below is unambiguous.
+    monkeypatch.setattr(
+        "pandrator.web.jobs.threading.Thread",
+        lambda *_args, **_kwargs: SimpleNamespace(start=lambda: None),
+    )
+    seen: list[Any] = []
+
+    def handler(payload, progress, _cancel):
+        job_id = payload["_job_id"]
+        with open_job_progress_state(job_id) as state:
+            assert state is not None
+            state.retry.record(
+                "segment-5",
+                attempt=2,
+                attempt_limit=10,
+                delay_seconds=0.02,
+                provider="Google Vertex AI",
+                reason="rate_limited",
+            )
+            progress(0.5, None)
+            seen.append(case.jobs.get(job_id).progress_detail or "")
+            time.sleep(0.05)
+            # The backoff elapsed: one heartbeat now drops both the suffix and
+            # the structured retry state it described.
+            progress(0.5, None)
+            stored = case.jobs.get(job_id)
+            seen.append(stored.progress_detail)
+            seen.append(stored.progress_state_json)
+        return {}
+
+    job = case.jobs.enqueue("generation.run", max_attempts=1)
+    assert Worker(case.jobs, "worker", {"generation.run": handler}).run_once()
+    assert "waiting on" in seen[0]
+    assert seen[1] is None
+    assert seen[2] is None
+    assert case.jobs.get(job.id).status == "succeeded"
+
+
+def test_a_busy_heartbeat_keeps_the_pending_progress_state(case, monkeypatch):
+    monkeypatch.setattr(
+        "pandrator.web.jobs.threading.Thread",
+        lambda *_args, **_kwargs: SimpleNamespace(start=lambda: None),
+    )
+    original = case.jobs.heartbeat
+    rejected: list[bool] = []
+
+    def heartbeat(*args, **kwargs):
+        if isinstance(kwargs.get("progress_state"), dict) and not rejected:
+            rejected.append(True)
+            error = sqlite3.OperationalError("database is locked")
+            error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise error
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(case.jobs, "heartbeat", heartbeat)
+    observed: list[Any] = []
+
+    def handler(payload, progress, _cancel):
+        job_id = payload["_job_id"]
+        with open_job_progress_state(job_id) as state:
+            assert state is not None
+            state.set_blocks(4, 40)
+            # This write is refused as busy; the report must not be lost.
+            progress(0.1, "Generating speech: 4 of 40")
+            observed.append(case.jobs.get(job_id).progress_state_json)
+            # The next heartbeat still sends the pending structured progress.
+            progress(0.2, "Generating speech: 5 of 40")
+            observed.append(case.jobs.get(job_id).progress_state_json)
+        return {}
+
+    job = case.jobs.enqueue("generation.run", max_attempts=1)
+    assert Worker(case.jobs, "worker", {"generation.run": handler}).run_once()
+    assert rejected
+    assert "blocks_done" not in observed[0]
+    assert observed[1]["blocks_done"] == 4
+    assert observed[1]["blocks_total"] == 40
+    # The claim's attempt start survives the report that replaces the state.
+    assert observed[1]["attempt_started_at"]
+    assert case.jobs.get(job.id).status == "succeeded"
+
+
 def wav_bytes() -> bytes:
     output = io.BytesIO()
     with wave.open(output, "wb") as audio:
@@ -360,11 +448,12 @@ class RecordingTracker(RetryTracker):
 
     def __init__(self) -> None:
         super().__init__()
-        self.snapshots: list[dict[str, Any] | None] = []
+        self.records: list[dict[str, Any]] = []
 
     def record(self, segment: str, **values: Any) -> None:
         super().record(segment, **values)
-        self.snapshots.append(self.summary())
+        # Keep what was reported; a derived summary expires with its backoff.
+        self.records.append({"segment": segment, **values})
 
 
 def test_parallel_batch_records_vertex_rate_limit_retries(monkeypatch):
@@ -399,14 +488,50 @@ def test_parallel_batch_records_vertex_rate_limit_retries(monkeypatch):
 
     assert len(calls) == 3
     assert results[0].error is None and results[0].audio is not None
-    retried = [snapshot for snapshot in tracker.snapshots if snapshot]
-    assert retried, tracker.snapshots
-    assert retried[0]["pending_requests"] == 1
-    assert retried[0]["provider"] == "Google Vertex AI"
-    assert retried[0]["attempt_limit"] == 4
-    assert retried[0]["max_attempt"] == 2
-    # Nothing is pending once the backoff has elapsed and the request succeeded.
-    assert tracker.summary() is None
+    assert [item["attempt"] for item in tracker.records] == [2, 3]
+    first = tracker.records[0]
+    assert first["segment"] == "segment-1"
+    assert first["attempt_limit"] == 4
+    assert first["provider"] == "Google Vertex AI"
+    assert first["reason"] == "rate_limited"
+
+
+class RetryingLegacyAdapter(LegacyTtsAdapter):
+    """A function-based provider that reports one retry before answering."""
+
+    def synthesize(self, text, settings, **options):
+        callback = options.get("retry_callback")
+        if callback is not None:
+            callback(1, 3, 0.0, "rate_limited")
+        return None
+
+
+def test_a_single_item_legacy_batch_reports_its_retry():
+    registry = TtsProviderRegistry()
+    registry.replace(RetryingLegacyAdapter("local_retry_probe"))
+    tracker = RecordingTracker()
+    try:
+        results = list(
+            registry.synthesize_batch(
+                [
+                    TtsBatchItem(
+                        id="segment-1",
+                        text="Hello there",
+                        settings={"service_id": "local_retry_probe"},
+                    )
+                ],
+                batch_size=1,
+                retry_tracker=tracker,
+            )
+        )
+    finally:
+        registry.close()
+
+    assert len(results) == 1 and results[0].error is None
+    # The inherited adapter-level batch dropped the tracker it was given.
+    assert [item["segment"] for item in tracker.records] == ["segment-1"]
+    assert tracker.records[0]["attempt"] == 1
+    assert tracker.records[0]["attempt_limit"] == 3
 
 
 def test_running_estimate_needs_ten_blocks_or_two_minutes(case):
@@ -450,6 +575,34 @@ def test_running_estimate_ignores_blocks_a_resume_kept(case):
     assert estimate["blocks_done"] == 330
     assert estimate["blocks_per_minute"] == pytest.approx(15.0, rel=0.1)
     assert estimate["remaining_seconds"] == pytest.approx(154 * 4.0, rel=0.1)
+
+
+def test_a_reclaimed_job_estimates_from_its_current_attempt(case):
+    job = case.jobs.enqueue("generation.run", max_attempts=2)
+    first = case.jobs.claim("worker")
+    assert first is not None and first.id == job.id
+    with case.database.immediate_session() as session:
+        stored = session.get(Job, job.id)
+        # The first attempt began six minutes ago and then lost its lease.
+        stored.started_at = utcnow() - timedelta(seconds=360)
+        stored.lease_expires_at = utcnow() - timedelta(seconds=1)
+    reclaimed = case.jobs.claim("worker")
+    assert reclaimed is not None and reclaimed.id == job.id
+    assert reclaimed.started_at is not None
+    # The claim measures the new attempt separately from the first claim.
+    assert reclaimed.progress_state_json["attempt_started_at"]
+    with case.database.immediate_session() as session:
+        stored = session.get(Job, job.id)
+        # 30 of 40 blocks were synthesised in this attempt's first two minutes.
+        stored.progress_state_json = {
+            **(stored.progress_state_json or {}),
+            "blocks_done": 30,
+            "blocks_total": 40,
+            "attempt_started_at": (utcnow() - timedelta(seconds=120)).isoformat(),
+        }
+    estimate = case.work.get(job.id).model_dump(mode="json")["estimate"]
+    assert estimate["blocks_per_minute"] == pytest.approx(15.0, rel=0.1)
+    assert estimate["remaining_seconds"] == pytest.approx(40.0, rel=0.1)
 
 
 def test_plan_pace_measures_parallel_waves_not_single_gaps():
@@ -503,7 +656,14 @@ def test_retry_and_estimate_are_absent_for_finished_work(case):
         progress_state=state,
     )
     with case.database.immediate_session() as session:
-        session.get(Job, job.id).started_at = utcnow() - timedelta(seconds=600)
+        stored = session.get(Job, job.id)
+        stored.started_at = utcnow() - timedelta(seconds=600)
+        # The estimate now measures the current attempt, whose start the claim
+        # records; keep this fixture's simulated hour of work explicit.
+        stored.progress_state_json = {
+            **(stored.progress_state_json or {}),
+            "attempt_started_at": (utcnow() - timedelta(seconds=600)).isoformat(),
+        }
     running = case.work.get(job.id).model_dump(mode="json")
     assert running["retry"] == {
         "pending_requests": 1,

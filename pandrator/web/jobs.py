@@ -1181,8 +1181,9 @@ class JobQueue:
             job.available_at = None
             job.attempts += 1
             job.started_at = job.started_at or now
-            # Structured progress describes one attempt; a new one reports afresh.
-            job.progress_state_json = None
+            # Structured progress describes one attempt; a new one reports afresh
+            # and measures its own pace from this moment, not the first claim.
+            job.progress_state_json = {"attempt_started_at": now.isoformat()}
             job.updated_at = now
             self._event(
                 session,
@@ -1229,15 +1230,30 @@ class JobQueue:
                 progress_was_current = requested_progress >= float(job.progress or 0.0)
                 job.progress = max(float(job.progress or 0.0), requested_progress)
                 payload["progress"] = job.progress
-            if detail is not None and (progress_was_current or force_detail):
-                job.progress_detail = self.secret_redactor.redact(detail)
+            if (detail is not None or force_detail) and (
+                progress_was_current or force_detail
+            ):
+                # An explicit clear carries None: the retry suffix has expired.
+                job.progress_detail = (
+                    self.secret_redactor.redact(detail)
+                    if detail is not None
+                    else None
+                )
                 payload["detail"] = job.progress_detail
             if progress_state is not _UNSET:
                 # Structured progress is replaced whole and carries no user
                 # text, so it is written even when a late progress value lost.
-                job.progress_state_json = (
+                # The claim's attempt start is not a report and survives.
+                new_state = (
                     dict(progress_state) if isinstance(progress_state, dict) else None
                 )
+                if new_state is not None and isinstance(job.progress_state_json, dict):
+                    attempt_started_at = job.progress_state_json.get(
+                        "attempt_started_at"
+                    )
+                    if attempt_started_at is not None:
+                        new_state.setdefault("attempt_started_at", attempt_started_at)
+                job.progress_state_json = new_state
                 payload["state"] = job.progress_state_json
             if payload:
                 self._event(session, job.id, "job.progress", payload)
@@ -1294,6 +1310,16 @@ class JobQueue:
             journal = session.get(SessionPurge, target) if isinstance(target, str) else None
             if journal is not None and journal.state in {"purging", "failed", "complete"}:
                 raise ValueError("Session purge has claimed irreversible deletion and cannot be cancelled.")
+        from .translation_projects import TRANSLATION_PROJECT_CREATE_JOB_KIND
+
+        if (
+            job.kind == TRANSLATION_PROJECT_CREATE_JOB_KIND
+            and isinstance(job.payload_json, dict)
+            and job.payload_json.get("committed_project_id")
+        ):
+            raise ValueError(
+                "The translation project has already been created; this job can no longer be cancelled."
+            )
         if job.status == "queued":
             job.status = "canceled"
             job.finished_at = utcnow()
@@ -1880,11 +1906,12 @@ class Worker:
             if state is not None:
                 # A retry that a batch worker thread recorded is folded into
                 # this heartbeat, even when the caller had no detail of its own.
-                composed = state.desired_detail()
-                if composed is not None:
+                detail_changed, composed = state.desired_detail()
+                if detail_changed:
+                    # A composed None clears an expired retry suffix; a retry-only
+                    # update must reach the job even when a late progress value
+                    # would otherwise keep its detail.
                     detail = composed
-                    # A retry-only update must reach the job even when a late
-                    # progress value would otherwise keep its detail.
                     force_detail = True
                 changed, payload = state.consume_state()
                 if changed:
@@ -1904,6 +1931,10 @@ class Worker:
                     lease_lost_event.set()
                     cancel_event.set()
                     return False
+                if state is not None:
+                    # The write landed, so the returned values may be marked as
+                    # reported; a busy writer leaves them pending for the retry.
+                    state.acknowledge()
                 expected_resources = {
                     _canonical_tts_resource_key(str(key).strip())
                     for key in (job.resource_keys_json or []) if str(key).strip()

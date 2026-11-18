@@ -1441,7 +1441,13 @@ class TtsProviderRegistry:
                 **options,
             )
         batch_method = getattr(adapter, "synthesize_batch", None)
-        if _is_tts_batch_synthesizer(batch_method):
+        inherited_legacy_batch = (
+            getattr(type(adapter), "synthesize_batch", None)
+            is LegacyTtsAdapter.synthesize_batch
+        )
+        if _is_tts_batch_synthesizer(batch_method) and not (
+            retry_tracker is not None and inherited_legacy_batch
+        ):
             # An adapter-level batch owns its own ordering and retries; it has
             # no per-item attempt to report upwards.
             return batch_method(
