@@ -26,6 +26,7 @@ from .models import (
 from .source_resolution import resolve_primary_source
 from .workflow_fingerprints import (
     _stage_settings_fingerprint,
+    dispatch_result_stage,
     dispatch_settings_fingerprint,
 )
 from .workflow_inputs import workflow_transformations
@@ -350,22 +351,32 @@ class WorkflowPrerequisiteService:
                     dispatch_run_id
                     and dispatch_kind
                     and (
-                        dispatch_kind != "translation"
+                        dispatch_result_stage(dispatch_kind, existing.role) != "translate"
                         or str(dispatch_language or "").strip()
                     )
                 ):
                     evidence = dispatch_settings_fingerprint(
-                        dispatch_kind, str(dispatch_language or "")
+                        dispatch_kind,
+                        str(dispatch_language or ""),
+                        output_role=existing.role,
                     )
-            expected_kind = "translation" if stage_key == "translate" else "correction"
-            if evidence is not None and evidence.get("dispatch_kind") == expected_kind:
+            # The artifact's own role decides what a correction result stands
+            # for, so a corrected translation recorded before the fingerprint
+            # named its output role still counts for the translation stage.
+            if evidence is not None and dispatch_result_stage(
+                str(evidence.get("dispatch_kind") or ""),
+                str(evidence.get("output_role") or existing.role or ""),
+            ) == stage_key:
                 dispatch_checked = True
                 if stage_key == "correct":
                     settings_match = True
                     settings_evidence = "dispatch_result"
                 else:
                     expected_language = self._current_target_language(session_id, settings)
-                    stored_language = str(evidence.get("target_language") or "")
+                    stored_language = str(
+                        evidence.get("target_language")
+                        or str(metadata.get("language") or "").strip().casefold()
+                    )
                     if not expected_language or stored_language == expected_language:
                         settings_match = True
                         settings_evidence = "dispatch_result"

@@ -571,23 +571,75 @@ def test_unreviewed_artifact_without_evidence_still_reruns(owner: Any, graph: Gr
     assert entry["reasons"] == ["settings_unverifiable"]
 
 
-def test_dispatch_evidence_for_another_stage_is_ignored(owner: Any, graph: Graph) -> None:
+@pytest.mark.parametrize("fingerprint", ["current", "before_output_role", "none"])
+def test_a_corrected_translation_stands_for_the_translation_stage(
+    owner: Any, graph: Graph, fingerprint: str
+) -> None:
+    # A correction run on a translation publishes a corrected translation;
+    # continuing must keep it rather than translate again over it.
+    metadata = dispatch_metadata(dispatch_kind="correction", fingerprint=fingerprint != "none")
+    if fingerprint == "current":
+        metadata["settings_fingerprint"] = {
+            "executor": "dispatch",
+            "dispatch_kind": "correction",
+            "output_role": "translation",
+            "target_language": "pl",
+        }
+    set_metadata(graph, "translated", metadata)
+    with graph.unmodified():
+        assert owner.settings_mismatches("voice") == []
+        entry = freshness_entry(owner, "translate")
+    assert entry["settings_match"] is True
+    assert entry["settings_evidence"] == "dispatch_result"
+
+
+def test_a_corrected_translation_in_another_language_reruns(
+    owner: Any, graph: Graph
+) -> None:
     set_metadata(
         graph,
         "translated",
-        dispatch_metadata(dispatch_kind="correction"),
+        dispatch_metadata(dispatch_kind="correction", language="de"),
     )
     with graph.unmodified():
-        assert owner.settings_mismatches("voice") == [
-            {
-                "stage": "translate",
-                "changed_fields": [],
-                "reasons": ["settings_unverifiable"],
-                "stored": {"executor": "dispatch", "dispatch_kind": "correction"},
-                "current": None,
-            }
-        ]
-        entry = freshness_entry(owner, "translate")
+        assert owner.settings_mismatches("voice") == mismatch(
+            stored={"target_language": "de"},
+            current={"target_language": "pl"},
+            reasons=["settings_changed"],
+            fields=["target_language"],
+        )
+
+
+def test_dispatch_evidence_for_another_stage_is_ignored(owner: Any, graph: Graph) -> None:
+    # A translation run's result cannot stand for the correction stage.
+    with graph.database.session() as session:
+        session.add(
+            artifact(
+                session,
+                "corrected",
+                "correction",
+                metadata=dispatch_metadata(),
+            )
+        )
+        outcome = session.get(OutcomePlan, "voice")
+        assert outcome is not None
+        outcome.value_json = {
+            "inputs": {"translation": "correction", "generation": "translation"},
+            "transformations": {
+                "correction": True,
+                "translation": True,
+                "generate_audio": True,
+            },
+        }
+        session.add(
+            SessionStageSelection(
+                session_id="voice", stage_key="correct", artifact_id="corrected"
+            )
+        )
+    with graph.unmodified():
+        entry = freshness_entry(owner, "correct")
+    assert entry["settings_match"] is False
+    assert entry["reasons"] == ["settings_unverifiable"]
     assert entry["settings_evidence"] is None
 
 

@@ -1040,6 +1040,16 @@ class DispatchWebTests(unittest.TestCase):
                 "correction", result_artifact.metadata_json["dispatch_kind"]
             )
             self.assertEqual("de", result_artifact.metadata_json["language"])
+            # It stands for the translation stage, in its own language.
+            self.assertEqual(
+                {
+                    "executor": "dispatch",
+                    "dispatch_kind": "correction",
+                    "output_role": "translation",
+                    "target_language": "de",
+                },
+                result_artifact.metadata_json["settings_fingerprint"],
+            )
 
             result_revision = session.get(
                 DocumentRevision, payload["result_revision_id"]

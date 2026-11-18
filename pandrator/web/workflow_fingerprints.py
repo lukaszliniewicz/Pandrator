@@ -124,20 +124,43 @@ def _stage_settings_fingerprint(stage_key: str, settings: dict[str, Any]) -> dic
     return {}
 
 
+def dispatch_result_stage(dispatch_kind: str, output_role: str | None) -> str | None:
+    """The workflow stage whose freshness a dispatch result can prove.
+
+    A translation run proves ``translate`` and a correction run ``correct``,
+    except a correction of a translation: it publishes a corrected translation,
+    which stands for the ``translate`` stage in its own language.
+    """
+
+    kind = str(dispatch_kind or "")
+    if kind == "translation":
+        return "translate"
+    if kind == "correction":
+        return "translate" if output_role == "translation" else "correct"
+    return None
+
+
 def dispatch_settings_fingerprint(
-    dispatch_kind: str, target_language: str | None
+    dispatch_kind: str,
+    target_language: str | None,
+    *,
+    output_role: str | None = None,
 ) -> dict[str, Any]:
     """Settings identity of a passive dispatch run.
 
     A dispatch run takes its settings from its create arguments and has no
     model of its own, so the managed stage fingerprint would differ on every
     field that the run does not own.  The run's own immutable inputs are the
-    dispatch kind and, for a translation, its target language.
+    dispatch kind and, for a result that is a translation, its language: the
+    target of a translation run, or the language of a corrected translation
+    (which also records its ``output_role``).
     """
 
     kind = str(dispatch_kind or "")
     fingerprint: dict[str, Any] = {"executor": "dispatch", "dispatch_kind": kind}
-    if kind == "translation":
+    if kind == "correction" and output_role == "translation":
+        fingerprint["output_role"] = "translation"
+    if dispatch_result_stage(kind, output_role) == "translate":
         fingerprint["target_language"] = str(target_language or "").strip().casefold()
     return fingerprint
 

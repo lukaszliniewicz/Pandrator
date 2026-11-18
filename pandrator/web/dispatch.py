@@ -2735,7 +2735,11 @@ class DispatchRunService:
                 **(
                     {
                         "settings_fingerprint": dispatch_settings_fingerprint(
-                            run.kind, run.target_language
+                            run.kind,
+                            run.target_language
+                            if run.kind == "translation"
+                            else document.language,
+                            output_role=run.output_role,
                         )
                     }
                     if run.kind in {"correction", "translation"}
