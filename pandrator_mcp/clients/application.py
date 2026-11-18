@@ -164,29 +164,85 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
 )
 
 
-def _unmodelled_conflict(downstream: dict[str, Any], status_code: int) -> PandratorMcpError:
-    """Keep the application's reason for a 409 this request does not pass through.
+# Application 409 codes whose message is prose written by Pandrator itself:
+# the reason names the way out and carries no host detail.
+_APPLICATION_CONFLICT_CODES = frozenset(
+    {
+        "already_exists",
+        "artifact_in_use",
+        "assembly_unavailable",
+        "bundled_voice_protected",
+        "catalogue_changed",
+        "catalogue_refresh_requires_post",
+        "configuration_changed",
+        "evidence_conflict",
+        "export_conflict",
+        "generation_admission_stale_inputs",
+        "generation_unavailable",
+        "invalid_artifact",
+        "invalid_state",
+        "invalid_take",
+        "job_conflict",
+        "legacy_registration",
+        "media_edit_inputs_changed",
+        "mix_preview_unavailable",
+        "overwrite_conflict",
+        "preview_artifact_changed",
+        "preview_preparation_required",
+        "public_origin_mismatch",
+        "replacement_required",
+        "source_in_use",
+        "stage_unavailable",
+        "training_active",
+        "upload_conflict",
+        "video_preview_conflict",
+        "voice_busy",
+    }
+)
 
-    Most such refusals are not revision races (a run that is no longer on the
-    active plan, a missing checkpoint), and the application's message names
-    the way out. Only a bare 409 is reported as a changed resource.
+# Application 409 codes whose message can carry host paths, operating-system
+# errors or database text. The code is reported; the message stays on the host.
+_OPAQUE_CONFLICT_CODES = frozenset(
+    {
+        "artifact_delete_failed",
+        "checkpoint_missing",
+        "folder_conflict",
+        "fork_failed",
+        "invalid_request",
+        "unsafe_storage",
+    }
+)
+
+
+def _unmodelled_conflict(downstream: dict[str, Any], status_code: int) -> PandratorMcpError:
+    """Report a 409 that this request does not pass through.
+
+    Most known refusals are not revision races (a run that is no longer on the
+    active plan, an output that cannot be deleted), so they become
+    ``state_conflict``. Only codes audited as application prose keep their
+    message. An unrecognised code is never trusted with model context and
+    stays an opaque ``revision_conflict``.
     """
 
     code = str(downstream.get("code") or "").strip()
     message = str(downstream.get("message") or "").strip()
-    if not message:
+    if code in _APPLICATION_CONFLICT_CODES and message:
         return PandratorMcpError(
-            "revision_conflict",
-            "The Pandrator resource changed since it was inspected.",
-            details={"status": status_code},
+            "state_conflict",
+            message[:2_000],
+            details={"status": status_code, "downstream_code": code},
+        )
+    if code in _APPLICATION_CONFLICT_CODES or code in _OPAQUE_CONFLICT_CODES:
+        return PandratorMcpError(
+            "state_conflict",
+            "Pandrator refused the request in its current state; the reason is "
+            "kept on the Pandrator host.",
+            details={"status": status_code, "downstream_code": code},
         )
     return PandratorMcpError(
-        "state_conflict",
-        message[:2_000],
-        details={
-            "status": status_code,
-            **({"downstream_code": code[:120]} if code else {}),
-        },
+        "revision_conflict",
+        "The Pandrator resource changed since it was inspected.",
+        details={"status": status_code},
     )
 
 

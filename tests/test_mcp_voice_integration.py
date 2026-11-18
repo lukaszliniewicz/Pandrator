@@ -446,7 +446,7 @@ def test_mcp_voice_and_session_lifecycle_reaches_native_http_routes():
                     "pandrator_delete_output",
                     {"session_id": session_id, "artifact_id": source.id},
                 )
-                assert _error_code(protected_source) == "revision_conflict"
+                assert _error_code(protected_source) == "state_conflict"
                 assert source_path.exists()
 
         with patch(

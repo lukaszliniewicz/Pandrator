@@ -1413,9 +1413,15 @@ class ApplicationClientTests(unittest.TestCase):
 
     def test_unmodelled_conflict_keeps_the_application_reason(self):
         reason = "Timing repair requires a completed voiceover on its active speech plan."
+        host_path = "/home/operator/Pandrator/sessions/a/output.wav"
         session = FakeSession([
             FakeResponse(409, {"error": {"code": "invalid_state", "message": reason}}),
             FakeResponse(409, {}),
+            FakeResponse(409, {"error": {
+                "code": "artifact_delete_failed",
+                "message": f"The output file could not be removed: {host_path}",
+            }}),
+            FakeResponse(409, {"error": {"code": "new_unaudited_code", "message": host_path}}),
         ])
         client = ApplicationClient(
             local_registry("http://127.0.0.1:8097").bind("local"),
@@ -1434,6 +1440,21 @@ class ApplicationClientTests(unittest.TestCase):
         with self.assertRaises(PandratorMcpError) as bare:
             client.repair_generation_timing("run-1", preview=True)
         self.assertEqual("revision_conflict", bare.exception.code)
+        # A known code whose text can carry host paths keeps only its code.
+        with self.assertRaises(PandratorMcpError) as opaque:
+            client.repair_generation_timing("run-1", preview=True)
+        self.assertEqual("state_conflict", opaque.exception.code)
+        self.assertNotIn(host_path, str(opaque.exception))
+        self.assertEqual(
+            {"status": 409, "downstream_code": "artifact_delete_failed"},
+            opaque.exception.details,
+        )
+        # An unrecognised code is never trusted with model context.
+        with self.assertRaises(PandratorMcpError) as unknown:
+            client.repair_generation_timing("run-1", preview=True)
+        self.assertEqual("revision_conflict", unknown.exception.code)
+        self.assertNotIn(host_path, str(unknown.exception))
+        self.assertEqual({"status": 409}, unknown.exception.details)
 
     def test_bounded_post_uses_csrf_idempotency_and_typed_errors(self):
         origin = "http://127.0.0.1:8097"
