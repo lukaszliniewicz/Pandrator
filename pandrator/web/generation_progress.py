@@ -128,6 +128,10 @@ class JobProgressState:
         self.job_id = job_id
         self.retry = RetryTracker()
         self._lock = threading.Lock()
+        # A heartbeat holds this from collecting the pending values through
+        # writing and acknowledging them, so a concurrent heartbeat cannot
+        # acknowledge values that another one collected.
+        self.heartbeat_lock = threading.Lock()
         self._detail: str | None = None
         self._blocks_done: int | None = None
         self._blocks_total: int | None = None

@@ -622,11 +622,16 @@ def _run_generation(
     # all before the loop: the pace estimate must divide by the blocks that
     # still need synthesis, and counting a kept block only when the loop
     # reaches it made the earlier blocks look as if they had taken its time.
+    # The report below counts every kept block as done from the start, so
+    # done - kept is always the number of blocks synthesised in this attempt.
     skipped = (
         sum(1 for segment_id in segment_ids if segment_id in completed_take_ids)
         if operation == "resume"
         else 0
     )
+    # Kept blocks the loop has already passed. They are added to the reported
+    # done count, so keeping them does not make the loop's own index lag.
+    kept_seen = 0
     # Segments the provider declined or returned without audio. The run goes
     # on and finishes partial; these are reported with their reasons.
     failed_segments: list[dict[str, Any]] = []
@@ -908,6 +913,7 @@ def _run_generation(
                     **({"failed_segments": failed_segments} if failed_segments else {}),
                 }
             if operation == "resume" and segment_id in completed_take_ids:
+                kept_seen += 1
                 progress(
                     optimization_share
                     + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
@@ -930,9 +936,11 @@ def _run_generation(
         )
         if progress_state is not None:
             # Structured counts for the running estimate; never parsed from text.
-            # Segments a resume kept took no time in this attempt, so they
-            # must not count towards its pace.
-            progress_state.set_blocks(index, len(segment_ids), kept=skipped)
+            # Kept blocks count as done from the start, so done - kept is the
+            # number of blocks this attempt has actually synthesised.
+            progress_state.set_blocks(
+                index + (skipped - kept_seen), len(segment_ids), kept=skipped
+            )
         take_path: Path | None = None
         take_file_identity: tuple[int, int] | None = None
         take_committed = False
