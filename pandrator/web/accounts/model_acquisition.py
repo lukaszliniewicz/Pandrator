@@ -1,4 +1,4 @@
-"""Bind missing-model acquisition to the current request or durable job actor."""
+"""Bind model acquisition, and other host fetches, to the current request or job actor."""
 
 from __future__ import annotations
 
@@ -8,9 +8,41 @@ from contextlib import contextmanager
 from pandrator.logic.model_acquisition import model_acquisition_scope
 
 from ..database import Database
-from .administration import require_execution_administrator_actor
-from .execution_actor import HostActor, UserActor, current_execution_actor
+from .administration import AdministratorRequired, require_execution_administrator_actor
+from .execution_actor import (
+    ExecutionActor,
+    HostActor,
+    UserActor,
+    current_execution_actor,
+    execution_actor_scope,
+)
 from .job_authorization import require_execution_actor_in_session
+
+
+def require_model_acquisition(database: Database) -> None:
+    """Refuse unless the current actor may acquire models: an Administrator, or the host.
+
+    It is the one rule for anything that fetches content from outside, including
+    a URL import: the host performs that fetch, so a non-administrator must not
+    be able to point it anywhere. It raises ``AdministratorRequired``.
+    """
+
+    require_execution_administrator_actor(database, allow_host=True)
+
+
+def may_acquire_models(database: Database, actor: ExecutionActor | None) -> bool:
+    """Whether a run by ``actor`` would pass the acquisition gate below.
+
+    Plans and readiness checks use it to say "will download" only to someone
+    whose run may actually download: an Administrator, or the host.
+    """
+
+    try:
+        with execution_actor_scope(actor):
+            require_model_acquisition(database)
+    except AdministratorRequired:
+        return False
+    return True
 
 
 @contextmanager
@@ -18,7 +50,7 @@ def model_acquisition_for_actor(database: Database) -> Iterator[None]:
     """Revalidate actual credentials for every acquisition, including host jobs."""
 
     def authorize() -> None:
-        require_execution_administrator_actor(database, allow_host=True)
+        require_model_acquisition(database)
 
     def authorize_inference() -> bool:
         actor = current_execution_actor.get()
@@ -39,3 +71,6 @@ def model_acquisition_for_actor(database: Database) -> Iterator[None]:
 
     with model_acquisition_scope(authorize, inference_authorizer=authorize_inference):
         yield
+
+
+__all__ = ["may_acquire_models", "model_acquisition_for_actor", "require_model_acquisition"]

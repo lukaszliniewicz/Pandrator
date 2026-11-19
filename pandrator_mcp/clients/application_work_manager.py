@@ -52,19 +52,26 @@ class ApplicationWorkManagerMethods(ApplicationRequests):
         overrides: dict[str, Any],
         expires_in_minutes: int,
         continuation: bool = True,
+        reuse_stages: list[str] | None = None,
+        rerun_stages: list[str] | None = None,
     ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "target_stage": target_stage,
+            "overrides": overrides,
+            "continuation": bool(continuation),
+            "expires_in_minutes": max(
+                1,
+                min(int(expires_in_minutes), 60),
+            ),
+        }
+        if reuse_stages:
+            body["reuse_stages"] = list(reuse_stages)
+        if rerun_stages:
+            body["rerun_stages"] = list(rerun_stages)
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/workflow-plans",
             method="POST",
-            body={
-                "target_stage": target_stage,
-                "overrides": overrides,
-                "continuation": bool(continuation),
-                "expires_in_minutes": max(
-                    1,
-                    min(int(expires_in_minutes), 60),
-                ),
-            },
+            body=body,
         )
 
     def get_workflow_plan(self, plan_id: str) -> dict[str, Any]:

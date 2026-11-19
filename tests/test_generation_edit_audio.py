@@ -1163,3 +1163,79 @@ def test_reconcile_with_nothing_to_copy_hydrates_no_segment_or_take(case):
     assert loaded == []
     # The revision, each ancestor and one candidate query.
     assert len(statements) <= 1 + len(ancestors) + 1, statements
+
+
+def test_resume_reports_every_kept_block_from_the_first_estimate(case):
+    """A resume keeps blocks 12-100 of 100, so only 1-11 count towards its pace.
+
+    The kept blocks used to be counted as the loop reached them, so the first
+    estimate divided by blocks the attempt had not synthesised yet.
+    """
+    from pandrator.web import generation_progress
+
+    created = case.client.post(
+        "/api/v1/sessions",
+        json={"name": "Resume estimate", "workflow_kind": "audiobook"},
+        headers=case.headers,
+    ).get_json()
+    session_id = created["id"]
+    plan = case.client.post(
+        f"/api/v1/sessions/{session_id}/generation-plan",
+        json={"segments": [{"text": f"Block {number}"} for number in range(1, 101)]},
+        headers=case.headers,
+    )
+    assert plan.status_code == 201, plan.get_json()
+    segment_ids = [
+        item["id"]
+        for item in case.client.get(
+            f"/api/v1/sessions/{session_id}/generation-segments"
+        ).get_json()["items"]
+    ]
+    assert len(segment_ids) == 100
+    reusable = segment_ids[11:]
+
+    # One run synthesises blocks 12-100 only and keeps those takes.
+    first = case._start(session_id=session_id, segment_ids=reusable)
+    with case._fake_tts([], [], batch_size=1) as handlers:
+        case._run_job(
+            handlers,
+            {
+                "generation_run_id": first["id"],
+                "segment_ids": reusable,
+                "operation": first["operation"],
+            },
+        )
+    with case.database.session() as session:
+        session.get(Job, first["job_id"]).status = "succeeded"
+
+    records = []
+    original_set_blocks = generation_progress.JobProgressState.set_blocks
+
+    def record_blocks(self, done, total, *, kept=0):
+        records.append((done, total, kept))
+        return original_set_blocks(self, done, total, kept=kept)
+
+    calls = []
+    with patch.object(
+        generation_progress.JobProgressState, "set_blocks", record_blocks
+    ), case._fake_tts(calls, [], batch_size=1) as handlers:
+        result = case._run_job(
+            handlers,
+            {
+                "generation_run_id": first["id"],
+                "segment_ids": [],
+                "operation": "resume",
+            },
+        )
+
+    assert calls == [f"Block {number}" for number in range(1, 12)]
+    assert result["generated"] == 11
+    assert result["skipped"] == 89
+    # The blocks 1-11 need synthesis and 12-100 are kept. Every report counts
+    # all kept blocks as done, so done - kept is the number synthesised so far.
+    for synthesis, (done, total, kept) in enumerate(records, start=1):
+        assert total == 100
+        assert kept == 89
+        assert done == synthesis - 1 + 89
+        assert done - kept == synthesis - 1 >= 0
+    assert len(records) == 11

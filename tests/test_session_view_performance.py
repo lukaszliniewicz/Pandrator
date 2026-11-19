@@ -524,7 +524,13 @@ class SessionViewPerformanceTests(unittest.TestCase):
         log = self._statement_log()
         items = self.generation.list_runs(session_id)
         selects, blockers = self._history_selects(log)
-        self.assertEqual([generation_job_ids, {selected_job_id}], job_batches)
+        self.assertEqual(
+            [
+                generation_job_ids | {session_id, "generation.repair-existing"},
+                {selected_job_id},
+            ],
+            job_batches,
+        )
         self.assertEqual([], blockers)
         self.assertLessEqual(len(selects), 8)
         self.assertEqual(
@@ -921,8 +927,7 @@ class SessionViewPerformanceTests(unittest.TestCase):
                 "tts": {"voice": "child"}, "early_repair_parent_run_id": root.id, **pad,
             }
         sessions = [mixed_id]
-        # A post-run repair job is only found when the snapshot enables repair,
-        # and here only audio, or only the override, does.
+        # Audio or the override can each select the second pass on their own.
         for enabling in ({"audio": early}, {"selected_segment_override": {"tts": early}}):
             session_id, (run_id,) = voiceover(1)
             with self.database.session() as session:

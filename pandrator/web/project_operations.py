@@ -173,11 +173,19 @@ class TranslationProjectOperationService:
                 "content_hash": source_artifact.content_hash if source_artifact else None,
             }
             frozen = revision.settings_json or {}
+            from .speech_plan_source import (
+                TIMING_ONLY_WARNING,
+                revision_source_compatibility,
+            )
+
+            compatibility = revision_source_compatibility(
+                db, frozen, source_artifact
+            )
             if (
                 not source.get("artifact_id")
                 or not source.get("content_hash")
-                or frozen.get("_source_artifact_id") != source["artifact_id"]
-                or frozen.get("_source_content_hash") != source["content_hash"]
+                or not frozen.get("_source_artifact_id")
+                or compatibility == "incompatible"
             ):
                 raise RevisionConflict(
                     "The reviewed speech plan does not match the current input ID and hash."
@@ -196,6 +204,8 @@ class TranslationProjectOperationService:
             "revision_id": revision_id,
             "content_signature": status["content_signature"],
             "current_input": {key: source[key] for key in ("artifact_id", "content_hash")},
+            "source_compatibility": compatibility,
+            "warnings": [TIMING_ONLY_WARNING] if compatibility == "timing_only" else [],
         }
 
     def _capture(self, project_id, branch_id, action, export_kind, principal, target_identity):
@@ -227,6 +237,8 @@ class TranslationProjectOperationService:
                 public = {
                     "speech_plan_revision_id": prepared["speech_plan_revision_id"],
                     "input": generation_guard["current_input"],
+                    "source_compatibility": generation_guard["source_compatibility"],
+                    "warnings": generation_guard["warnings"],
                     "settings": self.services.redactor.redact_value(snapshot),
                     "language_preflight": snapshot.get("tts_language_snapshot", {}),
                     "required_confirmations": [],

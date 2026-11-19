@@ -70,6 +70,12 @@ def native_execution_policy_json_schema(schema: dict[str, Any]) -> None:
     }
 
 
+def _blank_context_value(value: object) -> bool:
+    """Whether an optional context value or note carries no content."""
+
+    return isinstance(value, str) and not value.strip()
+
+
 def _encoded_size(value: ToolInput) -> int:
     return len(
         json.dumps(
@@ -84,14 +90,53 @@ class _ContextFields(ToolInput):
     terminology: dict[_ContextKey, _ContextValue] = Field(
         default_factory=dict,
         max_length=500,
+        description="Source term to preferred renderings. Empty values are ignored.",
     )
     entities: dict[_ContextKey, _ContextValue] = Field(
         default_factory=dict,
         max_length=500,
+        description="Named entity to a short note. Empty values are ignored.",
     )
-    style_rules: list[_ContextNote] = Field(default_factory=list, max_length=200)
-    decisions: list[_ContextNote] = Field(default_factory=list, max_length=200)
-    notes: list[_ContextNote] = Field(default_factory=list, max_length=200)
+    style_rules: list[_ContextNote] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Standing style rules. Empty items are ignored.",
+    )
+    decisions: list[_ContextNote] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Accepted decisions that later batches must respect. Empty items are ignored.",
+    )
+    notes: list[_ContextNote] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Free-form context notes. Empty items are ignored.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_empty_values(cls, value: Any) -> Any:
+        """Ignore blank values before the length rules run.
+
+        Callers that build a capsule from a list of names routinely leave empty
+        strings behind. Dropping them keeps the contract strict about content
+        while removing a pointless validation failure.
+        """
+
+        if not isinstance(value, dict):
+            return value
+        cleaned = dict(value)
+        for name in ("terminology", "entities"):
+            entries = cleaned.get(name)
+            if isinstance(entries, dict):
+                cleaned[name] = {
+                    key: item for key, item in entries.items() if not _blank_context_value(item)
+                }
+        for name in ("style_rules", "decisions", "notes"):
+            entries = cleaned.get(name)
+            if isinstance(entries, list):
+                cleaned[name] = [item for item in entries if not _blank_context_value(item)]
+        return cleaned
 
 
 class DelegationContextDeltaInput(_ContextFields):

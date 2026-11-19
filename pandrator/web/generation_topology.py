@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_REASON
 from pandrator.logic.dubbing.text_units import fragment_separator
 
 from .access.generation_resource_policy import require_generation_content_write
@@ -907,10 +908,10 @@ class GenerationTopologyService:
             },
             "source_references": source_references,
         }
-        if operation.get("reason") == "early_timing_repair":
+        if operation.get("reason") == EARLY_REPAIR_REASON:
             event.update(
                 action="automatic_split",
-                reason_code="early_timing_repair",
+                reason_code=EARLY_REPAIR_REASON,
                 summary="Short voiceover block split at a source cue boundary to reduce early speech.",
             )
         left_provenance, right_provenance = self._split_provenance(
@@ -1574,15 +1575,19 @@ class GenerationTopologyService:
             activate=activate,
         )
         carried = None
+        review_performance = True
         if action == "restore" and activate:
             # A restore is an exact copy of its target, so the target's adopted
-            # speaker and delivery plan still fits and needs no new review.
-            from .performance_plans import carry_adopted_plan
+            # speaker and delivery plan still fits and needs no new review,
+            # except for the blocks that already needed one on the target.
+            from .performance_plans import carry_adopted_plan, has_review_blocks
 
             carried = carry_adopted_plan(session, revision_source.id, revision.id, lineage)
+            review_performance = carried is None or has_review_blocks(session, carried)
         return {
             "id": plan.id,
             "lineage": lineage,
+            "unchanged_segment_ids": [source for source, _target in take_copy_pairs],
             "plan_revision_id": revision.id,
             "revision_number": revision.revision_number,
             "parent_revision_id": revision.parent_revision_id,
@@ -1592,7 +1597,7 @@ class GenerationTopologyService:
             "is_draft": not activate,
             "active_plan_revision_id": plan.active_revision_id,
             "preview": mappings[0] if action == "resegment" else None,
-            "review_required": {"performance": carried is None, "changed_audio": len(affected_ids)},
+            "review_required": {"performance": review_performance, "changed_audio": len(affected_ids)},
             "carried_performance_plan_id": carried.id if carried is not None else None,
         }
 
@@ -1756,6 +1761,11 @@ class TopologyBatch:
             activate=True,
         )
         affected = [saved[row.id] for row in self.rows if row.id in self.created]
+        # Only a restore carries the adopted speaker plan to the new revision
+        # (``carry_adopted_plan``); a batch holds only splits and merges, which
+        # carry none, as a single split or merge does not. The new revision has
+        # no adopted plan, so it needs one: ``performance`` is true for the same
+        # reason as a restore that carries nothing (``carried is None``).
         return {
             "id": self.plan.id,
             "plan_revision_id": revision.id,
@@ -1763,6 +1773,7 @@ class TopologyBatch:
             "parent_revision_id": revision.parent_revision_id,
             "active_plan_revision_id": self.plan.active_revision_id,
             "lineage": lineage,
+            "unchanged_segment_ids": [source for source, _target in take_copy_pairs],
             "saved_ids": saved,
             "affected_segment_ids": affected,
             "segment_count": len(new_segments),

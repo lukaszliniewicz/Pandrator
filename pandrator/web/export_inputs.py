@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .artifact_selection import selected_artifacts
 from .export_contract import (
@@ -21,6 +22,7 @@ from .export_subtitle_selection import (
 )
 from .models import (
     Artifact,
+    GenerationPlan,
     GenerationRun,
     MediaEditPlan,
     MediaEditPlanRevision,
@@ -303,14 +305,34 @@ def resolve_export_inputs(
                 raise ValueError(
                     "The selected generation run assembly is unavailable."
                 )
+        assembled_audio_candidates = tuple(
+            item for item in current if item.role == "assembled_audio"
+        )
+        if not selected_run_id:
+            # Read in the same snapshot as the candidates themselves.
+            assembled_audio_candidates = active_plan_assemblies(
+                session, session_id, assembled_audio_candidates
+            )
+            expected_assembly = str(
+                payload.get("expected_assembly_artifact_id") or ""
+            ).strip()
+            if (
+                expected_assembly
+                and uses_generated_audio
+                and [item.id for item in assembled_audio_candidates]
+                != [expected_assembly]
+            ):
+                # The plan measured one assembly; a timing edit and a new
+                # assembly after queueing must not swap in unreviewed audio.
+                raise ValueError(
+                    "The assembled audio this export was planned with is no "
+                    "longer current. Plan the export again."
+                )
     by_role = collect_export_roles(current, selected_text)
     if pinned_subtitles is not None:
         for role in SUBTITLE_TRACK_ROLES:
             by_role.pop(role, None)
         by_role.update(pinned_subtitles)
-    assembled_audio_candidates = tuple(
-        item for item in current if item.role == "assembled_audio"
-    )
     if (
         not selected_run_id
         and len(assembled_audio_candidates) > 1
@@ -344,6 +366,46 @@ def resolve_export_inputs(
         media_edit_plan=media_edit_plan,
         active_media_edit_revision=active_media_edit_revision,
     )
+
+
+def active_plan_assemblies(
+    session: Session,
+    session_id: str,
+    candidates: tuple[Artifact, ...],
+) -> tuple[Artifact, ...]:
+    """Prefer the one assembly made from the active speech plan.
+
+    Earlier assemblies stay current as audio versions of their runs. After a
+    timing-only subtitle change the plan is prepared again, keeping every take,
+    and assembled without a run, so no run can name that assembly. It is the
+    session's audio, and an export that names no run uses it. When the active
+    plan does not single out one assembly, every candidate is kept and the
+    caller's ambiguity check still applies.
+    """
+
+    if len(candidates) < 2:
+        return candidates
+    active_revision_id = session.scalar(
+        select(GenerationPlan.active_revision_id).where(
+            GenerationPlan.session_id == session_id
+        )
+    )
+    if not active_revision_id:
+        return candidates
+    active_artifact_ids = {
+        assembly.artifact_id
+        for assembly in session.scalars(
+            select(OutputAssembly).where(
+                OutputAssembly.session_id == session_id,
+                OutputAssembly.status == "completed",
+                OutputAssembly.artifact_id.in_([item.id for item in candidates]),
+            )
+        )
+        if isinstance(assembly.settings_json, dict)
+        and assembly.settings_json.get("plan_revision_id") == active_revision_id
+    }
+    narrowed = tuple(item for item in candidates if item.id in active_artifact_ids)
+    return narrowed if len(narrowed) == 1 else candidates
 
 
 def select_generated_audio(

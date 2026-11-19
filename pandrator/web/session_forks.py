@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from pandrator.logic.dubbing.srt_utils import parse_srt
 from pandrator.runtime import DataPaths
 
+from .artifact_lineage import artifact_ancestor_ids
 from .artifacts import ArtifactService, link_or_copy, sha256_file
 from .database import Database
 from .logical_passages import stored_passages
@@ -328,27 +329,12 @@ class SessionForkService:
             edited_subtitle_id = next(
                 item.id for item in render_sources if item.role == "media_edit_subtitles"
             )
-            frontier = [checkpoint.id]
-            ancestors: set[str] = set()
-            while frontier:
-                child_id = frontier.pop()
-                if child_id in ancestors:
-                    continue
-                ancestors.add(child_id)
-                frontier.extend(
-                    session.scalars(
-                        select(ArtifactEdge.parent_artifact_id).where(
-                            ArtifactEdge.child_artifact_id == child_id
-                        )
-                    ).all()
-                )
-                item = session.get(Artifact, child_id)
-                source_id = (item.metadata_json or {}).get("source_artifact_id") if item else None
-                if source_id:
-                    frontier.append(str(source_id))
-            if edited_subtitle_id not in ancestors:
+            if edited_subtitle_id not in artifact_ancestor_ids(session, checkpoint.id):
                 raise ValueError(
-                    "The current text checkpoint is not derived from the active edited timeline."
+                    "The current text checkpoint is not derived from the active edited "
+                    f"timeline. Correct or translate the edited subtitles (artifact "
+                    f"{edited_subtitle_id}, role media_edit_subtitles) and select that "
+                    "result as the checkpoint."
                 )
         return active_edit, render_sources, checkpoints
 

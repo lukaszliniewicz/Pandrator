@@ -105,6 +105,119 @@ def _mark_repair_revision_applied(design, p) -> None:
         }
 
 
+def test_workflow_continuation_receipt_reaches_the_run_summary(design):
+    """A workflow job nests the pass counters; the run summary must find them."""
+
+    p = _ready(design)
+    with design.case.database.immediate_session() as session:
+        project_row = session.get(Project, p.source["project_id"])
+        job = Job(
+            workspace_id=project_row.workspace_id,
+            project_id=p.source["project_id"],
+            session_id=p.source["id"],
+            kind="workflow.continue",
+            status="succeeded",
+            payload_json={"session_id": p.source["id"], "target_stage": "export"},
+            result_json={
+                "artifacts": [
+                    {
+                        "stage": "generate_audio",
+                        "generation_run_id": p.run_id,
+                        "repair_checked_blocks": 477,
+                        "repair_candidate_blocks": 22,
+                        "repair_attempted_blocks": 22,
+                        "repaired_blocks": 3,
+                        "repair_completed": True,
+                        "repair_rejection_reasons": {
+                            "context_neighbour_added_duration": 19
+                        },
+                        "repair_effect": {
+                            "late_cues_before": 22,
+                            "late_cues_after": 19,
+                            "worst_lag_ms_before": 5700,
+                            "worst_lag_ms_after": 3900,
+                            "blocks": 3,
+                        },
+                    },
+                    {"stage": "export", "artifact_id": "export-artifact"},
+                ],
+                "target_stage": "export",
+            },
+            progress=1.0,
+            attempts=1,
+        )
+        session.add(job)
+        session.flush()
+        session.get(GenerationRun, p.run_id).job_id = job.id
+
+    detail = body(design.users.owner.get(f"/api/v1/generation-runs/{p.run_id}"), 200)
+    repair = detail["timing_repair"]
+    # The summary must carry the counters its own job result reports.
+    assert repair["checked_count"] == 477
+    assert repair["candidate_count"] == 22
+    assert repair["attempted_count"] == 22
+    assert repair["pass_completed"] is True
+    assert repair["status"] == "partial"
+    assert repair["repair_rejection_reasons"] == {
+        "context_neighbour_added_duration": 19
+    }
+    # The late-cue evidence travels with the same counters.
+    assert repair["effect"] == {
+        "late_cues_before": 22,
+        "late_cues_after": 19,
+        "worst_lag_ms_before": 5700,
+        "worst_lag_ms_after": 3900,
+        "blocks": 3,
+    }
+
+
+def test_timing_repair_preview_queues_a_cpu_only_job(design):
+    """The preview is a job: measuring every block outlives an MCP call."""
+
+    p = _ready(design)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    created = body(
+        design.users.owner.post(url, json={"preview": True}, headers=design.users.oh),
+        202,
+    )
+    assert created["generation_run_id"] == p.run_id
+    assert created["status"] == "queued"
+    assert created["reused_job"] is False
+    with design.case.database.snapshot_session() as session:
+        job = session.get(Job, created["job_id"])
+        assert job is not None and job.kind == "generation.repair-preview"
+        assert job.payload_json == {
+            "session_id": p.source["id"],
+            "generation_run_id": p.run_id,
+            "repair_thresholds": {
+                "min_shortfall_ms": 1000,
+                "min_shortfall_percent": 20,
+                "min_advance_ms": 1000,
+                "min_child_span_ms": 1000,
+            },
+        }
+        # CPU only: the session serialises it, but no TTS service is claimed.
+        assert job.resource_keys_json == [f"session:{p.source['id']}"]
+    reused = body(
+        design.users.owner.post(url, json={"preview": True}, headers=design.users.oh),
+        200,
+    )
+    assert reused["job_id"] == created["job_id"]
+    assert reused["reused_job"] is True
+    with design.case.database.snapshot_session() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(Job)
+                .where(
+                    Job.session_id == p.source["id"],
+                    Job.kind == "generation.repair-preview",
+                )
+            )
+            == 1
+        )
+
+
 def test_timing_repair_admission_is_idempotent_and_queues_only_one_job(design):
     p = _ready(design)
     url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
@@ -131,6 +244,12 @@ def test_timing_repair_admission_is_idempotent_and_queues_only_one_job(design):
         assert jobs[0].payload_json == {
             "session_id": p.source["id"],
             "generation_run_id": p.run_id,
+            "repair_thresholds": {
+                "min_shortfall_ms": 1000,
+                "min_shortfall_percent": 20,
+                "min_advance_ms": 1000,
+                "min_child_span_ms": 1000,
+            },
         }
 
 
@@ -741,3 +860,133 @@ def test_timing_repair_request_waits_for_cancellation_then_starts_fresh(design):
         )
         assert len(jobs) == 2
         assert session.get(Job, created["job_id"]).status == "canceled"
+
+
+def test_timing_repair_rejects_a_malformed_body_before_any_job(design):
+    """Truncated JSON is a bad request, not an empty body admitting a repair."""
+
+    p = _ready(design)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    malformed = design.users.owner.post(
+        url,
+        data='{"preview": tru',
+        content_type="application/json",
+        headers=design.users.oh,
+    )
+    assert malformed.status_code == 400
+    error = malformed.get_json()["error"]
+    assert error["code"] == "invalid_request"
+    assert error["message"] == "Request body must be valid JSON."
+    with design.case.database.snapshot_session() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(Job)
+                .where(
+                    Job.session_id == p.source["id"],
+                    Job.kind.in_(
+                        ("generation.repair-existing", "generation.repair-preview")
+                    ),
+                )
+            )
+            == 0
+        )
+
+    # An empty body still means the documented default of no preview.
+    empty = body(
+        design.users.owner.post(url, data="", headers=design.users.oh), 202
+    )
+    assert empty["reused_job"] is False
+    with design.case.database.snapshot_session() as session:
+        job = session.get(Job, empty["job_id"])
+        assert job is not None and job.kind == "generation.repair-existing"
+
+
+def test_timing_repair_preview_replays_the_same_idempotency_key(design):
+    """A retried preview must replay its receipt, not queue a second job."""
+
+    p = _ready(design)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    headers = {**design.users.oh, "Idempotency-Key": "timing-preview-replay-v1"}
+    first = design.users.owner.post(url, json={"preview": True}, headers=headers)
+    created = body(first, 202)
+    repeated = design.users.owner.post(url, json={"preview": True}, headers=headers)
+    assert repeated.status_code == 202
+    assert body(repeated, 202) == created
+    assert repeated.headers.get("Idempotency-Replayed") == "true"
+    with design.case.database.snapshot_session() as session:
+        jobs = list(
+            session.scalars(
+                select(Job).where(
+                    Job.session_id == p.source["id"],
+                    Job.kind == "generation.repair-preview",
+                )
+            )
+        )
+        assert [job.id for job in jobs] == [created["job_id"]]
+
+
+def test_timing_repair_preview_reuses_a_job_only_for_the_same_thresholds(design):
+    """A queued preview measured with other thresholds cannot answer a new one."""
+
+    p = _ready(design)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    created = body(
+        design.users.owner.post(url, json={"preview": True}, headers=design.users.oh),
+        202,
+    )
+    with design.case.database.snapshot_session() as session:
+        assert session.get(Job, created["job_id"]).payload_json["repair_thresholds"] == {
+            "min_shortfall_ms": 1000,
+            "min_shortfall_percent": 20,
+            "min_advance_ms": 1000,
+            "min_child_span_ms": 1000,
+        }
+
+    changed = design.users.owner.put(
+        f"/api/v1/sessions/{p.source['id']}/settings/tts",
+        json={"value": {"speech_block_early_repair_min_shortfall_ms": 750}},
+        headers={**design.users.oh, "If-Match": '"0"'},
+    )
+    body(changed, 200)
+
+    fresh = body(
+        design.users.owner.post(url, json={"preview": True}, headers=design.users.oh),
+        202,
+    )
+    assert fresh["reused_job"] is False
+    assert fresh["job_id"] != created["job_id"]
+    with design.case.database.snapshot_session() as session:
+        job = session.get(Job, fresh["job_id"])
+        assert job is not None
+        assert job.payload_json["repair_thresholds"]["min_shortfall_ms"] == 750
+
+    # The same thresholds are reusable again.
+    again = body(
+        design.users.owner.post(url, json={"preview": True}, headers=design.users.oh),
+        200,
+    )
+    assert again["reused_job"] is True
+    assert again["job_id"] == fresh["job_id"]
+
+
+def test_active_repair_does_not_report_the_root_jobs_inline_pass(design):
+    """The root receipt belongs to the first pass, not to a repair in flight."""
+
+    p = _ready(design)
+    _install_completed_root_job(design, p)
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    created = body(design.users.owner.post(url, json={}, headers=design.users.oh), 202)
+
+    detail = body(
+        design.users.owner.get(f"/api/v1/generation-runs/{p.run_id}"), 200
+    )
+    repair = detail["timing_repair"]
+    assert detail["status"] == "running"
+    assert repair["status"] == "running"
+    # The inline pass checked two blocks; the repair has written nothing yet.
+    assert repair["checked_count"] is None
+    assert repair["candidate_count"] is None
+    assert repair["attempted_count"] is None
+    assert repair["pass_completed"] is False
+    assert detail["job_id"] != created["job_id"]

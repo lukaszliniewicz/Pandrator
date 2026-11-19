@@ -14,9 +14,15 @@ from ..schemas.media_edit_workflow import (
     MediaEditSourceReference,
     PlanMediaEditWorkflowInput,
 )
+from ..waits import effective_wait_seconds
 
 _ACTIVE_RUN_STATES = frozenset({"queued", "ready", "running", "finalizing"})
 _COMPLETE_STATES = frozenset({"complete", "completed", "succeeded"})
+_DIFFERENT_INSTRUCTIONS_NOTE = (
+    "The accepted edit came from different instructions. To propose a new edit with "
+    "these instructions, call pandrator_create_media_edit_dispatch_run explicitly; "
+    "this planner will not replace reviewed work."
+)
 _VAD_OPTION_KEYS = (
     "crispasr_vad_model",
     "crispasr_vad_threshold",
@@ -38,6 +44,32 @@ def _artifact_id(value: object) -> str | None:
         candidate = value
     normalized = str(candidate or "").strip()
     return normalized or None
+
+
+def _same_artifact(
+    plan_artifact: object,
+    current_artifact: object,
+    *,
+    plan_id: object = None,
+    current_id: object = None,
+) -> bool:
+    """Match a planned artifact by identity or by identical stored bytes.
+
+    The backend reuses a plan when the selected artifacts carry the same
+    content hash, so a re-registered artifact with a new ID is not a change.
+    """
+
+    plan_payload = _mapping(plan_artifact)
+    current_payload = _mapping(current_artifact)
+    planned = _artifact_id(plan_payload) or str(plan_id or "").strip()
+    current = _artifact_id(current_payload) or str(current_id or "").strip()
+    if not planned and not current:
+        return True
+    if planned and planned == current:
+        return True
+    planned_hash = str(plan_payload.get("content_hash") or "").strip()
+    current_hash = str(current_payload.get("content_hash") or "").strip()
+    return bool(planned_hash) and planned_hash == current_hash
 
 
 def _revision(value: object, default: int = 0) -> int:
@@ -241,6 +273,34 @@ def _next_action(tool: str, arguments: dict[str, Any], reason: str) -> NextActio
     return NextAction(tool=tool, arguments=arguments, reason=reason)
 
 
+_STT_DISCLOSURE_KEYS = ("stt_engine", "stt_model_quantization", "stt_language")
+
+
+def _stt_disclosure(settings: dict[str, Any]) -> dict[str, Any]:
+    """Report the effective STT engine and where each value came from.
+
+    The origins arrive with the session settings read; this tool does not
+    resolve provenance itself. The warning repeats the backend's plan-time
+    wording so the two routes say the same thing before transcription starts.
+    """
+
+    effective = _mapping(settings.get("effective"))
+    origins = _mapping(settings.get("origins"))
+    block: dict[str, Any] = {
+        key: {"effective": effective.get(key), "origin": origins.get(key)}
+        for key in _STT_DISCLOSURE_KEYS
+    }
+    engine = str(block["stt_engine"]["effective"] or "").strip()
+    origin = str(block["stt_engine"]["origin"] or "")
+    if origin in {"global", "service", "provider"} and engine and engine.casefold() != "auto":
+        block["warning"] = (
+            f"Speech recognition will use {engine}, inherited from the {origin} "
+            "settings; the built-in default is auto. Set stt.stt_engine on this "
+            "session to choose explicitly."
+        )
+    return block
+
+
 def _source_action(
     source: MediaEditSourceReference,
     *,
@@ -258,9 +318,15 @@ def _source_action(
     if source.source_asset_id is not None:
         tool = "pandrator_attach_existing_source"
         arguments["source_asset_id"] = source.source_asset_id
+        reason = f"Attach the supplied {role} source using the inspected session revision."
     else:
         tool = "pandrator_import_local_source"
         arguments.update({"root": source.root, "relative_path": source.relative_path})
+        reason = (
+            f"Attach the supplied {role} source using the inspected session revision. "
+            "For a source published at a public http(s) URL, use "
+            "pandrator_import_source_url instead of downloading it first."
+        )
     arguments["idempotency_key"] = _idempotency_key(
         "attach" if tool.endswith("attach_existing_source") else "import",
         session_id=session_id,
@@ -269,11 +335,7 @@ def _source_action(
         instructions=instructions,
         inputs={"role": role, **arguments},
     )
-    return _next_action(
-        tool,
-        arguments,
-        f"Attach the supplied {role} source using the inspected session revision.",
-    )
+    return _next_action(tool, arguments, reason)
 
 
 def _workflow_transcribe_summary(
@@ -299,6 +361,22 @@ def _run_items(payload: object) -> list[dict[str, Any]]:
     return [item for item in values if isinstance(item, dict)] if isinstance(values, list) else []
 
 
+def _accepted_instructions_differ(
+    plan: dict[str, Any],
+    completed_run: dict[str, Any] | None,
+    instructions: str,
+) -> bool:
+    """Whether the accepted proposal was not produced by the requested instructions."""
+
+    if completed_run is not None and (
+        str(completed_run.get("instructions") or "").strip() != instructions
+    ):
+        return True
+    return bool(plan.get("reviewed")) and (
+        str(plan.get("instructions") or "").strip() != instructions
+    )
+
+
 def _artifact_items(payload: object) -> list[dict[str, Any]]:
     return _run_items(payload)
 
@@ -311,10 +389,20 @@ def plan_media_edit_workflow(
 
     application = runtime.require_application()
     session = _mapping(application.get_session(arguments.session_id))
+    wait_seconds = effective_wait_seconds(runtime, arguments.wait_seconds)
     if (session.get("workflow_kind") or session.get("kind")) != "media_edit":
         raise PandratorMcpError(
             "ineligible_session",
-            "The media-edit workflow planner requires a media_edit session.",
+            "The media-edit workflow planner requires a media_edit session. Cut the "
+            "recording in its own media_edit session; a translation project made "
+            "from it gives voiceover branches.",
+            next_actions=[
+                _next_action(
+                    "pandrator_create_session",
+                    {"workflow_kind": "media_edit"},
+                    "Create a media_edit session for the recording, then import the source there.",
+                )
+            ],
         )
     workflow = _mapping(application.get_workflow(arguments.session_id))
     media_edit = _mapping(application.get_media_edit(arguments.session_id))
@@ -424,6 +512,7 @@ def plan_media_edit_workflow(
 
     next_action: NextAction | None = None
     blocking_reason: str | None = None
+    notes: list[str] = []
     if not primary_id:
         if arguments.recording_source is not None:
             next_action = _source_action(
@@ -507,7 +596,7 @@ def plan_media_edit_workflow(
                     "work_type": "job",
                     "work_id": str(stage.get("job_id")),
                     "include_events": True,
-                    "wait_seconds": arguments.wait_seconds,
+                    "wait_seconds": wait_seconds,
                 },
                 "The transcribe/alignment stage is already running; monitor its durable work item.",
             )
@@ -543,9 +632,24 @@ def plan_media_edit_workflow(
             plan_matches = bool(
                 plan
                 and active_revision >= 1
-                and str(plan_media_id or "") == str(primary_id or "")
-                and str(plan_editorial_id or "") == str(expected_editorial or "")
-                and str(plan_timing_id or "") == str(timing_id or "")
+                and _same_artifact(
+                    plan.get("source_media_artifact"),
+                    primary_artifact,
+                    plan_id=plan_media_id,
+                    current_id=primary_id,
+                )
+                and _same_artifact(
+                    plan.get("editorial_transcript_artifact"),
+                    external_transcript if resolved_mode == "captions" else transcription_artifact,
+                    plan_id=plan_editorial_id,
+                    current_id=expected_editorial,
+                )
+                and _same_artifact(
+                    plan.get("timing_artifact"),
+                    timing_artifact,
+                    plan_id=plan_timing_id,
+                    current_id=timing_id,
+                )
             )
             if not plan_matches:
                 prepare_arguments = {
@@ -577,18 +681,18 @@ def plan_media_edit_workflow(
                     application.list_media_edit_dispatch_runs(arguments.session_id, limit=100)
                 )
                 active_revision_id = str(plan.get("revision_id") or "")
+                ancestor_revision_ids = {
+                    str(item).strip()
+                    for item in plan.get("ancestor_revision_ids") or []
+                    if str(item).strip()
+                }
                 active_run: dict[str, Any] | None = None
                 completed_run: dict[str, Any] | None = None
-                completed_proposal = bool(
-                    plan.get("reviewed")
-                    and str(plan.get("instructions") or "").strip() == arguments.instructions
-                )
+                completed_proposal = bool(plan.get("reviewed"))
                 evidence = _mapping(plan.get("evidence"))
                 dispatch_evidence = _mapping(evidence.get("passive_dispatch"))
                 provenance_run_id = str(dispatch_evidence.get("dispatch_run_id") or "")
                 for candidate in runs:
-                    if str(candidate.get("instructions") or "").strip() != arguments.instructions:
-                        continue
                     run_id = str(candidate.get("id") or candidate.get("run_id") or "")
                     source_id = str(candidate.get("source_revision_id") or "")
                     source_revision = _revision(
@@ -596,19 +700,35 @@ def plan_media_edit_workflow(
                     )
                     status = str(candidate.get("status") or "").strip().lower()
                     result_revision_id = str(candidate.get("result_revision_id") or "")
-                    if status == "completed" and (
-                        (active_revision_id and result_revision_id == active_revision_id)
-                        or (provenance_run_id and run_id == provenance_run_id)
+                    # An accepted result counts whatever its instructions said;
+                    # a refined revision descends from it through the parent chain.
+                    if (
+                        status == "completed"
+                        and completed_run is None
+                        and (
+                            (active_revision_id and result_revision_id == active_revision_id)
+                            or (
+                                result_revision_id
+                                and result_revision_id in ancestor_revision_ids
+                            )
+                            or (provenance_run_id and run_id == provenance_run_id)
+                        )
                     ):
                         completed_run = candidate
                         completed_proposal = True
-                        break
+                        continue
+                    if str(candidate.get("instructions") or "").strip() != arguments.instructions:
+                        continue
                     if active_run is None and (
                         (active_revision_id and source_id == active_revision_id)
                         or (active_revision and source_revision == active_revision)
                     ):
                         active_run = candidate
                 matching_run = completed_run or active_run
+                if completed_proposal and _accepted_instructions_differ(
+                    plan, completed_run, arguments.instructions
+                ):
+                    notes.append(_DIFFERENT_INSTRUCTIONS_NOTE)
                 if matching_run is not None and not completed_proposal:
                     run_status = str(matching_run.get("status") or "").strip().lower()
                     if run_status in _ACTIVE_RUN_STATES:
@@ -713,7 +833,7 @@ def plan_media_edit_workflow(
                                     "work_type": "job",
                                     "work_id": render_job_id,
                                     "include_events": True,
-                                    "wait_seconds": arguments.wait_seconds,
+                                    "wait_seconds": wait_seconds,
                                 },
                                 "The reviewed media-edit render is already running; monitor its durable work item.",
                             )
@@ -722,8 +842,8 @@ def plan_media_edit_workflow(
                             render_arguments = {
                                 "session_id": arguments.session_id,
                                 "revision": active_revision,
-                                "wait": arguments.wait_seconds > 0,
-                                "timeout_seconds": arguments.wait_seconds,
+                                "wait": wait_seconds > 0,
+                                "timeout_seconds": wait_seconds,
                             }
                             render_arguments["idempotency_key"] = _idempotency_key(
                                 "render",
@@ -791,6 +911,7 @@ def plan_media_edit_workflow(
                                 pass
 
     if blocking_reason:
+        phases[2]["stt"] = _stt_disclosure(settings)
         result = {
             "schema_version": "1",
             "plan_type": "media_edit_workflow",
@@ -800,11 +921,13 @@ def plan_media_edit_workflow(
             "phases": phases,
             "phase_order": [str(item["phase"]) for item in phases],
             "blocking_reason": blocking_reason,
+            "notes": notes,
             "next_action": None,
             "procedure_semantics": "This is a live read-only procedure, not an atomic execution snapshot.",
         }
         return ToolOutcome(result=result)
 
+    phases[2]["stt"] = _stt_disclosure(settings)
     result = {
         "schema_version": "1",
         "plan_type": "media_edit_workflow",
@@ -813,6 +936,7 @@ def plan_media_edit_workflow(
         "current_status": status_summary,
         "phases": phases,
         "phase_order": [str(item["phase"]) for item in phases],
+        "notes": notes,
         "next_action": next_action.model_dump(mode="json") if next_action else None,
         "procedure_semantics": (
             "This is a live read-only procedure, not an atomic execution snapshot. "

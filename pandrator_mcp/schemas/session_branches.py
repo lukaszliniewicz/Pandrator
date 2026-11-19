@@ -21,6 +21,7 @@ class ForkSessionInput(ToolInput):
 
 class GetTranslationProjectInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
+    view: Literal["summary", "full"] = "summary"
 
 
 class CreateTranslationProjectInput(ToolInput):
@@ -43,6 +44,10 @@ class CreateTranslationBranchesInput(ToolInput):
     expected_revision: int = Field(ge=1)
     targets: list[TranslationBranchTargetInput] = Field(min_length=1, max_length=20)
     idempotency_key: str = Field(pattern=_KEY)
+    view: Literal["summary", "full"] = Field(
+        default="summary",
+        description="The updated project as pandrator_get_translation_project returns it.",
+    )
 
 
 class PreviewTranslationProjectOperationInput(ToolInput):

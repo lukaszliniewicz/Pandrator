@@ -182,6 +182,14 @@ class WorkflowPlanCreateRequest(StrictModel):
     overrides: dict[str, Any] = Field(default_factory=dict)
     continuation: bool = True
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
+    reuse_stages: list[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,79}$")]] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    rerun_stages: list[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,79}$")]] = Field(
+        default_factory=list,
+        max_length=20,
+    )
 
 
 class WorkflowPlanExecuteRequest(StrictModel):
@@ -908,6 +916,20 @@ class OptimizationReviewRequest(StrictModel):
     items: list[OptimizationReviewItem] = Field(min_length=1)
 
 
+class TimingRepairRequest(StrictModel):
+    """An explicit timing repair; ``preview`` queues a read-only planning job."""
+
+    preview: bool = Field(
+        default=False,
+        description=(
+            "When true, queue a CPU-only `generation.repair-preview` job that "
+            "lists the candidates, thresholds and synthesis calls a repair "
+            "would make, without synthesising audio or changing the plan. "
+            "Poll the returned job."
+        ),
+    )
+
+
 class OutputAssemblyCreateRequest(StrictModel):
     generation_run_id: str | None = None
     audio_version_side: Literal["before", "after"] = "after"
@@ -1032,18 +1054,56 @@ _ContextValue = Annotated[str, Field(min_length=1, max_length=2_000)]
 _ContextNote = Annotated[str, Field(min_length=1, max_length=2_000)]
 
 
+def _blank_context(value: object) -> bool:
+    return isinstance(value, str) and not value.strip()
+
+
 class _DispatchContextFields(StrictModel):
     terminology: dict[_ContextKey, _ContextValue] = Field(
         default_factory=dict,
         max_length=500,
+        description="Source term to preferred renderings. Empty values are ignored.",
     )
     entities: dict[_ContextKey, _ContextValue] = Field(
         default_factory=dict,
         max_length=500,
+        description="Named entity to a short note. Empty values are ignored.",
     )
-    style_rules: list[_ContextNote] = Field(default_factory=list, max_length=200)
-    decisions: list[_ContextNote] = Field(default_factory=list, max_length=200)
-    notes: list[_ContextNote] = Field(default_factory=list, max_length=200)
+    style_rules: list[_ContextNote] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Standing style rules. Empty items are ignored.",
+    )
+    decisions: list[_ContextNote] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Accepted decisions that later batches must respect. Empty items are ignored.",
+    )
+    notes: list[_ContextNote] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Free-form context notes. Empty items are ignored.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_empty_values(cls, value: Any) -> Any:
+        """Ignore blank values exactly as the MCP schema and normalisers do."""
+
+        if not isinstance(value, dict):
+            return value
+        cleaned = dict(value)
+        for name in ("terminology", "entities"):
+            entries = cleaned.get(name)
+            if isinstance(entries, dict):
+                cleaned[name] = {
+                    key: item for key, item in entries.items() if not _blank_context(item)
+                }
+        for name in ("style_rules", "decisions", "notes"):
+            entries = cleaned.get(name)
+            if isinstance(entries, list):
+                cleaned[name] = [item for item in entries if not _blank_context(item)]
+        return cleaned
 
 
 class DispatchContextDelta(_DispatchContextFields):
@@ -1443,6 +1503,24 @@ class DispatchBatchClaimResponse(StrictModel):
     lease_expires_at: str | None
 
 
+class DispatchFillerCheckPassage(StrictModel):
+    """One finalised passage that still contains a filler token."""
+
+    cue_id: int | str | None = None
+    passage_id: int | str | None = None
+    text: str = ""
+
+
+class DispatchFillerCheck(StrictModel):
+    """Post-correction scan of the declared filler-removal policy."""
+
+    status: Literal["clean", "fillers_remaining", "not_checked"]
+    policy: str
+    count: int = Field(ge=0)
+    passages: list[DispatchFillerCheckPassage] = Field(default_factory=list)
+    reason: str | None = None
+
+
 class DispatchBatchSubmitResponse(StrictModel):
     run_id: str
     batch_id: str
@@ -1460,6 +1538,7 @@ class DispatchBatchSubmitResponse(StrictModel):
     final_artifact_id: str | None = None
     finalized: bool
     result_revision_id: str | None = None
+    filler_check: DispatchFillerCheck | None = None
     error_code: str | None = None
     error_message: str | None = None
 

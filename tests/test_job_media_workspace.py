@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -38,6 +37,7 @@ from pandrator.web.models import (
 from pandrator.web.projects.identity import delete_empty_project
 from pandrator.web.sessions import SessionService
 from pandrator.web.video_previews import VideoInfo
+from tests.legacy_schema_support import prepare_read_only_pinned_schema
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -302,10 +302,9 @@ def test_retained_job_checks_reject_inconsistent_roots_without_repair(
         config.set_main_option("sqlalchemy.url", sqlite_url(harness.database.path))
         command.downgrade(config, predecessor)
         # The downgrade targets the legacy ownership constraint shape only. The
-        # current ORM mapper still writes 0084's nullable receipt column, so add
-        # that unrelated column back instead of downgrading the whole model.
-        with sqlite3.connect(harness.database.path) as connection:
-            connection.execute("ALTER TABLE jobs ADD COLUMN external_effect_json JSON")
+        # current ORM mapper still writes later nullable job columns, so add
+        # those unrelated columns back instead of downgrading the whole model.
+        prepare_read_only_pinned_schema(harness.database.path, [Job])
     elif corruption in {"no_project", "different_session"}:
         # 0075 makes execution roots immutable for writes; this case exercises
         # the reader fence over a retained pre-0075 row instead.
@@ -313,8 +312,7 @@ def test_retained_job_checks_reject_inconsistent_roots_without_repair(
         config.set_main_option("script_location", str(Path(__file__).parents[1] / "pandrator/web/migrations"))
         config.set_main_option("sqlalchemy.url", sqlite_url(harness.database.path))
         command.downgrade(config, "0074_actor_attribution")
-        with sqlite3.connect(harness.database.path) as connection:
-            connection.execute("ALTER TABLE jobs ADD COLUMN external_effect_json JSON")
+        prepare_read_only_pinned_schema(harness.database.path, [Job])
     job = harness.queue.enqueue("test.retained", session_id=harness.sessions["alpha"].id)
     with harness.database.immediate_session() as session:
         record = session.get(Job, job.id)

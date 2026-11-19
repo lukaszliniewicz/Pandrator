@@ -24,8 +24,49 @@ from .models import (
     SourceAsset,
 )
 from .source_resolution import resolve_primary_source
-from .workflow_fingerprints import _stage_settings_fingerprint
+from .workflow_fingerprints import (
+    _stage_settings_fingerprint,
+    dispatch_result_stage,
+    dispatch_settings_fingerprint,
+)
 from .workflow_inputs import workflow_transformations
+
+# Saved reviews of one stage form a chain; a longer one is not plausible.
+_REVISION_CHAIN_LIMIT = 50
+
+
+def _derives_from(session: Session, source_id: str, artifact_id: str, role: str) -> bool:
+    """Whether an artifact descends from the source, through its own stage.
+
+    A saved review stores a new revision derived from the previous revision
+    of its stage, so the link to the stage's input sits on the first revision
+    of the chain, not on the reviewed one.
+    """
+
+    current_id = artifact_id
+    seen = {artifact_id}
+    for _ in range(_REVISION_CHAIN_LIMIT):
+        if session.get(ArtifactEdge, (source_id, current_id)) is not None:
+            return True
+        parent = session.scalar(
+            select(Artifact)
+            .join(ArtifactEdge, ArtifactEdge.parent_artifact_id == Artifact.id)
+            .where(
+                ArtifactEdge.child_artifact_id == current_id,
+                Artifact.role == role,
+                Artifact.id.not_in(seen),
+            )
+            .order_by(Artifact.created_at.desc(), Artifact.id)
+            .limit(1)
+        )
+        if parent is None:
+            return False
+        metadata = parent.metadata_json if isinstance(parent.metadata_json, dict) else {}
+        if str(metadata.get("source_artifact_id") or "") == source_id:
+            return True
+        seen.add(parent.id)
+        current_id = parent.id
+    return False
 
 
 class WorkflowPrerequisiteService:
@@ -243,6 +284,7 @@ class WorkflowPrerequisiteService:
                 "changed_fields": [],
                 "stored": None,
                 "current": None,
+                "settings_evidence": None,
             }
         expected_settings_hash = hashlib.sha256(
             json.dumps(
@@ -288,28 +330,124 @@ class WorkflowPrerequisiteService:
         changed_fields: list[str] = []
         settings_match = fallback
         settings_reason = None
-        if stage_key in {"correct", "translate"} and isinstance(stored, dict) and stored:
-            current = self._current_stage_fingerprint(
-                stage_key, settings, session_id=session_id
-            )
-            if current is None:
-                # Keep the current artifact if the old provider configuration
-                # cannot be reconstructed. This is the continuation behavior
-                # that preflight must mirror.
-                settings_match = True
+        settings_evidence = "settings_hash" if fallback else None
+        stored_fingerprint = stored if isinstance(stored, dict) and stored else None
+        stored_dispatch = bool(
+            stored_fingerprint is not None
+            and stored_fingerprint.get("executor") == "dispatch"
+        )
+        dispatch_checked = False
+        if stage_key in {"correct", "translate"} and not fallback:
+            evidence: dict[str, Any] | None = None
+            if stored_dispatch:
+                evidence = stored_fingerprint
             else:
-                settings_match = stored == current
-                if not settings_match:
-                    settings_reason = "settings_changed"
-                    changed_fields = sorted(
-                        key
-                        for key in set(stored) | set(current)
-                        if stored.get(key) != current.get(key)
+                # Older dispatch artifacts have no fingerprint; their own
+                # metadata is enough to reconstruct what the run was asked to do.
+                dispatch_run_id = str(metadata.get("dispatch_run_id") or "").strip()
+                dispatch_kind = str(metadata.get("dispatch_kind") or "").strip()
+                dispatch_language = metadata.get("language")
+                if (
+                    dispatch_run_id
+                    and dispatch_kind
+                    and (
+                        dispatch_result_stage(dispatch_kind, existing.role) != "translate"
+                        or str(dispatch_language or "").strip()
                     )
-        elif not settings_match:
+                ):
+                    evidence = dispatch_settings_fingerprint(
+                        dispatch_kind,
+                        str(dispatch_language or ""),
+                        output_role=existing.role,
+                    )
+            # The artifact's own role decides what a correction result stands
+            # for, so a corrected translation recorded before the fingerprint
+            # named its output role still counts for the translation stage.
+            if evidence is not None and dispatch_result_stage(
+                str(evidence.get("dispatch_kind") or ""),
+                str(evidence.get("output_role") or existing.role or ""),
+            ) == stage_key:
+                dispatch_checked = True
+                if stage_key == "correct":
+                    settings_match = True
+                    settings_evidence = "dispatch_result"
+                else:
+                    expected_language = self._current_target_language(session_id, settings)
+                    stored_language = str(
+                        evidence.get("target_language")
+                        or str(metadata.get("language") or "").strip().casefold()
+                    )
+                    if not expected_language or stored_language == expected_language:
+                        settings_match = True
+                        settings_evidence = "dispatch_result"
+                    else:
+                        settings_match = False
+                        settings_reason = "settings_changed"
+                        changed_fields = ["target_language"]
+                        settings_evidence = None
+                        stored = {"target_language": stored_language}
+                        current = {"target_language": expected_language}
+            elif stored_dispatch or evidence is not None:
+                # A dispatch fingerprint for another stage, or one that cannot
+                # describe the stage at all, is no evidence either way. It must
+                # not be compared with the managed fingerprint.
+                dispatch_checked = True
+                settings_match = False
+                settings_reason = "settings_unverifiable"
+                settings_evidence = None
+        if stage_key in {"correct", "translate"} and not dispatch_checked:
+            if stored_fingerprint is not None and not stored_dispatch:
+                current = self._current_stage_fingerprint(
+                    stage_key, settings, session_id=session_id
+                )
+                if current is None:
+                    # Keep the current artifact if the old provider configuration
+                    # cannot be reconstructed. This is the continuation behavior
+                    # that preflight must mirror.
+                    settings_match = True
+                    if settings_evidence is None:
+                        settings_evidence = "current_settings_unavailable"
+                else:
+                    settings_match = stored_fingerprint == current
+                    if settings_match:
+                        settings_evidence = "settings_fingerprint"
+                    else:
+                        settings_reason = "settings_changed"
+                        settings_evidence = None
+                        changed_fields = sorted(
+                            key
+                            for key in set(stored_fingerprint) | set(current)
+                            if stored_fingerprint.get(key) != current.get(key)
+                        )
+        if (
+            not settings_match
+            and settings_reason is None
+            and stage_key in {"correct", "translate"}
+            and metadata.get("reviewed") is True
+        ):
+            # A saved review (a passage or cue edit, or its copy in a language
+            # branch) is deliberate work, like an accepted dispatch result:
+            # running the stage again would discard it, so only rerun_stages
+            # replaces it. A translation must still be in today's language.
+            expected_language = (
+                self._current_target_language(session_id, settings)
+                if stage_key == "translate"
+                else ""
+            )
+            stored_language = str(metadata.get("language") or "").strip().casefold()
+            if not expected_language or stored_language == expected_language:
+                settings_match = True
+                settings_evidence = "reviewed_revision"
+            else:
+                settings_reason = "settings_changed"
+                changed_fields = ["target_language"]
+                stored = {"target_language": stored_language}
+                current = {"target_language": expected_language}
+        if not settings_match and settings_reason is None:
             # A legacy artifact can still be safely reused when its exact raw
             # hash matches. Without that evidence, continuation will rerun it.
             settings_reason = "settings_unverifiable"
+            settings_evidence = None
 
         source_match = source is None
         if source is not None:
@@ -320,7 +458,9 @@ class WorkflowPrerequisiteService:
             )
             if not source_match:
                 with self.database.session() as session:
-                    source_match = session.get(ArtifactEdge, (source.id, existing.id)) is not None
+                    source_match = _derives_from(
+                        session, source.id, existing.id, existing.role
+                    )
         reasons = [reason for reason in (settings_reason,) if reason]
         if not source_match:
             reasons.append("source_lineage_changed")
@@ -331,7 +471,22 @@ class WorkflowPrerequisiteService:
             "changed_fields": changed_fields,
             "stored": stored if isinstance(stored, dict) else None,
             "current": current,
+            "settings_evidence": settings_evidence,
         }
+
+    def _current_target_language(
+        self, session_id: str, settings: dict[str, Any]
+    ) -> str:
+        """Target language a translation stage would use now, casefolded."""
+
+        requested = str(settings.get("target_language") or "").strip().casefold()
+        if requested:
+            return requested
+        return (
+            str(self._session_record(session_id).target_language or "")
+            .strip()
+            .casefold()
+        )
 
     def settings_mismatches(
         self, session_id: str, target_stage: str = "generate_audio"
@@ -341,6 +496,28 @@ class WorkflowPrerequisiteService:
         The response preserves the legacy ``stage`` and ``changed_fields``
         contract, while ``reasons`` distinguishes semantic changes from a
         legacy hash that cannot prove freshness and from broken source lineage.
+        """
+        return [
+            {
+                "stage": entry["stage"],
+                "changed_fields": entry["changed_fields"],
+                "reasons": entry["reasons"],
+                "stored": entry["stored"],
+                "current": entry["current"],
+            }
+            for entry in self.prerequisite_freshness(session_id, target_stage)
+            if not (entry["settings_match"] and entry["source_match"])
+        ]
+
+    def prerequisite_freshness(
+        self, session_id: str, target_stage: str = "generate_audio"
+    ) -> list[dict[str, Any]]:
+        """Report the reuse decision and its evidence for every evaluated stage.
+
+        One entry per prerequisite stage that has a selected artifact, in
+        workflow order.  ``settings_evidence`` states what a reuse rests on:
+        ``settings_hash``, ``settings_fingerprint``, ``dispatch_result``,
+        ``current_settings_unavailable``, or ``None`` when nothing matched.
         """
         from .settings_policy import adapt_runtime_settings
         from .workflows import AUDIOBOOK_STAGES, DUBBING_STAGES, MEDIA_EDIT_STAGES
@@ -430,7 +607,7 @@ class WorkflowPrerequisiteService:
             )
         )
         resolved, _ = settings_service.resolve(session_id, sections)
-        mismatches: list[dict[str, Any]] = []
+        evaluated: list[dict[str, Any]] = []
         for definition in runnable:
             stage_settings: dict[str, Any] = {}
             for section in section_map.get(definition.key, ()):
@@ -465,18 +642,22 @@ class WorkflowPrerequisiteService:
                 existing,
                 source,
             )
-            if freshness["settings_match"] and freshness["source_match"]:
-                continue
-            mismatches.append(
+            evaluated.append(
                 {
                     "stage": definition.key,
-                    "changed_fields": freshness["changed_fields"],
+                    "settings_match": freshness["settings_match"],
+                    "source_match": freshness["source_match"],
                     "reasons": freshness["reasons"],
+                    "changed_fields": freshness["changed_fields"],
                     "stored": freshness["stored"],
                     "current": freshness["current"],
+                    "settings_evidence": freshness["settings_evidence"],
+                    # The input the result was compared with; a plan that
+                    # replaces it cannot reuse the result.
+                    "source_artifact_id": source.id if source is not None else None,
                 }
             )
-        return mismatches
+        return evaluated
 
     def _session_record(self, session_id: str) -> SessionRecord:
         with self.database.session() as session:

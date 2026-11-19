@@ -42,6 +42,7 @@ from .generation_plan_store import (
     prepare_generation_plan_rows as _prepare_generation_plan_rows_impl,
 )
 from .generation_plan_store import store_generation_plan as _store_generation_plan_impl
+from .generation_progress import open_job_progress_state
 from .google_voice_design import design_google_voice as _design_google_voice_impl
 from .job_inputs import artifact_job_ownership
 from .jobs import JobQueue
@@ -74,6 +75,7 @@ from .models import (
     utcnow,
 )
 from .outcome_plans import resolve_workflow_inputs
+from .source_urls import parse_source_url
 from .workflow_audio_preview import AudioPreviewContext
 from .workflow_audio_preview import generate_audio_preview as _generate_audio_preview_impl
 from .workflow_audio_preview import preview_output_mix as _preview_output_mix_impl
@@ -864,11 +866,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
     def _validate_download_url(raw_url: str) -> str:
         import ipaddress
         import socket
-        from urllib.parse import urlparse
 
-        parsed = urlparse(str(raw_url or "").strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("Source URL must use http or https.")
+        parsed = parse_source_url(raw_url)
         for _family, _type, _proto, _canon, address in socket.getaddrinfo(
             parsed.hostname, parsed.port or 443
         ):
@@ -1012,8 +1011,17 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         direct_settings = (
             payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
         )
+        # Plans name stages as the snapshot does (``optimize_tts`` for document
+        # optimisation), while the definitions here say ``optimize_document``.
         reuse_stages = {
-            str(value) for value in (payload.get("reuse_stages") or []) if str(value)
+            canonical_stage_key(str(value))
+            for value in (payload.get("reuse_stages") or [])
+            if str(value)
+        }
+        rerun_stages = {
+            canonical_stage_key(str(value))
+            for value in (payload.get("rerun_stages") or [])
+            if str(value)
         }
         required = self._continuation_required_stages(
             record.workflow_kind,
@@ -1125,8 +1133,12 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 raise ValueError(
                     f"Stage '{definition.key}' is missing a required input artifact."
                 )
-            if existing is not None and definition.key != target_key:
-                if definition.key in reuse_stages:
+            if (
+                existing is not None
+                and definition.key != target_key
+                and canonical_stage_key(definition.key) not in rerun_stages
+            ):
+                if canonical_stage_key(definition.key) in reuse_stages:
                     # The caller explicitly chose to keep the current artifact
                     # even though settings or source lineage changed. This is
                     # meaningful only for prerequisites; the target stage is
@@ -2207,6 +2219,12 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 {speaker.casefold() for speaker in speaker_by_subtitle.values()}
             ),
             "revision_id": revision_id,
+            "overlaps_clamped": int(
+                getattr(transcription_result, "overlaps_clamped", 0) or 0
+            ),
+            "overlaps_unresolved": int(
+                getattr(transcription_result, "overlaps_unresolved", 0) or 0
+            ),
         }
 
     def _begin_agentic_operation(
@@ -2766,6 +2784,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         batch_size: int,
         tts_urls: dict[str, str],
         cancel_event,
+        retry_tracker: Any = None,
     ):
         from .tts_providers import TtsBatchItem
 
@@ -2777,6 +2796,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 ],
                 batch_size=batch_size,
                 cancel_event=cancel_event,
+                retry_tracker=retry_tracker,
                 **tts_urls,
             )
         )
@@ -3001,17 +3021,19 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         role: str,
         job_id: str | None = None,
     ) -> dict[str, Any]:
-        return _automatic_generate_audio(
-            self._automatic_generation_context(),
-            session_id,
-            source_artifact,
-            source_path,
-            settings,
-            progress,
-            cancel_event,
-            role=role,
-            job_id=job_id,
-        )
+        with open_job_progress_state(job_id) as progress_state:
+            return _automatic_generate_audio(
+                self._automatic_generation_context(),
+                session_id,
+                source_artifact,
+                source_path,
+                settings,
+                progress,
+                cancel_event,
+                role=role,
+                job_id=job_id,
+                progress_state=progress_state,
+            )
 
     def generate_dubbing_audio(self, payload, progress, cancel_event):
         from pandrator.logic.dubbing.speech_blocks import generate_speech_blocks_file
@@ -3193,18 +3215,24 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         cancel_event: threading.Event,
         *,
         stage_job_id: str | None = None,
+        thresholds: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         from .voiceover_repair import repair_early_blocks
 
-        kwargs = {"stage_job_id": stage_job_id} if stage_job_id is not None else {}
-        return repair_early_blocks(self, run_id, progress, cancel_event, **kwargs)
+        # Omitted keys stay absent so the facade call keeps its exact shape.
+        repair_kwargs: dict[str, Any] = {}
+        if stage_job_id is not None:
+            repair_kwargs["stage_job_id"] = stage_job_id
+        if thresholds is not None:
+            repair_kwargs["thresholds"] = thresholds
+        return repair_early_blocks(
+            self, run_id, progress, cancel_event, **repair_kwargs
+        )
 
     def run_repair_existing_generation(
         self, payload: dict[str, Any], progress: Progress, cancel_event: threading.Event
     ) -> dict[str, Any]:
-        """Run the optional passage timing check without redoing source synthesis."""
-        from pandrator.logic.dubbing.passage_regroup import select_second_pass
-
+        """Run an explicit passage timing check without redoing source synthesis."""
         from .access.contracts import ProjectAction
         from .access.generation_resource_policy import require_generation_resource_access
 
@@ -3222,20 +3250,40 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 or plan.active_revision_id != run.plan_revision_id
             ):
                 raise ValueError("Completed run is no longer on the active speech plan.")
-            if select_second_pass(
-                run.settings_snapshot_json or {},
-                operation=str(run.operation or ""),
-                has_selected_ids=False,
-                workflow_kind=self._session_record(session_id).workflow_kind,
-            ) != "repair":
-                raise ValueError("The frozen generation did not enable timing repair.")
+        # An explicit request does not consult the frozen automatic-pass flag:
+        # it was admitted with the thresholds resolved at request time.
+        thresholds = payload.get("repair_thresholds")
         result = self._repair_early_generation_blocks(
             run_id,
             progress,
             cancel_event,
             stage_job_id=str(payload.get("_job_id") or "") or None,
+            thresholds=thresholds if isinstance(thresholds, dict) else None,
         )
         return {"source_generation_run_id": run_id, **result}
+
+    def run_repair_preview(
+        self, payload: dict[str, Any], progress: Progress, cancel_event: threading.Event
+    ) -> dict[str, Any]:
+        """Measure the repair preview; CPU only, never synthesises or stages."""
+        from .access.contracts import ProjectAction
+        from .access.generation_resource_policy import require_generation_resource_access
+        from .voiceover_repair import preview_early_blocks
+
+        run_id = str(payload.get("generation_run_id") or "")
+        with self.database.session() as session:
+            require_generation_resource_access(session, "run", run_id, ProjectAction.RUN)
+        thresholds = payload.get("repair_thresholds")
+        progress(0.05, "Measuring speech placement")
+        result = preview_early_blocks(
+            self.database,
+            self.paths,
+            run_id,
+            thresholds=thresholds if isinstance(thresholds, dict) else None,
+            cancel_event=cancel_event,
+        )
+        progress(1.0, "Timing preview complete")
+        return result
 
     def _regroup_generation_blocks(
         self, run_id: str, progress: Progress, cancel_event: threading.Event
@@ -3405,6 +3453,15 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         audit = self._copy_audit or AuditService(self.database, self.jobs.secret_redactor)
         return ProjectCopyWorker(self.database, self.paths, self.jobs, audit).run(
             payload, progress, cancel_event
+        )
+
+    def create_translation_project(self, payload, progress, cancel_event):
+        """Fork a pinned source into language branches through the leased queue."""
+        from .translation_project_jobs import run_creation
+
+        return run_creation(
+            self.database, self.paths, self.artifacts, payload,
+            progress=progress, cancel_event=cancel_event,
         )
 
     def generate_video_preview(self, payload, progress, cancel_event):

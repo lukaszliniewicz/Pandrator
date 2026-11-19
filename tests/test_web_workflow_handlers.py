@@ -1452,7 +1452,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         outcome.update(self.session.id, current["revision"], value)
         return source, translation
 
-    def _continue_generation(self, translate_settings, *, reuse_stages=()):
+    def _continue_generation(self, translate_settings, *, reuse_stages=(), rerun_stages=()):
         with mock.patch.object(self.handlers, "translate") as translate, mock.patch.object(
             self.handlers,
             "_run_reviewable_generation",
@@ -1464,6 +1464,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                     "target_stage": "generate_audio",
                     "stage_settings": {"translate": translate_settings},
                     "reuse_stages": list(reuse_stages),
+                    "rerun_stages": list(rerun_stages),
                 },
                 self.progress,
                 threading.Event(),
@@ -1530,6 +1531,83 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         )
         translate = self._continue_generation({"target_language": "de"}, reuse_stages=("translate",))
         translate.assert_not_called()
+
+    def test_rerun_stages_runs_a_fresh_translation(self):
+        self._voiceover_session_with_translation(
+            {"backend": "llm", "target_language": "pl", "model": "mock/default-model", "instructions": ""}
+        )
+        translate = self._continue_generation(
+            {"translation_backend": "llm", "target_language": "pl", "translate_model": "default", "instructions": ""},
+            rerun_stages=("translate",),
+        )
+        translate.assert_called_once()
+
+    def _continue_with_document_optimisation(
+        self, *, fresh, reuse_stages=(), rerun_stages=()
+    ):
+        _source, translation = self._voiceover_session_with_translation(None)
+        optimised_path = self.session_dir / "optimised-translation.srt"
+        optimised_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nCześć.\n", encoding="utf-8"
+        )
+        self.artifacts.register(
+            optimised_path,
+            kind="srt",
+            role="tts_optimized",
+            session_id=self.session.id,
+            parent_ids=[translation.id],
+        )
+        outcome = OutcomePlanService(self.database)
+        current = outcome.get(self.session.id)
+        value = current["value"]
+        value["transformations"] = {
+            **value.get("transformations", {}),
+            "llm_tts_document_optimization": True,
+        }
+        outcome.update(self.session.id, current["revision"], value)
+
+        def freshness(_session_id, stage_key, *_args, **_kwargs):
+            matches = fresh if stage_key == "optimize_document" else True
+            return {"settings_match": matches, "source_match": True}
+
+        with mock.patch.object(
+            self.handlers, "_continuation_freshness", side_effect=freshness
+        ), mock.patch.object(self.handlers, "translate") as translate, mock.patch.object(
+            self.handlers, "optimize_tts", return_value={}
+        ) as optimise, mock.patch.object(
+            self.handlers,
+            "_run_reviewable_generation",
+            return_value={"generation_run_id": "fixture", "status": "completed"},
+        ):
+            self.handlers.continue_workflow(
+                {
+                    "session_id": self.session.id,
+                    "target_stage": "generate_audio",
+                    # Plans name the stage as the snapshot does.
+                    "reuse_stages": list(reuse_stages),
+                    "rerun_stages": list(rerun_stages),
+                },
+                self.progress,
+                threading.Event(),
+            )
+        translate.assert_not_called()
+        return optimise
+
+    def test_planned_rerun_of_document_optimisation_runs_a_fresh_result(self):
+        optimise = self._continue_with_document_optimisation(
+            fresh=True, rerun_stages=("optimize_tts",)
+        )
+        optimise.assert_called_once()
+
+    def test_planned_reuse_of_document_optimisation_keeps_a_changed_result(self):
+        optimise = self._continue_with_document_optimisation(
+            fresh=False, reuse_stages=("optimize_tts",)
+        )
+        optimise.assert_not_called()
+
+    def test_document_optimisation_still_follows_freshness_without_a_choice(self):
+        self._continue_with_document_optimisation(fresh=True).assert_not_called()
+        self._continue_with_document_optimisation(fresh=False).assert_called_once()
 
     def test_reuse_translation_bypasses_selected_parent_lineage_change(self):
         with self.database.session() as session:
@@ -2686,6 +2764,35 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         with self.database.session() as db:
             self.assertEqual(secret, db.get(StoredCredential, (initial_personal_workspace(db).id, key)).secret_value)
 
+    def test_reviewable_start_hands_its_job_to_generation(self):
+        """A workflow continuation's generation reports pace and retries on its job."""
+
+        _path, _source_bytes, source = self._reviewable_start_source()
+        revision_id, _ = self.handlers._store_generation_plan(
+            self.session.id, [{"text": "Native narration."}],
+            settings={"service": "XTTS"}, source_artifact_id=source.id,
+        )
+        job = self.handlers.jobs.enqueue(
+            "workflow.continue", {"session_id": self.session.id}, session_id=self.session.id
+        )
+        captured = []
+        payload = {
+            "session_id": self.session.id, "source_artifact_id": source.id,
+            "settings": {"service": "XTTS"}, "speech_plan_revision_id": revision_id,
+        }
+        with mock.patch.object(
+            self.handlers, "run_generation",
+            side_effect=lambda value, _progress, _cancel: captured.append(value) or {},
+        ):
+            self.handlers._run_reviewable_generation(
+                payload, self.progress, threading.Event(), job_id=job.id
+            )
+            self.handlers._run_reviewable_generation(
+                payload, self.progress, threading.Event()
+            )
+        self.assertEqual(job.id, captured[0]["_job_id"])
+        self.assertNotIn("_job_id", captured[1])
+
     def test_reviewable_start_redacts_snapshot_sections_without_mutating_inputs(self):
         path, source_bytes, source = self._reviewable_start_source()
         payload = {
@@ -3483,11 +3590,15 @@ A single reviewed cue.
             def prepare_filename(self, _information):
                 return str(captured["destination"])
 
-        with mock.patch.object(
-            self.handlers,
-            "_validate_download_url",
-            return_value="https://example.com/watch?v=fixture",
-        ), mock.patch("yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with (
+            execution_actor_scope(HostActor("pandrator-cli")),
+            mock.patch.object(
+                self.handlers,
+                "_validate_download_url",
+                return_value="https://example.com/watch?v=fixture",
+            ),
+            mock.patch("yt_dlp.YoutubeDL", FakeYoutubeDL),
+        ):
             result = self.handlers.download_source_url(
                 {"session_id": self.session.id, "url": "https://example.com/watch?v=fixture"},
                 lambda value, detail=None: progress_updates.append((value, detail)),
@@ -4801,7 +4912,7 @@ A single reviewed cue.
             )
 
         self.assertEqual("completed", result["status"])
-        self.assertEqual(0.0, next(value for value, detail in updates if detail == "Generating segment 1 of 2"))
+        self.assertEqual(0.0, next(value for value, detail in updates if detail == "Generating speech: 1 of 2"))
         self.assertEqual(0.5, next(value for value, detail in updates if detail == "Generated segment 1 of 2"))
         self.assertEqual(1.0, next(value for value, detail in updates if detail == "Generated segment 2 of 2"))
 

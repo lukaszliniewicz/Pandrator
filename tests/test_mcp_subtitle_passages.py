@@ -11,12 +11,12 @@ from pydantic import ValidationError
 
 from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.errors import PandratorMcpError
-from pandrator_mcp.schemas.sessions import ReplaceSubtitleTextInput
+from pandrator_mcp.schemas.sessions import PatchSubtitleCuesInput, ReplaceSubtitleTextInput
 from pandrator_mcp.schemas.subtitle_passages import (
     PatchSubtitlePassagesInput,
     PreviewSubtitlePassagesInput,
 )
-from pandrator_mcp.tools.sessions import replace_subtitle_text
+from pandrator_mcp.tools.sessions import patch_subtitle_cues, replace_subtitle_text
 from pandrator_mcp.tools.subtitle_passages import (
     patch_subtitle_passages,
     preview_subtitle_passages,
@@ -131,3 +131,48 @@ def test_duplicate_or_forged_passage_fields_are_rejected():
                      [{"id": "p", "starts_new_turn": "true"}]):
         with pytest.raises(ValidationError):
             PatchSubtitlePassagesInput(**base, passages=passages)
+
+
+class _TrimmedPassageApplication(ReviewApplication):
+    """Expose only one passage of a multi-passage cue, as a cue-level edit would."""
+
+    def review_subtitles(self, session_id, *, artifact_ids):
+        data = super().review_subtitles(session_id, artifact_ids=artifact_ids)
+        for column in data["columns"]:
+            for segment in column["segments"]:
+                segment["source_passage_ids"] = ["p-one"]
+        return data
+
+    def save_subtitle_review(self, session_id, stage, *, segments, idempotency_key, **kwargs):
+        # Mirror the application client, which turns an HTTP 422 into a typed error.
+        try:
+            return super().save_subtitle_review(
+                session_id, stage, segments=segments,
+                idempotency_key=idempotency_key, **kwargs,
+            )
+        except ValueError as error:
+            raise PandratorMcpError("validation_error", str(error)) from error
+
+
+def test_cue_tools_point_at_passage_tools_when_a_logical_passage_would_split(case):
+    _source(case,
+        "1\n00:00:00,000 --> 00:00:04,000\nFilomena begins the discussion.\n",
+        [{"id": "p-one", "text": "Filomena begins", "start_ms": 0, "end_ms": 2000,
+          "speaker": "", "turn_id": "t-one", "cue_indices": [0]},
+         {"id": "p-two", "text": "the discussion.", "start_ms": 2000, "end_ms": 4000,
+          "speaker": "", "turn_id": "t-one", "cue_indices": [0]}])
+    application = _TrimmedPassageApplication(case)
+    runtime = SimpleNamespace(require_application=lambda: application)
+    with pytest.raises(PandratorMcpError) as replaced:
+        replace_subtitle_text(runtime, ReplaceSubtitleTextInput(session_id=case.session.id,
+            stage="correct", expected_revision=1, search_text="Filomena",
+            replacement_text="Filomena Nunes", idempotency_key="passage-hint-replace"))
+    with pytest.raises(PandratorMcpError) as patched:
+        patch_subtitle_cues(runtime, PatchSubtitleCuesInput(session_id=case.session.id,
+            stage="correct", expected_revision=1, cues=[{"ordinal": 1, "text": "Changed."}],
+            idempotency_key="passage-hint-patch"))
+    for error in (replaced.value, patched.value):
+        assert error.code == "validation_error"
+        assert "passage references do not match this cue's passages" in str(error)
+        assert "pandrator_patch_subtitle_passages" in str(error)
+        assert "pandrator_preview_subtitle_passages" in str(error)

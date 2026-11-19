@@ -375,6 +375,76 @@ def test_voice_language_coverage_and_secret_redaction(project_case):
     assert ja["exports"]["subtitles"]["status"] != "not_requested"
 
 
+def test_invalid_stored_tts_language_keeps_readiness(project_case):
+    services = project_case[0]
+    branches = _branches(project_case, voiceover=True)
+    with services.database.session() as db:
+        setting = db.get(SessionSetting, (branches[0]["session_id"], "tts"))
+        setting.value_json = {
+            **setting.value_json,
+            "voice": "narrator",
+            "language": "not a language",
+        }
+
+    with services.database.session() as db:
+        payload = get_project(db, project_case[-1]["id"])
+    readiness = enrich_project_payload(services, payload)["project"]["branches"][0][
+        "readiness"
+    ]
+    assert readiness["voice"]["status"] == "blocked"
+    assert readiness["tts_route"]["language_support"] == "unverified"
+    assert readiness["tts_route"]["language_support_language"] is None
+
+
+def test_branch_reports_the_voice_route_and_its_origin(project_case):
+    services = project_case[0]
+    branches = _branches(project_case, voiceover=True)
+    route_settings = {
+        "service": "vertex_ai",
+        "model": "gemini-2.5-flash-preview-tts",
+        "voice": "Algenib",
+        "language": "ja",
+    }
+    with services.database.session() as db:
+        workspace_id = initial_personal_workspace(db).id
+        global_defaults = db.get(WorkspaceSetting, (workspace_id, "defaults.tts"))
+        if global_defaults is None:
+            db.add(
+                WorkspaceSetting(
+                    workspace_id=workspace_id,
+                    key="defaults.tts",
+                    value_json=route_settings,
+                    revision=1,
+                )
+            )
+        else:
+            global_defaults.value_json = route_settings
+            global_defaults.revision += 1
+        # The first branch inherits the global route; the second chooses its own.
+        db.get(SessionSetting, (branches[0]["session_id"], "tts")).value_json = {}
+        chosen = db.get(SessionSetting, (branches[1]["session_id"], "tts"))
+        chosen.value_json = {**chosen.value_json, **route_settings}
+
+    state = _read(project_case)
+    inherited, chosen_state = [b["readiness"] for b in state["branches"]][:2]
+
+    assert inherited["tts_route"]["service"] == "vertex_ai"
+    assert inherited["tts_route"]["model"] == "gemini-2.5-flash-preview-tts"
+    assert inherited["tts_route"]["voice"] == "Algenib"
+    assert inherited["tts_route"]["origin"]["service"] == "global"
+    assert inherited["tts_route"]["language_support"] == "unverified"
+    assert any(
+        "was inherited from the global settings and is not verified for" in warning
+        for warning in inherited["warnings"]
+    ), inherited["warnings"]
+    # The warning advises; it never blocks the branch.
+    assert inherited["voice"]["status"] == "ready"
+
+    assert chosen_state["tts_route"]["origin"]["service"] == "session_override"
+    assert chosen_state["tts_route"]["origin"]["voice"] == "session_override"
+    assert not chosen_state["warnings"]
+
+
 def test_stale_speech_plan_and_generation_run_identity(project_case):
     services = project_case[0]
     branch = _branches(project_case, voiceover=True)[0]

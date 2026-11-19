@@ -38,6 +38,46 @@ def frozen_semantic_contexts(snapshot: dict[str, Any]) -> dict[str, dict[str, st
     return semantic_context_window(raw.get("units") or [], dict(raw.get("settings") or {}))
 
 
+def refuse_review_segments(
+    session, snapshot: dict[str, Any], scope: Collection[str] | None
+) -> None:
+    """Refuse when ``scope`` includes a segment its speaker plan no longer fits.
+
+    ``scope=None`` means every segment, so any segment needing review refuses.
+    """
+    review = (snapshot.get("performance_snapshot") or {}).get("review_segment_ids") or []
+    if not review:
+        return
+    if scope is not None:
+        wanted = set(scope)
+        review = [segment_id for segment_id in review if segment_id in wanted]
+        if not review:
+            return
+    ordinals = dict(session.execute(
+        select(m.GenerationSegment.id, m.GenerationSegment.ordinal)
+        .where(m.GenerationSegment.id.in_(review))
+    ).tuples().all())
+    named = sorted((ordinals.get(segment_id, 0), segment_id) for segment_id in review)
+    # Blocks are numbered from 1, as the speaker plan panel lists them.
+    listed = ", ".join(
+        f"block {ordinal + 1} ({segment_id})" for ordinal, segment_id in named[:5]
+    )
+    more = f" and {len(named) - 5} more" if len(named) > 5 else ""
+    if len(named) == 1:
+        changed, them = "1 block changed", "this block"
+        fit = "fits its"
+    else:
+        changed, them = f"{len(named)} blocks changed", "these blocks"
+        fit = "fit their"
+    # Recast, workflow checks and voiceover regroup or repair share this
+    # refusal but cannot leave a block out, so the advice names a run.
+    raise ValueError(
+        f"{changed} after the speaker plan was adopted and no longer {fit} "
+        f"speaker markup: {listed}{more}. Review a new speaker plan; until then, "
+        f"only a generation run that leaves {them} out can start."
+    )
+
+
 def freeze_generation_performance_snapshot(
     session, revision_id: str, snapshot: dict[str, Any], _service_config_cache=None,
     *, _settings_copy=None, cast_segment_ids: Collection[str] | None = None,
@@ -47,6 +87,8 @@ def freeze_generation_performance_snapshot(
     _carried_snapshot: dict[str, Any] | None = None,
     _freeze_segment_ids: Collection[str] | None = None,
     _parsed_markup: ParsedMarkupMemo | None = None,
+    refuse_review: bool = False,
+    review_scope: Collection[str] | None = None,
 ) -> bool:
     """Bind a new run to current adoption and immutable semantic source text.
 
@@ -58,6 +100,12 @@ def freeze_generation_performance_snapshot(
     cast freeze itself to those segments, for a listing page. Performance and
     semantic context are always frozen for the whole revision.
     ``_parsed_markup`` is passed to the cast freeze (see ``build_render_parts``).
+
+    ``refuse_review`` refuses, before the cast freeze, when a segment that
+    needs a new speaker plan review is in ``review_scope`` (``None`` meaning
+    every segment). ``freeze_speech_snapshot`` always sets it, so a run start,
+    a recast, workflow preflight and voiceover regroup or repair all refuse;
+    the audio identity pass freezes without it.
     """
     if _service_config_cache is None:
         _service_config_cache = {}
@@ -80,6 +128,8 @@ def freeze_generation_performance_snapshot(
             PerformancePlan.status == "adopted",
         )):
             freeze_performance_snapshot(session, revision_id, snapshot)
+    if refuse_review:
+        refuse_review_segments(session, snapshot, review_scope)
     has_block_voice = session.scalar(select(m.GenerationSegment.id).where(
         m.GenerationSegment.plan_revision_id == revision_id,
         m.GenerationSegment.removed.is_(False),
@@ -146,7 +196,8 @@ def segment_performance_settings(
     )
     result.pop("_performance", None)
     result.pop("_semantic_context", None)
-    if bool(settings.get("performance_enabled")):
+    if bool(settings.get("performance_enabled")) and text.strip():
+        # A blank block is silent to the plan judge and holds no snapshot entry.
         from .performance_plans import performance_for_segment
 
         annotation = performance_for_segment(snapshot, segment_id, text)

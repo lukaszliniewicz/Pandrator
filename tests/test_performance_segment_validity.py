@@ -1,0 +1,1385 @@
+"""An edit makes only the edited segment's speaker plan entry stale.
+
+An adopted speaker plan is judged per segment against each unit's stored
+``text_hash``: unchanged segments keep their entries, an edited segment keeps
+its markup while the change lies inside one spoken string of it, and only the
+rest need a new review. Work is counted, never timed.
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from contextlib import contextmanager
+from copy import deepcopy
+
+import pytest
+from sqlalchemy import select
+
+from pandrator.logic.speech_markup import parse_speech_markup
+from pandrator.logic.speech_performance import content_hash, validate_annotation
+from pandrator.web import models as m
+from pandrator.web import performance_plans as plans
+from pandrator.web import performance_validity as validity
+from pandrator.web.generation_audio_identity import IDENTITY_KEY, AudioIdentityContext
+from pandrator.web.generation_performance_snapshot import (
+    refuse_review_segments,
+    segment_performance_settings,
+)
+from pandrator.web.performance_validity import REVIEW_MESSAGE, fit_entry
+from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+from pandrator.web.speech_annotation_records import normalized_record, record_markup
+from pandrator.web.speech_plan_workspace import freeze_speech_snapshot
+from tests.test_generation_cast_runtime import seed_cast
+from tests.test_performance_plans import adopt, create, edit, get
+from tests.test_performance_plans import case as case  # noqa: F401
+
+CHARACTERS = [{"id": "c-scrooge", "display_name": "Scrooge", "voice_category": "male"}]
+DIALOGUE_TEXT = "He said, “Bah!” Then left."
+DIALOGUE_XML = (
+    '<segment id="s">He said, <dialogue><speaker ref="c-scrooge"><em>cross</em>'
+    "“Bah!”</speaker></dialogue> Then left.</segment>"
+)
+
+
+def xml_record(text: str, xml: str, *, locked: bool = False, reason: str = "") -> dict:
+    return normalized_record(
+        text, "s", {"speech_xml": xml, "locked": locked, "reason": reason}, CHARACTERS
+    )
+
+
+def fit(old: str, record: dict, new: str) -> dict | None:
+    return fit_entry({"id": "s", "spoken_text": old}, record, new, "s", CHARACTERS)
+
+
+def parsed(record: dict, text: str):
+    xml = record_markup(record)
+    assert xml is not None
+    return parse_speech_markup(
+        xml, expected_segment_id="s", expected_text=text, characters=CHARACTERS
+    )
+
+
+# fit_entry units --------------------------------------------------------------
+
+
+def test_plain_entry_fits_any_edit():
+    record = xml_record("Hello there.", '<segment id="s" boundary_after="paragraph">Hello there.</segment>')
+    for new in ("Hello here.", "Oh, hello there.", "Hello there. Again.", "Bye."):
+        fitted = fit("Hello there.", record, new)
+        assert fitted is not None, new
+        assert parsed(fitted, new).boundary_after == "paragraph"
+    narrated = xml_record("Hello there.", '<segment id="s"><narrator>Hello there.</narrator></segment>')
+    fitted = fit("Hello there.", narrated, "Hello there. Again.")
+    assert fitted is not None
+    assert all(span.narrator for span in parsed(fitted, "Hello there. Again.").spans)
+
+
+def test_change_inside_a_span_keeps_the_dialogue_and_its_controls():
+    record = xml_record(DIALOGUE_TEXT, DIALOGUE_XML, locked=True, reason="Kept by hand.")
+    new = "He said, “Pah!” Then left."
+    fitted = fit(DIALOGUE_TEXT, record, new)
+    assert fitted is not None
+    spans = parsed(fitted, new).spans
+    assert [(span.text, span.dialogue, span.speaker_id) for span in spans] == [
+        ("He said, ", False, None),
+        ("“Pah!”", True, "c-scrooge"),
+        (" Then left.", False, None),
+    ]
+    assert spans[1].delivery["emotion"] == "cross"
+    assert fitted["locked"] is True and fitted["reason"] == "Kept by hand."
+    # A change in the narration after the dialogue fits too.
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then he left.") is not None
+
+
+def test_change_crossing_a_span_boundary_does_not_fit():
+    record = xml_record(DIALOGUE_TEXT, DIALOGUE_XML)
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah,” then left.") is None
+    assert fit(DIALOGUE_TEXT, record, "He left.") is None
+
+
+def test_insertion_at_a_shared_boundary_is_ambiguous():
+    record = xml_record(DIALOGUE_TEXT, DIALOGUE_XML)
+    # "!" lands exactly where the dialogue ends and the narration begins.
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!”! Then left.") is None
+    event = xml_record("Hello there.", '<segment id="s">Hello<event kind="laugh"/> there.</segment>')
+    assert fit("Hello there.", event, "Hello, there.") is None
+    assert fit("Hello there.", event, "Hello there!") is not None
+
+
+def test_narration_at_the_edge_of_a_dialogue_does_not_fit():
+    quote = "“Bah!”"
+    record = xml_record(
+        quote,
+        '<segment id="s"><dialogue><speaker ref="c-scrooge">“Bah!”</speaker></dialogue></segment>',
+    )
+    # An attribution after a closing quote, or a lead-in before an opening one,
+    # could be narration, so neither is rebased into the speaker's line.
+    assert fit(quote, record, "“Bah!” he said.") is None
+    assert fit(quote, record, "He said, “Bah!”") is None
+    fitted = fit(quote, record, "“Pah!”")
+    assert fitted is not None and parsed(fitted, "“Pah!”").spans[0].dialogue
+
+
+def test_text_at_the_edge_of_a_voiced_span_does_not_fit():
+    text = "He said hello"
+    record = xml_record(text, '<segment id="s">He said <span voice="Puck">hello</span></segment>')
+    # Appended text could be narration after the voiced words, so it is not
+    # rebased into the span's voice; a change inside the span still fits.
+    assert fit(text, record, "He said hello there.") is None
+    fitted = fit(text, record, "He said hallo")
+    assert fitted is not None
+    assert [(span.text, span.voice) for span in parsed(fitted, "He said hallo").spans] == [
+        ("He said ", None),
+        ("hallo", "Puck"),
+    ]
+
+
+def test_text_at_the_edge_of_a_narrator_with_its_own_voice_does_not_fit():
+    text = "Then I remember."
+    record = xml_record(text, '<segment id="s">Then <narrator voice="Puck">I remember.</narrator></segment>')
+    # A narrator with its own voice is voiced like a span with one.
+    assert fit(text, record, "Then I remember. He sighed.") is None
+    fitted = fit(text, record, "Then I recall.")
+    assert fitted is not None
+    assert [(span.text, span.voice) for span in parsed(fitted, "Then I recall.").spans] == [
+        ("Then ", None),
+        ("I recall.", "Puck"),
+    ]
+
+
+def test_a_change_that_repeats_the_text_at_an_edge_does_not_slip_across_it():
+    old = "He said “Go.”"
+    record = xml_record(
+        old,
+        '<segment id="s">He said <dialogue><speaker ref="c-scrooge">“Go.”</speaker></dialogue></segment>',
+    )
+    # Matched from the start, ',” he said “Go' would sit inside the speaker's
+    # line; matched from the end it crosses the opening quote's edge.
+    assert fit(old, record, "He said “Go,” he said “Go.”") is None
+    bare = "He said Go."
+    bare_record = xml_record(
+        bare,
+        '<segment id="s">He said <dialogue><speaker ref="c-scrooge">Go.</speaker></dialogue></segment>',
+    )
+    assert fit(bare, bare_record, "He said Go, he said Go.") is None
+    # A change that stays inside the line wherever it sits still fits.
+    fitted = fit(old, record, "He said “Goo.”")
+    assert fitted is not None
+    assert [span.text for span in parsed(fitted, "He said “Goo.”").spans if span.dialogue] == [
+        "“Goo.”"
+    ]
+
+
+def test_narration_that_gains_or_loses_a_quotation_mark_needs_review():
+    record = xml_record(DIALOGUE_TEXT, DIALOGUE_XML)
+    # Narration beside a spoken line that gains a quotation mark may now hold
+    # dialogue the narrator would read.
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then “Go,” he left.") is None
+    framed_text = "“Bah!” he said."
+    framed = xml_record(
+        framed_text,
+        '<segment id="s">“<dialogue><speaker ref="c-scrooge">Bah!</speaker></dialogue>” he said.</segment>',
+    )
+    assert fit(framed_text, framed, "Bah!” he said.") is None
+    # Other narration edits still fit, an apostrophe included; an edited
+    # attribution keeps the speaker it had.
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then didn’t leave.") is not None
+    renamed = fit(DIALOGUE_TEXT, record, "She said, “Bah!” Then left.")
+    assert renamed is not None
+    assert [span.speaker_id for span in parsed(renamed, "She said, “Bah!” Then left.").spans] == [
+        None, "c-scrooge", None,
+    ]
+    # A block without a spoken line is held to the same rule: narration that
+    # gains a quotation mark may now hold dialogue the narrator would read.
+    plain = xml_record("He said hi.", '<segment id="s">He said hi.</segment>')
+    assert fit("He said hi.", plain, "He said “hi.”") is None
+
+
+def test_a_spoken_line_that_gains_or_loses_a_quotation_mark_needs_review():
+    old = "He said “Go now.”"
+    record = xml_record(
+        old,
+        '<segment id="s">He said <dialogue><speaker ref="c-scrooge">“Go now.”</speaker></dialogue></segment>',
+    )
+    # Split around an attribution, the line would make the speaker voice it.
+    assert fit(old, record, "He said “Go,” he said, “now.”") is None
+    # Without a quotation mark nothing tells an attribution from speech: the
+    # speaker keeps all of it, as the docs say.
+    bare = "He said Go now."
+    bare_record = xml_record(
+        bare,
+        '<segment id="s">He said <dialogue><speaker ref="c-scrooge">Go now.</speaker></dialogue></segment>',
+    )
+    assert fit(bare, bare_record, "He said Go, he said, now.") is not None
+    # An apostrophe inside a word still fits.
+    assert fit(old, record, "He said “Go now, it’s late.”") is not None
+
+
+def test_single_quotation_marks_count_unless_inside_a_word():
+    record = xml_record(DIALOGUE_TEXT, DIALOGUE_XML)
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then 'Go,' he left.") is None
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then ‘Go’ he left.") is None
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then ＂Go＂ he left.") is None
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then 「Go」 he left.") is None
+    framed_text = "‘Bah!’ he said."
+    framed = xml_record(
+        framed_text,
+        '<segment id="s">‘<dialogue><speaker ref="c-scrooge">Bah!</speaker></dialogue>’ he said.</segment>',
+    )
+    # The closing mark is the apostrophe character, but no letter follows it.
+    assert fit(framed_text, framed, "‘Bah! he said.") is None
+    assert fit(DIALOGUE_TEXT, record, "He said, “Bah!” Then didn't leave.") is not None
+    assert fit(framed_text, framed, "‘Bah!’ he hadn’t said.") is not None
+
+
+def test_an_edit_that_turns_an_apostrophe_into_a_quotation_mark_or_back_does_not_fit():
+    text = "He said, “Bah!” Then didn't leave."
+    record = xml_record(
+        text,
+        '<segment id="s">He said, <dialogue><speaker ref="c-scrooge">“Bah!”</speaker>'
+        "</dialogue> Then didn't leave.</segment>",
+    )
+    # The mark itself is untouched, but a letter beside it comes or goes.
+    assert fit(text, record, "He said, “Bah!” Then didn 't leave.") is None
+    assert fit(text, record, "He said, “Bah!” Then didn' leave.") is None
+    quoted = "He said, “Bah!” Then 'tis done."
+    quoted_record = xml_record(
+        quoted,
+        '<segment id="s">He said, <dialogue><speaker ref="c-scrooge">“Bah!”</speaker>'
+        "</dialogue> Then 'tis done.</segment>",
+    )
+    assert fit(quoted, quoted_record, "He said, “Bah!” Then x'tis done.") is None
+    # A curly apostrophe is held to the same rule.
+    curly = "He said, “Bah!” Then didn’t leave."
+    curly_record = xml_record(
+        curly,
+        '<segment id="s">He said, <dialogue><speaker ref="c-scrooge">“Bah!”</speaker>'
+        "</dialogue> Then didn’t leave.</segment>",
+    )
+    assert fit(curly, curly_record, "He said, “Bah!” Then didn ’t leave.") is None
+    # A change elsewhere in the word, or of the mark itself, still fits.
+    assert fit(text, record, "He said, “Bah!” Then didn't go.") is not None
+    assert fit(text, record, "He said, “Bah!” Then couldn't leave.") is not None
+    assert fit(text, record, "He said, “Bah!” Then didn’t leave.") is not None
+    # So does a change right beside an apostrophe that keeps letters on both
+    # sides of it.
+    contraction = "He said, “Bah!” Then I'd go."
+    contraction_record = xml_record(
+        contraction,
+        '<segment id="s">He said, <dialogue><speaker ref="c-scrooge">“Bah!”</speaker>'
+        "</dialogue> Then I'd go.</segment>",
+    )
+    assert fit(contraction, contraction_record, "He said, “Bah!” Then I'll go.") is not None
+    assert fit(contraction, contraction_record, "He said, “Bah!” Then you'd go.") is not None
+    # So is a block without a spoken line.
+    plain = "Then didn't leave."
+    plain_record = xml_record(plain, "<segment id=\"s\">Then didn't leave.</segment>")
+    assert fit(plain, plain_record, "Then didn 't leave.") is None
+    assert fit(plain, plain_record, "Then couldn't leave.") is not None
+
+
+def test_an_earlier_insertion_does_not_hide_a_quote_role_change():
+    # The inserted "x" shifts every later character of the changed range, so
+    # the check must read the new text at its own position. Here the
+    # apostrophe in "didn't" becomes a quotation mark when the letter after
+    # it gives way to a space.
+    assert validity._quote_changed("The plan didn't work", "The planx didn' t work")
+    # A contraction that stays one still reads as no role change.
+    assert not validity._quote_changed(
+        "The plan didn't work", "The planx couldn't work"
+    )
+
+
+def test_two_edits_beside_an_unchanged_quotation_mark_keep_the_block():
+    old = "Yesterday I said “go” before dinner."
+    record = xml_record(old, f'<segment id="s">{old}</segment>')
+    new = "Today I said “go” before lunch."
+    # The marks are untouched by either edit, so the block keeps its markup.
+    fitted = fit(old, record, new)
+    assert fitted is not None
+    assert parsed(fitted, new).transcript == new
+    # A mark that really is removed still needs review.
+    assert fit(old, record, "Yesterday I said “go before dinner.") is None
+
+
+def test_a_block_without_a_spoken_line_that_gains_or_loses_a_quotation_mark_needs_review():
+    # The maintainer's example (#167): narration gains its first quote.
+    old = "Hello world, she began"
+    narrated = xml_record(old, '<segment id="s"><narrator>Hello world, she began</narrator></segment>')
+    assert fit(old, narrated, "Hello world, she said “go”") is None
+    plain_text = "He said hi, then left."
+    plain = xml_record(plain_text, '<segment id="s">He said hi, then left.</segment>')
+    assert fit(plain_text, plain, "He said “hi,” then left.") is None
+    assert fit(plain_text, plain, "He said 'hi,' then left.") is None
+    quoted_text = "He said “hi,” then left."
+    quoted = xml_record(quoted_text, '<segment id="s">He said “hi,” then left.</segment>')
+    # Lost, or swapped for another mark.
+    assert fit(quoted_text, quoted, "He said hi,” then left.") is None
+    assert fit(quoted_text, quoted, 'He said "hi,” then left.') is None
+    # Other edits, an apostrophe that stays one included, still fit.
+    assert fit(plain_text, plain, "He said hello, then left.") is not None
+    contraction = "Then I'd go."
+    contraction_record = xml_record(contraction, "<segment id=\"s\">Then I'd go.</segment>")
+    assert fit(contraction, contraction_record, "Then I'll go.") is not None
+    assert fit(quoted_text, quoted, "He said “hi,” then went.") is not None
+
+
+def test_an_insertion_beside_an_event_or_control_at_a_block_edge_does_not_fit():
+    old = "Hello there."
+    trailing = xml_record(old, '<segment id="s">Hello there.<event kind="laugh"/></segment>')
+    # Text added after the last words could come before or after the laugh.
+    assert fit(old, trailing, "Hello there. Again.") is None
+    leading = xml_record(old, '<segment id="s"><event kind="laugh"/>Hello there.</segment>')
+    assert fit(old, leading, "Oh. Hello there.") is None
+    control = xml_record(old, '<segment id="s"><em>calm</em>Hello there.</segment>')
+    assert fit(old, control, "Oh. Hello there.") is None
+    # A change inside the words beside it still fits, and keeps the event.
+    fitted = fit(old, trailing, "Hello here.")
+    assert fitted is not None
+    assert record_markup(fitted) == '<segment id="s">Hello here.<event kind="laugh"/></segment>'
+    assert fit(old, leading, "Hello here.") is not None
+
+
+def test_a_replacement_that_lengthens_the_words_beside_an_event_or_control_does_not_fit():
+    old = "Hello there."
+    leading = xml_record(old, '<segment id="s"><event kind="laugh"/>Hello there.</segment>')
+    # "H" becomes "Oh, h": the new words could come before or after the laugh,
+    # as for the insertion "Oh, Hello there.".
+    assert fit(old, leading, "Oh, hello there.") is None
+    trailing = xml_record(old, '<segment id="s">Hello there.<event kind="laugh"/></segment>')
+    # "." becomes "?!" right before the laugh.
+    assert fit(old, trailing, "Hello there?!") is None
+    middle_text = "He paused.Then left."
+    middle = xml_record(
+        middle_text, '<segment id="s">He paused.<event kind="laugh"/>Then left.</segment>'
+    )
+    assert fit(middle_text, middle, "He paused.So then left.") is None
+    control = xml_record(old, '<segment id="s"><em>calm</em>Hello there.</segment>')
+    assert fit(old, control, "Oh, hello there.") is None
+    # A replacement there that does not lengthen the words keeps the event.
+    fitted = fit(old, leading, "Jello there.")
+    assert fitted is not None
+    assert record_markup(fitted) == '<segment id="s"><event kind="laugh"/>Jello there.</segment>'
+    assert fit(middle_text, middle, "He paused.then left.") is not None
+    assert fit(old, trailing, "Hello here.") is not None
+    # A shorter edit right beside an event keeps it where it was.
+    assert fit(old, trailing, "Hello there") is not None
+    longer = "Oh, hello there."
+    shortened = xml_record(longer, '<segment id="s"><event kind="laugh"/>Oh, hello there.</segment>')
+    fitted = fit(longer, shortened, "Hello there.")
+    assert fitted is not None
+    assert record_markup(fitted) == '<segment id="s"><event kind="laugh"/>Hello there.</segment>'
+
+
+def test_words_added_to_the_words_beside_an_event_or_control_do_not_fit():
+    old = "Hello there."
+    leading = xml_record(old, '<segment id="s"><event kind="laugh"/>Hello there.</segment>')
+    # The new words share letters with the old ones, so the character change
+    # starts past the laugh ("H" stays, "ello" becomes "i, hello"); the words
+    # "Hi," could still come before or after it.
+    assert fit(old, leading, "Hi, hello there.") is None
+    assert fit(old, leading, "Hey, hello there.") is None
+    # A swap of the same length.
+    assert fit(old, leading, "Oh hi there.") is None
+    control = xml_record(old, '<segment id="s"><em>calm</em>Hello there.</segment>')
+    assert fit(old, control, "Hi, hello there.") is None
+    middle_text = "He paused.Then left."
+    middle = xml_record(
+        middle_text, '<segment id="s">He paused.<event kind="laugh"/>Then left.</segment>'
+    )
+    assert fit(middle_text, middle, "He paused.The man then left.") is None
+    # A second edit elsewhere that removes more than the first adds.
+    friend = "Hello there, my old friend."
+    friend_record = xml_record(
+        friend, '<segment id="s"><event kind="laugh"/>Hello there, my old friend.</segment>'
+    )
+    assert fit(friend, friend_record, "Oh, hello there, friend.") is None
+    # Words added away from the event, or a typo in the word beside it, fit.
+    assert fit(old, leading, "Helllo there.") is not None
+    assert fit(friend, friend_record, "Hello there, my dear old frend.") is not None
+    assert fit(middle_text, middle, "He paused.Then he left.") is not None
+    spaced_text = "He paused. Then left."
+    spaced = xml_record(
+        spaced_text, '<segment id="s">He paused. <event kind="laugh"/>Then left.</segment>'
+    )
+    assert fit(spaced_text, spaced, "He paused a bit. Then left.") is not None
+    assert fit(spaced_text, spaced, "He paused. So then left.") is None
+
+
+def test_a_spaceless_greeting_is_aligned_beside_a_leading_laugh():
+    old = "こんにちは、皆さん。"
+    record = xml_record(old, f'<segment id="s"><event kind="laugh"/>{old}</segment>')
+    # Each CJK character is its own token, as a word is in a spaced script, so
+    # a change the repeated characters let sit before the first one counts as
+    # words added beside the laugh.
+    assert fit(old, record, "ここにちは、皆さん。") is None
+    # Without spaces nothing places a changed greeting apart from the laugh
+    # before it, so any change in that run of letters needs review.
+    assert fit(old, record, "こんばんは。では、皆さん。") is None
+    # A change in the next clause, past the punctuation, still fits.
+    assert fit(old, record, "こんにちは、皆さま。") is not None
+
+
+def test_a_long_block_edit_needs_review_without_an_alignment():
+    old = " ".join(["la"] * 5_000)
+    plain = xml_record(old, f'<segment id="s">{old}</segment>')
+    started = time.monotonic()
+    # The character diff and the token alignment are both bounded, so the edit
+    # is assumed to need review rather than stalling a plan read.
+    assert fit(old, plain, " ".join(["lo"] * 5_000)) is None
+    record = xml_record(old, f'<segment id="s"><event kind="laugh"/>{old}</segment>')
+    assert fit(old, record, old + " la") is None
+    assert time.monotonic() - started < 5
+
+
+def test_a_carriage_return_survives_the_rebase():
+    record = xml_record("Helo\rthere.", '<segment id="s">Helo&#13;there.</segment>')
+    fitted = fit("Helo\rthere.", record, "Hello\rthere.")
+    assert fitted is not None
+    assert "&#13;" in record_markup(fitted)
+    assert parsed(fitted, "Hello\rthere.").transcript == "Hello\rthere."
+
+
+def test_rebased_markup_that_fails_to_parse_does_not_fit():
+    record = xml_record("Hi there.", '<segment id="s">Hi there.</segment>')
+    # A character XML 1.0 cannot represent never parses.
+    assert fit("Hi there.", record, "Hi\x01there.") is None
+
+
+def test_legacy_entry_fits_while_it_validates():
+    old = "Yet this defeat would be temporary."
+    record = validate_annotation(old, {
+        "decision": "steer",
+        "spans": [{"anchor": {"quote": "defeat"}, "delivery": {"instruction": "Weigh it"}}],
+    })
+    fitted = fit(old, record, "Yet this defeat would be brief.")
+    assert fitted is not None and fitted["spans"][0]["anchor"]["quote"] == "defeat"
+    assert fit(old, record, "Yet this loss would be brief.") is None
+    assert fit(old, None, "Anything.") is None
+
+
+def legacy_record(text: str, quote: str, occurrence: int | None = None) -> dict:
+    anchor = {"quote": quote} if occurrence is None else {"quote": quote, "occurrence": occurrence}
+    return validate_annotation(text, {
+        "decision": "steer",
+        "spans": [{"anchor": anchor, "delivery": {"instruction": "Weigh it"}}],
+    })
+
+
+def test_legacy_anchor_moved_by_an_earlier_copy_of_its_quote_does_not_fit():
+    old = "He paused. Then the defeat came, and the defeat stayed."
+    record = legacy_record(old, "defeat", 2)
+    # A new earlier copy makes occurrence 2 the first "defeat" of the old text.
+    assert fit(old, record, "A defeat. He paused. Then the defeat came, and the defeat stayed.") is None
+    # Removing an earlier copy moves it too.
+    assert fit(old, record, "He paused. Then it came, and the defeat stayed.") is None
+    # An event's anchor is held to the same rule.
+    event = validate_annotation(old, {
+        "decision": "steer",
+        "events": [{"kind": "sigh", "anchor": {"quote": "defeat", "occurrence": 2}}],
+    })
+    assert fit(old, event, "A defeat. He paused. Then the defeat came, and the defeat stayed.") is None
+    assert fit(old, event, "He paused long. Then the defeat came, and the defeat stayed.") is not None
+    # A copy written right beside the anchored words can sit before or after
+    # them; placed before, the anchor moves, so the entry does not fit.
+    beside = "Then the defeat stayed."
+    assert fit(beside, legacy_record(beside, "defeat", 1), "Then the defeat defeat stayed.") is None
+
+
+def test_legacy_entry_that_gains_loses_or_swaps_a_quotation_mark_does_not_fit():
+    old = "He said “Go now.” Then the defeat came."
+    record = legacy_record(old, "defeat")
+    # The anchor still resolves to the same words in every case below; the
+    # quotation mark alone sends the entry to review, as for markup.
+    assert fit(old, record, "He said “Go now.” Then “the defeat came.") is None
+    assert fit(old, record, "He said Go now.” Then the defeat came.") is None
+    assert fit(old, record, 'He said "Go now.” Then the defeat came.') is None
+    assert fit(old, record, "He said “Go now.” Then 'the defeat came.") is None
+    plain = "Then the defeat came."
+    plain_record = legacy_record(plain, "defeat")
+    assert fit(plain, plain_record, "Then the defeat came, she said “go”.") is None
+    # An apostrophe moved into or out of a word.
+    apostrophe = "Then didn't the defeat come?"
+    apostrophe_record = legacy_record(apostrophe, "defeat")
+    assert fit(apostrophe, apostrophe_record, "Then didn 't the defeat come?") is None
+    assert fit(apostrophe, apostrophe_record, "Then didn' the defeat come?") is None
+    # One that stays inside a word, and other edits, still fit.
+    assert fit(apostrophe, apostrophe_record, "Then couldn't the defeat come?") is not None
+    contraction = "Then I'd see the defeat."
+    contraction_record = legacy_record(contraction, "defeat")
+    assert fit(contraction, contraction_record, "Then I'll see the defeat.") is not None
+    assert fit(old, record, "He said “Go on now.” Then the defeat came.") is not None
+
+
+def plain_fit(old: str, new: str) -> bool:
+    return fit(old, xml_record(old, f'<segment id="s">{old}</segment>'), new) is not None
+
+
+def test_a_dash_that_opens_a_line_of_dialogue_counts_as_a_quotation_mark():
+    # Polish, Spanish, Russian and French open a line of dialogue with a dash.
+    assert not plain_fit("Poszła do domu.", "— Idę do domu — powiedziała.")
+    assert not plain_fit("Ella se fue.", "—Me voy —dijo ella.")
+    assert not plain_fit("Она ушла.", "– Я ухожу, – сказала она.")
+    assert not plain_fit("Poszła.\nI tyle.", "Poszła.\n― I tyle.")
+    # Removed, or turned into one or back by the text before it on its line.
+    assert not plain_fit("— Idę do domu.", "Idę do domu.")
+    assert not plain_fit("Ona: — Idę.", "— Idę.")
+    assert not plain_fit("— Idę.", "Ona: — Idę.")
+    assert not plain_fit("Poszła.\n— Idę.", "Poszła. — Idę.")
+    legacy = "Then the defeat came."
+    assert fit(legacy, legacy_record(legacy, "defeat"), "— Then the defeat came.") is None
+    attributed = "Then: — the defeat came."
+    assert fit(attributed, legacy_record(attributed, "defeat"), "— the defeat came.") is None
+    # A dash inside narration, or one that keeps opening its line, still fits.
+    assert plain_fit("He paused, then left.", "He paused — then left.")
+    assert plain_fit("He paused — then left.", "He paused, then left.")
+    assert plain_fit("— Idę do domu.", "— Idę do sklepu.")
+    assert fit(legacy, legacy_record(legacy, "defeat"), "Then – the defeat came.") is not None
+
+
+def test_a_single_quote_between_letters_of_an_unspaced_script_is_a_quotation_mark():
+    # Chinese and Japanese put no spaces between words, so a letter on each
+    # side does not make the mark an apostrophe inside a word.
+    assert not plain_fit("他说你好就走了。", "他说'你好'就走了。")
+    assert not plain_fit("他说你好就走了。", "他说’你好’就走了。")
+    assert not plain_fit("彼はこんにちはと言った。", "彼は'こんにちは'と言った。")
+    assert not plain_fit("タロウはハイと言った。", "タロウは'ハイ'と言った。")
+    # Space-separated scripts keep their apostrophes inside words.
+    assert plain_fit("Then didn't leave.", "Then couldn't leave.")
+    assert plain_fit("Он сказал д'Артаньян.", "Он позвал д'Артаньян.")
+
+
+@pytest.mark.parametrize("mark", ["⹂", "＇", "`", "❛", "❜", "❝", "❞"])
+def test_other_quotation_marks_count(mark):
+    assert not plain_fit("He said hi, then left.", f"He said {mark}hi, then left.")
+    legacy = "He said hi, then the defeat came."
+    assert fit(legacy, legacy_record(legacy, "defeat"), f"He said {mark}hi, then the defeat came.") is None
+
+
+@pytest.mark.parametrize("mark", ["″", "´", "״"])
+def test_primes_acute_and_gershayim_are_not_quotation_marks(mark):
+    # Each has common uses that are not quotation (inches, an accent, Hebrew
+    # acronyms), so adding one is an ordinary edit.
+    assert plain_fit("It was six feet tall.", f"It was 6{mark} tall.")
+
+
+def test_legacy_anchor_fits_an_edit_before_or_after_it_without_a_new_copy():
+    old = "Yet this defeat would be temporary."
+    record = legacy_record(old, "defeat")
+    assert fit(old, record, "Yet this defeat would be brief.") is not None
+    assert fit(old, record, "And yet this defeat would be temporary.") is not None
+    repeated = "The defeat came, and the defeat stayed."
+    second = legacy_record(repeated, "defeat", 2)
+    assert fit(repeated, second, "The defeat came, and the defeat stayed long.") is not None
+    assert fit(repeated, second, "The first defeat came, and the defeat stayed.") is not None
+
+
+def legacy_event(text: str, position: str, anchor: dict | None = None) -> dict:
+    event = {"kind": "laugh", "position": position}
+    if anchor is not None:
+        event["anchor"] = anchor
+    return validate_annotation(text, {"decision": "steer", "events": [event]})
+
+
+def test_legacy_event_does_not_fit_text_added_right_beside_it():
+    old = "Hello there."
+    before = legacy_event(old, "before")
+    after = legacy_event(old, "after")
+    # Without an anchor an event sits at the block's start or end, so text
+    # added there could fall on either side of it, as for an event in markup.
+    assert fit(old, before, "Oh, Hello there.") is None
+    assert fit(old, before, "Oh, hello there.") is None
+    assert fit(old, after, "Hello there. Bye.") is None
+    # The words before an event at the end grow into it.
+    assert fit(old, after, "Hello there?!") is None
+    # Words added to the words beside it, as for an event in markup.
+    assert fit(old, before, "Hi, hello there.") is None
+    friend = "Hello there, my old friend."
+    assert fit(friend, legacy_event(friend, "before"), "Oh, hello there, friend.") is None
+    # An anchored event sits before or after its words.
+    text = "He paused. Then the defeat came."
+    anchored = legacy_event(text, "before", {"quote": "defeat"})
+    assert fit(text, anchored, "He paused. Then the sudden defeat came.") is None
+    trailing = legacy_event(text, "after", {"quote": "defeat"})
+    assert fit(text, trailing, "He paused. Then the defeat, at last, came.") is None
+    # Text added elsewhere, or a change at the event that does not lengthen
+    # the words, still fits.
+    assert fit(old, before, "Hello there. Bye.") is not None
+    assert fit(old, after, "Oh, Hello there.") is not None
+    assert fit(old, before, "Jello there.") is not None
+    assert fit(text, anchored, "He waited. Then the defeat came.") is not None
+    assert fit(text, trailing, "He paused. Then the defeat came at last.") is not None
+    # A shorter edit right beside an event keeps it.
+    assert fit("Oh, hello there.", legacy_event("Oh, hello there.", "before"), "Hello there.") is not None
+    assert fit(old, after, "Hello there") is not None
+    # An anchored event on a repeated quote sits at the copy it names.
+    repeated = "The defeat came, and the defeat stayed."
+    second = legacy_event(repeated, "before", {"quote": "defeat", "occurrence": 2})
+    assert fit(repeated, second, "The defeat came, and the sudden defeat stayed.") is None
+    assert fit(repeated, second, "The sudden defeat came, and the defeat stayed.") is not None
+
+
+# Plan reads and freezes -------------------------------------------------------
+
+
+def set_text(case, index: int, text: str, *, removed: bool | None = None) -> None:
+    with case["services"]["database"].session() as session:
+        segment = session.get(m.GenerationSegment, case["segment_ids"][index])
+        segment.text = text
+        if removed is not None:
+            segment.removed = removed
+
+
+def freeze(case) -> dict:
+    snapshot: dict = {}
+    with case["services"]["database"].session() as session:
+        plans.freeze_performance_snapshot(session, case["revision_id"], snapshot)
+    return snapshot["performance_snapshot"]
+
+
+def test_unchanged_plan_freezes_and_reads_as_before(case):
+    adopted = adopt(case, edit(case, create(case)))
+    assert adopted["stale"] is False
+    assert (adopted["changed_segment_count"], adopted["review_segment_count"],
+            adopted["review_segments"]) == (0, 0, [])
+    frozen = freeze(case)
+    assert "review_segment_ids" not in frozen
+    assert list(frozen["annotations"]) == case["segment_ids"]
+
+
+def test_fitting_edit_is_changed_not_review_and_the_plan_stays_immutable(case):
+    adopted = adopt(case, edit(case, create(case)))
+    with case["services"]["database"].session() as session:
+        before = deepcopy(session.get(m.PerformancePlan, adopted["id"]).units_json)
+    set_text(case, 1, "Yet this defeat would be brief.")
+    read = get(case, adopted)
+    assert read["stale"] is True
+    assert (read["changed_segment_count"], read["review_segment_count"],
+            read["review_segments"]) == (1, 0, [])
+    frozen = freeze(case)
+    assert frozen["review_segment_ids"] == []
+    entry = frozen["annotations"][case["segment_ids"][1]]
+    assert entry["text_hash"] == content_hash("Yet this defeat would be brief.")
+    assert entry["annotation"]["delivery"]["instruction"] == "Mark a restrained contrast"
+    with case["services"]["database"].session() as session:
+        assert session.get(m.PerformancePlan, adopted["id"]).units_json == before
+
+
+def test_removed_blank_and_unplanned_segments(case):
+    set_text(case, 2, "   ")  # blank: never planned
+    adopted = adopt(case, create(case))
+    set_text(case, 2, "Membership doubled soon afterwards.")  # spoken, with no unit
+    set_text(case, 0, "Rejected.", removed=True)  # removed: changed
+    read = get(case, adopted)
+    # The unplanned segment's text changed too, so it is counted as changed.
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (2, 1)
+    assert read["review_segments"] == [{"ordinal": 2, "id": case["segment_ids"][2]}]
+    frozen = freeze(case)
+    assert set(frozen["annotations"]) == {case["segment_ids"][1]}
+    assert frozen["review_segment_ids"] == [case["segment_ids"][2]]
+    set_text(case, 1, "   ")  # a planned segment blanked: changed, not frozen
+    read = get(case, adopted)
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (3, 1)
+    assert freeze(case)["annotations"] == {}
+
+
+def test_plan_not_on_the_active_revision_is_not_judged(case):
+    adopted = adopt(case, create(case))
+    with case["services"]["database"].session() as session:
+        selected = session.scalar(
+            select(m.GenerationPlan).where(m.GenerationPlan.session_id == case["session_id"])
+        )
+        assert selected is not None
+        selected.active_revision_id = None
+    read = get(case, adopted)
+    assert read["stale"] is True
+    assert (read["changed_segment_count"], read["review_segment_count"],
+            read["review_segments"]) == (None, None, None)
+
+
+def test_a_draft_plan_is_not_judged(case):
+    adopt(case, create(case))
+    draft = create(case)
+    set_text(case, 1, "Yet this defeat would be brief.")
+    read = get(case, draft)
+    assert read["status"] == "draft" and read["stale"] is True
+    assert (read["changed_segment_count"], read["review_segment_count"],
+            read["review_segments"]) == (None, None, None)
+
+
+def test_review_lists_are_bounded(case, monkeypatch):
+    adopted = adopt(case, create(case))
+    set_text(case, 1, "Yet this defeat would be brief.")
+    review = tuple((ordinal, f"seg-{ordinal}") for ordinal in range(25))
+    monkeypatch.setattr(
+        plans, "plan_validity",
+        lambda *_args, **_kwargs: validity.PlanValidity({}, (), review),
+    )
+    read = get(case, adopted)
+    assert read["review_segment_count"] == 25
+    assert read["review_segments"] == [
+        {"ordinal": ordinal, "id": f"seg-{ordinal}"} for ordinal in range(20)
+    ]
+
+
+def test_run_refusal_names_five_blocks_from_one(case):
+    seeded = case["services"]["generation"].create_plan(
+        case["session_id"], source_revision_id=None, settings={},
+        segments=[{"text": f"Line {index}.", "speaker": "A"} for index in range(7)],
+    )
+    with case["services"]["database"].session() as session:
+        ids = list(session.scalars(
+            select(m.GenerationSegment.id)
+            .where(m.GenerationSegment.plan_revision_id == seeded["active_revision_id"])
+            .order_by(m.GenerationSegment.ordinal)
+        ))
+        snapshot = {"performance_snapshot": {"review_segment_ids": list(reversed(ids))}}
+        with pytest.raises(ValueError) as refused:
+            refuse_review_segments(session, snapshot, None)
+        # A scope without any review block starts.
+        refuse_review_segments(session, snapshot, [])
+    message = str(refused.value)
+    assert message.startswith(
+        "7 blocks changed after the speaker plan was adopted and no longer fit their "
+        "speaker markup: "
+    )
+    assert message.endswith(
+        "Review a new speaker plan; until then, only a generation run that leaves "
+        "these blocks out can start."
+    )
+    # A single block reads in the singular.
+    with case["services"]["database"].session() as session:
+        with pytest.raises(ValueError) as single:
+            refuse_review_segments(
+                session, {"performance_snapshot": {"review_segment_ids": [ids[0]]}}, None
+            )
+    assert str(single.value) == (
+        "1 block changed after the speaker plan was adopted and no longer fits its "
+        f"speaker markup: block 1 ({ids[0]}). Review a new speaker plan; until then, "
+        "only a generation run that leaves this block out can start."
+    )
+    assert ", ".join(f"block {index + 1} ({ids[index]})" for index in range(5)) in message
+    assert ids[5] not in message and " and 2 more." in message
+
+
+# The ticket's check on a cast fixture -----------------------------------------
+
+
+def cast_settings(case, **extra) -> None:
+    service = case["services"]["workspace_settings"]
+    current = service.get(case["session_id"], "tts")
+    service.patch(case["session_id"], "tts", current["revision"], {
+        "service": "gemini", "model": "gemini-2.5-flash-tts", "voice": "Kore",
+        "casting_enabled": True, "performance_enabled": True, **extra,
+    })
+
+
+def live_snapshot(case) -> dict:
+    snapshot, _digest = case["services"]["workspace_settings"].resolve(
+        case["session_id"], sections=["tts", "audio"]
+    )
+    return snapshot
+
+
+def identities(case) -> dict[str, dict]:
+    snapshot = live_snapshot(case)
+    with case["services"]["database"].session() as session:
+        context = AudioIdentityContext(session, snapshot)
+        return {
+            segment_id: context.for_segment(session.get_one(m.GenerationSegment, segment_id))
+            for segment_id in case["segment_ids"]
+        }
+
+
+def complete_every_segment(case) -> None:
+    """Give every segment a completed take recorded with today's identity."""
+    recorded = identities(case)
+    assert all("performance_error" not in value for value in recorded.values()), recorded
+    sid = case["session_id"]
+    with case["services"]["database"].session() as session:
+        ownership = resolve_artifact_ownership(session, session_id=sid)
+        for segment_id in case["segment_ids"]:
+            artifact = m.Artifact(
+                session_id=sid, workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id, kind="audio", role="generation_take",
+                relative_path=f"test/{segment_id}.wav", content_hash="a" * 64,
+                metadata_json={IDENTITY_KEY: recorded[segment_id]},
+            )
+            session.add(artifact)
+            session.flush()
+            session.get_one(m.GenerationSegment, segment_id).status = "completed"
+            session.add(m.AudioTake(
+                generation_segment_id=segment_id, artifact_id=artifact.id,
+                status="completed", is_active=True, duration_ms=100,
+            ))
+
+
+@contextmanager
+def counted_freezes():
+    calls = {"freeze": 0, "validity": 0}
+    real_freeze = plans.freeze_performance_snapshot
+    real_validity = validity.plan_validity
+
+    def freeze(*args, **kwargs):
+        calls["freeze"] += 1
+        return real_freeze(*args, **kwargs)
+
+    def judge(*args, **kwargs):
+        calls["validity"] += 1
+        return real_validity(*args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(plans, "freeze_performance_snapshot", freeze)
+        patcher.setattr(plans, "plan_validity", judge)
+        yield calls
+
+
+def reasons(case) -> tuple[dict[str, str], dict[str, int]]:
+    with counted_freezes() as calls:
+        listing = case["services"]["generation"].list_segments(
+            case["session_id"], fields=["id", "ordinal", "audio_reuse_reason"]
+        )
+    return {item["id"]: item["audio_reuse_reason"] for item in listing["items"]}, dict(calls)
+
+
+def edit_segment(case, index: int, text: str) -> None:
+    segment_id = case["segment_ids"][index]
+    with case["services"]["database"].session() as session:
+        revision = session.get_one(m.GenerationSegment, segment_id).revision
+    result = case["services"]["generation"].update_segment(segment_id, revision, {"text": text})
+    assert result["id"] == segment_id  # edited in place, not through an edit copy
+
+
+def start_run(case, segment_ids=None):
+    body = {"speech_plan_revision_id": case["revision_id"]}
+    if segment_ids is not None:
+        body["segment_ids"] = segment_ids
+    return case["client"].post(
+        f"/api/v1/sessions/{case['session_id']}/generation-runs", json=body,
+        headers={**case["headers"], "Idempotency-Key": str(uuid.uuid4())},
+    )
+
+
+# A listing pass freezes the adopted plan a fixed number of times, whatever
+# the segment count: a per-segment judgement would multiply it.
+LISTING_FREEZES = 1
+# The edit resets the flagged segment itself, so its own take is not reused.
+FLAGGED_REASON = "not_completed"
+
+
+@pytest.fixture(params=[True, False], ids=["performance", "casting-only"])
+def cast_case(case, request):
+    # Casting alone also freezes the adopted plan, for its speaker markup.
+    plan, _xml = seed_cast(case)
+    cast_settings(case, performance_enabled=request.param)
+    complete_every_segment(case)
+    before, work = reasons(case)
+    assert set(before.values()) == {"reusable"}, before
+    return case, plan, before, work
+
+
+def test_fitting_edit_keeps_every_other_reuse_reason(cast_case):
+    case, plan, before, work = cast_case
+    edit_segment(case, 1, "Yet this defeat would be brief.")
+    after, work_after = reasons(case)
+    others = [sid for sid in case["segment_ids"] if sid != case["segment_ids"][1]]
+    assert {sid: after[sid] for sid in others} == {sid: before[sid] for sid in others}
+    assert after[case["segment_ids"][1]] == "not_completed"
+    # The judgement is made once per listing pass, never once per segment.
+    assert work["freeze"] == LISTING_FREEZES
+    assert work_after["freeze"] == work["freeze"]
+    assert work_after["validity"] == work_after["freeze"]
+    read = get(case, plan)
+    assert read["stale"] is True
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (1, 0)
+    current = identities(case)
+    assert all("performance_error" not in value for value in current.values())
+
+
+def test_editing_the_dialogue_segment_inside_its_quote_keeps_its_markup(cast_case):
+    case, plan, before, _work = cast_case
+    edit_segment(case, 0, "He said, “Pah!” Then left.")
+    after, _ = reasons(case)
+    assert {sid: after[sid] for sid in case["segment_ids"][1:]} == {
+        sid: before[sid] for sid in case["segment_ids"][1:]
+    }
+    snapshot = live_snapshot(case)
+    with case["services"]["database"].session() as session:
+        freeze_speech_snapshot(session, case["revision_id"], snapshot)
+    record = snapshot["performance_snapshot"]["annotations"][case["segment_ids"][0]]["annotation"]
+    assert "“Pah!”</speaker></dialogue>" in record_markup(record)
+    cast = snapshot["generation_control_snapshot"]["segments"][case["segment_ids"][0]]
+    assert "“Pah!”</speaker></dialogue>" in cast["speech_xml"]
+    assert get(case, plan)["review_segment_count"] == 0
+
+
+def test_edit_that_no_longer_fits_flags_only_that_segment(cast_case):
+    case, plan, before, work = cast_case
+    flagged = case["segment_ids"][0]
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    after, work_after = reasons(case)
+    others = case["segment_ids"][1:]
+    assert {sid: after[sid] for sid in others} == {sid: before[sid] for sid in others}
+    assert work_after["freeze"] == work["freeze"] == LISTING_FREEZES
+    assert after[flagged] == FLAGGED_REASON
+    current = identities(case)
+    assert current[flagged]["performance_error"] == REVIEW_MESSAGE
+    assert all("performance_error" not in current[sid] for sid in others)
+    read = get(case, plan)
+    assert read["stale"] is True
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (1, 1)
+    assert read["review_segments"] == [{"ordinal": 0, "id": flagged}]
+
+    refused = start_run(case)
+    assert refused.status_code == 409, refused.get_json()
+    error = refused.get_json()["error"]
+    assert error["code"] == "generation_unavailable"
+    assert f"block 1 ({flagged})" in error["message"]
+    refused = start_run(case, [flagged, others[0]])
+    assert refused.status_code == 409, refused.get_json()
+    started = start_run(case, [others[0]])
+    assert started.status_code == 202, started.get_json()
+
+
+def test_voice_change_pauses_do_not_refuse_a_run_without_the_flagged_segment(cast_case):
+    # With a voice-change pause the boundary freeze resolves every segment's
+    # voices, including the flagged one outside the run.
+    case, _plan, _before, _work = cast_case
+    service = case["services"]["workspace_settings"]
+    current = service.get(case["session_id"], "audio")
+    service.patch(case["session_id"], "audio", current["revision"], {"voice_change_silence_ms": 300})
+    flagged = case["segment_ids"][0]
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    refused = start_run(case, [flagged])
+    assert refused.status_code == 409, refused.get_json()
+    assert f"block 1 ({flagged})" in refused.get_json()["error"]["message"]
+    started = start_run(case, [case["segment_ids"][2]])
+    assert started.status_code == 202, started.get_json()
+
+
+def test_a_review_block_naming_a_new_character_does_not_stop_a_run_without_it(cast_case):
+    # The review block has no frozen entry, so the boundary freeze reads its
+    # own markup, which names a character added after adoption.
+    from pandrator.web.generation_controls import save_generation_controls
+
+    case, _plan, _before, _work = cast_case
+    characters = [
+        *CHARACTERS,
+        {"id": "c-marley", "display_name": "Marley", "voice_category": "male"},
+    ]
+    with case["services"]["database"].session() as session:
+        save_generation_controls(
+            session, case["session_id"], expected_revision=1, characters=characters,
+            cast={
+                "narrator": {"voice": "Kore"},
+                "characters": {"c-scrooge": {"voice": "Puck"}, "c-marley": {"voice": "Charon"}},
+            },
+        )
+    flagged = case["segment_ids"][0]
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    with case["services"]["database"].session() as session:
+        segment = session.get_one(m.GenerationSegment, flagged)
+        segment.speech_plan_json = {
+            **(segment.speech_plan_json or {}),
+            "speech_xml": (
+                f'<segment id="{flagged}">He said, <dialogue><speaker ref="c-marley">'
+                "“Bah,”</speaker></dialogue> then left.</segment>"
+            ),
+        }
+    refused = start_run(case, [flagged])
+    assert refused.status_code == 409, refused.get_json()
+    assert f"block 1 ({flagged})" in refused.get_json()["error"]["message"]
+    started = start_run(case, [case["segment_ids"][2]])
+    assert started.status_code == 202, started.get_json()
+
+
+def test_a_selected_freeze_limits_boundaries_to_the_selected_blocks(cast_case, monkeypatch):
+    from pandrator.web import speech_boundaries
+
+    case, _plan, _before, _work = cast_case
+    calls: list[list[str] | None] = []
+
+    def capture(session, revision_id, snapshot, *, segments=None):
+        calls.append(None if segments is None else [row.id for row in segments])
+
+    monkeypatch.setattr(speech_boundaries, "freeze_boundaries", capture)
+    selected = case["segment_ids"][2]
+    with case["services"]["database"].session() as session:
+        freeze_speech_snapshot(
+            session, case["revision_id"], live_snapshot(case), explicit=True,
+            segment_ids=[selected],
+        )
+    assert calls == [[selected]]
+
+
+def test_a_character_that_speech_markup_names_cannot_be_deleted(cast_case):
+    # Every run resolves the markup of every block, selected or not, so a
+    # deleted character that a block still names would stop each later run.
+    from pandrator.web.generation_controls import save_generation_controls
+
+    case, _plan, _before, _work = cast_case
+    flagged = case["segment_ids"][0]
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    with case["services"]["database"].session() as session:
+        segment = session.get_one(m.GenerationSegment, flagged)
+        segment.speech_plan_json = {
+            **(segment.speech_plan_json or {}),
+            "speech_xml": (
+                f'<segment id="{flagged}">He said, <dialogue><speaker n="Scrooge">'
+                "“Bah,”</speaker></dialogue> then left.</segment>"
+            ),
+        }
+    with case["services"]["database"].session() as session:
+        with pytest.raises(
+            ValueError, match=r"speech markup still names: Scrooge \(block 1\)"
+        ):
+            save_generation_controls(
+                session, case["session_id"], expected_revision=1, characters=[],
+                cast={"narrator": {"voice": "Kore"}, "characters": {}},
+            )
+
+
+def test_a_stale_review_block_outside_the_selected_boundaries_does_not_fail(
+    cast_case, monkeypatch
+):
+    # Markup saved before deletion was refused can still name a deleted
+    # character. The block fails on its own, but a freeze limited to another
+    # block never reads it.
+    from pandrator.web import generation_controls
+    from pandrator.web.speech_boundaries import freeze_boundaries
+
+    case, _plan, _before, _work = cast_case
+    monkeypatch.setattr(
+        generation_controls, "_refuse_characters_named_in_markup", lambda *_args: None
+    )
+    with case["services"]["database"].session() as session:
+        generation_controls.save_generation_controls(
+            session, case["session_id"], expected_revision=1, characters=[],
+            cast={"narrator": {"voice": "Kore"}, "characters": {}},
+        )
+    flagged = case["segment_ids"][0]
+    other = case["segment_ids"][2]
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    with case["services"]["database"].session() as session:
+        segment = session.get_one(m.GenerationSegment, flagged)
+        segment.speech_plan_json = {
+            **(segment.speech_plan_json or {}),
+            "speech_xml": (
+                f'<segment id="{flagged}">He said, <dialogue><speaker ref="c-scrooge">'
+                "“Bah,”</speaker></dialogue> then left.</segment>"
+            ),
+        }
+    with case["services"]["database"].session() as session:
+        rows = {
+            segment_id: session.get_one(m.GenerationSegment, segment_id)
+            for segment_id in (flagged, other)
+        }
+        freeze_boundaries(session, case["revision_id"], {}, segments=[rows[other]])
+        with pytest.raises(ValueError, match="unresolved speaker reference"):
+            freeze_boundaries(session, case["revision_id"], {}, segments=[rows[flagged]])
+
+
+def test_a_blank_unremoved_block_has_no_performance_settings(case):
+    adopt(case, edit(case, create(case)))
+    settings = {
+        "service": "gemini", "model": "gemini-2.5-flash-tts", "voice": "Kore",
+        "performance_enabled": True,
+    }
+    set_text(case, 1, "   ")
+    snapshot = {"tts": settings}
+    with case["services"]["database"].session() as session:
+        plans.freeze_performance_snapshot(session, case["revision_id"], snapshot)
+    blank = case["segment_ids"][1]
+    assert blank not in snapshot["performance_snapshot"]["annotations"]
+    # The plan judge treats a blank block as silent, so a run holds no
+    # speaker performance for it and must not fail looking one up.
+    assert "_performance" not in segment_performance_settings(settings, snapshot, blank, "   ")
+    spoken = segment_performance_settings(
+        settings, snapshot, case["segment_ids"][0], "The request was rejected."
+    )
+    assert "_performance" in spoken
+
+
+def test_a_neighbour_whose_request_carries_the_edited_text_really_changes(case):
+    # With a TTS context mode that sends neighbour text, the neighbour's
+    # request includes the edit, so it loses reuse (the epic's assumption).
+    seed_cast(case)
+    cast_settings(case, tts_context_mode="both")
+    complete_every_segment(case)
+    before, _ = reasons(case)
+    assert set(before.values()) == {"reusable"}
+    edit_segment(case, 1, "Yet this defeat would be brief.")
+    after, _ = reasons(case)
+    assert after[case["segment_ids"][0]] != "reusable"
+    assert after[case["segment_ids"][2]] != "reusable"
+
+
+# Structure, edit copies, restores and previews ---------------------------------
+
+
+def active_ids(case) -> tuple[str, list[str]]:
+    """The selected revision and its block ids, in order."""
+    with case["services"]["database"].session() as session:
+        selected = session.scalar(
+            select(m.GenerationPlan).where(m.GenerationPlan.session_id == case["session_id"])
+        )
+        assert selected is not None and selected.active_revision_id
+        revision_id = selected.active_revision_id
+        return revision_id, list(session.scalars(
+            select(m.GenerationSegment.id)
+            .where(m.GenerationSegment.plan_revision_id == revision_id)
+            .order_by(m.GenerationSegment.ordinal)
+        ))
+
+
+def identities_of(case, segment_ids) -> dict[str, dict]:
+    snapshot = live_snapshot(case)
+    with case["services"]["database"].session() as session:
+        context = AudioIdentityContext(session, snapshot)
+        return {
+            segment_id: context.for_segment(session.get_one(m.GenerationSegment, segment_id))
+            for segment_id in segment_ids
+        }
+
+
+def edit_copy(case, index: int, text: str) -> tuple[str, list[str]]:
+    """Edit one block of the selected revision through an edit copy.
+
+    Approving the revision first makes the edit copy it, as a reviewed or used
+    revision is in the app. Returns the copy and its block ids.
+    """
+    revision_id, ids = active_ids(case)
+    with case["services"]["database"].session() as session:
+        if session.get(m.SpeechPlanReview, revision_id) is None:
+            session.add(m.SpeechPlanReview(
+                revision_id=revision_id, content_hash=plans.plan_signature(session, revision_id),
+            ))
+        revision = session.get_one(m.GenerationSegment, ids[index]).revision
+    result = case["services"]["generation"].update_segment(ids[index], revision, {"text": text})
+    copy_id, copy_ids = active_ids(case)
+    assert copy_id != revision_id and result["id"] == copy_ids[index]
+    return copy_id, copy_ids
+
+
+def adopted_read(case, revision_id: str) -> dict:
+    with case["services"]["database"].session() as session:
+        plan = session.scalar(select(m.PerformancePlan).where(
+            m.PerformancePlan.plan_revision_id == revision_id,
+            m.PerformancePlan.status == "adopted",
+        ))
+        assert plan is not None
+        plan_id = plan.id
+    return get(case, {"id": plan_id})
+
+
+def change_block(case, index: int, **values) -> None:
+    with case["services"]["database"].session() as session:
+        segment = session.get_one(m.GenerationSegment, case["segment_ids"][index])
+        for key, value in values.items():
+            setattr(segment, key, value)
+
+
+def test_a_structure_change_needs_review_whatever_the_text(cast_case):
+    case, plan, before, _work = cast_case
+    changed = case["segment_ids"][2]
+    change_block(case, 2, speaker="B")
+    read = get(case, plan)
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (1, 1)
+    assert read["review_segments"] == [{"ordinal": 2, "id": changed}]
+    current = identities(case)
+    assert current[changed]["performance_error"] == REVIEW_MESSAGE
+    assert all("performance_error" not in current[sid] for sid in case["segment_ids"][:2])
+    after, _ = reasons(case)
+    assert {sid: after[sid] for sid in case["segment_ids"][:2]} == {
+        sid: before[sid] for sid in case["segment_ids"][:2]
+    }
+    # Voice, pauses and references are read live by identity, not judged here.
+    change_block(case, 2, speaker="A")
+    change_block(case, 1, silence_after_ms=900)
+    assert get(case, plan)["review_segment_count"] == 0
+
+
+def test_an_edit_copy_keeps_every_other_identity_and_reason(cast_case):
+    case, _plan, before, work = cast_case
+    old_ids = case["segment_ids"]
+    recorded = identities(case)
+    copy_id, new_ids = edit_copy(case, 1, "Yet this defeat would be brief.")
+    after, work_after = reasons(case)
+    current = identities_of(case, new_ids)
+    for index, (old, new) in enumerate(zip(old_ids, new_ids, strict=True)):
+        if index == 1:
+            continue
+        assert after[new] == before[old], index
+        assert current[new] == recorded[old], index
+    assert "performance_error" not in current[new_ids[1]]
+    # The copy's carried plan is judged once per listing pass, as in place.
+    assert work_after["freeze"] == work["freeze"] == LISTING_FREEZES
+    assert work_after["validity"] == work_after["freeze"]
+    read = adopted_read(case, copy_id)
+    assert read["stale"] is True
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (1, 0)
+
+
+def test_a_second_edit_copy_after_a_run_judges_both_edited_blocks(cast_case):
+    case, _plan, _before, _work = cast_case
+    copy_id, copy_ids = edit_copy(case, 1, "Yet this defeat would be brief.")
+    run = start_run({**case, "revision_id": copy_id}, [copy_ids[2]])
+    assert run.status_code == 202, run.get_json()
+    # The second edit lands on a revision whose carried plan is already stale.
+    second_id, second_ids = edit_copy(case, 0, "He said, “Bah,” then left.")
+    assert second_id != copy_id
+    read = adopted_read(case, second_id)
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (2, 1)
+    assert read["review_segments"] == [{"ordinal": 0, "id": second_ids[0]}]
+    after, work = reasons(case)
+    assert after[second_ids[2]] == "reusable"
+    assert after[second_ids[0]] == FLAGGED_REASON
+    assert work["freeze"] == LISTING_FREEZES
+    current = identities_of(case, second_ids)
+    assert current[second_ids[0]]["performance_error"] == REVIEW_MESSAGE
+    assert "performance_error" not in current[second_ids[1]]
+    assert "performance_error" not in current[second_ids[2]]
+
+
+def test_restore_of_a_stale_plan_reports_the_sources_blocks(cast_case):
+    case, plan, before, _work = cast_case
+    recorded = identities(case)
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    edit_segment(case, 1, "Yet this defeat would be brief.")
+    source = get(case, plan)
+    assert (source["changed_segment_count"], source["review_segment_count"]) == (2, 1)
+    result = case["services"]["generation"].revise_topology(
+        case["session_id"], case["revision_id"],
+        {"action": "restore", "target_revision_id": case["revision_id"]},
+    )
+    assert result["review_required"]["performance"] is True
+    lineage = {key: children[0] for key, children in result["lineage"].items()}
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert (carried["changed_segment_count"], carried["review_segment_count"]) == (2, 1)
+    assert carried["review_segments"] == [
+        {"ordinal": 0, "id": lineage[case["segment_ids"][0]]}
+    ]
+    last = case["segment_ids"][2]
+    current = identities_of(case, [lineage[sid] for sid in case["segment_ids"]])
+    assert current[lineage[case["segment_ids"][0]]]["performance_error"] == REVIEW_MESSAGE
+    assert current[lineage[last]] == recorded[last]
+    after, _ = reasons(case)
+    assert after[lineage[last]] == before[last]
+
+
+def preview(case, segment_id: str) -> dict:
+    from pandrator.web.speech_plan_preview import preview_speech_segment
+
+    return preview_speech_segment(
+        case["services"], case["session_id"],
+        revision_id=case["revision_id"], segment_id=segment_id,
+    )
+
+
+def test_block_preview_judges_the_adopted_plan_per_block(cast_case):
+    case, _plan, _before, _work = cast_case
+    first, middle, last = case["segment_ids"]
+    edit_segment(case, 0, "He said, “Pah!” Then left.")
+    fitted = preview(case, first)
+    assert fitted["text"] == "He said, “Pah!” Then left."
+    voiced = [span for span in fitted["spans"] if span["speaker_id"]]
+    assert [(span["start"], span["end"], span["speaker_id"]) for span in voiced] == [
+        (9, 15, "c-scrooge")
+    ]
+    assert preview(case, last)["text"] == "Membership doubled soon afterwards."
+    edit_segment(case, 1, "Yet this defeat would be brief.")
+    assert preview(case, middle)["text"] == "Yet this defeat would be brief."
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    with pytest.raises(ValueError, match="no longer fits"):
+        preview(case, first)
+    assert preview(case, last)["text"] == "Membership doubled soon afterwards."
+
+
+def test_units_made_before_structure_fields_need_review_after_an_edit(cast_case):
+    case, plan, _before, _work = cast_case
+    ids = case["segment_ids"]
+    with case["services"]["database"].session() as session:
+        stored = session.get_one(m.PerformancePlan, plan["id"])
+        stored.units_json = [
+            {key: value for key, value in unit.items() if key not in validity.STRUCTURE_FIELDS}
+            for unit in stored.units_json
+        ]
+    # While the plan fits its revision as a whole it is not judged per block.
+    assert get(case, plan)["review_segment_count"] == 0
+    assert set(freeze(case)["annotations"]) == set(ids)
+    # One edit that fits: such a unit cannot show its block's speaker,
+    # language, node kind or section is unchanged, so every block needs review.
+    edit_segment(case, 1, "Yet this defeat would be brief.")
+    read = get(case, plan)
+    assert (read["changed_segment_count"], read["review_segment_count"]) == (3, 3)
+    assert read["review_segments"] == [
+        {"ordinal": index, "id": segment_id} for index, segment_id in enumerate(ids)
+    ]
+    frozen = freeze(case)
+    assert frozen["annotations"] == {}
+    assert frozen["review_segment_ids"] == ids
+    refused = start_run(case)
+    assert refused.status_code == 409, refused.get_json()
+    message = refused.get_json()["error"]["message"]
+    assert all(
+        f"block {index + 1} ({segment_id})" in message for index, segment_id in enumerate(ids)
+    )
+
+
+@pytest.mark.parametrize("performance", [True, False], ids=["performance", "casting-only"])
+def test_a_frozen_run_preview_of_a_review_block_gives_the_review_message(case, performance):
+    from pandrator.web.speech_plan_preview import preview_speech_segment
+
+    # Casting alone also freezes the adopted plan, review blocks included.
+    seed_cast(case)
+    cast_settings(case, performance_enabled=performance)
+    complete_every_segment(case)
+    flagged, _middle, last = case["segment_ids"]
+    edit_segment(case, 0, "He said, “Bah,” then left.")
+    started = start_run(case, [last])
+    assert started.status_code == 202, started.get_json()
+    run_id = started.get_json()["id"]
+
+    def frozen_preview(segment_id: str) -> dict:
+        return preview_speech_segment(
+            case["services"], case["session_id"], revision_id=case["revision_id"],
+            segment_id=segment_id, generation_run_id=run_id,
+        )
+
+    # The run's frozen plan lists the block for review and holds no entry for
+    # it, so the preview says why, not that it is absent from the snapshot.
+    with pytest.raises(ValueError) as refused:
+        frozen_preview(flagged)
+    assert str(refused.value) == REVIEW_MESSAGE
+    assert frozen_preview(last)["text"] == "Membership doubled soon afterwards."
+
+
+@pytest.mark.parametrize("mode", ["manual", "passive"])
+@pytest.mark.parametrize("edited", [False, True])
+def test_a_new_draft_falls_back_to_block_markup_when_characters_changed(cast_case, edited, mode):
+    from pandrator.web.generation_controls import save_generation_controls
+
+    case, plan, _before, _work = cast_case
+    first, middle, _last = case["segment_ids"]
+    # Locked, the dialogue entry would be seeded by reanalysis if it still held.
+    with case["services"]["database"].session() as session:
+        stored = session.get_one(m.PerformancePlan, plan["id"])
+        manual = deepcopy(stored.manual_annotations_json or {})
+        manual[first] = {**manual[first], "locked": True}
+        stored.manual_annotations_json = manual
+    if edited:
+        # The plan is stale: its entries are judged per block first.
+        edit_segment(case, 1, "Yet this defeat would be brief.")
+    with case["services"]["database"].session() as session:
+        save_generation_controls(
+            session, case["session_id"], expected_revision=1, characters=[], cast={},
+        )
+    draft = create(case, annotation_format="xml", mode=mode)
+    items = {item["id"]: item for item in draft["items"]}
+    # The adopted dialogue names a character that no longer exists, so the
+    # block starts from its own markup and the entry is not seeded.
+    assert "<dialogue>" not in items[first]["speech_xml"]
+    assert items[first]["annotation"] is None
+    if edited:
+        assert items[middle]["speech_xml"].endswith("would be brief.</segment>")

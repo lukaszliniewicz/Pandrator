@@ -39,6 +39,7 @@ from pandrator.logic.dubbing.passage_regroup import (
     regenerated_group_fits,
     select_regroup_candidates,
 )
+from pandrator.logic.dubbing.repair_markers import REGROUP_MARKER_KEY, REGROUP_REASON
 from pandrator.logic.dubbing.text_units import fragment_separator
 
 from .generation_audio_identity import plan_audio_identities
@@ -65,8 +66,6 @@ from .voiceover_repair import (
 from .workspace import GenerationService, mark_output_assemblies_stale
 
 logger = logging.getLogger(__name__)
-
-REPAIR_REASON = "passage_regroup"
 
 _MANUAL_EVENT_ACTIONS = {"manual_split", "manual_merge"}
 _MANUAL_REASON_PREFIX = "manual_topology"
@@ -462,7 +461,7 @@ def _stage_group_revision(
     operation_json: dict[str, Any] = {
         "action": "merge",
         "expected_revision_id": current_revision_id,
-        "reason": REPAIR_REASON,
+        "reason": REGROUP_REASON,
         GUARD_KEY: deepcopy(batch_snapshot),
         "source_block_ordinal": group_index,
         "source_generation_run_id": run_id,
@@ -595,7 +594,7 @@ def repair_regroup_blocks(
             .where(
                 GenerationRun.session_id == session_id,
                 GenerationRun.settings_snapshot_json[
-                    "regroup_parent_run_id"
+                    REGROUP_MARKER_KEY
                 ].as_string()
                 == run_id,
             )
@@ -752,7 +751,7 @@ def repair_regroup_blocks(
             # it with the take choices and the source plan.
             child_snapshot = deepcopy(snapshot)
             child_snapshot["speech_plan_revision_id"] = staged_revision_id
-            child_snapshot["regroup_parent_run_id"] = run_id
+            child_snapshot[REGROUP_MARKER_KEY] = run_id
             with handler.database.session() as session:
                 guard = snapshot_guard(session, session_id, staged_revision_id)
                 freeze_speech_snapshot(

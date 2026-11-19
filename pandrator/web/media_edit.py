@@ -713,12 +713,43 @@ class MediaEditService:
             "transcription_artifact": self._artifact_payload(transcription),
             "timing_artifact": self._artifact_payload(timing),
         }
+        plan_payload = self._payload(active, artifacts_by_id) if active else None
+        if plan_payload is not None and active is not None:
+            plan_payload["ancestor_revision_ids"] = self._ancestor_revision_ids(
+                session, active
+            )
         return {
             "session_id": session_id,
             "workflow_kind": record.workflow_kind,
             "readiness": readiness,
-            "plan": self._payload(active, artifacts_by_id) if active else None,
+            "plan": plan_payload,
         }
+
+    @staticmethod
+    def _ancestor_revision_ids(session, active: MediaEditPlanRevision) -> list[str]:
+        """Return the refine chain above the active revision, nearest first.
+
+        The walk stays inside one plan, excludes the active revision itself and
+        stops at a cycle or after 50 ancestors.
+        """
+
+        ancestors: list[str] = []
+        seen = {active.id}
+        current_id = active.parent_revision_id
+        while current_id and len(ancestors) < 50:
+            if current_id in seen:
+                break
+            seen.add(current_id)
+            parent = session.get(MediaEditPlanRevision, current_id)
+            if parent is None or parent.plan_id != active.plan_id:
+                break
+            # A revision built on another source is not refine ancestry, even
+            # inside the same plan: a forced prepare starts a fresh chain.
+            if parent.source_media_artifact_id != active.source_media_artifact_id:
+                break
+            ancestors.append(parent.id)
+            current_id = parent.parent_revision_id
+        return ancestors
 
     def state(self, session_id: str) -> dict[str, Any]:
         with self.database.session() as session:

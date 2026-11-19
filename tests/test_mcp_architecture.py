@@ -197,6 +197,11 @@ class McpArchitectureTests(unittest.TestCase):
                     ("sound", "voice_reference"),
                 )
                 forbidden.remove("target")
+            elif model.__name__ == "ImportSourceUrlInput":
+                # A public http(s) source URL is the subject of this import; it is
+                # never a configured application origin, proxy or credential.
+                self.assertEqual(model.model_fields["url"].metadata[0].min_length, 8)
+                forbidden.remove("url")
             self.assertTrue(
                 forbidden.isdisjoint(model.model_fields),
                 f"{model.__name__}: {set(model.model_fields) & forbidden}",
@@ -443,6 +448,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_download_artifact",
                 "pandrator_edit_performance_plan",
                 "pandrator_import_local_source",
+                "pandrator_import_source_url",
                 "pandrator_import_audio_reference",
                 "pandrator_import_subtitles",
                 "pandrator_fork_session",
@@ -457,6 +463,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_prepare_speech_plan",
                 "pandrator_propose_media_edit",
                 "pandrator_regenerate_segments",
+                "pandrator_repair_generation_timing",
                 "pandrator_render_media_edit",
                 "pandrator_restore_session",
                 "pandrator_refine_media_edit_boundary",
@@ -569,6 +576,9 @@ class McpArchitectureTests(unittest.TestCase):
                     # Refresh is a bounded repeatable provider probe, so it
                     # intentionally has no admission idempotency key.
                     "pandrator_refresh_tts_catalog",
+                    # The source-download route enqueues a job and accepts no
+                    # replay key; each accepted call is a separate managed source.
+                    "pandrator_import_source_url",
                 }
                 for action in mutating
             )

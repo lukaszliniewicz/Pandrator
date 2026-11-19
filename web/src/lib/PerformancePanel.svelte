@@ -78,6 +78,9 @@
     copied_count?: number;
     skipped_count?: number;
     carried_from_id?: string;
+    changed_segment_count?: number | null;
+    review_segment_count?: number | null;
+    review_segments?: { ordinal: number; id: string }[] | null;
     job_id?: string;
     job_status?: string;
     items?: Unit[];
@@ -240,6 +243,33 @@
     selected?.items?.find((item) => item.id === unitId)
   );
   const editable = $derived(selected?.status === 'draft' && !selected.stale);
+  // Generation reads the saved settings, not unsaved toggles: directions only
+  // with adopted speech directions on, speakers also with casting on.
+  const savedDirections = $derived(
+    Boolean(stored?.effective.performance_enabled)
+  );
+  const savedCasting = $derived(Boolean(stored?.effective.casting_enabled));
+
+  function blockCount(count: number): string {
+    return `${count} block${count === 1 ? '' : 's'}`;
+  }
+
+  function changedLine(plan: Plan): string {
+    const changed = `${blockCount(plan.changed_segment_count ?? 0)} changed since adoption.`;
+    return (plan.review_segment_count ?? 0) > 0
+      ? `${changed} ${reviewLine(plan)}`
+      : changed;
+  }
+
+  function reviewLine(plan: Plan): string {
+    const count = plan.review_segment_count ?? 0;
+    const listed = (plan.review_segments ?? []).map(
+      (segment) => `#${segment.ordinal + 1}`
+    );
+    const more =
+      count > listed.length ? ` and ${count - listed.length} more` : '';
+    return `${count} ${count === 1 ? 'needs' : 'need'} a new speaker plan review before generation: ${count === 1 ? 'block' : 'blocks'} ${listed.join(', ')}${more}.`;
+  }
   const blocked = $derived(pending || busy);
   const settingsKey = $derived(
     JSON.stringify({
@@ -1209,11 +1239,31 @@
           class="space-y-2 text-sm text-amber-700"
           data-testid="performance-stale-plan"
         >
-          <p>
-            The speech changed after this draft was made, so it can no longer be
-            adopted. Copying it keeps every block whose text and neighbours are
-            unchanged, so only the rest need review.
-          </p>
+          {#if selected.status === 'adopted' && (selected.changed_segment_count ?? 0) > 0}<p
+            >
+              {changedLine(selected)} Every other block keeps its entry. A neighbour
+              of an edited block may still deserve a look: copy the plan to review
+              it again, since a copy keeps only blocks whose text and neighbours are
+              unchanged.
+            </p>{:else if selected.status === 'adopted' && selected.changed_segment_count === 0}<p
+            >
+              Block settings such as voice or pauses changed since adoption.
+              Every entry still fits{savedDirections
+                ? ', so generation still uses this plan.'
+                : savedCasting
+                  ? '. Generation uses its speakers; its directions apply once Use adopted speech directions is on and saved.'
+                  : '. Generation uses it once Use adopted speech directions is on and saved.'}
+            </p>{:else if selected.status === 'adopted'}<p>
+              This plan was adopted for another version of the speech, not the
+              one now in use, so generation does not use it. {selected.plan_revision_id ===
+              revisionId
+                ? 'Copying it keeps every block whose text and neighbours are unchanged, so only the rest need review.'
+                : 'The version in use offers to copy it when it has no adopted plan of its own.'}
+            </p>{:else}<p>
+              The speech changed after this draft was made, so it can no longer
+              be adopted. Copying it keeps every block whose text and neighbours
+              are unchanged, so only the rest need review.
+            </p>{/if}
           {#if selected.plan_revision_id === revisionId}<div
               class="flex flex-wrap gap-2"
             >

@@ -127,6 +127,7 @@ def build_managed_runtime(
     *,
     configuration_path: str | Path,
     credentials: CredentialResolver | None = None,
+    maximum_wait_seconds: int | None = None,
 ) -> McpRuntime:
     """Build the Manager-owned local runtime used by the HTTP service.
 
@@ -182,6 +183,11 @@ def build_managed_runtime(
         McpSettings(
             target_name=MANAGED_TARGET_NAME,
             configuration_path=selected_configuration,
+            **(
+                {"maximum_wait_seconds": maximum_wait_seconds}
+                if maximum_wait_seconds is not None
+                else {}
+            ),
         ),
         registry=registry,
         credentials=credentials,

@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from ..waits import WAIT_DESCRIPTION
 from .common import ToolInput
 
 
@@ -25,7 +26,9 @@ class GetWorkInput(ToolInput):
         default=0,
         ge=0,
         le=3_600,
-        description="Optionally wait and poll this work item until terminal or timeout.",
+        description=(
+            "Optionally wait and poll this work item until terminal or timeout. " + WAIT_DESCRIPTION
+        ),
     )
 
 

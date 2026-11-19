@@ -5,22 +5,11 @@ from __future__ import annotations
 from functools import wraps
 from typing import TYPE_CHECKING, Protocol
 
+from .job_lane_kinds import DELIVERY_LANE_JOB_KINDS as DELIVERY_LANE_JOB_KINDS
+from .job_lane_kinds import SESSION_BESIDE_JOB_KINDS as SESSION_BESIDE_JOB_KINDS
 from .job_registry import JobHandlerRegistry, JobPayloadContract
 from .jobs import JobHandler
 from .projects.copy_contracts import PROJECT_COPY_JOB_KIND
-
-# Delivery jobs a person waits on. Each worker process also runs a lane that
-# claims only these, so an export never queues behind a long generation in
-# another project. Jobs in one project still run one at a time and in order.
-# PANDRATOR_DELIVERY_LANE=0 turns the lane off.
-DELIVERY_LANE_JOB_KINDS = frozenset({
-    "export.create",
-    "export.variant",
-    "export.comparison",
-    "output.mix_preview",
-    "session.bundle.export",
-    "project.exports.bundle",
-})
 
 if TYPE_CHECKING:
     from pandrator.runtime import DataPaths
@@ -118,6 +107,7 @@ def register_generation_handlers(
                 "audiobook.generate_audio": "generate_audiobook_audio",
                 "generation.run": "run_generation",
                 "generation.repair-existing": "run_repair_existing_generation",
+                "generation.repair-preview": "run_repair_preview",
                 "generation.admit": "run_generation_admission",
                 "generation.assemble": "assemble_generation_output",
                 "audio.waveform": "generate_waveform",
@@ -138,6 +128,7 @@ def register_generation_handlers(
                 ),
                 "generation.run": ("generation_run_id",),
                 "generation.repair-existing": ("generation_run_id", "session_id"),
+                "generation.repair-preview": ("generation_run_id", "session_id"),
                 "generation.admit": ("admission_id", "session_id", "speech_plan_revision_id", "active_revision_id_at_admission", "snapshot_guard", "settings_revision_guard", "request"),
                 "generation.assemble": ("output_assembly_id",),
                 "audio.waveform": ("source_artifact_id",),
@@ -290,6 +281,24 @@ def register_media_edit_handlers(
     )
 
 
+def register_project_handlers(
+    registry: JobHandlerRegistry,
+    handlers: object,
+) -> None:
+    """Queue a translation project's branch forks without holding the request."""
+
+    from .translation_projects import TRANSLATION_PROJECT_CREATE_JOB_KIND
+
+    registry.register(
+        TRANSLATION_PROJECT_CREATE_JOB_KIND,
+        _late_bound(handlers, "create_translation_project"),
+        domain="projects",
+        payload_contract=JobPayloadContract(
+            required_fields=("session_id", "checkpoint_artifact_id", "expected_revision")
+        ),
+    )
+
+
 def register_workflow_handlers(
     registry: JobHandlerRegistry,
     handlers: object,
@@ -312,6 +321,7 @@ def build_workflow_handler_registry(
     register_source_handlers(registry, handlers)
     register_delivery_handlers(registry, handlers)
     register_media_edit_handlers(registry, handlers)
+    register_project_handlers(registry, handlers)
     register_workflow_handlers(registry, handlers)
     from .comparison_export_render import ComparisonExportContext, render_comparison_export
     from .comparison_exports import COMPARISON_EXPORT_JOB_KIND

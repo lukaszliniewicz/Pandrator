@@ -28,7 +28,7 @@ from pandrator.web.accounts.execution_actor import (
     actor_from_principal,
     execution_actor_scope,
 )
-from pandrator.web.accounts.models import WorkspaceMembership
+from pandrator.web.accounts.models import User, WorkspaceMembership
 from pandrator.web.job_execution import current_job_lease
 from pandrator.web.models import new_id
 from pandrator.web.projects.models import ProjectMembership
@@ -45,6 +45,7 @@ from tests.test_provider_workspace_access import no_network as no_network  # noq
 from tests.test_source_library_workspace_http import library as library  # noqa: F401
 
 FULL_SCOPES = frozenset({"app.read", "app.write", "app.run"})
+ADMINISTRATOR_SCOPES = FULL_SCOPES | {"app.admin"}
 
 
 def project(client, csrf, workspace=None):
@@ -82,6 +83,13 @@ def _actor(
     actor = actor_from_principal(principal)
     assert type(actor) is UserActor
     return actor
+
+
+def _administrator_account(f: Any, user_id: str) -> None:
+    """Give an existing account the instance Administrator role for URL ingress."""
+
+    with f.case.database.immediate_session() as unit:
+        unit.get_one(User, user_id).is_instance_admin = True
 
 
 def _workflow_context(
@@ -534,7 +542,8 @@ def test_writer_rechecks_revoked_member_before_atomic_publication(library, monke
 def test_url_hook_preserves_typed_denial_when_downloader_wraps_callback_error(library, monkeypatch):
     f, u = library, library.u
     target = project(u.alice, u.ah, u.workspace_id)
-    actor = _actor(f.case, u.alice_id, workspaces=(u.workspace_id,))
+    _administrator_account(f, u.alice_id)
+    actor = _actor(f.case, u.alice_id, ADMINISTRATOR_SCOPES, workspaces=(u.workspace_id,))
     context = _workflow_context(f, target)
     outputs = _install_fake_ytdlp(monkeypatch)
     module = cast(Any, sys.modules["yt_dlp"])
@@ -599,7 +608,7 @@ def test_publication_failure_rolls_back_artifact_record_asset_and_attachment(lib
     assert source_path.read_bytes() == b"Bob private source"
 
 
-def test_member_can_download_and_reuse_after_creator_departure_with_provenance(
+def test_administrator_can_download_and_reuse_after_creator_departure_with_provenance(
     library, monkeypatch
 ):
     f, u = library, library.u
@@ -614,7 +623,9 @@ def test_member_can_download_and_reuse_after_creator_departure_with_provenance(
     with f.case.database.immediate_session() as unit:
         unit.delete(unit.get_one(WorkspaceMembership, (u.workspace_id, u.alice_id)))
 
-    actor = _actor(f.case, u.bob_id, workspaces=(u.workspace_id,))
+    # The host fetches a URL, so only an Administrator may download one.
+    _administrator_account(f, u.bob_id)
+    actor = _actor(f.case, u.bob_id, ADMINISTRATOR_SCOPES, workspaces=(u.workspace_id,))
     context = _workflow_context(f, target)
     url_outputs = _install_fake_ytdlp(monkeypatch)
     progress: list[tuple[float, str | None]] = []

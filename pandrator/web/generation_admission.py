@@ -345,6 +345,9 @@ def run_generation_admission(
                     "settings_hash": result.get("settings_hash"),
                     "source_generation_run_id": result.get("source_generation_run_id"),
                     "settings_source_receipt": result.get("settings_source_receipt"),
+                    "settings_source_diff": dict(
+                        result.get("settings_source_diff") or {}
+                    ),
                 }
                 preflight = prepared.get("provider_preflight")
                 if isinstance(preflight, dict):

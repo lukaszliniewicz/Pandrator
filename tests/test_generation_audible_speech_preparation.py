@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from pandrator.web import generation_speech_preparation as preparation
 from pandrator.web import models as m
-from pandrator.web.generation_audio_identity import plan_audio_identities
+from pandrator.web.generation_audio_identity import identity_for_storage, plan_audio_identities
 from pandrator.web.generation_cast_runtime import segment_render_parts
 from pandrator.web.generation_controls import save_generation_controls
 from pandrator.web.generation_performance_snapshot import performance_runtime_settings
@@ -357,7 +357,7 @@ def test_registered_worker_uses_retained_physical_choice_and_frozen_identity(run
         take = session.scalar(select(m.AudioTake).where(m.AudioTake.generation_run_id == run.id))
         assert take is not None
         artifact = session.get_one(m.Artifact, take.artifact_id)
-        assert artifact.metadata_json[IDENTITY_KEY] == run.settings_snapshot_json["generation_audio_identities"][take.generation_segment_id]
+        assert artifact.metadata_json[IDENTITY_KEY] == identity_for_storage(run.settings_snapshot_json["generation_audio_identities"][take.generation_segment_id])
         assert "The selected original reference." in str(calls)
         assert session.scalar(select(func.count()).select_from(m.ProjectSpeechReference)) == 0
 
@@ -679,5 +679,5 @@ def test_shared_cast_metadata_cannot_bypass_requested_capture(run_project, monke
         takes = list(session.scalars(select(m.AudioTake).where(m.AudioTake.generation_run_id == run.id)))
         assert len(takes) == 1 and takes[0].generation_segment_id == ids[requested_index]
         artifact = session.get_one(m.Artifact, takes[0].artifact_id)
-        assert artifact.metadata_json[IDENTITY_KEY] == snapshot["generation_audio_identities"][ids[requested_index]]
+        assert artifact.metadata_json[IDENTITY_KEY] == identity_for_storage(snapshot["generation_audio_identities"][ids[requested_index]])
     assert len(calls) == 1

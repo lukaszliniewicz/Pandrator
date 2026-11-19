@@ -15,9 +15,17 @@ from ..schemas.generation_operations import (
     GetGenerationOperationInput,
     GetGenerationRunCoverageInput,
 )
+from ..waits import (
+    effective_wait_seconds,
+    requested_wait_seconds,
+    wait_ceiling,
+    wait_receipt,
+)
 
 _WORK_STATES = frozenset({"queued", "running", "waiting", "succeeded", "failed", "cancelled"})
 _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
+# Matches the le=60 bound GetGenerationOperationInput puts on wait_seconds.
+_MAX_FOLLOW_UP_WAIT_SECONDS = 60
 _COVERAGE_COUNTS = (
     "included_count",
     "effective_audio_count",
@@ -35,6 +43,8 @@ class _GenerationOperationApplication(Protocol):
         self,
         operation_id: str,
         include_coverage: bool = True,
+        *,
+        request_timeout_seconds: float | None = None,
     ) -> dict[str, Any]: ...
 
     def get_generation_run_coverage(
@@ -160,6 +170,7 @@ def _next_actions(
     *,
     include_coverage: bool,
     wait_seconds: int,
+    ceiling: int,
 ) -> list[NextAction]:
     state = summary["state"]
     operation_id = summary["id"]
@@ -169,7 +180,14 @@ def _next_actions(
                 tool="pandrator_get_generation_operation",
                 arguments={
                     "operation_id": operation_id,
-                    "wait_seconds": max(1, min(wait_seconds or 30, 60)),
+                    "wait_seconds": max(
+                        1,
+                        min(
+                            wait_seconds or ceiling,
+                            ceiling,
+                            _MAX_FOLLOW_UP_WAIT_SECONDS,
+                        ),
+                    ),
                     "include_coverage": include_coverage,
                 },
                 reason="Continue polling the same stable generation operation until it reaches a terminal state.",
@@ -218,24 +236,42 @@ def get_generation_operation(
         _GenerationOperationApplication,
         runtime.require_application(),
     )
-    requested_seconds = arguments.wait_seconds
+    requested_seconds = requested_wait_seconds(arguments.wait_seconds)
+    effective_seconds = effective_wait_seconds(runtime, requested_seconds)
     started_at = time.monotonic()
-    deadline = started_at + requested_seconds
+    deadline = started_at + effective_seconds
     poll_count = 0
-    timed_out = False
+    summary: dict[str, Any] | None = None
 
     while True:
-        payload = application.get_generation_operation(
-            arguments.resolved_operation_id,
-            include_coverage=arguments.include_coverage,
-        )
+        # The first poll always runs, even with a zero wait. Later polls only
+        # start while some of the promised wait is left, so the last snapshot
+        # is reported rather than a poll that can only time out again.
+        if summary is not None and time.monotonic() >= deadline:
+            break
+        # A hung request must not outlive the wait this call promised, so each
+        # poll is bounded by the budget that is still left (at least 1 second,
+        # the smallest timeout the client accepts).
+        remaining_seconds = max(1.0, deadline - time.monotonic())
+        try:
+            payload = application.get_generation_operation(
+                arguments.resolved_operation_id,
+                include_coverage=arguments.include_coverage,
+                request_timeout_seconds=remaining_seconds,
+            )
+        except PandratorMcpError as error:
+            # A poll can hit its own transport timeout while this call's wait
+            # still has room. Keep the snapshot the application already
+            # returned; with no snapshot there is nothing to report.
+            if error.code != "application_response_timeout" or summary is None:
+                raise
+            break
         poll_count += 1
         summary = _operation_summary(payload, arguments.resolved_operation_id)
         if summary["state"] in _TERMINAL_STATES:
             break
         now = time.monotonic()
-        if requested_seconds == 0 or now >= deadline:
-            timed_out = requested_seconds > 0
+        if effective_seconds == 0 or now >= deadline:
             break
         delay = min(
             max(summary["poll_after_ms"] / 1_000.0, 0.1),
@@ -243,17 +279,22 @@ def get_generation_operation(
             max(0.0, deadline - now),
         )
         if delay <= 0:
-            timed_out = True
             break
         time.sleep(delay)
 
+    assert summary is not None
     elapsed_seconds = max(0.0, time.monotonic() - started_at)
     summary.update(
         {
             "wait_requested_seconds": requested_seconds,
+            "wait_effective_seconds": effective_seconds,
             "elapsed_seconds": round(elapsed_seconds, 3),
             "poll_count": poll_count,
-            "timed_out": timed_out,
+            "timed_out": wait_receipt(
+                requested=requested_seconds,
+                effective=effective_seconds,
+                terminal=summary["state"] in _TERMINAL_STATES,
+            )["timed_out"],
         }
     )
 
@@ -276,7 +317,8 @@ def get_generation_operation(
         next_actions=_next_actions(
             summary,
             include_coverage=arguments.include_coverage,
-            wait_seconds=requested_seconds,
+            wait_seconds=effective_seconds,
+            ceiling=wait_ceiling(runtime),
         ),
     )
 

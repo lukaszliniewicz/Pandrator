@@ -36,9 +36,74 @@ from .session_forks import SessionForkService
 from .settings_policy import RevisionConflict, stable_hash
 from .workspace_settings import WorkspaceSettingsService
 
+TRANSLATION_PROJECT_CREATE_JOB_KIND = "translation_project.create"
+ACTIVE_CREATION_JOB_STATUSES = ("queued", "running", "retrying")
+
 
 class TranslationProjectConflict(RevisionConflict):
     """A pinned snapshot or project revision no longer matches the live source."""
+
+
+def pending_creation_job_id(session: Session, session_id: str) -> str | None:
+    """Return the unfinished durable creation job for this source, if any."""
+
+    return session.scalar(
+        select(Job.id)
+        .where(
+            Job.kind == TRANSLATION_PROJECT_CREATE_JOB_KIND,
+            Job.session_id == session_id,
+            Job.status.in_(ACTIVE_CREATION_JOB_STATUSES),
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    )
+
+
+def require_no_existing_project_or_work(session: Session, session_id: str) -> None:
+    """Refuse a second creation and name what already exists."""
+
+    project_id = session.scalar(
+        select(TranslationProject.id).where(
+            TranslationProject.source_session_id == session_id
+        )
+    )
+    if project_id is not None:
+        raise TranslationProjectConflict(
+            f"This source already has a translation project ({project_id})."
+        )
+    work_id = pending_creation_job_id(session, session_id)
+    if work_id is not None:
+        raise TranslationProjectConflict(
+            f"Translation-project creation is already queued or running as work {work_id}."
+        )
+
+
+def validate_new_project_request(
+    session: Session,
+    session_id: str,
+    payload: dict[str, Any],
+    *,
+    paths: DataPaths,
+    verify_file: bool,
+) -> None:
+    """Check everything a new project needs, before any branch file is written.
+
+    The queue route validates its request with this, and its worker validates
+    again inside the writer, so a refused request never enqueues and a racing
+    one never creates a second project.
+    """
+
+    require_no_existing_project_or_work(session, session_id)
+    _validate_new_project(
+        session,
+        session_id,
+        str(payload["checkpoint_artifact_id"]),
+        str(payload.get("name") or ""),
+        int(payload["expected_revision"]),
+        paths=paths,
+        create_planned_branches=bool(payload.get("create_planned_branches")),
+        verify_file=verify_file,
+    )
 
 
 def _selected_checkpoint(session: Session, source_session_id: str, role: str) -> Artifact | None:
@@ -377,6 +442,12 @@ def get_session_project(
         "correction_checkpoint_artifact_id": checkpoint_id,
         "source_checkpoint_artifact_id": checkpoint_id,
     })
+    if project is None:
+        # A queued creation job is not an absent project; naming its work lets a
+        # caller tell "being created" from "never started".
+        pending_work_id = pending_creation_job_id(session, session_id)
+        if pending_work_id is not None:
+            result["pending_work_id"] = pending_work_id
     return result
 
 
@@ -718,7 +789,9 @@ def create_branches_in_session(
                 if setup.generate_voiceover:
                     context = WorkspaceSettingsService._output_context(db, record)
                     child_value["export_mode"] = "media"
-                    child_value["audio_mode"] = "dubbing_only"
+                    child_value["audio_mode"] = (
+                        "mixed" if context["has_source_audio"] else "dubbing_only"
+                    )
                     if source.workflow_kind == "subtitles" or child_value.get("subtitle_mode") not in {
                         "none", "soft", "burned",
                     }:

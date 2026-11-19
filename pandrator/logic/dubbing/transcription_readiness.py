@@ -126,6 +126,10 @@ def _asset_status(assets: list[dict[str, str]]) -> tuple[str, bool | None]:
         return "unresolved", None
     if statuses == {"not_required"}:
         return "not_required", True
+    if "will_download" in statuses:
+        # CrispASR fetches a named VAD companion itself when the run starts, so
+        # its absence is not a readiness failure.
+        return "will_download", True
     return "cached", True
 
 
@@ -167,7 +171,74 @@ def _vad_asset(settings: dict[str, Any], enabled: bool) -> dict[str, str]:
             }
         return _file_asset("vad", "selected_local_file", custom_path)
     artifact = crispasr.VAD_ARTIFACTS[normalized]
-    return _crisp_cached_asset(settings, "vad", normalized, artifact)
+    asset = _crisp_cached_asset(settings, "vad", normalized, artifact)
+    if asset["status"] == "missing":
+        # A named companion is not a blocker: CrispASR downloads it on first
+        # use (on Windows Pandrator fetches it before the command is built).
+        return {**asset, "status": "will_download"}
+    return asset
+
+
+_VAD_MODEL_LABELS = {
+    "silero": "Silero",
+    "firered": "FireRed",
+    "marblenet": "MarbleNet",
+    "whisper-vad": "Whisper-VAD",
+}
+
+
+ADMINISTRATOR_DOWNLOAD = "administrator_required"
+
+
+def has_pending_download(payload: Mapping[str, Any]) -> bool:
+    """Whether any selected file would be fetched when the run starts."""
+
+    assets = payload.get("assets") if isinstance(payload, Mapping) else None
+    return any(
+        isinstance(asset, Mapping) and asset.get("status") == "will_download"
+        for asset in assets or []
+    )
+
+
+def withhold_downloads(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Readiness for an actor who may not download models.
+
+    Only an Administrator's run may fetch a missing file; anyone else's run is
+    refused before CrispASR starts. So a pending download is a missing file.
+    """
+
+    assets: list[dict[str, str]] = [
+        {**asset, "status": "missing", "download": ADMINISTRATOR_DOWNLOAD}
+        if asset.get("status") == "will_download"
+        else dict(asset)
+        for asset in payload.get("assets") or []
+        if isinstance(asset, Mapping)
+    ]
+    status, ready = _asset_status(assets)
+    return {**payload, "assets": assets, "status": status, "ready": ready}
+
+
+def transcription_readiness_warnings(payload: Mapping[str, Any]) -> list[str]:
+    """Name each selected VAD file that is missing, and say what will happen."""
+
+    warnings: list[str] = []
+    assets = payload.get("assets") if isinstance(payload, Mapping) else None
+    for asset in assets or []:
+        if not isinstance(asset, Mapping) or str(asset.get("kind") or "") != "vad":
+            continue
+        asset_id = str(asset.get("id") or "")
+        label = _VAD_MODEL_LABELS.get(asset_id, asset_id or "selected")
+        if asset.get("status") == "will_download":
+            warnings.append(
+                f"The {label} VAD model is not cached; it will be downloaded when "
+                "transcription starts."
+            )
+        elif asset.get("download") == ADMINISTRATOR_DOWNLOAD:
+            warnings.append(
+                f"The {label} VAD model is not cached, and only an Administrator "
+                "can download it. Ask one to prepare it, or transcription will fail."
+            )
+    return warnings
 
 
 def _pinned_crisp_asset(

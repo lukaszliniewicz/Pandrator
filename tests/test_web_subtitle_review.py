@@ -193,6 +193,50 @@ class SubtitleReviewTests(unittest.TestCase):
             second_revision = session.get(DocumentRevision, second["revision_id"])
             self.assertNotEqual(first_hash, second_revision.content_hash)
 
+    def test_a_trimmed_cue_end_moves_the_speech_plan_timing_signature(self):
+        # A speech plan is fitted to passage windows, so a saved cue retime must
+        # move those windows, and with them the plan's timing signature.
+        from pandrator.web.speech_plan_source import (
+            plan_source_compatibility,
+            source_plan_settings,
+            source_signatures,
+        )
+
+        source = self._artifact(
+            "retime-source.srt",
+            "transcription",
+            "1\n00:00:00,000 --> 00:00:02,000\nFirst thought.\n\n"
+            "2\n00:00:03,000 --> 00:00:05,000\nSecond thought.\n",
+        )
+        current = self.service.documents(self.session.id)["stages"]["transcription"]
+        saved = self.service.save_review(
+            self.session.id,
+            "transcription",
+            current["revision"],
+            [
+                {"start_ms": 0, "end_ms": 1800, "text": "First thought.", "speaker": None},
+                {"start_ms": 3000, "end_ms": 5000, "text": "Second thought.", "speaker": None},
+            ],
+        )
+        with self.database.session() as session:
+            retimed = session.get(Artifact, saved["artifact_id"])
+            self.assertIsNotNone(
+                (retimed.metadata_json or {}).get("logical_passages"),
+                "the reviewed artifact should carry its own passage packet",
+            )
+            plan_settings = {
+                "_source_artifact_id": source.id,
+                **source_plan_settings(session, session.get(Artifact, source.id)),
+            }
+            before = source_signatures(session, session.get(Artifact, source.id))
+            after = source_signatures(session, retimed)
+            self.assertEqual(before["text"], after["text"])
+            self.assertNotEqual(before["timing"], after["timing"])
+            self.assertEqual(
+                "timing_only",
+                plan_source_compatibility(plan_settings, retimed, after),
+            )
+
     def _artifact(self, name, role, content, parent=None):
         path = self.session_dir / name
         path.write_text(content, encoding="utf-8")

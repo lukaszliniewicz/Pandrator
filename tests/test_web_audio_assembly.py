@@ -39,9 +39,11 @@ from pandrator.web.models import (
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import (
+    OUTPUT_ASSEMBLY_ALGORITHM_VERSION,
     GenerationService,
     RevisionConflict,
     WorkspaceSettingsService,
+    find_matching_output_assembly,
     output_assembly_settings_hash,
     stable_hash,
 )
@@ -480,7 +482,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             exported = session.get(Artifact, result["artifact_ids"][0])
             self.assertEqual("export", exported.role)
 
-    def _legacy_completed_run_assembly(self):
+    def _legacy_completed_run_assembly(self, *, stamped: bool = True):
         self._plan_with_takes()
         with self.database.session() as session:
             segment = session.scalar(
@@ -499,6 +501,11 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 take.generation_run_id = run_id
 
         legacy_snapshot, legacy_hash = self.settings.resolve(self.record.id)
+        # The stored resolve for a current algorithm carries its version; a
+        # pre-0.15 row (stamped=False) has none and must not be reused.
+        stored_snapshot = dict(legacy_snapshot)
+        if stamped:
+            stored_snapshot["assembly_algorithm"] = OUTPUT_ASSEMBLY_ALGORITHM_VERSION
         with self.database.session() as session:
             run = session.get(GenerationRun, run_id)
             assembly = OutputAssembly(
@@ -506,7 +513,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 generation_run_id=run_id,
                 status="queued",
                 settings_json={
-                    "resolved": legacy_snapshot,
+                    "resolved": stored_snapshot,
                     "plan_revision_id": run.plan_revision_id,
                 },
                 settings_hash=legacy_hash,
@@ -626,6 +633,39 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             )
         self.assertEqual([assembly_id], [assembly.id for assembly in assemblies])
         self.assertIsNotNone(edge)
+
+    def test_legacy_assembly_without_the_algorithm_stamp_is_not_reused(self):
+        run_id, legacy_snapshot, _legacy_hash, assembly_id = (
+            self._legacy_completed_run_assembly(stamped=False)
+        )
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, assembly_id)
+            self.assertNotIn(
+                "assembly_algorithm", assembly.settings_json["resolved"]
+            )
+            matched, _snapshot, _hash = find_matching_output_assembly(
+                session,
+                session_id=self.record.id,
+                run=session.get(GenerationRun, run_id),
+                resolved_settings_snapshot=legacy_snapshot,
+            )
+        self.assertIsNone(matched)
+
+        # The export chain refuses the pre-version assembly instead of reusing
+        # output that earlier assembly code rendered.
+        with self.assertRaisesRegex(ValueError, "Reassemble"):
+            WorkflowHandlers(self.database, self.paths).export(
+                {
+                    "session_id": self.record.id,
+                    "settings": {
+                        **dict(legacy_snapshot["output"]),
+                        "generation_run_id": run_id,
+                    },
+                    "resolved_settings_snapshot": legacy_snapshot,
+                },
+                lambda *_args: None,
+                threading.Event(),
+            )
 
     def test_direct_export_rejects_legacy_assembly_after_output_settings_change(self):
         run_id, legacy_snapshot, _legacy_hash, _assembly_id = (
@@ -1101,6 +1141,273 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             [item["alignment_group"] for item in artifact.metadata_json["takes"]],
         )
 
+    def test_subtitle_generation_assembly_reports_speech_timing_and_late_cues(self):
+        with self.database.session() as session:
+            session.get(SessionRecord, self.record.id).workflow_kind = "voiceover"
+            document = Document(
+                session_id=self.record.id, stage="translation", language="nl"
+            )
+            session.add(document)
+            session.flush()
+            revision = DocumentRevision(
+                document_id=document.id, revision_number=1, content_hash="timing-drift"
+            )
+            session.add(revision)
+            session.flush()
+            session.add_all(
+                [
+                    Segment(
+                        revision_id=revision.id,
+                        ordinal=0,
+                        start_ms=500,
+                        end_ms=1000,
+                        text="Eerste deel.",
+                    ),
+                    # The pause between these two cues cannot survive one
+                    # continuous take, so the second cue can only appear late.
+                    Segment(
+                        revision_id=revision.id,
+                        ordinal=1,
+                        start_ms=5000,
+                        end_ms=5500,
+                        text="Tweede deel.",
+                    ),
+                    Segment(
+                        revision_id=revision.id,
+                        ordinal=2,
+                        start_ms=6000,
+                        end_ms=6500,
+                        text="Derde deel.",
+                    ),
+                ]
+            )
+            document.active_revision_id = revision.id
+            revision_id = revision.id
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=revision_id,
+            segments=[
+                {
+                    "text": "Eerste deel.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [1],
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+                {
+                    "text": "Tweede deel.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [2],
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+                {
+                    "text": "Derde deel.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [3],
+                    "silence_after_ms": 0,
+                },
+            ],
+        )
+        artifacts = ArtifactService(self.database, self.paths)
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id == plan["active_revision_id"]
+                    )
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            segment_ids = [segment.id for segment in segments]
+        for index, segment_id in enumerate(segment_ids):
+            path = self.session_dir / f"timing-drift-take-{index}.wav"
+            Sine(440 + index * 110).to_audio_segment(duration=100).export(
+                path, format="wav"
+            ).close()
+            artifact = artifacts.register(
+                path, kind="audio", role="generation_take", session_id=self.record.id
+            )
+            with self.database.session() as session:
+                segment = session.get(GenerationSegment, segment_id)
+                segment.status = "completed"
+                session.add(
+                    AudioTake(
+                        generation_segment_id=segment_id,
+                        artifact_id=artifact.id,
+                        kind="tts",
+                        status="completed",
+                        duration_ms=100,
+                        is_active=True,
+                    )
+                )
+
+        queued = self.generation.create_assembly(self.record.id)
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+        self.assertEqual("subtitle_timed", result["synchronization"]["mode"])
+        artifact, _output_path = artifacts.resolve(result["artifact_id"])
+        details = artifact.metadata_json["synchronization"]["blocks"]
+        merged, separate = details
+        # Two segments in one alignment group merge into one numbered block,
+        # and the merged block keeps both cue windows.
+        self.assertEqual("0001-0002", merged["block"])
+        # The first block starts at its own cue with no accumulated drift, so
+        # its speech simply follows the configured start delay.
+        self.assertEqual(0, merged["drift_before_ms"])
+        self.assertEqual(
+            500 + merged["start_delay_ms"], merged["speech_start_ms"]
+        )
+        self.assertEqual(
+            merged["speech_start_ms"] + merged["processed_audio_ms"],
+            merged["speech_end_ms"],
+        )
+        self.assertGreaterEqual(separate["speech_start_ms"], 6000)
+        self.assertEqual(2, merged["cue_count"])
+        self.assertEqual(1, merged["late_cue_count"])
+        self.assertEqual(5000 - merged["speech_end_ms"], merged["worst_cue_lag_ms"])
+        self.assertEqual("0003", separate["block"])
+        self.assertEqual(1, separate["cue_count"])
+        self.assertEqual(0, separate["late_cue_count"])
+        self.assertEqual(0, separate["worst_cue_lag_ms"])
+        # The cue windows themselves never reach the metadata.
+        self.assertNotIn("cues", merged)
+
+        expected_drift = {
+            "worst_block_lag_ms": 0,
+            "worst_block": None,
+            "blocks_late_over_1s": 0,
+            "blocks_late_over_3s": 0,
+            "blocks_late_over_10s": 0,
+            "final_drift_ms": 0,
+            "blocks": 2,
+            "late_cues": 1,
+            "worst_cue_lag_ms": 5000 - merged["speech_end_ms"],
+            "cues": 3,
+        }
+        self.assertEqual(
+            expected_drift, artifact.metadata_json["synchronization"]["timing_drift"]
+        )
+        self.assertEqual(
+            expected_drift, result["synchronization"]["timing_drift"]
+        )
+        self.assertNotIn("blocks", result["synchronization"])
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, queued["id"])
+            self.assertEqual(
+                expected_drift, assembly.settings_json["synchronization"]["timing_drift"]
+            )
+
+    def test_merged_segments_count_a_shared_cue_once(self):
+        with self.database.session() as session:
+            document = Document(
+                session_id=self.record.id, stage="translation", language="pl"
+            )
+            session.add(document)
+            session.flush()
+            revision = DocumentRevision(
+                document_id=document.id, revision_number=1, content_hash="shared-cue"
+            )
+            session.add(revision)
+            session.flush()
+            cues = [
+                Segment(
+                    revision_id=revision.id,
+                    ordinal=0,
+                    start_ms=500,
+                    end_ms=1000,
+                    text="Pierwsza część.",
+                ),
+                Segment(
+                    revision_id=revision.id,
+                    ordinal=1,
+                    start_ms=1000,
+                    end_ms=1500,
+                    text="Druga część.",
+                ),
+            ]
+            session.add_all(cues)
+            session.flush()
+            cue_ids = [cue.id for cue in cues]
+            document.active_revision_id = revision.id
+            revision_id = revision.id
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=revision_id,
+            segments=[
+                # The first segment covers both cues, the second repeats the
+                # second one; the merged block must keep each cue once.
+                {
+                    "text": "Pierwsza część. Druga część.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": cue_ids,
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+                {
+                    "text": "Druga część.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [cue_ids[1]],
+                    "alignment_group": "a0001",
+                    "silence_after_ms": 0,
+                },
+            ],
+        )
+        artifacts = ArtifactService(self.database, self.paths)
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id == plan["active_revision_id"]
+                    )
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            segment_ids = [segment.id for segment in segments]
+        for index, segment_id in enumerate(segment_ids):
+            path = self.session_dir / f"shared-cue-take-{index}.wav"
+            Sine(440 + index * 110).to_audio_segment(duration=100).export(
+                path, format="wav"
+            ).close()
+            artifact = artifacts.register(
+                path, kind="audio", role="generation_take", session_id=self.record.id
+            )
+            with self.database.session() as session:
+                segment = session.get(GenerationSegment, segment_id)
+                segment.status = "completed"
+                session.add(
+                    AudioTake(
+                        generation_segment_id=segment_id,
+                        artifact_id=artifact.id,
+                        kind="tts",
+                        status="completed",
+                        duration_ms=100,
+                        is_active=True,
+                    )
+                )
+
+        queued = self.generation.create_assembly(self.record.id)
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+        artifact, _output_path = artifacts.resolve(result["artifact_id"])
+        details = artifact.metadata_json["synchronization"]["blocks"]
+        self.assertEqual(1, len(details))
+        self.assertEqual("0001-0002", details[0]["block"])
+        self.assertEqual(2, details[0]["cue_count"])
+        self.assertEqual(
+            2, artifact.metadata_json["synchronization"]["timing_drift"]["cues"]
+        )
+
     def test_second_generation_run_still_applies_configured_drift_speedup(self):
         with self.database.session() as session:
             document = Document(
@@ -1199,6 +1506,113 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.assertEqual(3.0, result["synchronization"]["configured_max_speed_factor"])
         self.assertEqual(250, result["synchronization"]["configured_min_block_gap_ms"])
         self.assertEqual(1, result["synchronization"]["speed_adjusted_block_count"])
+
+    def test_subtitle_timed_assembly_trims_padded_take_silence(self):
+        with self.database.session() as session:
+            document = Document(
+                session_id=self.record.id, stage="translation", language="nl"
+            )
+            session.add(document)
+            session.flush()
+            revision = DocumentRevision(
+                document_id=document.id, revision_number=1, content_hash="trim"
+            )
+            session.add(revision)
+            session.flush()
+            session.add(
+                Segment(
+                    revision_id=revision.id,
+                    ordinal=0,
+                    start_ms=0,
+                    end_ms=700,
+                    text="Ja.",
+                )
+            )
+            document.active_revision_id = revision.id
+            revision_id = revision.id
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=revision_id,
+            segments=[
+                {
+                    "text": "Ja.",
+                    "node_kind": "subtitle_cue",
+                    "source_segment_ids": [1],
+                }
+            ],
+        )
+        with self.database.session() as session:
+            segment = session.scalar(
+                select(GenerationSegment).where(
+                    GenerationSegment.plan_revision_id == plan["active_revision_id"]
+                )
+            )
+            run = GenerationRun(
+                session_id=self.record.id,
+                plan_revision_id=plan["active_revision_id"],
+                sequence_number=1,
+                status="completed",
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+            segment_id = segment.id
+            segment.status = "completed"
+        take_path = self.session_dir / "padded-take.wav"
+        (
+            AudioSegment.silent(duration=300, frame_rate=24_000)
+            + Sine(440, sample_rate=24_000).to_audio_segment(duration=270)
+            + AudioSegment.silent(duration=400, frame_rate=24_000)
+        ).export(take_path, format="wav").close()
+        take_artifact = ArtifactService(self.database, self.paths).register(
+            take_path, kind="audio", role="generation_take", session_id=self.record.id
+        )
+        with self.database.session() as session:
+            session.add(
+                AudioTake(
+                    generation_segment_id=segment_id,
+                    generation_run_id=run_id,
+                    artifact_id=take_artifact.id,
+                    kind="tts",
+                    status="completed",
+                    duration_ms=970,
+                    is_active=True,
+                )
+            )
+        audio_profile = self.settings.get(self.record.id, "audio")
+        self.settings.update(
+            self.record.id,
+            "audio",
+            audio_profile["revision"],
+            {
+                **audio_profile["override"],
+                "synchronization_speed": 1.15,
+                "synchronization_delay_ms": 0,
+                "synchronization_min_block_gap_ms": 0,
+                "synchronization_slowdown_enabled": False,
+            },
+        )
+
+        queued = self.generation.create_assembly(
+            self.record.id, generation_run_id=run_id
+        )
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]}, lambda *_args: None, threading.Event()
+        )
+
+        self.assertEqual("subtitle_timed", result["synchronization"]["mode"])
+        self.assertEqual(580, result["synchronization"]["silence_trimmed_ms"])
+        self.assertEqual(
+            1, result["synchronization"]["silence_trimmed_block_count"]
+        )
+        self.assertEqual(0, result["synchronization"]["speed_adjusted_block_count"])
+        self.assertEqual(700, result["duration_ms"])
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, queued["id"])
+            block = assembly.settings_json["synchronization"]["blocks"][0]
+        self.assertEqual(260, block["trimmed_lead_ms"])
+        self.assertEqual(320, block["trimmed_tail_ms"])
+        self.assertEqual(390, block["original_audio_ms"])
 
     def test_selected_run_assembles_its_cumulative_take_snapshot(self):
         segment_ids = self._plan_with_takes()

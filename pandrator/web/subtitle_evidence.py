@@ -9,7 +9,7 @@ import re
 import shutil
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -107,7 +107,29 @@ def evidence_stt_routes() -> list[str]:
     return list(STT_BACKEND_LABELS)
 
 
+def evidence_resource_keys(evidence_id: str, routes: Sequence[str]) -> list[str]:
+    """Declare the accelerator an evidence request will actually use.
+
+    The request itself is scoped by its own evidence ID: it may run beside a
+    render in the same session, and two evidence requests in one session are
+    serialised by the session fence rather than by a shared session key. A
+    local route puts a model on the same GPU a local generation or earlier
+    transcription would use, so it declares that device, and the local STT
+    service every other ASR entry point claims (``stt_resources``), so it never
+    loads a second recogniser beside a transcription. Cloud routes do not.
+    """
+
+    keys = [f"subtitle-evidence:{evidence_id}"]
+    if any(
+        route not in CLOUD_STT_ENGINE_IDS and route != "audio_llm"
+        for route in routes
+    ):
+        keys.extend(("service:stt", "gpu:default"))
+    return keys
+
+
 EVIDENCE_ROUTES = frozenset((*evidence_stt_routes(), "audio_llm"))
+
 RESOLUTION_ACTIONS = frozenset(
     {"accepted", "edited", "deleted", "uncertain", "dismissed"}
 )
@@ -637,7 +659,7 @@ class SubtitleEvidenceService:
             job_payload,
             session_id=session_id,
             max_attempts=1,
-            resource_keys=[f"session:{session_id}", f"subtitle-evidence:{evidence.id}"],
+            resource_keys=evidence_resource_keys(evidence.id, routes),
         )
         evidence.job_id = job.id
         evidence.updated_at = utcnow()

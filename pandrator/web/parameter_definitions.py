@@ -225,6 +225,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "phrase_gap_ms": "Sets Pandrator's deterministic subtitle-grouping gap. Adjacent same-speaker word-timed cues separated by less than this are regrouped when their combined text fits the display, duration, and reading-rate limits; this value is not sent to a model.",
         "hard_gap_ms": "Sets a hard pause boundary for Pandrator's deterministic word-timed subtitle composer. It will never create a cue across a gap this long; this value is not sent to a model.",
         "sentence_boundary_threshold": "Sets the sentence-boundary probability threshold used by subtitle finalization when scoring semantic cue breaks; the compositor bounds it to 0.01 through 0.99.",
+        "clamp_overlaps": "Trims each finalized cue's end to the next cue's start minus min_gap_ms when the source timing overlaps, so a browser never stacks two cues. A cue that would fall below min_duration_ms is left as it is and counted as overlaps_unresolved. Off by default; the text is never changed.",
         "boundary_correction_enabled": "Would enable a boundary-correction pass for subtitle timings, but this setting currently has no consumer in the finalization or workflow runtime.",
     },
     "source_passages": {
@@ -347,7 +348,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "speech_block_merge_threshold": "Sets the largest source pause across which Pandrator's deterministic speech planner may pack compatible same-speaker utterances when their combined display and speech text fits the character cap. It is not sent to a model and does not change subtitle cues.",
         "speech_block_continuation_threshold_ms": "Sets the outer pause allowance for unfinished same-speaker phrases. Above the normal silence limit, only a non-clausal hesitation may be bridged, within a cumulative pause budget and a 30-second phrase window. Zero disables continuation across positive gaps.",
         "speech_block_max_internal_gap_ms": "Sets the normal silence limit inside a speech block. Natural clause and sentence pauses retain this guard; an unfinished same-speaker phrase may use the larger continuation allowance rather than split mid-phrase. Zero retains a strict no-positive-gap limit.",
-        "speech_block_early_repair_enabled": "After voiceover generation, splits and regenerates substantially short multi-cue blocks at suitable cue boundaries. Uses the configured early-finish and timing-improvement thresholds; blocks carrying playback delay stay together to preserve catch-up. Original plan versions remain available.",
+        "speech_block_early_repair_enabled": "Controls the automatic second pass of a full voiceover run: after generation, substantially short multi-cue blocks are split and regenerated at suitable cue boundaries using the configured early-finish and timing-improvement thresholds. Blocks carrying playback delay stay together to preserve catch-up, and original plan versions remain available. A finished run does not need this flag: repair-timing checks it with the current thresholds.",
         "speech_block_early_repair_min_shortfall_ms": "Minimum spare time after accounting for audio duration and start delay. This and the percentage threshold must both be met before a combined block is considered for splitting.",
         "speech_block_early_repair_min_shortfall_percent": "Minimum percentage of the source cue span left unused by speech and start delay. Both early-finish thresholds must be met.",
         "speech_block_early_repair_min_advance_ms": "Minimum estimated improvement at a later cue boundary. The estimate uses spoken-text proportions rather than word timestamps.",
@@ -371,10 +372,11 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "fade_in_ms": "Sets the fade-in duration applied to each assembled audio part when fade_enabled is true, measured in milliseconds.",
         "fade_out_ms": "Sets the fade-out duration applied to each assembled audio part when fade_enabled is true, measured in milliseconds.",
         "synchronization_delay_ms": "Sets the maximum initial voiceover delay in milliseconds. Placement uses slack inside the block's own cue span, not the following silent gap; no delay is added while catching up.",
-        "synchronization_speed": "Sets the maximum synchronization catch-up speed: values at or below 10 are interpreted as a multiplier and values above 10 as a percentage; alignment caps the effective speed at 1x through 4x.",
+        "synchronization_speed": "Sets the maximum synchronization catch-up speed: values at or below 10 are interpreted as a multiplier and values above 10 as a percentage; alignment caps the effective speed at 1x through 4x. The default is 1.15, because faster catch-up above about 1.2 starts to sound rushed.",
         "synchronization_slowdown_enabled": "Enabled by default. Preserves the voiceover start delay first, then applies proportionate pitch-preserving slowdown down to 0.9x using the remaining room in the block's own cue span. Playback that starts late can still slow down if it finishes within that cue and before the next block. Explicitly saved off settings remain off.",
         "synchronization_sentence_gap_ms": "Adds this many milliseconds between sentence files inside one subtitle-timed speech block before alignment computes catch-up speed.",
         "synchronization_min_block_gap_ms": "Keeps at least this much inserted silence between speech blocks, including while catching up. Alignment reserves the gap when calculating speed, start delay and slowdown. Longer source pauses remain; if the maximum speed cannot fit speech and the gap, the remaining delay carries forward. Zero disables the minimum. No extra gap is added after the final block.",
+        "synchronization_trim_silence": "Trims silence before and after each speech block's audio before fitting it to the subtitle timing, keeping a short margin. Speech providers often pad short takes with silence, which pushes later speech late. Turn off to fit takes exactly as generated.",
     },
     "rvc": {
         "enabled": "Enables applying the selected RVC voice-conversion model to generated or explicitly converted audio; a model is still required for conversion.",
@@ -429,7 +431,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "subtitle_text_source": "Uses current display edits by default. Select selected_artifact to keep the chosen caption revision, including display-only labels; speech exclusions stay independent. Select generation_run for the selected audio run's historical wording on its matching subtitle track.",
         "subtitle_format": "Selects SRT or WebVTT for exported subtitle files and soft subtitle tracks.",
         "video_transcode": "Requests video transcoding even when subtitle rendering does not already require it; the selected encoder, resolution, quality, speed, and audio settings then apply.",
-        "video_tail_extension_policy": "When speech extends beyond a video, ask stops before rendering and reports the extra duration; extend freezes the last frame for the full required duration, with no limit. Existing speech timing is preserved. Video must be reencoded.",
+        "video_tail_extension_policy": "When speech runs past the end of the video: ask stops before rendering and reports the extra time; extend holds the last frame for as long as the speech needs, with no limit. Speech timing is kept. Usually only the added tail is encoded and the rest of the video is copied. The whole video is encoded only when the tail can't be added that way, or when burned-in subtitles already require a full encode.",
         "burn_video_encoder": "Selects the FFmpeg video encoder used when video is transcoded or subtitles are burned; the encoder must be available in the active FFmpeg build.",
         "burn_video_resolution": "Selects the output video height preset, from source resolution through 360p, 480p, 720p, 1080p, 1440p, or 2160p, when video is transcoded.",
         "burn_video_quality": "Sets the FFmpeg video quality value for transcoding; the runtime accepts the encoder quality scale from 0 through 51.",
@@ -673,6 +675,9 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "phrase_gap_ms": {"minimum": 100, "maximum": 3000, "unit": "milliseconds"},
         "hard_gap_ms": {"minimum": 250, "maximum": 5000, "unit": "milliseconds"},
         "sentence_boundary_threshold": {"minimum": 0.01, "maximum": 0.99},
+        "clamp_overlaps": {
+            "applicability": "Subtitle export finalization only; it changes cue end times, never text."
+        },
         "boundary_correction_enabled": {
             "caveat": "No current consumer is wired for this setting; changing it does not currently run boundary correction."
         },
@@ -997,7 +1002,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "applicability": "Optional voiceover timing repair only.",
         },
         "speech_block_early_repair_enabled": {
-            "applicability": "Subtitle-timed voiceover generation only.",
+            "applicability": "The automatic second pass of a full subtitle-timed voiceover run. A completed run can be checked separately with repair-timing.",
             "caveat": "Optional and off by default. Repair generates additional speech takes.",
         },
         "speech_block_generation_mode": {
@@ -1069,6 +1074,10 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "maximum": 5000,
             "unit": "milliseconds",
             "applicability": "Subtitle-timed voiceover assembly and timing repair.",
+        },
+        "synchronization_trim_silence": {
+            "applicability": "Subtitle-timed voiceover assembly and timing repair.",
+            "caveat": "Only the outer edges of a block are trimmed; the pause between takes inside a block and any silence inside a take remain.",
         },
     },
     "rvc": {

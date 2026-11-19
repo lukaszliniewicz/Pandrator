@@ -93,7 +93,6 @@ def _state(*, plan=True, transcript=True, timing=True, reviewed=False):
     )
     return {"readiness": readiness, "plan": active}
 
-
 class _Application:
     def __init__(
         self,
@@ -349,6 +348,65 @@ class MediaEditWorkflowPlannerTests(unittest.TestCase):
         self.assertEqual("preserve", action["arguments"]["value"]["unrelated"])
         self.assertEqual("moss", action["arguments"]["value"]["stt_engine"])
 
+    def test_transcription_phase_reports_the_inherited_stt_engine(self):
+        media = _state(timing=False)
+        settings = {
+            "effective": {
+                "stt_engine": "moss",
+                "stt_model_quantization": "q8_0",
+                "stt_language": "en",
+            },
+            "origins": {
+                "stt_engine": "global",
+                "stt_model_quantization": "global",
+                "stt_language": "session_context",
+            },
+            "override": {},
+            "revision": 3,
+        }
+        application = _Application(media=media, settings=settings)
+
+        result = _plan(application)
+
+        phase = result.result["phases"][2]
+        self.assertEqual("transcribe", phase["phase"])
+        self.assertEqual(
+            {"effective": "moss", "origin": "global"},
+            phase["stt"]["stt_engine"],
+        )
+        self.assertEqual(
+            {"effective": "q8_0", "origin": "global"},
+            phase["stt"]["stt_model_quantization"],
+        )
+        self.assertIn(
+            "Speech recognition will use moss, inherited from the global settings; ",
+            phase["stt"]["warning"],
+        )
+        self.assertIn(
+            "Set stt.stt_engine on this session to choose explicitly.",
+            phase["stt"]["warning"],
+        )
+
+    def test_transcription_phase_keeps_quiet_when_the_session_chooses_the_engine(self):
+        media = _state(timing=False)
+        settings = {
+            "effective": {"stt_engine": "parakeet"},
+            "origins": {"stt_engine": "session_override"},
+            "override": {"stt_engine": "parakeet"},
+            "revision": 4,
+        }
+        application = _Application(media=media, settings=settings)
+
+        result = _plan(application)
+
+        phase = result.result["phases"][2]
+        self.assertEqual(
+            {"effective": "parakeet", "origin": "session_override"},
+            phase["stt"]["stt_engine"],
+        )
+        self.assertNotIn("warning", phase["stt"])
+        self.assertIsNone(phase["stt"]["stt_language"]["origin"])
+
     def test_ctc_and_asr_execution_needed_return_native_transcribe_plan(self):
         media = _state(timing=False)
         application = _Application(media=media)
@@ -473,6 +531,95 @@ class MediaEditWorkflowPlannerTests(unittest.TestCase):
             "pandrator_create_media_edit_dispatch_run",
             created.result["next_action"]["tool"],
         )
+
+    def test_refined_revision_descending_from_an_accepted_result_reaches_review(self):
+        refined = _state()
+        refined["plan"]["revision_id"] = "revision-2"
+        refined["plan"]["revision"] = 2
+        refined["plan"]["ancestor_revision_ids"] = ["revision-1"]
+        completed = {
+            "id": "run-1",
+            "status": "completed",
+            "source_revision_id": "revision-0",
+            "result_revision_id": "revision-1",
+            "instructions": "Trim the setup chatter.",
+        }
+        result = _plan(_Application(media=refined, runs=[completed]))
+        phases = result.result["phases"]
+        self.assertEqual("complete", phases[4]["status"])
+        self.assertEqual("pending_review", phases[5]["status"])
+        self.assertEqual(
+            "pandrator_update_media_edit", phases[5]["approval_action"]["tool"]
+        )
+        self.assertNotEqual(
+            "pandrator_create_media_edit_dispatch_run",
+            result.result["next_action"]["tool"],
+        )
+        self.assertEqual([], result.result["notes"])
+
+    def test_refined_revision_with_different_instructions_also_adds_a_note(self):
+        refined = _state()
+        refined["plan"]["revision_id"] = "revision-2"
+        refined["plan"]["revision"] = 2
+        refined["plan"]["ancestor_revision_ids"] = ["revision-1"]
+        completed = {
+            "id": "run-1",
+            "status": "completed",
+            "source_revision_id": "revision-0",
+            "result_revision_id": "revision-1",
+            "instructions": "Remove the studio intro.",
+        }
+        result = _plan(_Application(media=refined, runs=[completed]))
+        self.assertEqual("pending_review", result.result["phases"][5]["status"])
+        self.assertEqual(1, len(result.result["notes"]))
+        self.assertIn("different instructions", result.result["notes"][0])
+
+    def test_reviewed_revision_with_different_instructions_is_complete_with_a_note(self):
+        reviewed = _state(reviewed=True)
+        reviewed["plan"]["instructions"] = "Remove the studio intro."
+        result = _plan(_Application(media=reviewed))
+        self.assertEqual("complete", result.result["phases"][4]["status"])
+        self.assertEqual("complete", result.result["phases"][5]["status"])
+        self.assertEqual(
+            "pandrator_render_media_edit", result.result["next_action"]["tool"]
+        )
+        self.assertEqual(1, len(result.result["notes"]))
+        self.assertIn("different instructions", result.result["notes"][0])
+
+    def test_equal_content_hashes_keep_the_prepared_revision(self):
+        media = _state()
+        media["plan"]["source_media_artifact"] = {
+            "id": "video-old",
+            "content_hash": "media-hash",
+        }
+        media["plan"]["editorial_transcript_artifact"] = {
+            "id": "caption-old",
+            "content_hash": "text-hash",
+        }
+        media["plan"]["timing_artifact"] = {
+            "id": "timing-old",
+            "content_hash": "timing-hash",
+        }
+        media["readiness"] = {
+            "source_media_artifact": {"id": "video-1", "content_hash": "media-hash"},
+            "external_transcript_artifact": {"id": "caption-1", "content_hash": "text-hash"},
+            "transcription_artifact": {"id": "transcript-1", "content_hash": "text-hash"},
+            "timing_artifact": {"id": "timing-1", "content_hash": "timing-hash"},
+        }
+        reused = _plan(_Application(media=media))
+        self.assertNotEqual(
+            "pandrator_prepare_media_edit", reused.result["next_action"]["tool"]
+        )
+
+        media["readiness"]["timing_artifact"] = {
+            "id": "timing-1",
+            "content_hash": "changed-timing",
+        }
+        stale = _plan(_Application(media=media))
+        self.assertEqual(
+            "pandrator_prepare_media_edit", stale.result["next_action"]["tool"]
+        )
+        self.assertTrue(stale.result["next_action"]["arguments"]["force"])
 
     def test_review_gate_render_and_materialization(self):
         completed = {
@@ -611,9 +758,15 @@ class MediaEditWorkflowPlannerTests(unittest.TestCase):
 
     def test_wrong_kind_attached_caption_block_and_idempotency(self):
         application = _Application()
-        application.get_session = lambda _session_id: {"workflow_kind": "subtitles"}
-        with self.assertRaises(PandratorMcpError):
+        application.get_session = lambda _session_id: {"workflow_kind": "voiceover"}
+        with self.assertRaises(PandratorMcpError) as refused:
             _plan(application)
+        self.assertEqual("ineligible_session", refused.exception.code)
+        self.assertIn("media_edit session", str(refused.exception))
+        self.assertEqual(
+            [("pandrator_create_session", {"workflow_kind": "media_edit"})],
+            [(item.tool, item.arguments) for item in refused.exception.next_actions],
+        )
 
         blocked = _plan(_Application(), transcript_mode="asr")
         self.assertIsNone(blocked.result["next_action"])

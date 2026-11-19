@@ -14,6 +14,7 @@ from pandrator_mcp.schemas import (
     RenewDispatchBatchInput,
     SubmitDispatchBatchInput,
 )
+from pandrator_mcp.schemas.common import WarningMessage
 from pandrator_mcp.tools.dispatch import (
     claim_dispatch_batch,
     create_dispatch_run,
@@ -146,6 +147,46 @@ class DispatchHandlerTests(unittest.TestCase):
     def setUp(self):
         self.application = _Application()
         self.runtime = SimpleNamespace(require_application=lambda: self.application)
+
+    def test_create_run_surfaces_pre_edit_timeline_warnings_in_the_envelope(self):
+        message = (
+            "This session has a reviewed media edit, but the selected source is on the "
+            "pre-edit timeline."
+        )
+        self.application.create_dispatch_run = lambda session_id, **kwargs: {
+            "id": "run-1",
+            "status": "ready",
+            "warnings": [message],
+        }
+        outcome = create_dispatch_run(
+            self.runtime,
+            CreateDispatchRunInput(
+                session_id="session-1",
+                kind="correction",
+                idempotency_key="create:warning",
+            ),
+        )
+        self.assertEqual("run-1", outcome.result["id"])
+        self.assertNotIn("warnings", outcome.result)
+        self.assertEqual(
+            [WarningMessage(code="source_on_pre_edit_timeline", message=message)],
+            outcome.warnings,
+        )
+
+        self.application.create_dispatch_run = lambda session_id, **kwargs: {
+            "id": "run-2",
+            "status": "ready",
+            "warnings": [],
+        }
+        quiet = create_dispatch_run(
+            self.runtime,
+            CreateDispatchRunInput(
+                session_id="session-1",
+                kind="correction",
+                idempotency_key="create:quiet",
+            ),
+        )
+        self.assertEqual([], quiet.warnings)
 
     def test_split_anchor_inspection_preserves_lease_and_pagination(self):
         arguments = InspectDispatchSplitBoundariesInput(
@@ -435,3 +476,47 @@ class DispatchHandlerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DelegationContextCapsuleTests(unittest.TestCase):
+    def test_empty_values_are_ignored_and_empty_keys_still_fail(self):
+        capsule = CreateDispatchRunInput(
+            session_id="session-1",
+            kind="correction",
+            idempotency_key="create:empty-context",
+            context_capsule={
+                "overview": "Shared",
+                "terminology": {"kept": "kept value", "blank": "", "spaces": "   "},
+                "entities": {"empty": ""},
+                "style_rules": ["", "Keep titles formal.", "  "],
+                "notes": [""],
+            },
+        )
+        self.assertEqual({"kept": "kept value"}, capsule.context_capsule.terminology)
+        self.assertEqual({}, capsule.context_capsule.entities)
+        self.assertEqual(["Keep titles formal."], capsule.context_capsule.style_rules)
+        self.assertEqual([], capsule.context_capsule.notes)
+        with self.assertRaises(ValidationError):
+            CreateDispatchRunInput(
+                session_id="session-1",
+                kind="correction",
+                idempotency_key="create:empty-key",
+                context_capsule={"terminology": {"": "value"}},
+            )
+
+    def test_empty_context_values_reach_the_application_cleaned(self):
+        application = _Application()
+        runtime = SimpleNamespace(require_application=lambda: application)
+        create_dispatch_run(
+            runtime,
+            CreateDispatchRunInput(
+                session_id="session-1",
+                kind="correction",
+                idempotency_key="create:cleaned-context",
+                context_capsule={"notes": ["", "Real note"], "entities": {"blank": ""}},
+            ),
+        )
+        capsule = application.calls[0][1]["context_capsule"]
+        self.assertEqual(["Real note"], capsule["notes"])
+        self.assertEqual({}, capsule["entities"])
+        self.assertEqual({}, capsule["terminology"])

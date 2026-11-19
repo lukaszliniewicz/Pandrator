@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -209,6 +209,9 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
             "tts_context_mode",
             "secret_ref",
             "api_key_env",
+            # Derived for correction and translation by adapt_runtime_settings;
+            # it never changes synthesized audio.
+            "timing_context_enabled",
         }
     )
     selected = str(values.get("service") or values.get("tts_service") or "")
@@ -299,6 +302,34 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
             }
         )
     return values
+
+
+def settings_source_material_diff(
+    run_tts: Any, current_tts: Any
+) -> dict[str, dict[str, Any]]:
+    """Material TTS differences a replayed run would impose on current settings.
+
+    Compares both sections through :func:`_material_settings`, so the diff uses
+    the same exclusions as a take's audio identity: credentials, provider
+    catalogues and derived keys that never change synthesized audio stay out.
+    Only keys literally present in one of the two ``tts`` sections are
+    reported, so derived identity inputs never appear as if they were settings.
+    """
+
+    run_section = run_tts if isinstance(run_tts, dict) else {}
+    current_section = current_tts if isinstance(current_tts, dict) else {}
+    run_material = _material_settings({"tts": run_section})
+    current_material = _material_settings({"tts": current_section})
+    keys = (set(run_section) | set(current_section)) & (
+        set(run_material) | set(current_material)
+    )
+    diff: dict[str, dict[str, Any]] = {}
+    for key in sorted(keys):
+        run_value = run_material.get(key)
+        current_value = current_material.get(key)
+        if run_value != current_value:
+            diff[key] = {"run": run_value, "current": current_value}
+    return diff
 
 
 class AudioIdentityContext:
@@ -564,6 +595,14 @@ class AudioIdentityContext:
             pinned, contexts = self.performance_states[revision_id]
             if pinned.get("_performance_error"):
                 raise ValueError(pinned["_performance_error"])
+            review_ids = (pinned.get("performance_snapshot") or {}).get("review_segment_ids")
+            if review_ids and segment.id in review_ids:
+                # Only this segment's speaker plan entry no longer fits; the
+                # rest of the revision keeps its frozen performance.
+                from .performance_validity import REVIEW_MESSAGE
+
+                return {**identity, "performance_request_hash": "unavailable",
+                        "performance_error": REVIEW_MESSAGE}
             text = segment.optimized_text or segment.text
             prepared = segment_performance_settings(
                 settings, pinned, segment.id, text, contexts=contexts,
@@ -638,11 +677,13 @@ class AudioIdentityContext:
                     })
                 # Base narrator settings/references are not audible when every
                 # part has a cast binding. Hash the actual resolved requests.
-                return {
+                part_settings = [part["settings"] for part in requests]
+                rvc_material = self.selected_rvc if self.selected_rvc.get("enabled") else {}
+                identity = {
                     "schema_version": IDENTITY_VERSION,
                     "settings_hash": _hash({
-                        "parts": [part["settings"] for part in requests],
-                        "rvc": self.selected_rvc if self.selected_rvc.get("enabled") else {},
+                        "parts": part_settings,
+                        "rvc": rvc_material,
                     }),
                     "voice_reference_hash": _hash([part["references"] for part in requests]),
                     **({"source_voice_reference_hash": _hash([
@@ -656,6 +697,19 @@ class AudioIdentityContext:
                         "parts": [{"range": part["range"], "request": part["request"]} for part in requests],
                     }),
                 }
+                if not any("timing_context_enabled" in part for part in part_settings):
+                    # Takes stamped before the key was excluded still hash it.
+                    identity["legacy_settings_hashes"] = [
+                        _hash({
+                            "parts": [
+                                {**part, "timing_context_enabled": value}
+                                for part in part_settings
+                            ],
+                            "rvc": rvc_material,
+                        })
+                        for value in (True, False)
+                    ]
+                return identity
             compiled = compile_performance(text, prepared, None, self._service_config_cache)
             baseline_settings = dict(settings)
             for key in ("_performance", "_semantic_context", "generation_prompt", "openai_audio_instructions"):
@@ -868,18 +922,22 @@ class AudioIdentityContext:
                             )]
                     self._voice_reference_cache[settings_hash_key] = cached
                 references = cached
+        material = self._memoized_material_settings(settings)
+        rvc_material = self.selected_rvc if self.selected_rvc.get("enabled") else {}
         identity = {
             "schema_version": IDENTITY_VERSION,
-            "settings_hash": _hash(
-                {
-                    "tts": self._memoized_material_settings(settings),
-                    "rvc": self.selected_rvc
-                    if self.selected_rvc.get("enabled")
-                    else {},
-                }
-            ),
+            "settings_hash": _hash({"tts": material, "rvc": rvc_material}),
             "voice_reference_hash": voice_reference_hash(references),
         }
+        if "timing_context_enabled" not in material:
+            # Takes stamped before the key was excluded still hash it.
+            identity["legacy_settings_hashes"] = [
+                _hash({
+                    "tts": {**material, "timing_context_enabled": value},
+                    "rvc": rvc_material,
+                })
+                for value in (True, False)
+            ]
         source_hash = source_voice_reference_hash(settings)
         if source_hash is not None:
             identity["source_voice_reference_hash"] = source_hash
@@ -903,6 +961,62 @@ def take_reuse_reason(
     )
 
 
+def reuse_identity_basis(
+    selected_run: Any, current_snapshot: Mapping[str, Any] | None
+) -> tuple[dict[str, Any], str]:
+    """Return the settings snapshot an expected audio identity is built from.
+
+    The segment rows and the revision review counters ask the same question:
+    reusable against which settings? A selected run answers with the snapshot it
+    froze at start, so a run review agrees with its own rows; without one, both
+    use the session's current settings. One helper keeps the two from drifting
+    apart again.
+    """
+    if selected_run is not None:
+        frozen = getattr(selected_run, "settings_snapshot_json", None)
+        if isinstance(frozen, Mapping):
+            return dict(frozen), "selected_run"
+    return dict(current_snapshot or {}), "current_settings"
+
+
+def settings_hash_matches(expected: dict[str, Any], stored_hash: Any) -> bool:
+    """Accept the pre-fix hash that still covered ``timing_context_enabled``."""
+    if type(stored_hash) is not str:
+        return False
+    if stored_hash == expected.get("settings_hash"):
+        return True
+    return stored_hash in (expected.get("legacy_settings_hashes") or ())
+
+
+def identity_matches(stored: Any, expected: dict[str, Any]) -> bool:
+    """Compare two identities, accepting a pre-fix settings hash on either side."""
+    if not isinstance(stored, dict):
+        return False
+    stored_hash = stored.get("settings_hash")
+    expected_hash = expected.get("settings_hash")
+    if type(stored_hash) is not str or type(expected_hash) is not str:
+        return False
+    hashes_match = (
+        stored_hash == expected_hash
+        or stored_hash in (expected.get("legacy_settings_hashes") or ())
+        or expected_hash in (stored.get("legacy_settings_hashes") or ())
+    )
+    if not hashes_match:
+        return False
+    ignored = {"settings_hash", "legacy_settings_hashes"}
+    return {key: value for key, value in stored.items() if key not in ignored} == {
+        key: value for key, value in expected.items() if key not in ignored
+    }
+
+
+def identity_for_storage(identity: dict[str, Any]) -> dict[str, Any]:
+    """Strip the comparison-only legacy hashes before an identity is persisted."""
+    return {
+        key: value for key, value in identity.items()
+        if key != "legacy_settings_hashes"
+    }
+
+
 def stored_take_reuse_reason(
     segment_status: str | None,
     take_status: str | None,
@@ -920,7 +1034,7 @@ def stored_take_reuse_reason(
     actual = (artifact_metadata or {}).get(IDENTITY_KEY)
     if not isinstance(actual, dict) or actual.get("schema_version") != IDENTITY_VERSION:
         return "audio_identity_unknown"
-    if actual.get("settings_hash") != expected["settings_hash"]:
+    if not settings_hash_matches(expected, actual.get("settings_hash")):
         return "generation_settings_changed"
     candidates = ("voice_reference_hash", "source_voice_reference_hash", "legacy_voice_reference_hash")
     actual_hashes = {value for name in candidates

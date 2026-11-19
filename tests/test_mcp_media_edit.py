@@ -450,7 +450,12 @@ class MediaEditToolTests(unittest.TestCase):
 
     def test_state_and_prepare_update_paths(self):
         self.assertEqual(
-            {"session_id": "session-1", "plan": None},
+            {
+                "session_id": "session-1",
+                "plan": None,
+                "view": "summary",
+                "omitted": [],
+            },
             get_media_edit(self.runtime, GetMediaEditArguments(session_id="session-1")),
         )
         prepare_media_edit(

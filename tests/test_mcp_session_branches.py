@@ -8,6 +8,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from mcp import Client
 
+from pandrator.web.jobs import Worker
 from pandrator_mcp.catalog import ACTION_CATALOG
 from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.context import build_runtime
@@ -106,12 +107,27 @@ def test_native_mcp_fork_and_parallel_language_runs(tmp_path: Path):
                     "expected_revision": fixture.record["revision"],
                     "idempotency_key": "mcp-project-test-001",
                 }
-                project = (await call("pandrator_create_translation_project", project_args))[
-                    "project"
-                ]
-                assert (await call("pandrator_create_translation_project", project_args))[
-                    "project"
-                ]["id"] == project["id"]
+                handle = await call("pandrator_create_translation_project", project_args)
+                assert handle["kind"] == "translation_project.create"
+                assert handle["status"] == "queued"
+                # The creation is queued; its worker forks the pinned source.
+                extension = fixture.app.extensions["pandrator"]
+                worker = Worker(
+                    extension["jobs"], "mcp-branch-worker",
+                    extension["workflow_handlers"].handlers(),
+                )
+                while worker.run_once():
+                    pass
+                assert extension["jobs"].get(handle["id"]).status == "succeeded"
+                project = (
+                    await call(
+                        "pandrator_get_translation_project",
+                        {"session_id": fixture.record["id"]},
+                    )
+                )["project"]
+                # A retry returns the same work handle and never re-enqueues.
+                replay = await call("pandrator_create_translation_project", project_args)
+                assert replay["id"] == handle["id"]
                 args = {
                     "project_id": project["id"],
                     "expected_revision": project["revision"],
@@ -119,8 +135,12 @@ def test_native_mcp_fork_and_parallel_language_runs(tmp_path: Path):
                                 "carry_source_subtitle_settings": True}],
                     "idempotency_key": "mcp-branches-test-001",
                 }
-                project = (await call("pandrator_create_translation_branches", args))["project"]
+                created = await call("pandrator_create_translation_branches", args)
+                # The summary, as pandrator_get_translation_project gives by default.
+                assert created["view"] == "summary"
+                project = created["project"]
                 branches = project["branches"]
+                assert all("settings" not in branch for branch in branches)
                 assert len(branches) == 2
                 assert len({branch["session_id"] for branch in branches}) == 2
                 for branch in branches:
@@ -230,6 +250,59 @@ def test_native_mcp_fork_and_parallel_language_runs(tmp_path: Path):
         fixture.tearDown()
 
 
+def test_create_translation_project_tool_returns_a_bounded_work_handle(tmp_path):
+    from types import SimpleNamespace
+
+    from pandrator_mcp.schemas.session_branches import CreateTranslationProjectInput
+    from pandrator_mcp.tools.session_branches import create_translation_project
+
+    job = {
+        "id": "work-1",
+        "kind": "translation_project.create",
+        "session_id": "session-1",
+        "status": "queued",
+        "progress": 0.0,
+    }
+    calls: dict = {}
+
+    def create(session_id, **kwargs):
+        calls.update(kwargs)
+        calls["session_id"] = session_id
+        return job
+
+    runtime = SimpleNamespace(
+        settings=McpSettings(
+            target_name="unconfigured",
+            configuration_path=tmp_path / "absent.json",
+            maximum_wait_seconds=7,
+        ),
+        require_application=lambda: SimpleNamespace(create_translation_project=create),
+    )
+    outcome = create_translation_project(
+        runtime,
+        CreateTranslationProjectInput(
+            session_id="session-1",
+            checkpoint_artifact_id="cp",
+            expected_revision=4,
+            idempotency_key="tool-create-001",
+        ),
+    )
+
+    assert calls.pop("run_as_job") is True
+    assert calls["checkpoint_artifact_id"] == "cp"
+    assert calls["expected_revision"] == 4
+    assert calls["idempotency_key"] == "tool-create-001"
+    assert outcome.result["id"] == "work-1"
+    assert outcome.work is not None
+    assert (outcome.work.id, outcome.work.state) == ("work-1", "queued")
+    assert [action.tool for action in outcome.next_actions] == [
+        "pandrator_get_work",
+        "pandrator_get_translation_project",
+    ]
+    assert outcome.next_actions[0].arguments == {"work_id": "work-1", "wait_seconds": 7}
+    assert outcome.next_actions[1].arguments == {"session_id": "session-1"}
+
+
 def test_client_preserves_fork_revision_and_batch_idempotency():
     client = object.__new__(ApplicationClient)
     client.timeout_seconds = 15.0
@@ -258,6 +331,21 @@ def test_client_preserves_fork_revision_and_batch_idempotency():
     )
     assert client._request_json.call_args.kwargs["idempotency_key"] == "branches-client-test"
     assert client._request_json.call_args.kwargs["request_timeout_seconds"] == 120.0
+    client.create_translation_project(
+        "session/a",
+        checkpoint_artifact_id="cp",
+        expected_revision=2,
+        idempotency_key="project-client-test",
+        run_as_job=True,
+    )
+    assert client._request_json.call_args.kwargs["body"]["run_as_job"] is True
+    client.create_translation_project(
+        "session/a",
+        checkpoint_artifact_id="cp",
+        expected_revision=2,
+        idempotency_key="project-client-sync-test",
+    )
+    assert "run_as_job" not in client._request_json.call_args.kwargs["body"]
 
 
 @pytest.mark.parametrize("value", ["true", 1, None])

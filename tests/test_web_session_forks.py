@@ -5,6 +5,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from pandrator.web.api import create_app
+from pandrator.web.artifact_lineage import artifact_ancestor_ids
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
@@ -388,6 +389,36 @@ class WebSessionForkTests(unittest.TestCase):
                 ).value_json
             )
         self.assertEqual({"reasoning_effort": "high"}, child_setting_value)
+
+    def test_artifact_ancestor_ids_follows_edges_and_recorded_sources(self):
+        rendered_path = self.session_dir / "edited.mp4"
+        rendered_path.write_bytes(b"edited media")
+        rendered = self.artifacts.register(
+            rendered_path,
+            kind="mp4",
+            role="media_edit_media",
+            session_id=self.record["id"],
+            metadata={"source_artifact_id": self.translation.id},
+        )
+        with self.database.session() as session:
+            from_translation = artifact_ancestor_ids(session, self.translation.id)
+            from_render = artifact_ancestor_ids(session, rendered.id)
+        self.assertIn(self.translation.id, from_translation)
+        self.assertLessEqual(
+            {self.correction.id, self.transcription.id},
+            from_translation,
+        )
+        # Metadata ancestry and registered edges are walked together.
+        self.assertLessEqual(
+            {
+                rendered.id,
+                self.translation.id,
+                self.correction.id,
+                self.transcription.id,
+            },
+            from_render,
+        )
+        self.assertNotIn(rendered.id, from_translation)
 
     def test_non_checkpoint_artifacts_are_rejected(self):
         response = self.client.post(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from copy import deepcopy
 from typing import Any
@@ -13,6 +14,7 @@ from pandrator.logic.speech_markup import parse_speech_markup
 from pandrator.logic.speech_performance import content_hash, validate_annotation
 from pandrator.web.generation_cast_runtime import remap_markup
 from pandrator.web.generation_control_schemas import VoiceBinding
+from pandrator.web.performance_validity import STRUCTURE_FIELDS
 from pandrator.web.project_speech_references import speech_reference_selector_hash
 from pandrator.web.projects import copy_performance as codec
 from pandrator.web.projects.copy_performance import (
@@ -27,6 +29,7 @@ from pandrator.web.projects.copy_performance import (
 )
 from pandrator.web.projects.copy_speech import remap_segment_reference, segment_copy_references
 from pandrator.web.projects.copy_speech_plan import speech_plan_signature
+from pandrator.web.settings_policy import stable_hash
 from pandrator.web.speech_annotation_records import normalized_record
 
 
@@ -756,3 +759,659 @@ def test_bulk_empty_and_over_budget_inputs_do_not_construct_graph(monkeypatch):
             base_adopted_plan_ids=untouched,
         )
     ownership.assert_not_called()
+
+
+# A stale adopted plan is judged per segment: kept, rebased or left for review.
+CHARACTERS = [{"id": "source-session", "display_name": "Narrator"}]
+_FAMILIES = (
+    "sessions",
+    "projects",
+    "generation_plans",
+    "generation_plan_revisions",
+    "generation_segments",
+)
+_OWNERS = ("id", "session_id", "project_id", "active_revision_id", "plan_id", "plan_revision_id")
+
+
+def judged_rows():
+    """Five segments: a dialogue entry, a plain entry, a removed, a blank and a last one."""
+    rows = graph()
+    extra = deepcopy(rows["generation_segments"][0])
+    extra["id"], extra["ordinal"] = "segment-4", 4
+    extra["speech_block_provenance_json"] = {"section_id": "source-session", "start_ms": 4000}
+    rows["generation_segments"].append(extra)
+    texts = ("Go on now.", "Second line here.", "Removed.", "   ", "Last one.")
+    for segment, text in zip(rows["generation_segments"], texts, strict=True):
+        segment.update(text=text, optimized_text=None)
+    return rows
+
+
+def stale_adopted(rows):
+    """The raw adopted row and its annotations as stored before any edit."""
+    units, annotations = [], {}
+    for segment in rows["generation_segments"]:
+        text, key = segment["text"], segment["id"]
+        if segment["removed"] or not text.strip():
+            continue
+        inner = (
+            f'<ins>calm</ins><dialogue><speaker ref="source-session">{text}</speaker></dialogue>'
+            if key == "segment-0"
+            else text
+        )
+        annotations[key] = normalized_record(
+            text,
+            key,
+            {"speech_xml": f'<segment id="{key}">{inner}</segment>', "locked": key == "segment-0"},
+            CHARACTERS,
+        )
+        units.append(
+            {
+                "id": key,
+                "text": text,
+                "speaker": segment["speaker"],
+                "language": "en",
+                "node_kind": "paragraph",
+                "section_id": "source-session",
+                "ordinal": segment["ordinal"],
+                "spoken_text": text,
+                "text_hash": content_hash(text),
+                "voice": "",
+                "paragraph_break_after": True,
+                "timing": {"start_ms": segment["ordinal"] * 1000},
+                "speech_xml": annotations[key]["_speech_xml"],
+            }
+        )
+    raw = raw_plan(rows, identifier="adopted", status="adopted", xml=True)
+    raw.update(units_json=units, base_signature="signature-before-the-edit")
+    raw["settings_json"]["character_dictionary"] = CHARACTERS
+    return raw, annotations
+
+
+def edit(rows, **texts):
+    for key, text in texts.items():
+        rows["generation_segments"][int(key.removeprefix("s"))]["text"] = text
+
+
+def current_signature(rows):
+    (signature,) = codec._graph(rows)[3].values()
+    return signature
+
+
+def review_signature(signature):
+    return stable_hash({"performance_review": signature})
+
+
+def judged(rows, **texts):
+    raw, annotations = stale_adopted(rows)
+    edit(rows, **texts)
+    return freeze(rows, raw, annotations)
+
+
+def unit_ids(frozen):
+    return [unit["id"] for unit in frozen["units_json"]]
+
+
+def round_trip(rows, frozen):
+    rows["performance_plans"] = [frozen]
+    validate_performance_copy_graph(rows, allow_performance=True)
+
+
+def mapped_copy(rows):
+    identities = {
+        row["id"]: f"new-{row['id']}"
+        for family in (*_FAMILIES, "performance_plans")
+        for row in rows[family]
+    }
+    mapped = deepcopy(rows)
+    mapped.pop("performance_plans")
+    for family in _FAMILIES:
+        for row in mapped[family]:
+            for key in _OWNERS:
+                if key in row:
+                    row[key] = identities[row[key]]
+    # The destination's own signature differs from the source's.
+    mapped["generation_segments"][4]["silence_after_ms"] = 250
+    return identities, mapped
+
+
+def test_signature_only_change_keeps_every_entry_and_is_fresh():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    before = deepcopy((raw, annotations, rows))
+    frozen = freeze(rows, raw, annotations)
+    assert unit_ids(frozen) == ["segment-0", "segment-1", "segment-4"]
+    assert frozen["base_signature"] == current_signature(rows) != raw["base_signature"]
+    assert frozen["manual_annotations_json"] == annotations
+    assert (raw, annotations, rows) == before
+    round_trip(rows, frozen)
+
+
+def test_fitted_entries_are_rebased_inside_a_plain_entry_and_the_dialogue_quote():
+    rows = judged_rows()
+    frozen = judged(rows, s0="Go on right now.", s1="Second line there.")
+    assert unit_ids(frozen) == ["segment-0", "segment-1", "segment-4"]
+    assert frozen["base_signature"] == current_signature(rows)
+    by_id = {unit["id"]: unit for unit in frozen["units_json"]}
+    assert by_id["segment-0"]["spoken_text"] == "Go on right now."
+    assert by_id["segment-0"]["text_hash"] == content_hash("Go on right now.")
+    record = frozen["manual_annotations_json"]["segment-0"]
+    assert record["locked"] is True
+    assert '<speaker ref="source-session">Go on right now.</speaker>' in record["_speech_xml"]
+    assert by_id["segment-0"]["speech_xml"] == record["_speech_xml"]
+    assert "<ins>calm</ins>" in record["_speech_xml"]
+    assert frozen["manual_annotations_json"]["segment-1"]["_speech_xml"] == (
+        '<segment id="segment-1">Second line there.</segment>'
+    )
+    dumped = json.dumps(frozen)
+    assert "Go on now." not in dumped and "Second line here." not in dumped
+    round_trip(rows, frozen)
+
+
+def test_a_change_reaching_the_dialogue_edge_is_left_for_review():
+    rows = judged_rows()
+    frozen = judged(rows, s0="Go on now!", s1="Second line there.")
+    assert unit_ids(frozen) == ["segment-1", "segment-4"]
+    assert set(frozen["manual_annotations_json"]) == {"segment-1", "segment-4"}
+    assert frozen["base_signature"] == review_signature(current_signature(rows))
+    assert frozen["base_signature"] != current_signature(rows)
+    assert len(frozen["base_signature"]) <= 128
+    dumped = json.dumps(frozen)
+    assert "Go on now." not in dumped and "Second line here." not in dumped
+    round_trip(rows, frozen)
+
+
+def test_removed_and_blanked_segments_lose_their_unit_without_review():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    rows["generation_segments"][1]["removed"] = True
+    edit(rows, s4="   ")
+    frozen = freeze(rows, raw, annotations)
+    assert unit_ids(frozen) == ["segment-0"]
+    assert frozen["base_signature"] == current_signature(rows)
+    assert "Second line here." not in json.dumps(frozen)
+    round_trip(rows, frozen)
+
+
+def test_a_spoken_segment_without_a_unit_is_left_for_review():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    raw["units_json"].pop()
+    annotations.pop("segment-4")
+    frozen = freeze(rows, raw, annotations)
+    assert unit_ids(frozen) == ["segment-0", "segment-1"]
+    assert frozen["base_signature"] == review_signature(current_signature(rows))
+    round_trip(rows, frozen)
+
+
+def test_judged_units_are_matched_by_id_not_position():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    raw["units_json"].reverse()
+    frozen = freeze(rows, raw, annotations)
+    assert unit_ids(frozen) == ["segment-0", "segment-1", "segment-4"]
+    assert frozen == freeze(rows, *stale_adopted(rows))
+
+
+@pytest.mark.parametrize("missing", [("section_id",), ("language",), STRUCTURE_FIELDS])
+def test_judged_units_made_before_structure_fields_were_recorded_need_review(missing):
+    # The copy rebuilds each unit from its current block, so an entry kept for
+    # a unit that never recorded a field would hide a change to that field (the
+    # language below) and look current there. Such units need review, as a
+    # plan read in the app judges them; the copy itself still succeeds.
+    def changed(rows):
+        edit(rows, s0="Go on right now.")
+        rows["generation_segments"][1]["language"] = "fr"
+
+    recorded = judged_rows()
+    raw, annotations = stale_adopted(recorded)
+    changed(recorded)
+    assert unit_ids(freeze(recorded, raw, annotations)) == ["segment-0", "segment-4"]
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    for unit in raw["units_json"]:
+        for field in missing:
+            del unit[field]
+    changed(rows)
+    frozen = freeze(rows, raw, annotations)
+    assert unit_ids(frozen) == []
+    assert frozen["manual_annotations_json"] == {}
+    assert frozen["base_signature"] == review_signature(current_signature(rows))
+    round_trip(rows, frozen)
+
+
+@pytest.mark.parametrize("missing", ["voice", "text_hash", "spoken_text"])
+def test_judged_units_still_need_their_other_fields(missing):
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    del raw["units_json"][1][missing]
+    edit(rows, s0="Go on right now.")
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+def test_a_fresh_adopted_unit_still_needs_its_other_fields():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    raw["base_signature"] = current_signature(rows)
+    freeze(rows, deepcopy(raw), deepcopy(annotations))
+    del raw["units_json"][1]["voice"]
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+def test_a_current_plan_keeps_units_made_before_structure_fields():
+    # The capture knows the plan is current from the live signature, which the
+    # copied rows (signed without lineage) cannot reproduce. Its units are
+    # rebuilt from the current blocks, whose structure the signature covers.
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    raw["base_signature"] = "the-live-signature"
+    for unit in raw["units_json"]:
+        for field in STRUCTURE_FIELDS:
+            del unit[field]
+    (current,) = freeze_performance_plan_rows(
+        [raw],
+        rows=rows,
+        annotations={raw["id"]: annotations},
+        base_adopted_plan_ids={raw["id"]: None},
+        current_plan_ids={raw["id"]},
+    )
+    assert unit_ids(current) == ["segment-0", "segment-1", "segment-4"]
+    assert set(current["manual_annotations_json"]) == set(unit_ids(current))
+    assert all(set(STRUCTURE_FIELDS) <= set(unit) for unit in current["units_json"])
+    assert current["base_signature"] == current_signature(rows)
+    round_trip(rows, current)
+    # Judged by the copied rows alone, the same plan needs review throughout.
+    (judged_copy,) = freeze_performance_plan_rows(
+        [raw],
+        rows=rows,
+        annotations={raw["id"]: annotations},
+        base_adopted_plan_ids={raw["id"]: None},
+    )
+    assert unit_ids(judged_copy) == []
+
+
+@pytest.mark.parametrize("edited", [{"s0": "Go on right now."}, {"s0": "Go on now!"}])
+def test_judged_rows_remap_with_ids_and_the_review_signature_on_the_destination(edited):
+    rows = judged_rows()
+    frozen = judged(rows, **edited)
+    rows["performance_plans"] = [frozen]
+    validate_performance_copy_graph(rows, allow_performance=True)
+    identities, mapped = mapped_copy(rows)
+    before = deepcopy((rows, mapped))
+    destination = remap_performance_plan_rows(rows, identities, mapped_rows=mapped)[
+        "performance_plans"
+    ][0]
+    assert (rows, mapped) == before
+    signature = current_signature(mapped)
+    review = edited["s0"].endswith("!")
+    assert signature != current_signature(rows)
+    assert destination["base_signature"] == (review_signature(signature) if review else signature)
+    assert destination["base_signature"] != frozen["base_signature"]
+    expected = (
+        ["new-segment-1", "new-segment-4"]
+        if review
+        else ["new-segment-0", "new-segment-1", "new-segment-4"]
+    )
+    assert unit_ids(destination) == expected
+    assert set(destination["manual_annotations_json"]) == set(expected)
+    for key, record in destination["manual_annotations_json"].items():
+        assert f'id="{key}"' in record["_speech_xml"]
+    for record in destination["manual_annotations_json"].values():
+        assert 'id="segment-' not in record["_speech_xml"]
+    mapped["performance_plans"] = [destination]
+    validate_performance_copy_graph(mapped, allow_performance=True)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "stale_signature_full_units",
+        "review_value_without_review",
+        "review_with_plain_signature",
+        "annotation_for_dropped_segment",
+        "unit_on_old_text",
+        "unit_hash_only_old",
+        "record_on_old_text",
+        "foreign_unit",
+        "fitted_text_changed",
+    ],
+)
+def test_forged_judged_rows_fail_their_own_round_trip(defect):
+    rows = judged_rows()
+    review = defect in {"review_with_plain_signature", "annotation_for_dropped_segment"}
+    frozen = judged(rows, s0="Go on now!" if review else "Go on right now.")
+    rows["performance_plans"] = [frozen]
+    signature = current_signature(rows)
+    unit = frozen["units_json"][0]
+    if defect == "stale_signature_full_units":
+        frozen["base_signature"] = "arbitrary-stale-signature"
+    elif defect == "review_value_without_review":
+        frozen["base_signature"] = review_signature(signature)
+    elif defect == "review_with_plain_signature":
+        frozen["base_signature"] = signature
+    elif defect == "annotation_for_dropped_segment":
+        frozen["manual_annotations_json"]["segment-0"] = normalized_record(
+            "Go on now!",
+            "segment-0",
+            {"speech_xml": '<segment id="segment-0">Go on now!</segment>'},
+            CHARACTERS,
+        )
+    elif defect == "unit_on_old_text":
+        unit.update(text="Go on now.", spoken_text="Go on now.", text_hash=content_hash("Go on now."))
+    elif defect == "unit_hash_only_old":
+        unit["text_hash"] = content_hash("Go on now.")
+    elif defect == "record_on_old_text":
+        record = frozen["manual_annotations_json"]["segment-0"]
+        record["_speech_xml"] = record["_speech_xml"].replace("Go on right now.", "Go on now.")
+    elif defect == "foreign_unit":
+        unit["id"] = "segment-9"
+    elif defect == "fitted_text_changed":
+        unit["text"] = "Go on right now, really."
+    with pytest.raises(ValueError):
+        validate_performance_copy_graph(rows, allow_performance=True)
+
+
+@pytest.mark.parametrize(
+    "defect", ["duplicate_unit", "foreign_unit", "foreign_annotation", "missing_record"]
+)
+def test_judged_source_rows_with_a_broken_shape_are_rejected(defect):
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    if defect == "duplicate_unit":
+        raw["units_json"].append(deepcopy(raw["units_json"][0]))
+    elif defect == "foreign_unit":
+        raw["units_json"][0]["id"] = "missing"
+    elif defect == "foreign_annotation":
+        annotations["missing"] = {}
+    else:
+        annotations.pop("segment-1")
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+def test_a_draft_on_a_changed_revision_is_never_judged():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    raw.update(status="draft", id="draft")
+    edit(rows, s1="Second line there.")
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    raw.update(status="draft", id="draft")
+    raw["units_json"].pop()
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+def test_an_adopted_row_with_the_current_signature_freezes_as_before():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    differing = freeze(rows, raw, annotations)
+    raw["base_signature"] = current_signature(rows)
+    fresh = freeze(rows, raw, annotations)
+    assert unit_ids(fresh) == ["segment-0", "segment-1", "segment-4"]
+    assert fresh["base_signature"] == current_signature(rows)
+    assert fresh == differing
+    round_trip(rows, fresh)
+
+
+def test_a_plan_with_every_spoken_segment_needing_review_freezes_empty():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    # Segment 0 no longer fits; segments 1 and 4 have no unit at all.
+    raw["units_json"] = raw["units_json"][:1]
+    annotations = {"segment-0": annotations["segment-0"]}
+    edit(rows, s0="Go on now!")
+    frozen = freeze(rows, raw, annotations)
+    assert frozen["status"] == "adopted"
+    assert frozen["units_json"] == [] and frozen["manual_annotations_json"] == {}
+    assert frozen["base_signature"] == review_signature(current_signature(rows))
+    round_trip(rows, frozen)
+
+
+def test_a_plan_whose_segments_are_all_removed_or_blank_freezes_empty_and_fresh():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    rows["generation_segments"][0]["removed"] = True
+    edit(rows, s1="  ", s4="")
+    frozen = freeze(rows, raw, annotations)
+    assert frozen["status"] == "adopted"
+    assert frozen["units_json"] == [] and frozen["manual_annotations_json"] == {}
+    assert frozen["base_signature"] == current_signature(rows)
+    assert "Go on now." not in json.dumps(frozen)
+    round_trip(rows, frozen)
+    # A draft still needs a spoken segment.
+    raw.update(status="draft", id="draft", base_signature=current_signature(rows))
+    raw["units_json"] = []
+    with pytest.raises(ValueError):
+        freeze(rows, raw, {})
+
+
+LEGACY_CHOICE = {
+    "decision": "steer",
+    "delivery": {"pace": "slower"},
+    "spans": [{"anchor": {"quote": "Second"}, "delivery": {"emphasis": "light"}}],
+    "reason": "Legacy choice",
+}
+
+
+def legacy_adopted(rows, *, xml):
+    """A stale adopted plan whose segment-1 entry is a legacy (non-XML) choice."""
+    raw, annotations = stale_adopted(rows)
+    raw["units_json"][1].pop("speech_xml")
+    if xml:
+        raw["units_json"][1]["legacy_annotation"] = True
+        annotations["segment-1"] = validate_annotation("Second line here.", LEGACY_CHOICE)
+        return raw, annotations
+    raw["settings_json"]["annotation_format"] = "pssml"
+    for unit in raw["units_json"]:
+        unit.pop("speech_xml", None)
+    annotations = {
+        unit["id"]: validate_annotation(
+            unit["spoken_text"], LEGACY_CHOICE if unit["id"] == "segment-1" else {}
+        )
+        for unit in raw["units_json"]
+    }
+    return raw, annotations
+
+
+@pytest.mark.parametrize("xml", [True, False], ids=["xml", "pssml"])
+def test_a_legacy_entry_is_fitted_when_its_anchors_survive_the_edit(xml):
+    rows = judged_rows()
+    raw, annotations = legacy_adopted(rows, xml=xml)
+    edit(rows, s1="Second line there.")
+    frozen = freeze(rows, raw, annotations)
+    assert unit_ids(frozen) == ["segment-0", "segment-1", "segment-4"]
+    assert frozen["base_signature"] == current_signature(rows)
+    unit = frozen["units_json"][1]
+    assert unit["spoken_text"] == "Second line there."
+    assert "speech_xml" not in unit
+    assert unit.get("legacy_annotation", False) is xml
+    assert frozen["manual_annotations_json"]["segment-1"] == validate_annotation(
+        "Second line there.", LEGACY_CHOICE
+    )
+    assert "Second line here." not in json.dumps(frozen)
+    round_trip(rows, frozen)
+
+
+@pytest.mark.parametrize("xml", [True, False], ids=["xml", "pssml"])
+def test_a_legacy_entry_whose_anchor_is_gone_is_left_for_review(xml):
+    rows = judged_rows()
+    raw, annotations = legacy_adopted(rows, xml=xml)
+    edit(rows, s1="The line here.")
+    frozen = freeze(rows, raw, annotations)
+    assert unit_ids(frozen) == ["segment-0", "segment-4"]
+    assert "segment-1" not in frozen["manual_annotations_json"]
+    assert frozen["base_signature"] == review_signature(current_signature(rows))
+    round_trip(rows, frozen)
+
+
+def test_a_judged_entry_follows_the_spoken_text_not_the_display_text():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    # The display text changes while the spoken (optimized) text stays the same.
+    rows["generation_segments"][1].update(
+        text="Second line, as displayed.", optimized_text="Second line here."
+    )
+    frozen = freeze(rows, raw, annotations)
+    unit = frozen["units_json"][1]
+    assert unit["text"] == "Second line, as displayed."
+    assert unit["spoken_text"] == "Second line here."
+    assert frozen["manual_annotations_json"]["segment-1"] == annotations["segment-1"]
+    assert frozen["base_signature"] == current_signature(rows)
+    round_trip(rows, frozen)
+
+
+def test_a_judged_entry_is_fitted_to_a_changed_optimized_text():
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    rows["generation_segments"][1]["optimized_text"] = "Second line there."
+    frozen = freeze(rows, raw, annotations)
+    unit = frozen["units_json"][1]
+    assert unit["text"] == "Second line here."
+    assert unit["spoken_text"] == "Second line there."
+    assert frozen["manual_annotations_json"]["segment-1"]["_speech_xml"] == (
+        '<segment id="segment-1">Second line there.</segment>'
+    )
+    assert frozen["base_signature"] == current_signature(rows)
+    round_trip(rows, frozen)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["speaker", "language", "node_kind", "section_id"],
+)
+def test_a_structure_change_leaves_the_block_for_review(field):
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    segment = rows["generation_segments"][1]
+    if field == "section_id":
+        segment["speech_block_provenance_json"]["section_id"] = "another-section"
+    else:
+        segment[field] = {"speaker": "another-speaker", "language": "fr"}.get(field, "heading")
+    frozen = freeze(rows, raw, annotations)
+    # The text is unchanged, but the planner read another block.
+    assert unit_ids(frozen) == ["segment-0", "segment-4"]
+    assert "segment-1" not in frozen["manual_annotations_json"]
+    assert frozen["base_signature"] == review_signature(current_signature(rows))
+    round_trip(rows, frozen)
+
+
+def with_source_hashes(raw):
+    for unit in raw["units_json"]:
+        unit["source_hash"] = f"source-block-hash-of-{unit['id']}"
+    return raw
+
+
+@pytest.mark.parametrize("path", ["judged", "fresh", "draft"])
+def test_a_source_hash_is_accepted_and_read_past_on_every_path(path):
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    if path == "judged":
+        edit(rows, s1="Second line there.")
+    elif path == "fresh":
+        raw["base_signature"] = current_signature(rows)
+    else:
+        raw.update(status="draft", id="draft")
+    plain = freeze(rows, deepcopy(raw), annotations)
+    frozen = freeze(rows, with_source_hashes(raw), annotations)
+    assert frozen == plain
+    assert "source_hash" not in json.dumps(frozen)
+    assert "source-block-hash-of-" not in json.dumps(frozen)
+    round_trip(rows, frozen)
+    raw["units_json"][1]["source_hash"] = 1
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+def test_a_frozen_row_never_carries_a_source_hash():
+    rows = judged_rows()
+    frozen = judged(rows, s1="Second line there.")
+    frozen["units_json"][0]["source_hash"] = "source-block-hash"
+    rows["performance_plans"] = [frozen]
+    with pytest.raises(ValueError):
+        validate_performance_copy_graph(rows, allow_performance=True)
+
+
+def restored(value):
+    """The same value on a restored revision: every block under a new id."""
+    return json.loads(json.dumps(value).replace("segment-", "restored-"))
+
+
+def test_a_plan_carried_stale_by_a_restore_is_judged_as_its_source():
+    # The source plan, judged after a fitting edit to segment 1 and one that
+    # reaches the dialogue edge in segment 0.
+    source_rows = judged_rows()
+    raw, annotations = stale_adopted(source_rows)
+    edit(source_rows, s0="Go on now!", s1="Second line there.")
+    source = freeze(source_rows, with_source_hashes(deepcopy(raw)), annotations)
+    # The restore's carry: each unit and its markup move to the new block's id,
+    # keep their old text, and the edited blocks keep their old block hash.
+    carried = restored(raw)
+    for unit in carried["units_json"]:
+        unit["source_hash"] = (
+            f"old-block-hash-of-{unit['id']}"
+            if unit["id"] in {"restored-0", "restored-1"}
+            else f"new-block-hash-of-{unit['id']}"
+        )
+    rows = restored(source_rows)
+    frozen = freeze(rows, carried, restored(annotations))
+    assert unit_ids(frozen) == ["restored-1", "restored-4"]
+    assert frozen["units_json"][0]["spoken_text"] == "Second line there."
+    assert frozen["base_signature"] == review_signature(current_signature(rows))
+    assert {key: value for key, value in frozen.items() if key != "base_signature"} == {
+        key: value for key, value in restored(source).items() if key != "base_signature"
+    }
+    dumped = json.dumps(frozen)
+    assert "block-hash" not in dumped and "Second line here." not in dumped
+    round_trip(rows, frozen)
+
+
+@pytest.mark.parametrize("path", ["fresh", "unchanged", "fitted", "draft"])
+def test_a_pssml_unit_marked_as_a_legacy_choice_is_read_past(path):
+    # A pSSML plan made from another plan's entries marks its seeded units as
+    # legacy choices; only an XML plan reads that flag.
+    rows = judged_rows()
+    raw, annotations = legacy_adopted(rows, xml=False)
+    if path == "fresh":
+        raw["base_signature"] = current_signature(rows)
+    elif path == "fitted":
+        edit(rows, s1="Second line there.")
+    elif path == "draft":
+        raw.update(status="draft", id="draft")
+    plain = deepcopy(raw)
+    for unit in raw["units_json"]:
+        unit["legacy_annotation"] = True
+    frozen = freeze(rows, raw, annotations)
+    assert frozen == freeze(rows, plain, annotations)
+    assert "legacy_annotation" not in json.dumps(frozen)
+    round_trip(rows, frozen)
+    raw["units_json"][1]["legacy_annotation"] = "yes"
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+@pytest.mark.parametrize("path", ["unchanged", "fitted"])
+def test_an_xml_unit_marked_as_a_legacy_choice_needs_a_legacy_entry(path):
+    rows = judged_rows()
+    raw, annotations = stale_adopted(rows)
+    # Segment 1's entry is markup, not a legacy choice.
+    raw["units_json"][1]["legacy_annotation"] = True
+    if path == "fitted":
+        edit(rows, s1="Second line there.")
+    with pytest.raises(ValueError):
+        freeze(rows, raw, annotations)
+
+
+def test_a_review_row_without_one_of_its_kept_entries_still_round_trips():
+    # The limit ``_review_signature`` states: under the review signature a block
+    # with no unit is one more block to review, so dropping a kept entry leaves
+    # a consistent row rather than a forged one.
+    rows = judged_rows()
+    frozen = judged(rows, s0="Go on now!", s1="Second line there.")
+    assert unit_ids(frozen) == ["segment-1", "segment-4"]
+    frozen["units_json"].pop()
+    frozen["manual_annotations_json"].pop("segment-4")
+    round_trip(rows, frozen)

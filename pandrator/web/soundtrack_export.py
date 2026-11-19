@@ -168,8 +168,9 @@ def resolve_video_tail_extension_ms(
     if policy == "ask":
         raise VideoTailExtensionRequired(
             f"Generated speech is {overrun:.2f} seconds longer than the video. "
-            f"Freeze the last frame and extend the video by {extension_ms / 1000:.2f} "
-            "seconds to keep all speech. This requires reencoding the video."
+            "Freeze the last frame to keep all speech: set "
+            "video_tail_extension_policy=extend to hold the last frame for "
+            f"{extension_ms / 1000:.2f} seconds; usually only that tail is encoded."
         )
     return extension_ms
 
@@ -459,6 +460,18 @@ def export_soundtrack_file(
     metadata = dict(master.metadata_json or {})
     from .output_storage import reserve_output_space
 
+    soundtrack_mode = str((metadata.get("soundtrack") or {}).get("audio_mode") or "")
+    audio_language = str(metadata.get("language") or "")
+    audio_language_origin = "soundtrack_master" if audio_language else "none"
+    if not audio_language and soundtrack_mode in {"dubbed", "mixed"}:
+        # A translation branch keeps the speech language on the session record,
+        # so the master's settings-derived tag is often empty there.
+        from .export_subtitles import speech_track_language
+
+        audio_language, audio_language_origin = speech_track_language(
+            handler._session_record(session_id), settings
+        )
+
     check_output_io(handler)
     # Encoded audio may be slightly larger than PCM for very short inputs;
     # a second complete input-size allowance covers supported output formats.
@@ -488,6 +501,8 @@ def export_soundtrack_file(
                 *codecs[format_name],
             ]
             language = metadata.get("language")
+            if not language and audio_language:
+                language = audio_language
             if language:
                 command += ["-metadata:s:a:0", f"language={language}"]
             command += [str(temporary)]
@@ -507,6 +522,8 @@ def export_soundtrack_file(
                 **metadata,
                 "audio_only": True,
                 "soundtrack_master_id": master.id,
+                "audio_language": audio_language or None,
+                "audio_language_origin": audio_language_origin,
             },
         )
     finally:

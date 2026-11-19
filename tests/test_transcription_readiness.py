@@ -11,6 +11,7 @@ from sqlalchemy import select
 from pandrator.logic.dubbing import crispasr, crispasr_qwen_assets, qwen_alignment
 from pandrator.logic.dubbing.transcription_readiness import (
     diagnose_transcription_readiness,
+    transcription_readiness_warnings,
 )
 from pandrator.web.accounts.credential_resources import CredentialResources
 from pandrator.web.accounts.models import Workspace, WorkspaceMembership
@@ -50,7 +51,9 @@ def _asset(result, kind: str, asset_id: str):
     )
 
 
-def test_cached_asr_with_missing_default_silero_is_not_ready(tmp_path, monkeypatch):
+def test_cached_asr_with_missing_default_silero_reports_an_on_demand_download(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("CRISPASR_CACHE_DIR", str(tmp_path))
     _write(tmp_path / "ggml-large-v3.bin")
 
@@ -60,8 +63,8 @@ def test_cached_asr_with_missing_default_silero_is_not_ready(tmp_path, monkeypat
 
     assert result["schema_version"] == "1"
     assert result["scope"] == "local_model_files"
-    assert result["status"] == "missing"
-    assert result["ready"] is False
+    assert result["status"] == "will_download"
+    assert result["ready"] is True
     assert result["runtime_check_required"] is True
     assert _asset(result, "asr", "whisper_f16") == {
         "kind": "asr",
@@ -69,7 +72,11 @@ def test_cached_asr_with_missing_default_silero_is_not_ready(tmp_path, monkeypat
         "status": "cached",
         "verification": "nonempty",
     }
-    assert _asset(result, "vad", "silero")["status"] == "missing"
+    assert _asset(result, "vad", "silero")["status"] == "will_download"
+    assert transcription_readiness_warnings(result) == [
+        "The Silero VAD model is not cached; it will be downloaded when "
+        "transcription starts."
+    ]
     assert str(tmp_path) not in repr(result)
 
 
@@ -113,6 +120,47 @@ def test_webrtc_and_disabled_vad_need_no_vad_file(tmp_path, monkeypatch):
     assert _asset(disabled, "vad", "disabled")["status"] == "not_required"
     assert webrtc["ready"] is True
     assert disabled["ready"] is True
+
+
+def test_named_vad_absence_is_a_download_not_a_readiness_blocker(tmp_path, monkeypatch):
+    cache = tmp_path / "crisp"
+    monkeypatch.setenv("CRISPASR_CACHE_DIR", str(cache))
+    _write(cache / "parakeet-tdt-0.6b-v3-q4_k.gguf")
+
+    def diagnose(vad_model, enabled=True):
+        return diagnose_transcription_readiness(
+            _settings(
+                stt_engine="parakeet",
+                stt_model_quantization="q4_k",
+                crispasr_vad_enabled=enabled,
+                crispasr_vad_model=vad_model,
+            )
+        )
+
+    missing = diagnose("firered")
+    assert _asset(missing, "vad", "firered")["status"] == "will_download"
+    assert missing["status"] == "will_download"
+    assert missing["ready"] is True
+    assert transcription_readiness_warnings(missing) == [
+        "The FireRed VAD model is not cached; it will be downloaded when "
+        "transcription starts."
+    ]
+
+    _write(cache / "firered-vad.gguf")
+    cached = diagnose("firered")
+    assert _asset(cached, "vad", "firered")["status"] == "cached"
+    assert cached["status"] == "cached"
+    assert transcription_readiness_warnings(cached) == []
+
+    custom = diagnose(str(tmp_path / "absent-vad.gguf"))
+    assert _asset(custom, "vad", "selected_local_file")["status"] == "missing"
+    assert custom["status"] == "missing"
+    assert custom["ready"] is False
+    assert transcription_readiness_warnings(custom) == []
+
+    disabled = diagnose("silero", enabled=False)
+    assert _asset(disabled, "vad", "disabled")["status"] == "not_required"
+    assert transcription_readiness_warnings(disabled) == []
 
 
 def test_wrong_quantization_does_not_adopt_another_installed_variant(
@@ -282,8 +330,8 @@ def test_qwen_checks_only_the_selected_model_and_resolved_chunk_mode(
             crispasr_cache_dir=str(cache),
         )
     )
-    assert _asset(forced_vad, "vad", "silero")["status"] == "missing"
-    assert forced_vad["ready"] is False
+    assert _asset(forced_vad, "vad", "silero")["status"] == "will_download"
+    assert forced_vad["ready"] is True
 
 
 def test_auto_language_includes_tiny_lid_only_when_whisper_lid_is_selected(
@@ -644,3 +692,148 @@ def test_workflow_plan_reports_files_for_transcribe_without_gating_creation(
     )
     assert plan["transcription_readiness"]["status"] == "missing"
     assert plan["transcription_readiness"]["ready"] is False
+
+
+@pytest.mark.parametrize("may_download", [True, False])
+def test_workflow_plan_warns_about_an_uncached_named_vad_model(
+    readiness_web, monkeypatch, may_download
+):
+    # Only an Administrator's run may fetch a missing model; anyone else's run
+    # is refused before CrispASR starts, so the plan must not promise a download.
+    from pandrator.web.workflow_plans import WorkflowExecutionPlanService
+
+    monkeypatch.setattr(
+        WorkflowExecutionPlanService,
+        "_may_download_models",
+        lambda self, context: may_download,
+    )
+    source = readiness_web.temp_path / "vad-plan-source.wav"
+    source.write_bytes(b"synthetic source audio")
+    artifact = ArtifactService(
+        readiness_web.extension["database"], readiness_web.extension["paths"]
+    ).register(
+        source,
+        kind="wav",
+        role="upload",
+        session_id=readiness_web.alice_session,
+        metadata={"original_filename": source.name},
+    )
+    asset = readiness_web.extension["source_library"].ensure_for_artifact(
+        artifact.id,
+        display_name=source.name,
+        kind="wav",
+    )
+    readiness_web.extension["source_library"].attach(
+        readiness_web.alice_session,
+        asset.id,
+    )
+    cache = readiness_web.temp_path / "vad-plan-cache"
+    _write(cache / "ggml-large-v3.bin")
+    monkeypatch.setenv("CRISPASR_CACHE_DIR", str(cache))
+
+    response = readiness_web.alice.post(
+        f"/api/v1/sessions/{readiness_web.alice_session}/workflow-plans",
+        json={
+            "target_stage": "transcribe",
+            "continuation": False,
+            "overrides": {
+                "stt_engine": "whisper",
+                "stt_model_quantization": "f16",
+                "stt_language": "en",
+                "stt_lid_backend": "off",
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_model": "silero",
+            },
+        },
+        headers=readiness_web.alice_headers,
+    )
+
+    assert response.status_code == 201, response.get_json()
+    plan = response.get_json()
+    readiness = plan["transcription_readiness"]
+    if may_download:
+        assert readiness["status"] == "will_download"
+        assert readiness["ready"] is True
+        assert _asset(readiness, "vad", "silero")["status"] == "will_download"
+        assert (
+            "The Silero VAD model is not cached; it will be downloaded when "
+            "transcription starts."
+        ) in plan["warnings"]
+    else:
+        assert readiness["status"] == "missing"
+        assert readiness["ready"] is False
+        vad = _asset(readiness, "vad", "silero")
+        assert vad["status"] == "missing"
+        assert vad["download"] == "administrator_required"
+        assert (
+            "The Silero VAD model is not cached, and only an Administrator can "
+            "download it. Ask one to prepare it, or transcription will fail."
+        ) in plan["warnings"]
+    assert any(
+        item["stage"] == "transcribe" and item["decision"] == "run"
+        for item in plan["ordered_steps"]
+    )
+
+
+@pytest.mark.parametrize("may_download", [True, False])
+def test_route_promises_a_download_only_to_someone_who_may_download(
+    readiness_web, monkeypatch, may_download
+):
+    from pandrator.web.accounts import model_acquisition
+
+    monkeypatch.setattr(
+        model_acquisition, "may_acquire_models", lambda _database, _actor: may_download
+    )
+    cache = readiness_web.temp_path / "route-vad-cache"
+    _write(cache / "ggml-large-v3.bin")
+    monkeypatch.setenv("CRISPASR_CACHE_DIR", str(cache))
+
+    response = readiness_web.alice.post(
+        f"/api/v1/sessions/{readiness_web.alice_session}/transcription-readiness",
+        json={
+            "settings": {
+                "stt_engine": "whisper",
+                "stt_model_quantization": "f16",
+                "stt_language": "en",
+                "stt_lid_backend": "off",
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_model": "silero",
+            }
+        },
+        headers=readiness_web.alice_headers,
+    )
+
+    assert response.status_code == 200, response.get_json()
+    vad = _asset(response.get_json(), "vad", "silero")
+    if may_download:
+        assert vad["status"] == "will_download"
+    else:
+        assert vad["status"] == "missing"
+        assert vad["download"] == "administrator_required"
+
+
+def test_route_withholds_the_download_from_a_token_without_admin_scope(
+    readiness_web, monkeypatch
+):
+    # The fixture's tokens carry read, write and run but not app.admin.
+    cache = readiness_web.temp_path / "route-vad-real-gate"
+    _write(cache / "ggml-large-v3.bin")
+    monkeypatch.setenv("CRISPASR_CACHE_DIR", str(cache))
+    response = readiness_web.alice.post(
+        f"/api/v1/sessions/{readiness_web.alice_session}/transcription-readiness",
+        json={
+            "settings": {
+                "stt_engine": "whisper",
+                "stt_model_quantization": "f16",
+                "stt_language": "en",
+                "stt_lid_backend": "off",
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_model": "silero",
+            }
+        },
+        headers=readiness_web.alice_headers,
+    )
+    assert response.status_code == 200, response.get_json()
+    assert _asset(response.get_json(), "vad", "silero")["download"] == (
+        "administrator_required"
+    )

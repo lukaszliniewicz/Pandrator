@@ -65,6 +65,7 @@ def run_reviewable_generation(
         settings.get("speech_plan_revision_id") or ""
     ).strip()
     from .settings_policy import RevisionConflict
+    from .speech_plan_source import revision_source_compatibility
 
     if (
         top_level_revision_id
@@ -100,7 +101,16 @@ def run_reviewable_generation(
         planned_source_id = str(
             revision_settings.get("_source_artifact_id") or ""
         )
-        if planned_source_id and planned_source_id != source_artifact.id:
+        if (
+            planned_source_id
+            and planned_source_id != source_artifact.id
+            # A replacement with the same spoken text (a timing-only edit, or
+            # an identical copy) keeps the reviewed plan, as the binding does.
+            and revision_source_compatibility(
+                session, revision_settings, session.get(Artifact, source_artifact.id)
+            )
+            == "incompatible"
+        ):
             raise RevisionConflict(
                 "The selected speech plan revision belongs to a different generation input."
             )
@@ -258,6 +268,9 @@ def run_reviewable_generation(
                 "generation_run_id": run_id,
                 "segment_ids": [],
                 "operation": "generate",
+                # The running job's heartbeats read pace and retries from the
+                # progress state opened under this ID.
+                **({"_job_id": job_id} if job_id else {}),
             },
             lambda value, detail=None: progress(
                 0.03 + max(0.0, min(1.0, float(value))) * 0.97, detail

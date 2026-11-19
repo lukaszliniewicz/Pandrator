@@ -11,8 +11,9 @@ documents, prompts, credentials, arbitrary Manager task inputs, or raw results.
 
 Generation and regeneration return `generation_operation_id`. Use
 `pandrator_get_generation_operation` with that ID to follow preparation into
-synthesis without changing handles. Bounded waits run up to 60 seconds; structured
-responses keep the routine receipt small. Terminal synthesis includes selected-run
+synthesis without changing handles. Bounded waits stop at the process ceiling,
+25 seconds by default, and report `timed_out`; structured responses keep the
+routine receipt small. Terminal synthesis includes selected-run
 coverage: included, effective, generated, inherited and missing audio counts, missing-file
 counts and `export_ready`. Read it independently with
 `pandrator_get_generation_run_coverage` for any saved run. Readiness concerns
@@ -27,6 +28,40 @@ so `run_audio_count` overlaps those counts.
 The operation ID is the durable admission job ID. Cancellation through
 `pandrator_cancel_work` also follows its validated child after preparation succeeds.
 Legacy `get_work` still returns individual jobs and `followup_work`.
+
+## Why work is waiting, and how long it has left
+
+A queued work item carries `queue`: its `lane` (`main` for long work,
+`delivery` for exports, mix previews, bundles and subtitle evidence), its
+`position` in that lane (1 is next), and a `reason`:
+
+- `session_busy`: another job in the same session is running (`blocked_by`
+  names it). Jobs in one session run one at a time; subtitle evidence is the
+  exception and may run beside a render.
+- `resource_busy`: another job holds a resource it needs, such as the GPU or a
+  speech provider (`resource` names the key, `blocked_by` the holder).
+- `worker_busy`: its lane is running work from another session (`blocked_by`),
+  or, without `blocked_by`, the worker has not picked it up yet. A job that
+  stays first in line without `blocked_by` while nothing else runs may have no
+  worker to run it: report that to the operator rather than resubmitting.
+- `scheduled`: it is waiting for a retry time (`available_at`).
+
+A blocker in a session the caller cannot see is not named. Waiting is normal;
+do not cancel and resubmit work because it is queued.
+
+A running generation may carry `retry`: requests waiting on provider retries
+(`pending_requests`, `max_attempt` of `attempt_limit`, `provider`,
+`next_retry_in_seconds`). The progress detail says the same in words. Repeated
+rate limits are worth reporting; the job keeps retrying on its own. After 10
+blocks or 2 minutes it also carries `estimate`: `blocks_done`, `blocks_total`,
+`blocks_per_minute` and `remaining_seconds`, from this run's own pace.
+
+Before a run, the workflow plan's `generate_audio` step gives
+`estimated_seconds` and `estimate_basis` when the workspace has a recent
+completed run with the same provider, model and request count;
+`estimate_basis: "no_history"` means there was nothing to compare with. The
+estimate counts every block in the plan, so reused audio makes it an upper
+bound.
 
 To diagnose work:
 

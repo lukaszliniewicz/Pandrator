@@ -11,8 +11,9 @@ when provider, language, or model choice matters.
 2. Request `txt`, `srt`, or `json` and use a stable idempotency key. The
    configured local or cloud STT service performs recognition; the harness
    model does not transcribe the audio through passive dispatch.
-3. The tool waits up to 30 seconds. If it returns pending work, keep the
-   temporary transcription ID and call `pandrator_transcription_get`.
+3. The tool waits at most the server ceiling, 25 seconds by default. If it
+   returns pending work, keep the temporary transcription ID and call
+   `pandrator_transcription_get`.
 4. Read or page the result with `pandrator_transcription_result`. Switching
    output format uses the existing recognition result. Check pagination and
    return the complete requested transcript, not just its first page.

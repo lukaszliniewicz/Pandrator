@@ -94,11 +94,19 @@ with every leased batch and in the OpenAPI component definitions. For example:
 Directions are plain text, not native provider markup. Anchors must match the
 accepted spoken representation exactly. Repeated phrases require an occurrence.
 Overlapping spans and partial Unicode graphemes are rejected. This works with
-Japanese and other scripts without relying on spaces or word indices. Later
-pronunciation/text/topology changes make an adopted sidecar stale rather than
-silently remapping its anchors.
+Japanese and other scripts without relying on spaces or word indices. After a
+later text change an adopted entry is judged per block: it is rebased onto the
+new text only when the change lies outside its anchored words and every anchor
+still resolves to the same words (or, for markup, the change stays inside one
+stretch of it); anything else, and any topology change, needs review rather
+than a silent remap.
 
-A stale plan is not lost work. Copying it (`copy_from_id`) onto its own
+A stale plan is not lost work. An adopted plan stays in use after an edit,
+judged block by block (see below): only a block whose markup no longer fits,
+or whose speaker, language, node kind or section changed, needs a new review.
+That judgement keeps an unlocked neighbour of an edited block in use, though
+the planner read the edited text as its context; copying the plan is the way
+to have such neighbours reviewed again. Copying it (`copy_from_id`) onto its own
 revision keeps every entry whose block is unchanged and whose planning context
 (the neighbouring blocks the planner saw) is unchanged too; a locked entry needs
 only its own block unchanged. An edited "said John" can change who speaks the
@@ -116,10 +124,16 @@ record a hash of each block, so for them a block counts as unchanged when its
 recorded words, speaker, voice, language, structure and timing match.
 Restoring a speech-plan revision, including the copy an edit makes of a
 reviewed or used revision, carries that revision's adopted plan over unchanged,
-because the restored blocks are exact copies; a plan already stale on its own
-revision is not carried. On an edit copy the edit then makes the carried plan
-stale, so a cast run is refused until it is copied as above and the copy is
-adopted.
+because the restored blocks are exact copies. A plan already stale on its own
+revision is carried stale in the same way: each entry moves with its block and
+is judged on the new revision, so the carried plan reports the same changed and
+review blocks, and the restore asks for a performance review only when one of
+them needs it. On an edit copy the edit then makes the carried plan stale, and
+only the edited block is judged again; a cast run is refused only when it
+includes a block that needs review. A new plan made without `copy_from_id`
+starts each block from the adopted plan's entry while that entry still holds
+(unchanged or fitted), and passive and LLM plans keep those entries that are
+locked.
 
 Non-pause vocalizations are disabled by default. Enabling them permits explicit
 requested events; it does not authorize the planner to invent emotional sounds.
@@ -203,8 +217,67 @@ Alignment, verification, subtitle text and spoken-length calculations use the
 clean transcript, not Fish tags or Gemini's prompt envelope. Effective compiled
 requests contribute to audio identity. Changing a reason/confidence/lock alone
 does not stale audio, while changed applied delivery or supplied context does.
-History remains inspectable when a performance plan becomes stale; generation
-requires a new valid adoption or disabling performance.
+History remains inspectable when a performance plan becomes stale. An adopted
+plan is judged block by block after an edit: unchanged blocks keep their
+directions, and so does an edited block whose markup still fits its new text
+(the change lies inside one stretch of it). A block whose markup no longer fits
+needs a new speaker plan review, and so does a block whose speaker, language,
+node kind or section changed. A plan made before Pandrator recorded those fields
+for each block cannot show they are unchanged, so after any change to the
+revision, a voice or pause change included, every block of it needs review, as
+the whole plan did before per-block judgement, and so it does in a project copy.
+An edit does not fit when it reaches the start or end of a
+spoken line or of a stretch with its own voice, where it could be the narration
+around it, or any boundary inside one, such as an event, a delivery control or a
+nested span; when it adds text right beside an event or delivery control, by
+inserting it, by lengthening the words there or by adding words to the words
+that touch it ("Hello" to "Hi, hello" or "Oh hi"), where it could fall on either
+side; or when it adds, removes or replaces a quotation mark anywhere in the
+block, with or without a spoken line, in either annotation format, since
+narration that gains one may now hold dialogue. A change whose span merely
+includes an existing quotation mark counts too: two edits on either side of one,
+saved together, form one change across it. A straight or curly single quote
+counts unless letters stand on both sides of it, as in "didn't", so an edit that
+moves it into or out of a word counts too; one that stays inside a word
+("didn't" to "couldn't") still fits. Letters of a script written without spaces
+between words, such as Chinese, Japanese or Thai, do not make it an apostrophe.
+A dash (em dash, en dash or horizontal bar) counts as a quotation mark where it
+opens a line, with only whitespace before it on its line, as a line of dialogue
+opens in Polish, Spanish, Russian or French ("— Idę do domu — powiedziała.");
+so does an edit that adds or removes the text before such a dash on its line,
+while a dash inside narration is an ordinary edit. The backtick of older e-texts
+(`like this') and the heavy quotation mark ornaments count as quotation marks;
+primes, the acute accent and the Hebrew gershayim do not. An edited attribution ("said John" to "said
+Mary"), or an attribution written into a spoken line without quotation marks,
+still fits and keeps the speaker the plan chose; copy the plan to have that
+block reviewed again. A generation run that includes a block needing review is
+refused with that block named; a run without it can still start, and the block
+preview shows the review message for it, as does a preview against a run that
+left it out. Recasting, workflow checks and voiceover regrouping or repair
+cannot leave a block out, so they are refused while any block of the revision
+needs review. A plan read reports `changed_segment_count`,
+`review_segment_count` and `review_segments` (the first 20, each with its
+0-based `ordinal`; the refusal and the speaker plan panel number blocks from 1)
+for an adopted plan on the selected revision; `stale` keeps its meaning. Copying
+the project carries such a plan into the new project, where the blocks that need
+review still need it. Once an edit has made it stale, every block of a plan made
+before Pandrator recorded each block's speaker, language, node kind and section
+needs review there, as in the original: the copy rebuilds each block's plan entry
+from the current block, so an old entry kept there would hide a change to a field
+the plan never recorded (a block whose speaker changed would keep its old markup
+and look current). Such a plan that is still up to date cannot be copied, as
+before. An
+edited block whose markup
+still fits arrives there on its new text and counts as unchanged, and a plan
+with no block left to review arrives up to date (`stale` is false there, while
+the original's stays true). So a speaker plan copy in the new project keeps that
+block's entry and its neighbours' entries. To have the block reviewed again,
+copy the speaker plan in the original project, then review and adopt that copy,
+before copying the project or in the new project afterwards: the copy travels as
+a draft beside the adopted plan, whose entry is used until the copy is adopted.
+Phrase editing, the starting markup of a split, merge or re-segmentation, and
+the plan's own segment preview still need a plan that fits the whole revision:
+for those, copy the stale speaker plan and adopt that copy.
 
 With casting on and performance off, a revision without an adopted plan voices
 each block from its own markup, which usually means the narrator reads the

@@ -128,6 +128,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "phrase_gap_ms": 900,
         "hard_gap_ms": 1500,
         "sentence_boundary_threshold": 0.25,
+        "clamp_overlaps": False,
         "boundary_correction_enabled": False,
     },
     "source_passages": dict(_SOURCE_PASSAGE_DEFAULTS),
@@ -318,10 +319,11 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "fade_in_ms": 0,
         "fade_out_ms": 0,
         "synchronization_delay_ms": 800,
-        "synchronization_speed": 1.2,
+        "synchronization_speed": 1.15,
         "synchronization_slowdown_enabled": True,
         "synchronization_sentence_gap_ms": 100,
         "synchronization_min_block_gap_ms": 100,
+        "synchronization_trim_silence": True,
     },
     "rvc": {
         "enabled": False,
@@ -815,6 +817,40 @@ def validate_tts_retry_settings(value: dict[str, Any]) -> None:
             raise ValueError(f"{key} must be an integer from 1 to {maximum}.")
 
 
+# Suffix, minimum and maximum of the early-finish repair thresholds. Defaults
+# come from BUILTIN_DEFAULTS, so a stored value, a clamped request and a
+# documented default cannot drift apart.
+EARLY_REPAIR_THRESHOLD_BOUNDS: tuple[tuple[str, int, int], ...] = (
+    ("min_shortfall_ms", 100, 60000),
+    ("min_shortfall_percent", 1, 95),
+    ("min_advance_ms", 100, 60000),
+    ("min_child_span_ms", 250, 60000),
+)
+
+
+def repair_thresholds(settings: Any, *, clamp: bool = True) -> dict[str, int]:
+    """Return the four early-finish repair thresholds from one settings mapping.
+
+    ``clamp`` keeps an out-of-range or non-integer stored value inside the
+    accepted bounds instead of failing, so an explicit repair request can use
+    whatever the session resolves today.  Stored settings still go through
+    :func:`validate_voiceover_repair_settings`, which refuses such values on
+    write.
+    """
+
+    source = settings if isinstance(settings, dict) else {}
+    defaults = BUILTIN_DEFAULTS["tts"]
+    resolved: dict[str, int] = {}
+    for suffix, minimum, maximum in EARLY_REPAIR_THRESHOLD_BOUNDS:
+        key = f"speech_block_early_repair_{suffix}"
+        default = int(defaults[key])
+        value = source.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int):
+            value = default
+        resolved[suffix] = max(minimum, min(maximum, value)) if clamp else value
+    return resolved
+
+
 def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
     if "voice_mode_version" in value and (
         type(value["voice_mode_version"]) is not int
@@ -836,12 +872,7 @@ def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
                 "annotation_format": "xml",
                 "purpose": purpose,
             })
-    for suffix, minimum, maximum in (
-        ("min_shortfall_ms", 100, 60000),
-        ("min_shortfall_percent", 1, 95),
-        ("min_advance_ms", 100, 60000),
-        ("min_child_span_ms", 250, 60000),
-    ):
+    for suffix, minimum, maximum in EARLY_REPAIR_THRESHOLD_BOUNDS:
         key = f"speech_block_early_repair_{suffix}"
         if key not in value:
             continue
@@ -898,3 +929,6 @@ def validate_audio_pause_settings(value: dict[str, Any]) -> None:
     key = "synchronization_min_block_gap_ms"
     if key in value and (type(value[key]) is not int or not 0 <= value[key] <= 5000):
         raise ValueError(f"{key} must be an integer from 0 to 5000.")
+    key = "synchronization_trim_silence"
+    if key in value and type(value[key]) is not bool:
+        raise ValueError(f"{key} must be a boolean.")

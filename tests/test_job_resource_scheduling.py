@@ -324,6 +324,103 @@ def test_worker_delivery_lane_handles_every_delivery_kind(tmp_path):
         assert lane is not None and lane.worker_id == "worker.delivery"
         assert lane.kinds == DELIVERY_LANE_JOB_KINDS == frozenset(lane.handlers)
         assert COMPARISON_EXPORT_JOB_KIND in DELIVERY_LANE_JOB_KINDS
+        assert "subtitle.evidence" in DELIVERY_LANE_JOB_KINDS
     finally:
         providers.close()
         database.dispose()
+
+
+def test_jobs_released_together_show_only_the_one_that_really_started(queue):
+    """Field test 15:20: three queued Vertex jobs looked like they all started."""
+
+    jobs, database = queue
+    sessions = SessionService(database)
+    held = sessions.create("Dutch running").id
+    holder = jobs.enqueue(
+        "generation.run",
+        session_id=held,
+        resource_keys=[f"session:{held}", "service:tts:vertex_ai"],
+        max_attempts=2,
+    )
+    targets = []
+    for name in ("German", "Japanese", "Hungarian"):
+        session_id = sessions.create(name).id
+        targets.append(
+            jobs.enqueue(
+                "generation.run",
+                session_id=session_id,
+                resource_keys=[f"session:{session_id}", "service:tts:vertex_ai"],
+                max_attempts=2,
+            )
+        )
+    running = jobs.claim("holder")
+    assert running is not None and running.id == holder.id
+    assert jobs.acquire_resources(
+        holder.id, "holder", list(running.resource_keys_json or []),
+        lease_generation=running.lease_generation,
+    )
+    # The running job is cancelled but keeps its lease and claim until it stops.
+    jobs.request_cancel(holder.id)
+
+    # Nothing is claimed while the cancelled job still holds the Vertex lock.
+    assert [jobs.claim("main") for _ in range(3)] == [None, None, None]
+    for job in targets:
+        stored = jobs.get(job.id)
+        assert (stored.status, stored.started_at, stored.attempts) == ("queued", None, 0)
+    assert jobs.get(holder.id).status == "cancel_requested"
+
+    # When it finishes, exactly one waiter starts; the rest keep no start time.
+    jobs.release_resources(holder.id, "holder", lease_generation=running.lease_generation)
+    started = jobs.claim("main")
+    assert started is not None and started.id == targets[0].id
+    assert started.started_at is not None
+    for job in targets[1:]:
+        stored = jobs.get(job.id)
+        assert (stored.status, stored.started_at) == ("queued", None)
+
+
+def test_a_deferred_claim_does_not_claim_to_have_started(queue):
+    jobs, _database = queue
+    job = jobs.enqueue("generation.run", resource_keys=["gpu:default"], max_attempts=2)
+    claimed = jobs.claim("main")
+    assert claimed is not None and claimed.started_at is not None
+    assert jobs.defer_for_resources(job.id, "main", lease_generation=claimed.lease_generation)
+    stored = jobs.get(job.id)
+    assert (stored.status, stored.started_at) == ("queued", None)
+
+
+def test_service_display_name_and_alias_share_one_resource_key(queue):
+    jobs, database = queue
+    from pandrator.web.resource_keys import canonical_resource_key
+
+    assert (
+        canonical_resource_key("service:tts:Google Vertex AI")
+        == canonical_resource_key("service:tts:vertex_ai")
+        == "service:tts:vertex_ai"
+    )
+    holder = jobs.enqueue(
+        "generation.run", resource_keys=["service:tts:Google Vertex AI"], max_attempts=2
+    )
+    contender = jobs.enqueue(
+        "generation.run", resource_keys=["service:tts:vertex_ai"], max_attempts=2
+    )
+    first = jobs.claim("first")
+    second = jobs.claim("second")
+    assert first is not None and second is not None
+    assert jobs.acquire_resources(
+        holder.id, "first", ["service:tts:Google Vertex AI"],
+        lease_generation=first.lease_generation,
+    )
+    assert not jobs.acquire_resources(
+        contender.id, "second", ["service:tts:vertex_ai"],
+        lease_generation=second.lease_generation,
+    )
+    # A row written before the alias existed still blocks the same service.
+    with database.immediate_session() as unit:
+        claim = unit.get(ResourceClaim, "service:tts:vertex_ai")
+        assert claim is not None
+        claim.resource_key = "service:tts:google_vertex_ai"
+    assert not jobs.acquire_resources(
+        contender.id, "second", ["service:tts:vertex_ai"],
+        lease_generation=second.lease_generation,
+    )

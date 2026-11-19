@@ -76,6 +76,8 @@ def upgrade() -> None:
     # 0084 owns the durable provider receipt column, including predecessor shape.
     jobs = bootstrap_metadata.tables["jobs"]
     jobs._columns.remove(jobs.c.external_effect_json)
+    # 0089 owns the structured progress column for running work.
+    jobs._columns.remove(jobs.c.progress_state_json)
     # 0087 owns the default-preserving staged-upload attachment flag.
     uploads = bootstrap_metadata.tables["upload_sessions"]
     uploads._columns.remove(uploads.c.attach_to_session)

@@ -62,7 +62,7 @@ CHUNKS = [
     call("upload_transcription_chunk", IDENTIFIER, 1, b"4567"),
     call("upload_transcription_chunk", IDENTIFIER, 2, b"89"),
 ]
-START = call("start_transcription", IDENTIFIER, wait_seconds=30)
+START = call("start_transcription", IDENTIFIER, wait_seconds=25)
 UPLOAD = [INITIALIZE, *CHUNKS, START]
 GET = call("get_transcription", IDENTIFIER, format=None, wait_seconds=0)
 RESULT = call("get_transcription_result", IDENTIFIER, format="txt", offset=0, limit=16_000)
@@ -130,7 +130,7 @@ INVALID = [
     Case("invalid-cancel-id", "pandrator_transcription_cancel", {"id": ""}, []),
     Case("invalid-delete-id", "pandrator_transcription_delete", {"id": "x" * 121}, []),
 ]
-TRANSCRIBE_GET = call("get_transcription", IDENTIFIER, format="txt", wait_seconds=30)
+TRANSCRIBE_GET = call("get_transcription", IDENTIFIER, format="txt", wait_seconds=25)
 EXTRAS = [
     Case(
         "local-same-bytes",
@@ -306,6 +306,27 @@ def fixture_runtime(root: Path, case: Case) -> tuple[McpRuntime, list[dict[str, 
     return runtime, calls, application
 
 
+TERMINAL_TRANSCRIPTION_STATES = {"succeeded", "failed", "canceled", "interrupted"}
+
+
+def wait_receipt(case: Case) -> dict[str, Any]:
+    """The bounded-wait telemetry every transcription tool now reports."""
+
+    if case.tool == "pandrator_transcribe":
+        requested = int(case.arguments.get("wait_seconds", 30))
+    elif case.tool == "pandrator_transcription_get":
+        requested = int(case.arguments.get("wait_seconds", 0))
+    else:
+        return {}
+    effective = 0 if requested == 0 else min(requested, 25)
+    status = str((case.expected_result or {}).get("status") or "")
+    return {
+        "wait_requested_seconds": requested,
+        "wait_effective_seconds": effective,
+        "timed_out": bool(effective and status not in TERMINAL_TRANSCRIPTION_STATES),
+    }
+
+
 def failure_envelope(result: Any, tool: str) -> dict[str, Any]:
     assert result.is_error
     block = next(item for item in result.content if isinstance(item, TextContent))
@@ -361,7 +382,7 @@ async def invoke_case(
             "next_actions",
         }
         assert value["schema_version"] == "1"
-        assert value["result"] == case.expected_result
+        assert value["result"] == {**(case.expected_result or {}), **wait_receipt(case)}
         assert value["work"] is None
         assert value["warnings"] == []
         assert value["next_actions"] == []

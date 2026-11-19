@@ -12,13 +12,17 @@ from sqlalchemy import Select, case, func, select
 from sqlalchemy.orm import Session, defer
 from sqlalchemy.orm.attributes import set_committed_value
 
+from pandrator.logic.dubbing.repair_markers import (
+    EARLY_REPAIR_MARKER_KEY,
+    EARLY_REPAIR_REASON,
+    MIXED_REASON,
+    REGROUP_MARKER_KEY,
+    REGROUP_REASON,
+)
+
 from .access.current_session_policy import require_current_session_access
 from .database import Database
 from .generation_run_history import (
-    EARLY_REPAIR_MARKER_KEY,
-    EARLY_REPAIR_REASON,
-    REGROUP_MARKER_KEY,
-    REGROUP_REASON,
     GenerationRunHistory,
     build_generation_run_history,
 )
@@ -39,12 +43,12 @@ COMPACT_ASSEMBLY_FIELDS = (
     "error_message", "created_at", "updated_at",
 )
 # The only run-snapshot keys the history payload path reads: the label, the
-# repair and regroup markers, the second-pass selection and the early-repair
-# probe. The compact list loads just these, extracted in SQL. Their readers
-# are `_run_label`, `_run_payload`, `_timing_repair_payload`,
-# `_snapshot_enables_early_repair`, `generation_run_history._repair_marker`
-# and `passage_regroup.select_second_pass`; a key any of them starts to read
-# must be added here, or the compact view diverges from the full one.
+# repair and regroup markers and the second-pass selection. The compact list
+# loads just these, extracted in SQL. Their readers are `_run_label`,
+# `_run_payload`, `_timing_repair_payload`,
+# `generation_run_history._repair_marker` and
+# `passage_regroup.select_second_pass`; a key any of them starts to read must
+# be added here, or the compact view diverges from the full one.
 COMPACT_RUN_SNAPSHOT_KEYS = (
     "tts", "rvc", "selected_segment_override", "audio",
     EARLY_REPAIR_MARKER_KEY, REGROUP_MARKER_KEY,
@@ -112,27 +116,23 @@ def _select_narrow_assemblies(query: Select[Any], session: Session) -> list[Outp
     return assemblies
 
 
-def _snapshot_enables_early_repair(snapshot: object) -> bool:
-    """Mirror the effective-settings merge used to select the repair pass."""
-    if not isinstance(snapshot, dict) or snapshot.get("early_repair_parent_run_id"):
-        return False
-    sections = [snapshot.get("audio"), snapshot.get("tts")]
-    override = snapshot.get("selected_segment_override")
-    if isinstance(override, dict):
-        sections.append(override.get("tts"))
-    return any(
-        isinstance(section, dict)
-        and section.get("speech_block_early_repair_enabled") is True
-        for section in sections
-    )
-
-
 _REPAIR_RECEIPT_KEYS = (
     "repair_checked_blocks",
     "repair_candidate_blocks",
     "repair_attempted_blocks",
     "repaired_blocks",
     "repair_completed",
+)
+
+#: Keys that identify a job result as the optional pass receipt. Regroup
+#: receipts use group counters but live in the same place, including inside a
+#: workflow continuation's stage list.
+_PASS_RECEIPT_KEYS = (
+    *_REPAIR_RECEIPT_KEYS,
+    "repair_effect",
+    "regrouped_groups",
+    "regroup_status",
+    "regroup_attempted_groups",
 )
 
 
@@ -155,6 +155,35 @@ class _RegroupReceiptOutcome:
     status: str
     reason: str | None = None
     completed: bool | None = None
+
+
+def _repair_receipt(result: Any) -> dict[str, Any]:
+    """Return the optional-pass receipt carried by one job result.
+
+    A generation job stores the pass counters at the top level. A workflow
+    continuation (``workflow.continue``) instead appends each stage's result to
+    ``artifacts`` as ``{"stage": key, **stage_result}``, so the pass counters
+    sit one level down. Both shapes describe the same pass, and reading only
+    the top level reported zero checked and zero candidate blocks for a
+    workflow-driven run. The last matching stage wins because later stages
+    cannot rewrite the generation stage's counters.
+    """
+
+    if not isinstance(result, dict):
+        return {}
+    if any(key in result for key in _PASS_RECEIPT_KEYS):
+        return result
+    artifacts = result.get("artifacts")
+    if isinstance(artifacts, list):
+        for entry in reversed(artifacts):
+            if not isinstance(entry, dict):
+                continue
+            receipt = _repair_receipt(
+                {key: value for key, value in entry.items() if key != "artifacts"}
+            )
+            if receipt:
+                return receipt
+    return {}
 
 
 def _regroup_receipt_outcome(
@@ -484,32 +513,21 @@ class GenerationHistoryReader:
         histories = build_generation_run_history(runs, revision_by_id)
 
         job_ids = {run.job_id for run in runs if run.job_id}
-        jobs = (
-            list(session.scalars(select(Job).where(Job.id.in_(job_ids))).all())
-            if job_ids
-            else []
-        )
-        # Threads of a post-run repair have no child run until one is staged,
-        # so their job ID is not reachable through GenerationRun.job_id. Probe
-        # the session only when a frozen snapshot enables that pass. Effective
-        # settings merge audio, tts and the selected-segment override, so any
-        # of those sections can carry the enabling flag.
-        repair_enabled = any(
-            _snapshot_enables_early_repair(run.settings_snapshot_json)
-            for run in runs
-        )
-        if repair_enabled:
-            seen_job_ids = {job.id for job in jobs}
-            jobs.extend(
-                job
-                for job in session.scalars(
-                    select(Job).where(
-                        Job.session_id == session_id,
-                        Job.kind == "generation.repair-existing",
+        # A post-run repair job has no child run until one is staged, so its
+        # job ID is not reachable through GenerationRun.job_id. Load every
+        # repair job for the session in the same query: an explicit request is
+        # admitted even when the run's frozen settings disable that pass.
+        jobs = list(
+            session.scalars(
+                select(Job).where(
+                    Job.id.in_(job_ids)
+                    | (
+                        (Job.session_id == session_id)
+                        & (Job.kind == "generation.repair-existing")
                     )
-                ).all()
-                if job.id not in seen_job_ids
-            )
+                )
+            ).all()
+        )
         job_by_id = {job.id: job for job in jobs}
         repair_jobs_by_root: dict[str, list[Job]] = {}
         for repair_job in jobs:
@@ -913,11 +931,15 @@ class GenerationHistoryReader:
             root, history, root_job, repair_job
         )
         receipt_job = repair_job or root_job
-        receipt = (
-            receipt_job.result_json
-            if receipt_job is not None and isinstance(receipt_job.result_json, dict)
-            else {}
+        # A workflow continuation stores the generation stage's result inside
+        # its own receipt, so read the counters where that job put them.
+        receipt = _repair_receipt(
+            receipt_job.result_json if receipt_job is not None else None
         )
+        # A post-run repair job owns its own evidence. The root job's receipt
+        # belongs to the inline first-pass, so borrowing it while the repair
+        # has not written anything would report someone else's progress.
+        awaiting_receipt = repair_job is not None and not receipt
         attempt_children = GenerationHistoryReader._repair_attempt_children(
             history, root_job, repair_job
         )
@@ -962,7 +984,7 @@ class GenerationHistoryReader:
         )
         regroup_outcome = _regroup_receipt_outcome(receipt)
         skip_reason = None
-        if status == "completed":
+        if status == "completed" and not awaiting_receipt:
             if regroup_outcome is not None:
                 # Regroup receipts use group counters, not repair counters, so
                 # the repair branches below must not reinterpret them.
@@ -999,6 +1021,10 @@ class GenerationHistoryReader:
                     # none needed a split. The check itself completed.
                     status = "no_effect"
         reported_pass_completed = pass_completed
+        if awaiting_receipt and active:
+            # The repair is still running with nothing written yet: it has not
+            # completed the pass, and no counter may claim it inspected blocks.
+            reported_pass_completed = False
         if (
             not isinstance(reported_pass_completed, bool)
             and regroup_outcome is not None
@@ -1030,7 +1056,7 @@ class GenerationHistoryReader:
             for child in history.repair_children
         }
         if REGROUP_REASON in reasons and EARLY_REPAIR_REASON in reasons:
-            kind = "mixed"
+            kind = MIXED_REASON
         elif REGROUP_REASON in reasons:
             kind = "regroup"
         elif EARLY_REPAIR_REASON in reasons:
@@ -1065,6 +1091,17 @@ class GenerationHistoryReader:
         else:
             kind = "unknown"
         usage_events = self._logical_usage_events(context, history)
+        # The pass owns the usage of its staged children only. Everything the
+        # logical run spent stays available as usage_total so neither figure
+        # can be mistaken for the other.
+        repair_events = [
+            event
+            for child in history.repair_children
+            for event in context["usage_by_run_id"].get(child.id, ())
+        ]
+        effect = receipt.get("repair_effect")
+        if not isinstance(effect, dict):
+            effect = None
         from .usage import usage_summary
 
         summary = {
@@ -1074,10 +1111,12 @@ class GenerationHistoryReader:
             "applied_count": len(history.applied_children),
             "attempt_count": len(history.repair_children),
             # Additive diagnostics: the current attempt's receipt is the
-            # authoritative evidence for a truthful status.
-            "checked_count": checked,
-            "candidate_count": candidates,
-            "attempted_count": attempted,
+            # authoritative evidence for a truthful status. A repair that has
+            # written no receipt has inspected nothing it can report, so its
+            # counters stay unknown rather than borrowing the inline pass.
+            "checked_count": None if awaiting_receipt else checked,
+            "candidate_count": None if awaiting_receipt else candidates,
+            "attempted_count": None if awaiting_receipt else attempted,
             "pass_completed": reported_pass_completed
             if isinstance(reported_pass_completed, bool)
             else None,
@@ -1097,7 +1136,11 @@ class GenerationHistoryReader:
             ),
             "repair_rejection_reasons": rejections if isinstance(rejections, dict) else {},
             "versions": versions,
-            "usage": usage_summary(usage_events),
+            # The second pass's own spending.
+            "usage": usage_summary(repair_events),
+            # The whole logical run, including first-pass synthesis.
+            "usage_total": usage_summary(usage_events),
+            "effect": effect,
         }
         return summary, active
 
@@ -1300,7 +1343,9 @@ class GenerationHistoryReader:
             and job is not None
             and job.status in {"succeeded", "failed", "canceled"}
         ):
-            receipt = job.result_json if isinstance(job.result_json, dict) else {}
+            # Read the receipt where the job put it: top level for a plain
+            # generation job, a stage entry for a workflow continuation.
+            receipt = _repair_receipt(job.result_json)
             if (
                 second_pass == "repair"
                 and not history.repair_children
@@ -1329,8 +1374,7 @@ class GenerationHistoryReader:
             and repair_job is None
             and job is not None
             and job.status in {"succeeded", "failed", "canceled"}
-            and isinstance(job.result_json, dict)
-            and "regrouped_groups" in job.result_json
+            and "regrouped_groups" in _repair_receipt(job.result_json)
         )
         if (
             is_original_root

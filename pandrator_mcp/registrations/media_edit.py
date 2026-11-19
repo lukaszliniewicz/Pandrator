@@ -48,6 +48,7 @@ from ..tools import (
     submit_media_edit_dispatch_batch,
     update_media_edit,
 )
+from ..waits import WAIT_DESCRIPTION
 
 
 def register_media_edit_tools(
@@ -190,7 +191,7 @@ def register_media_edit_tools(
                 description="Safe STT/VAD setting overrides merged into the current STT section."
             ),
         ] = None,
-        wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
+        wait_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 0,
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
         materialize: Annotated[
             bool,
@@ -249,6 +250,7 @@ def register_media_edit_tools(
             ),
         ],
         force: bool = False,
+        view: Literal["summary", "full"] = "summary",
     ) -> dict[str, Any]:
         """Prepare or explicitly refresh the media-edit plan for a session."""
 
@@ -259,6 +261,7 @@ def register_media_edit_tools(
             {
                 "session_id": session_id,
                 "force": force,
+                "view": view,
                 "idempotency_key": idempotency_key,
             },
         )
@@ -282,6 +285,7 @@ def register_media_edit_tools(
         ],
         instructions: Annotated[NativeNullableString, Field(max_length=10_000)] = None,
         reviewed: bool | None = None,
+        view: Literal["summary", "full"] = "summary",
     ) -> dict[str, Any]:
         """Apply keep ranges only when the supplied media-edit revision is current."""
 
@@ -296,6 +300,7 @@ def register_media_edit_tools(
                 "idempotency_key": idempotency_key,
                 "instructions": instructions,
                 "reviewed": reviewed,
+                "view": view,
             },
         )
 
@@ -356,7 +361,7 @@ def register_media_edit_tools(
         ],
         model: Annotated[NativeNullableString, Field(max_length=512)] = None,
         wait: bool = True,
-        timeout_seconds: Annotated[int, Field(ge=0, le=3_600)] = 60,
+        timeout_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 60,
     ) -> dict[str, Any]:
         """Queue an instruction-driven proposal and optionally wait for its job."""
 
@@ -392,7 +397,7 @@ def register_media_edit_tools(
             ),
         ],
         wait: bool = True,
-        timeout_seconds: Annotated[int, Field(ge=0, le=3_600)] = 60,
+        timeout_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 60,
         subtitles_only: bool = False,
     ) -> dict[str, Any]:
         """Render an edit, or resegment its subtitles only, and optionally wait."""

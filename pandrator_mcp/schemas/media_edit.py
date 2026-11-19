@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import Field, StrictInt, field_validator, model_validator
 
+from ..waits import WAIT_DESCRIPTION
 from .common import ToolInput
 
 _MAX_JOB_WAIT_SECONDS = 3_600
@@ -72,6 +73,7 @@ class RefineMediaEditBoundaryArguments(ToolInput):
 class PrepareMediaEditArguments(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     force: bool = False
+    view: Literal["summary", "full"] = "summary"
     idempotency_key: str = Field(**_IDEMPOTENCY_KEY)
 
 
@@ -81,6 +83,7 @@ class UpdateMediaEditArguments(ToolInput):
     keep_ranges: list[MediaEditKeepRange] = Field(min_length=1, max_length=1000)
     instructions: str | None = Field(default=None, max_length=10_000)
     reviewed: bool | None = None
+    view: Literal["summary", "full"] = "summary"
     idempotency_key: str = Field(**_IDEMPOTENCY_KEY)
 
 
@@ -94,6 +97,7 @@ class ProposeMediaEditArguments(ToolInput):
         default=_DEFAULT_JOB_WAIT_SECONDS,
         ge=0,
         le=_MAX_JOB_WAIT_SECONDS,
+        description=WAIT_DESCRIPTION,
     )
     idempotency_key: str = Field(**_IDEMPOTENCY_KEY)
 
@@ -125,5 +129,6 @@ class RenderMediaEditArguments(ToolInput):
         default=_DEFAULT_JOB_WAIT_SECONDS,
         ge=0,
         le=_MAX_JOB_WAIT_SECONDS,
+        description=WAIT_DESCRIPTION,
     )
     idempotency_key: str = Field(**_IDEMPOTENCY_KEY)

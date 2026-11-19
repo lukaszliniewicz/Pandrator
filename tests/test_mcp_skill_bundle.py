@@ -79,7 +79,8 @@ def test_recent_release_semantics_are_documented_without_fake_mcp_tools() -> Non
     operations = docs["references/mcp-operations.md"]
     assert "early-finish" in operations
     assert "no_effect" in operations and "pass_completed" in operations
-    assert "not** through a dedicated MCP" in operations
+    assert "pandrator_repair_generation_timing" in operations
+    assert "neighbour_growth_precheck" in operations
     assert '`subtitle_selection="dual"`' in operations
     assert '`subtitle_mode="soft"`' in operations
     assert '`subtitle_mode="burned"`' in operations

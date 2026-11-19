@@ -1,6 +1,7 @@
 import { apiJson } from './api';
 
-type AssetStatus = 'cached' | 'missing' | 'unresolved' | 'not_required';
+type AssetStatus =
+  'cached' | 'missing' | 'unresolved' | 'not_required' | 'will_download';
 
 export type TranscriptionReadiness = {
   scope: 'local_model_files';
@@ -13,6 +14,8 @@ export type TranscriptionReadiness = {
     id: string;
     status: AssetStatus;
     verification: string;
+    /** Set on a missing model that only an Administrator's run may download. */
+    download?: 'administrator_required';
   }[];
 };
 

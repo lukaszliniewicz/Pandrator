@@ -117,7 +117,9 @@ def test_timed_video_mixes_effects_after_the_voice_soundtrack_master(
     inputs = SimpleNamespace(
         session_id="session-id",
         settings=settings,
-        record=SimpleNamespace(storage_key="test-book"),
+        record=SimpleNamespace(
+            storage_key="test-book", target_language=None, source_language=None
+        ),
     )
     selection = SimpleNamespace(
         upload_media=upload_media,

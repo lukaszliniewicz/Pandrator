@@ -154,7 +154,14 @@ class RepairHistoryDeletionTests(unittest.TestCase):
             self.result_run_id, root["timing_repair"]["result_generation_run_id"]
         )
         self.assertEqual(2, root["timing_repair"]["applied_count"])
-        self.assertAlmostEqual(1.3, root["timing_repair"]["usage"]["total_cost_usd"])
+        # The pass's own spending, and the whole logical run that contains it.
+        self.assertAlmostEqual(
+            0.2, root["timing_repair"]["usage"]["total_cost_usd"]
+        )
+        self.assertAlmostEqual(
+            1.3, root["timing_repair"]["usage_total"]["total_cost_usd"]
+        )
+        self.assertEqual(3, root["timing_repair"]["usage_total"]["event_count"])
         self.assertEqual(1.0, root["usage"]["total_cost_usd"])
         self.assertTrue(rows[manual_id]["label"].startswith("Run 2:"))
         self.assertNotIn("timing_repair", rows[manual_id])

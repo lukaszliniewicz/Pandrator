@@ -249,6 +249,29 @@ class OrchestrationToolTests(unittest.TestCase):
             "not an immutable execution snapshot", outcome.result["immutability"]
         )
 
+    def test_omitted_audio_mode_is_not_forwarded_to_the_export_plan(self):
+        runtime = SimpleNamespace(require_application=lambda: _Application())
+        omitted = plan_orchestrated_workflow(
+            runtime,
+            PlanOrchestratedWorkflowInput(
+                session_id="session-1", goal="Export existing media",
+            ),
+        ).result["phases"][0]["arguments"]["overrides"]["output"]
+        self.assertNotIn("audio_mode", omitted)
+        supplied = plan_orchestrated_workflow(
+            runtime,
+            PlanOrchestratedWorkflowInput(
+                session_id="session-1", goal="Export existing media",
+                audio_mode="mixed",
+            ),
+        ).result["phases"][0]["arguments"]["overrides"]["output"]
+        self.assertEqual("mixed", supplied["audio_mode"])
+        self.assertIsNone(
+            PlanOrchestratedWorkflowInput(
+                session_id="session-1", goal="Export existing media",
+            ).audio_mode
+        )
+
     def test_omitted_typed_selector_preserves_override_and_explicit_auto_wins(self):
         runtime = SimpleNamespace(require_application=lambda: _Application())
         arguments = PlanOrchestratedWorkflowInput(

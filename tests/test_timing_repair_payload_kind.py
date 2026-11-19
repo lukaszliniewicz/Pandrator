@@ -39,7 +39,9 @@ def _root(snapshot: dict | None = None):
     )
 
 
-def _payload(root, children, operations, *, root_job=None, repair_job=None):
+def _payload(
+    root, children, operations, *, root_job=None, repair_job=None, usage_by_run_id=None
+):
     history = GenerationRunHistory(
         root=root,
         repair_children=tuple(children),
@@ -57,13 +59,26 @@ def _payload(root, children, operations, *, root_job=None, repair_job=None):
     )
     context = {
         "runs": [root, *children],
-        "usage_by_run_id": {},
+        "usage_by_run_id": usage_by_run_id or {},
         "workflow_kind": "voiceover",
     }
     summary, _active = GenerationService._timing_repair_payload(
         stub, context, history, root, root_job, repair_job=repair_job
     )
     return summary
+
+
+def _usage_event(event_id: str, *, input_tokens: int, cost: float):
+    return SimpleNamespace(
+        id=event_id,
+        raw_usage_json={},
+        cost_usd=cost,
+        stage="tts",
+        input_tokens=input_tokens,
+        cached_input_tokens=0,
+        output_tokens=0,
+        model_id="fixture-model",
+    )
 
 
 def _operations(children, reason: str, repair_status: str = "applied"):
@@ -553,6 +568,74 @@ class TimingRepairPayloadKindTests(unittest.TestCase):
         operations = {"g1": {"repair_status": "applied"}}
         summary = _payload(root, children, operations)
         self.assertEqual("unknown", summary["kind"])
+
+    def test_workflow_stage_receipt_reports_the_same_counts_and_status(self):
+        """A workflow continuation nests the pass counters under ``artifacts``."""
+
+        root = _root()
+        children = [_child("r1", 2), _child("r2", 3)]
+        operations = _operations(children, "early_timing_repair")
+        effect = {
+            "late_cues_before": 3,
+            "late_cues_after": 1,
+            "worst_lag_ms_before": 4000,
+            "worst_lag_ms_after": 800,
+            "blocks": 2,
+        }
+        stage = {
+            "stage": "generate_audio",
+            "generation_run_id": "root",
+            "repair_checked_blocks": 477,
+            "repair_candidate_blocks": 22,
+            "repair_attempted_blocks": 2,
+            "repaired_blocks": 2,
+            "repair_completed": True,
+            "repair_rejection_reasons": {},
+            "repair_effect": effect,
+        }
+        job = SimpleNamespace(
+            status="succeeded",
+            result_json={
+                "artifacts": [stage, {"stage": "export", "artifact_id": "a1"}],
+                "target_stage": "export",
+            },
+        )
+        summary = _payload(root, children, operations, root_job=job)
+        # The run projection must agree with the job result it read.
+        self.assertEqual(477, summary["checked_count"])
+        self.assertEqual(22, summary["candidate_count"])
+        self.assertEqual(2, summary["attempted_count"])
+        self.assertEqual(2, summary["applied_count"])
+        self.assertTrue(summary["pass_completed"])
+        self.assertEqual("completed", summary["status"])
+        self.assertEqual(effect, summary["effect"])
+
+    def test_usage_separates_the_pass_from_the_whole_run(self):
+        root = _root()
+        children = [_child("r1", 2)]
+        operations = _operations(children, "early_timing_repair")
+        summary = _payload(
+            root,
+            children,
+            operations,
+            usage_by_run_id={
+                "root": [_usage_event("u1", input_tokens=482, cost=0.73)],
+                "r1": [_usage_event("u2", input_tokens=88, cost=0.14)],
+            },
+        )
+        # The pass's own spending, and the logical run that contains it.
+        self.assertEqual(1, summary["usage"]["event_count"])
+        self.assertEqual(88, summary["usage"]["input_tokens"])
+        self.assertAlmostEqual(0.14, summary["usage"]["total_cost_usd"])
+        self.assertEqual(2, summary["usage_total"]["event_count"])
+        self.assertEqual(570, summary["usage_total"]["input_tokens"])
+        self.assertAlmostEqual(0.87, summary["usage_total"]["total_cost_usd"])
+
+    def test_no_receipt_effect_stays_absent(self):
+        summary = _payload(_root(), [], {}, root_job=SimpleNamespace(
+            status="succeeded", result_json={"repaired_blocks": 0}
+        ))
+        self.assertIsNone(summary["effect"])
 
 
 if __name__ == "__main__":

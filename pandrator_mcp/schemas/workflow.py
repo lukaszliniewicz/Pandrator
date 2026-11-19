@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from ..waits import WAIT_DESCRIPTION
 from .common import ToolInput
 from .delegation import DelegationExecutionMixin
 
@@ -102,7 +103,31 @@ class PlanWorkflowInput(ToolInput):
     ] = "generate_audio"
     overrides: dict[str, Any] = Field(default_factory=dict)
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
-    continuation: bool = Field(default=True, description="Include prerequisite workflow stages. Use false for export-only planning from existing inputs/audio.")
+    continuation: bool = Field(
+        default=True,
+        description="Include prerequisite workflow stages. Use false for export-only planning from existing inputs/audio.",
+    )
+    reuse_stages: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "Prerequisite stages to keep even if their settings or source "
+            "changed, such as an accepted passive correction or translation."
+        ),
+    )
+    rerun_stages: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Prerequisite stages to run again even if their results are current.",
+    )
+    view: Literal["summary", "full"] = Field(
+        default="summary",
+        description=(
+            "Summary keeps the steps, warnings, confirmations, digest, expiry and "
+            "effective settings; full also returns settings.resolved_snapshot. "
+            "Execution accepts either view."
+        ),
+    )
 
     @field_validator("overrides")
     @classmethod
@@ -139,20 +164,28 @@ class PlanOrchestratedWorkflowInput(DelegationExecutionMixin):
     packet_format: Literal["standard", "compact"] = "compact"
     overrides: dict[str, Any] = Field(default_factory=dict)
     export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media"
-    audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed"
+    audio_mode: Literal["preserve", "mixed", "dubbing_only"] | None = Field(
+        default=None,
+        description=(
+            "Omit to use the session's effective audio mode. `mixed` keeps the "
+            "original soundtrack under the voice; `dubbing_only` replaces it."
+        ),
+    )
     subtitle_mode: Literal["none", "soft", "burned"] = "none"
     subtitle_text_source: Literal["current", "generation_run", "selected_artifact"] = "current"
     subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None
     subtitle_format: Literal["srt", "vtt"] = "srt"
     materialize: bool = False
     filename: str | None = Field(default=None, max_length=255)
-    wait_seconds: int = Field(default=0, ge=0, le=3_600)
+    wait_seconds: int = Field(default=0, ge=0, le=3_600, description=WAIT_DESCRIPTION)
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
 
     @model_validator(mode="after")
     def validate_existing_audio_export(self):
         if self.generation_run_id and (self.final_stage != "export" or self.passive_stages):
-            raise ValueError("A selected generation run requires export with no upstream passive stages.")
+            raise ValueError(
+                "A selected generation run requires export with no upstream passive stages."
+            )
         return self
 
     @field_validator("goal")

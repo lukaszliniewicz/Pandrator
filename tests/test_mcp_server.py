@@ -172,6 +172,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_work_log",
                         "pandrator_get_workflow",
                         "pandrator_import_local_source",
+                        "pandrator_import_source_url",
                         "pandrator_import_audio_reference",
                         "pandrator_import_voice_reference",
                         "pandrator_import_subtitles",
@@ -216,6 +217,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_recast_voices",
                         "pandrator_refine_media_edit_boundary",
                         "pandrator_regenerate_segments",
+                        "pandrator_repair_generation_timing",
                         "pandrator_release_dispatch_batch",
                         "pandrator_release_media_edit_dispatch_batch",
                         "pandrator_release_source_cleaning_dispatch_batch",
@@ -289,6 +291,11 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                             ["sound", "voice_reference"],
                         )
                         forbidden_properties.remove("target")
+                    elif tool.name == "pandrator_import_source_url":
+                        # A public http(s) source URL is this tool's subject; the
+                        # route rejects any other scheme or a missing host, and the
+                        # argument never names a configured target or endpoint.
+                        forbidden_properties.remove("url")
                     self.assertTrue(properties.isdisjoint(forbidden_properties))
                     spec = ACTION_CATALOG.get(tool.name)
                     self.assertEqual(

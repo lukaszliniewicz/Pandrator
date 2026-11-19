@@ -281,7 +281,6 @@ def media_edit_render(context: MediaEditRenderContext, payload, progress, cancel
         "duration_ms": duration_ms,
         "media_edit_word_timestamps_artifact_id": word_timestamps_artifact.id,
         "word_timestamps_artifact_id": word_timestamps_artifact.id,
-        "word_timestamps_path": word_timestamps_artifact.relative_path,
         "word_count": stored_word_count,
         **composition_metadata,
         "document_id": document_id,

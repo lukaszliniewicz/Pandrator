@@ -18,7 +18,9 @@ from .access.contracts import AccessDenied
 from .access.session_policy import SessionNotFound
 from .access.source_ingress_policy import require_source_ingress_access
 from .access.source_preparation_policy import require_text_preparation_access
+from .accounts.administration import AdministratorRequired
 from .accounts.execution_actor import current_execution_actor
+from .accounts.model_acquisition import require_model_acquisition
 from .models import (
     Artifact,
     SourceRecord,
@@ -328,6 +330,17 @@ def download_source_url(
 ) -> dict[str, Any]:
     session_id = str(payload.get("session_id") or "")
     _check_source_ingress(context, session_id, "source.download_url")
+
+    # The host fetches the URL, and yt-dlp follows whatever it finds. Repeat the
+    # acquisition rule for the job's restored actor before the first lookup: an
+    # import admitted elsewhere must not outlive that actor's authority.
+    try:
+        require_model_acquisition(context.database)
+    except AdministratorRequired as error:
+        raise ValueError(
+            "Importing a source from a URL requires an Administrator: the Pandrator "
+            "host fetches the URL."
+        ) from error
 
     import yt_dlp
     from yt_dlp.utils import DownloadError

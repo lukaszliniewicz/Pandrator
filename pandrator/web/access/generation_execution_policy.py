@@ -15,6 +15,8 @@ from typing import Any, NamedTuple, NoReturn, TypeGuard
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_MARKER_KEY
+
 from ..accounts.credential_resources import credential_project_clause
 from ..accounts.execution_actor import (
     HostActor,
@@ -37,6 +39,7 @@ from ..models import (
     WorkflowRun,
 )
 from ..projects.models import Project
+from ..settings_policy import EARLY_REPAIR_THRESHOLD_BOUNDS
 from .contracts import AccessDenied, ProjectAction
 from .project_visibility import project_ids_for_user
 
@@ -44,6 +47,23 @@ _INJECTED = frozenset({"_job_id", "_lease_generation"})
 _LEASE_KEYS = frozenset({"job_id", "owner_id", "lease_generation"})
 _BRIDGES = frozenset({"workflow.continue", "audiobook.generate_audio", "dubbing.generate_audio"})
 _BRIDGE_KEYS = frozenset({"generation_run_id", "operation", "segment_ids"}) | _INJECTED
+#: The explicit repair request freezes its four thresholds into the job payload.
+#: Bounds come from the settings policy so admission and storage agree.
+_REPAIR_THRESHOLD_BOUNDS = tuple(
+    (suffix, minimum, maximum)
+    for suffix, minimum, maximum in EARLY_REPAIR_THRESHOLD_BOUNDS
+)
+
+
+def _valid_repair_thresholds(value: Any) -> bool:
+    if type(value) is not dict or set(value) != {
+        name for name, _minimum, _maximum in _REPAIR_THRESHOLD_BOUNDS
+    }:
+        return False
+    return all(
+        type(value[name]) is int and minimum <= value[name] <= maximum
+        for name, minimum, maximum in _REPAIR_THRESHOLD_BOUNDS
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,7 +423,7 @@ def _require_repair_child_lineage(
             run_job_id != job_id
             or run_session_id != session_id
             or not isinstance(snapshot, dict)
-            or snapshot.get("early_repair_parent_run_id") != root_id
+            or snapshot.get(EARLY_REPAIR_MARKER_KEY) != root_id
             or not _identifier(source_id)
         ):
             _deny()
@@ -428,10 +448,15 @@ def _check_payload(session: Session, payload: Mapping[str, Any], header: _JobHea
             # descendants, not arbitrary generation runs in the session.
             repair_session_id = header.session_id
             if (
-                set(stored) != {"generation_run_id", "session_id"}
+                set(stored) - {"repair_thresholds"}
+                != {"generation_run_id", "session_id"}
                 or not _identifier(stored.get("generation_run_id"))
                 or not _identifier(repair_session_id)
                 or stored.get("session_id") != repair_session_id
+                or (
+                    "repair_thresholds" in stored
+                    and not _valid_repair_thresholds(stored["repair_thresholds"])
+                )
                 or set(supplied) != {"generation_run_id", "operation", "segment_ids"}
                 or supplied.get("operation") != "resume"
                 or type(supplied.get("segment_ids")) is not list
@@ -447,7 +472,7 @@ def _check_payload(session: Session, payload: Mapping[str, Any], header: _JobHea
                 or child.job_id != header.id
                 or child.source_generation_run_id is None
                 or not isinstance(child.settings_snapshot_json, dict)
-                or child.settings_snapshot_json.get("early_repair_parent_run_id")
+                or child.settings_snapshot_json.get(EARLY_REPAIR_MARKER_KEY)
                 != root.id
             ):
                 _deny()

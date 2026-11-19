@@ -663,6 +663,9 @@ class Job(Base):
     )
     progress: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     progress_detail: Mapped[str | None] = mapped_column(Text)
+    progress_state_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     error_code: Mapped[str | None] = mapped_column(String(120))
     error_message: Mapped[str | None] = mapped_column(Text)
     lease_owner: Mapped[str | None] = mapped_column(String(120), index=True)

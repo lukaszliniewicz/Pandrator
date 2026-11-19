@@ -44,6 +44,7 @@ class StreamingTtsBatchProtocol(Protocol):
         batch_size: int,
         tts_urls: dict[str, str],
         cancel_event: threading.Event,
+        retry_tracker: Any = None,
     ) -> Iterator[TtsBatchResult]: ...
 
 

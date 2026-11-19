@@ -30,7 +30,11 @@ def capture_current_performance(
     session: Session, *, rows: Mapping[str, Any], max_rows: int,
     allow_performance: bool = True,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Capture matching drafts/adopted intent; exclude stale draft history.
+    """Capture matching drafts and the adopted plan; exclude stale draft history.
+
+    An adopted plan whose signature no longer matches is captured too: the codec
+    judges it per block, keeping unchanged and still-fitting entries and leaving
+    the rest for review.
 
     The caller proves project authority in this same unit. Headers and limits
     precede units/annotation bodies; no job, usage or response payload is loaded.
@@ -69,8 +73,9 @@ def capture_current_performance(
             adopted[sid] = header
         if revision not in signatures:
             signatures[revision] = plan_signature(session, revision)
-        if header["base_signature"] != signatures[revision]:
-            unavailable += header["status"] == "adopted"
+        # A stale adopted plan is judged per block when it is frozen; a stale
+        # draft is superseded history and stays out.
+        if header["status"] == "draft" and header["base_signature"] != signatures[revision]:
             continue
         candidates.append(header)
     if unavailable:
@@ -160,8 +165,12 @@ def capture_current_performance(
         values.append({**header, "settings_json": settings[identifier], "units_json": body["units_json"]})
         baselines[identifier] = current["id"] if current is not None and header["status"] == "draft" else None
     try:
+        # The live signatures decide which plans are current: the copied rows
+        # carry no lineage, so their own signature cannot.
+        current = {header["id"] for header in candidates
+            if header["base_signature"] == signatures[header["plan_revision_id"]]}
         return freeze_performance_plan_rows(values, rows=rows, annotations=annotations,
-            base_adopted_plan_ids=baselines), 0
+            base_adopted_plan_ids=baselines, current_plan_ids=current), 0
     except (ValueError, TypeError, KeyError) as error:
         raise project_copy_error("copy_graph_invalid") from error
 

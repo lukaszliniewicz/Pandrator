@@ -10,7 +10,11 @@ from pydub import AudioSegment
 
 from pandrator.logic import tts_handler
 from pandrator.logic.cancellable_process import ProcessCancelled
-from pandrator.web.tts_providers import AudioCppAdapter, TtsBatchItem
+from pandrator.web.tts_providers import (
+    AudioCppAdapter,
+    TtsBatchItem,
+    TtsProviderRegistry,
+)
 
 
 @pytest.mark.parametrize("service", ["audio_cpp", "audio.cpp", "audio-cpp", "audiocpp"])
@@ -102,6 +106,50 @@ def test_caller_owned_session_does_not_allocate_an_adapter_pool(monkeypatch, bat
         else:
             adapter.synthesize("One", settings, request_session=session)
         assert seen == [session]
+
+
+def test_audio_cpp_batch_reports_each_items_retry_wait(monkeypatch):
+    registry = TtsProviderRegistry()
+    settings = {
+        "service": "audio_cpp",
+        "audio_cpp_base_url": "http://203.0.113.30:8060",
+    }
+    recorded = []
+    lock_entries = []
+
+    class Tracker:
+        def record(self, key, **fields):
+            recorded.append((key, fields))
+
+    @contextmanager
+    def endpoint_lock(_settings, _cancel=None):
+        lock_entries.append(1)
+        yield
+
+    def synthesize(_text, _settings, **options):
+        options["retry_callback"](1, 3, 0.5, "rate_limited")
+        return AudioSegment.silent(duration=20)
+
+    monkeypatch.setattr(tts_handler, "audio_cpp_endpoint_lock", endpoint_lock)
+    monkeypatch.setattr(tts_handler, "text_to_audio", synthesize)
+    results = list(
+        registry.synthesize_batch(
+            [TtsBatchItem("item-1", "Hello", settings)],
+            batch_size=1,
+            retry_tracker=Tracker(),
+        )
+    )
+
+    assert results[0].error is None
+    # The whole batch still runs inside one endpoint lock.
+    assert len(lock_entries) == 1
+    assert [key for key, _fields in recorded] == ["item-1"]
+    fields = recorded[0][1]
+    assert fields["attempt"] == 1
+    assert fields["attempt_limit"] == 3
+    assert fields["delay_seconds"] == 0.5
+    assert fields["reason"] == "rate_limited"
+    assert fields["provider"]
 
 
 def test_batch_rejects_distinct_configured_endpoints_despite_common_fallback(monkeypatch):

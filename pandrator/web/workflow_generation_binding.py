@@ -442,7 +442,14 @@ def _subtitle_plan_state(
         planned_source = str(
             (active_revision.settings_json or {}).get("_source_artifact_id") or ""
         )
-        if planned_source and planned_source != source_artifact_id:
+        from .speech_plan_source import revision_source_compatibility
+
+        compatibility = revision_source_compatibility(
+            session,
+            active_revision.settings_json or {},
+            session.get(Artifact, source_artifact_id),
+        )
+        if planned_source and compatibility == "incompatible":
             raise ValueError(
                 "The selected speech plan belongs to a different subtitle source. Restore the matching source or explicitly prepare a new speech plan."
             )

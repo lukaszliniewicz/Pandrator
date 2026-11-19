@@ -70,6 +70,8 @@ def register_workflow_plan_routes(
                 overrides=payload.overrides,
                 continuation=payload.continuation,
                 expires_in_minutes=payload.expires_in_minutes,
+                reuse_stages=payload.reuse_stages,
+                rerun_stages=payload.rerun_stages,
             )
         except KeyError:
             return error_response(

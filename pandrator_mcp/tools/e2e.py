@@ -1103,6 +1103,9 @@ def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutc
                 ),
             },
             "settings_revision": result.get("revision"),
+            # The backend's post-change read names the route and its origins;
+            # this tool never resolves provenance itself.
+            "tts_route": result.get("tts_route"),
         },
         next_actions=[
             NextAction(
@@ -1155,11 +1158,12 @@ def plan_export_variant(
     output: dict[str, Any] = {
         "audio_version_side": arguments.audio_version_side,
         "export_mode": arguments.export_mode,
-        "audio_mode": arguments.audio_mode,
         "subtitle_mode": arguments.subtitle_mode,
         "subtitle_text_source": arguments.subtitle_text_source,
         "subtitle_format": arguments.subtitle_format,
     }
+    if arguments.audio_mode is not None:
+        output["audio_mode"] = arguments.audio_mode
     if arguments.subtitle_selection is not None:
         output["subtitle_selection"] = arguments.subtitle_selection
     if arguments.generation_run_id:
@@ -1171,7 +1175,7 @@ def plan_export_variant(
         expires_in_minutes=arguments.expires_in_minutes,
         continuation=False,
     )
-    return workflow_plan_outcome(plan)
+    return workflow_plan_outcome(plan, view=arguments.view)
 
 
 def _safe_filename(value: str) -> str:
@@ -1196,9 +1200,14 @@ def download_artifact(
     ):
         output_root = str(Path(profile.workspace) / "exports")
     if not output_root:
+        # Only the operator can approve a local folder, so the message names
+        # the host command rather than a tool.
+        target = profile.name if profile else "<target>"
         raise PandratorMcpError(
             "precondition_required",
-            "Configure a local output root before materializing artifacts.",
+            "This target has no local output root, so artifacts cannot be "
+            "downloaded. Ask the operator to set one on the MCP host: "
+            f"pandrator-mcp target output-root-set {target} <folder>.",
         )
     application = runtime.require_application()
     context = application.artifact_context(arguments.artifact_id)

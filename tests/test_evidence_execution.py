@@ -620,3 +620,92 @@ def test_audio_library_requires_independent_grant_and_freezes_model_revision(cas
         if revoked == "workspace":
             with case.database.immediate_session() as session:
                 session.get(m.Workspace, case.workspace_id).state = "active"
+
+
+def _running_render(case):
+    render = case.services.jobs.enqueue(
+        "media_edit.render",
+        session_id=case.source.id,
+        resource_keys=[f"session:{case.source.id}", "service:ffmpeg"],
+        max_attempts=2,
+    )
+    claimed = case.services.jobs.claim("render-worker")
+    assert claimed is not None and claimed.id == render.id
+    assert case.services.jobs.acquire_resources(
+        render.id,
+        "render-worker",
+        list(claimed.resource_keys_json or []),
+        lease_generation=claimed.lease_generation,
+    )
+    return render, claimed
+
+
+def test_evidence_runs_beside_a_render_in_its_session_on_the_delivery_lane(case):
+    from pandrator.web.job_handler_domains import DELIVERY_LANE_JOB_KINDS
+
+    render, _claimed = _running_render(case)
+    evidence_id, _job_id = admit(case)
+
+    lane = Worker(
+        case.services.jobs,
+        "evidence-lane",
+        {"subtitle.evidence": handler(case)},
+        kinds=DELIVERY_LANE_JOB_KINDS,
+    )
+    assert lane.run_once()
+    assert record(case, evidence_id).status == "completed"
+    # The render it was asked to support is untouched and still running.
+    assert case.services.jobs.get(render.id).status == "running"
+
+
+def test_two_evidence_jobs_in_one_session_still_run_one_after_the_other(case):
+    _first_evidence, first_id = admit(case)
+    _second_evidence, second_id = admit(case)
+    first = case.services.jobs.claim("evidence-worker", kinds={"subtitle.evidence"})
+    assert first is not None and first.id in {first_id, second_id}
+    other_id = second_id if first.id == first_id else first_id
+    # Two evidence requests in one session never overlap: the second waits for
+    # the running one and for the older queued one.
+    assert case.services.jobs.claim("other-worker", kinds={"subtitle.evidence"}) is None
+    case.services.jobs.complete(
+        first.id, "evidence-worker", {}, lease_generation=first.lease_generation
+    )
+    waited = case.services.jobs.get(other_id)
+    assert waited.status == "queued"
+    second = case.services.jobs.claim("other-worker", kinds={"subtitle.evidence"})
+    assert second is not None and second.id == other_id
+
+
+def test_local_evidence_route_claims_the_accelerator_and_a_cloud_route_does_not(case):
+    _cloud_evidence, cloud_id = admit(case, routes=["azure_mai_transcribe_2"])
+    _local_evidence, local_id = admit(case, routes=["whisper"])
+    local = case.services.jobs.get(local_id)
+    cloud = case.services.jobs.get(cloud_id)
+    assert "gpu:default" in local.resource_keys_json
+    assert "gpu:default" not in cloud.resource_keys_json
+    assert "service:stt" in local.resource_keys_json
+    assert "service:stt" not in cloud.resource_keys_json
+    # The evidence request owns no session-wide key: a render keeps that one.
+    assert not [key for key in local.resource_keys_json if str(key).startswith("session:")]
+
+    # A local generation in another session holds the device. The local route
+    # must not take it, and the cloud route does not need it.
+    other = case.services.sessions.create("Other project").id
+    generation = case.services.jobs.enqueue(
+        "generation.run",
+        session_id=other,
+        resource_keys=[f"session:{other}", "service:tts:xtts", "gpu:default"],
+        max_attempts=2,
+    )
+    running = case.services.jobs.claim("generate-worker", kinds={"generation.run"})
+    assert running is not None and running.id == generation.id
+    assert case.services.jobs.acquire_resources(
+        generation.id,
+        "generate-worker",
+        list(running.resource_keys_json or []),
+        lease_generation=running.lease_generation,
+    )
+    chosen = case.services.jobs.claim("evidence-worker", kinds={"subtitle.evidence"})
+    assert chosen is not None and chosen.id == cloud_id
+    assert case.services.jobs.get(local_id).status == "queued"
+    assert case.services.jobs.get(local_id).attempts == 0

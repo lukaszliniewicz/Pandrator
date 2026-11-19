@@ -7,6 +7,25 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+DEFAULT_MAXIMUM_WAIT_SECONDS = 25
+
+
+def default_maximum_wait_seconds() -> int:
+    """Read the server-side wait ceiling from the process environment."""
+
+    configured = str(os.environ.get("PANDRATOR_MCP_MAX_WAIT_SECONDS") or "").strip()
+    if not configured:
+        return DEFAULT_MAXIMUM_WAIT_SECONDS
+    try:
+        value = int(configured)
+    except ValueError as error:
+        raise ValueError(
+            "PANDRATOR_MCP_MAX_WAIT_SECONDS must be a whole number of seconds."
+        ) from error
+    if not 1 <= value <= 3_600:
+        raise ValueError("PANDRATOR_MCP_MAX_WAIT_SECONDS must be between 1 and 3600.")
+    return value
+
 
 def default_configuration_path() -> Path:
     configured = str(os.environ.get("PANDRATOR_MCP_CONFIG") or "").strip()
@@ -27,6 +46,11 @@ class McpSettings(BaseModel):
     target_name: str = Field(min_length=1, max_length=80)
     configuration_path: Path = Field(default_factory=default_configuration_path)
     request_timeout_seconds: float = Field(default=15.0, ge=1.0, le=120.0)
+    maximum_wait_seconds: int = Field(
+        default_factory=default_maximum_wait_seconds,
+        ge=1,
+        le=3_600,
+    )
     maximum_response_bytes: int = Field(
         default=8 * 1024 * 1024,
         ge=64 * 1024,

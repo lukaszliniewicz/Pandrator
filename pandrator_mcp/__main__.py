@@ -57,6 +57,23 @@ def _add_config_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_max_wait_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--max-wait-seconds",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Cap each server-side tool wait. Defaults to 25, or to "
+            "PANDRATOR_MCP_MAX_WAIT_SECONDS when that is set."
+        ),
+    )
+
+
+def _wait_setting(value: int | None) -> dict[str, int]:
+    return {"maximum_wait_seconds": value} if value is not None else {}
+
+
 def _credential_reference(
     backend: str | None,
     reference: str | None,
@@ -211,6 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     stdio = subcommands.add_parser("stdio", help="Run the local stdio MCP server.")
     stdio.add_argument("--target", required=True)
+    _add_max_wait_argument(stdio)
     _add_config_argument(stdio)
 
     http = subcommands.add_parser(
@@ -221,6 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     http.add_argument("--token-file", type=Path, required=True)
     http.add_argument("--host", default=MCP_HTTP_HOST)
     http.add_argument("--port", type=int, default=MCP_HTTP_PORT)
+    _add_max_wait_argument(http)
     _add_config_argument(http)
 
     target = subcommands.add_parser(
@@ -573,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
                 McpSettings(
                     target_name=args.target,
                     configuration_path=args.config,
+                    **_wait_setting(args.max_wait_seconds),
                 )
             )
             build_server(runtime).run()
@@ -581,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime = build_managed_runtime(
                 args.workspace,
                 configuration_path=args.config,
+                maximum_wait_seconds=args.max_wait_seconds,
             )
             run_http_server(
                 runtime,

@@ -314,6 +314,79 @@ class ExportInputResolutionTests(unittest.TestCase):
             "Multiple assembled audio versions are available",
         )
 
+    def test_unpinned_export_uses_the_assembly_of_the_active_speech_plan(self):
+        """A timing-only change is assembled again without a run; no run names it."""
+
+        first = self.prepare_audiobook()
+        second = self.session_dir / "assembled-current-takes.wav"
+        with wave.open(str(second), "wb") as audio:
+            audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            audio.writeframes(b"\x01\x00" * 320)
+        current = self.artifacts.register(
+            second,
+            kind="audio",
+            role="assembled_audio",
+            session_id=self.session.id,
+        )
+        with self.database.session() as session:
+            plan = GenerationPlan(session_id=self.session.id)
+            session.add(plan)
+            session.flush()
+            revisions = []
+            for number in (1, 2):
+                revision = GenerationPlanRevision(
+                    plan_id=plan.id,
+                    revision_number=number,
+                    settings_json={},
+                    content_hash=f"assembly-revision-{number}",
+                )
+                session.add(revision)
+                session.flush()
+                revisions.append(revision.id)
+            plan.active_revision_id = revisions[1]
+            older = session.scalar(
+                select(Artifact).where(
+                    Artifact.session_id == self.session.id,
+                    Artifact.role == "assembled_audio",
+                    Artifact.id != current.id,
+                )
+            )
+            for artifact_id in (older.id, current.id):
+                session.add(
+                    OutputAssembly(
+                        session_id=self.session.id,
+                        status="completed",
+                        artifact_id=artifact_id,
+                        settings_json={"plan_revision_id": revisions[1]},
+                    )
+                )
+        payload = self.queued_payload()
+        payload.pop("export_contract")
+        # Two assemblies of the active plan are still a choice the caller makes.
+        self.assert_rejected_before_output(
+            payload,
+            "Multiple assembled audio versions are available",
+        )
+        with self.database.session() as session:
+            older_assembly = session.scalar(
+                select(OutputAssembly).where(OutputAssembly.artifact_id == older.id)
+            )
+            older_assembly.settings_json = {"plan_revision_id": revisions[0]}
+        # A plan that measured the older assembly must not render the one a
+        # later timing edit made current while the export was queued.
+        self.assert_rejected_before_output(
+            {**payload, "expected_assembly_artifact_id": older.id},
+            "planned with is no longer current",
+        )
+        result = self.handlers.export(
+            {**payload, "expected_assembly_artifact_id": current.id},
+            mock.Mock(),
+            threading.Event(),
+        )
+        _exported, output = self.artifacts.resolve(result["artifact_ids"][0])
+        self.assertEqual(second.read_bytes(), output.read_bytes())
+        self.assertNotEqual(first.read_bytes(), output.read_bytes())
+
     def test_audiobook_exports_with_valid_contract_or_legacy_payload(self):
         original = self.prepare_audiobook()
         payload = self.queued_payload()

@@ -200,6 +200,22 @@ def build_openapi_document() -> dict:
             "poll_after_ms": {"type": "integer", "minimum": 0},
         },
     }
+    schemas["GenerationTimingRepairRequest"] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "preview": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "When true, queue a CPU-only `generation.repair-preview` job "
+                    "that lists the candidates, thresholds and synthesis calls a "
+                    "repair would make, without synthesising audio or changing "
+                    "the plan. Poll the returned job."
+                ),
+            },
+        },
+    }
     schemas["GenerationTimingRepairReceipt"] = {
         "type": "object",
         "required": ["job_id", "generation_run_id", "session_id", "status", "reused_job"],
@@ -3223,7 +3239,8 @@ def build_openapi_document() -> dict:
             },
             "/api/v1/sessions/{sessionId}/settings/{section}": {
                 "get": operation(
-                    "getSessionSettings", "Effective settings and inheritance"
+                    "getSessionSettings",
+                    "Effective settings, each key's origin, and inheritance",
                 ),
                 "put": operation(
                     "putSessionSettings",
@@ -3338,7 +3355,13 @@ def build_openapi_document() -> dict:
                                             "scope": {"type": "string", "const": "local_model_files"},
                                             "status": {
                                                 "type": "string",
-                                                "enum": ["cached", "missing", "unresolved", "not_required"],
+                                                "enum": [
+                                                    "cached",
+                                                    "missing",
+                                                    "unresolved",
+                                                    "not_required",
+                                                    "will_download",
+                                                ],
                                             },
                                             "ready": {"type": ["boolean", "null"]},
                                             "engine": {"type": "string"},
@@ -3352,6 +3375,11 @@ def build_openapi_document() -> dict:
                                                         "id": {"type": "string"},
                                                         "status": {"type": "string"},
                                                         "verification": {"type": "string"},
+                                                        "download": {
+                                                            "type": "string",
+                                                            "enum": ["administrator_required"],
+                                                            "description": "A missing model this caller's run may not download.",
+                                                        },
                                                     },
                                                 },
                                             },
@@ -3584,16 +3612,21 @@ def build_openapi_document() -> dict:
             "/api/v1/generation-runs/{runId}/repair-timing": {
                 "post": {
                     "operationId": "repairGenerationTiming",
-                    "summary": "Admit a timing-only repair for a completed voiceover",
+                    "summary": "Queue a timing preview or a timing repair for a completed voiceover",
                     "description": (
-                        "Queue one durable generation.repair-existing job for a "
-                        "completed voiceover on its active speech plan. The frozen "
-                        "settings must enable early-finish repair; audio-version and "
-                        "automatic second-pass children are refused. Send no body "
-                        "parameters; an empty JSON object is equivalent to no body. "
-                        "A new job returns 202, while an eligible existing job "
-                        "returns 200 with reused_job=true. Reusing the same "
-                        "Idempotency-Key replays the retained receipt."
+                        "With {\"preview\": true} queue one CPU-only "
+                        "generation.repair-preview job whose result lists the "
+                        "candidate blocks, the thresholds in force and the "
+                        "estimated synthesis calls without staging or "
+                        "synthesising anything. Otherwise queue one durable "
+                        "generation.repair-existing job for a completed voiceover "
+                        "on its active speech plan, using the repair thresholds "
+                        "resolved at request time. The frozen automatic-pass "
+                        "setting is not required; audio-version and second-pass "
+                        "child runs are refused. A new job returns 202, while an "
+                        "eligible existing job returns 200 with reused_job=true. "
+                        "Reusing the same Idempotency-Key replays the retained "
+                        "receipt."
                     ),
                     "x-required-scopes": ["app.read", "app.run"],
                     "security": [
@@ -3605,20 +3638,17 @@ def build_openapi_document() -> dict:
                         "required": False,
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "type": "object",
-                                    "additionalProperties": False,
-                                    "maxProperties": 0,
-                                }
+                                "schema": {"$ref": "#/components/schemas/GenerationTimingRepairRequest"}
                             }
                         },
                     },
                     "responses": {
                         "200": {
                             "description": (
-                                "Existing eligible timing repair job reused. The "
-                                "receipt is a frozen snapshot of the admitting "
-                                "call; read the job or run for live status."
+                                "Existing eligible job reused (repair or a running "
+                                "preview). A queued receipt is a frozen snapshot of "
+                                "the admitting call; read the job or run for live "
+                                "status."
                             ),
                             "headers": {
                                 "Idempotency-Replayed": {
@@ -3665,7 +3695,7 @@ def build_openapi_document() -> dict:
                             )
                         },
                         "422": {
-                            "description": "Body parameters were supplied; timing repair accepts an empty body only"
+                            "description": "A body parameter is invalid or unknown"
                         },
                     },
                 }
@@ -4380,6 +4410,7 @@ def build_openapi_document() -> dict:
         {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
         {"name": "before_revision_number", "in": "query", "schema": {"type": "integer", "minimum": 1}},
         {"name": "summary", "in": "query", "description": "When true, skip audio-reuse inspection: reuse counts are null with audio_reuse_checked=false. Default full preserves the legacy payload.", "schema": {"type": "boolean", "default": False}},
+        {"name": "generation_run_id", "in": "query", "description": "Count reuse against this run's frozen settings snapshot, the same basis its segment rows use. Without it the session's current settings are the basis; reuse_basis names the one used.", "schema": {"type": "string", "minLength": 1, "maxLength": 80}},
     ]
     plan_status = paths["/api/v1/sessions/{sessionId}/generation-plan/status"]["get"]
     plan_status.setdefault("parameters", []).append(

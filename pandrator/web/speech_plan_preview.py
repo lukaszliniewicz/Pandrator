@@ -36,10 +36,12 @@ from .performance_plans import (
     _assert_current,
     speech_markup_for_segment,
 )
+from .performance_validity import REVIEW, REVIEW_MESSAGE, segment_entry
 from .settings_policy import RevisionConflict, adapt_runtime_settings
 from .speech_annotation_records import record_annotation, record_markup
 from .speech_plan_workspace import (
     frozen_semantic_contexts,
+    plan_signature,
     segment_performance_settings,
     semantic_context_units,
     semantic_context_window,
@@ -63,6 +65,31 @@ class PlanReads:
     adopted: m.PerformancePlan | None
     annotations: dict[str, Any]
     signature: str
+
+
+def _adopted_record(
+    session,
+    adopted: m.PerformancePlan,
+    segment: m.GenerationSegment,
+    annotations: Mapping[str, Any],
+    signature: str,
+) -> Mapping[str, Any] | None:
+    """The adopted entry the block would freeze with, judged per block.
+
+    The plan must be on the selected revision. While it fits the revision as
+    a whole its entry is used as stored; after an edit an unchanged or fitted
+    entry is used, and a block that needs a new review is refused.
+    """
+
+    if adopted.base_signature == signature:
+        _assert_current(session, adopted, base_signature=signature)
+        return annotations.get(segment.id)
+    # Passing the plan's own signature leaves only the revision check.
+    _assert_current(session, adopted, base_signature=adopted.base_signature)
+    state, record = segment_entry(adopted, segment, annotations)
+    if state == REVIEW:
+        raise ValueError(REVIEW_MESSAGE)
+    return record
 
 
 def _plan_segment(
@@ -376,6 +403,11 @@ def _frozen_parts(
         raise ValueError(
             "Spoken text changed after performance adoption. Review the performance plan again."
         )
+    # A block the run's frozen plan listed for review has no entry there; say
+    # why, rather than that it is absent from the snapshot or rendering its
+    # own markup. Casting alone freezes the adopted plan too.
+    if segment.id in (performance.get("review_segment_ids") or ()):
+        raise ValueError(REVIEW_MESSAGE)
     contexts = frozen_semantic_contexts(snapshot)
     effective = segment_performance_settings(
         settings,
@@ -515,10 +547,13 @@ def preview_speech_segment_in_session(
                             "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
                         )
                 else:
-                    _assert_current(
-                        session, adopted, base_signature=_plan_reads.signature
+                    annotation_record = _adopted_record(
+                        session,
+                        adopted,
+                        segment,
+                        _plan_reads.annotations,
+                        _plan_reads.signature,
                     )
-                    annotation_record = _plan_reads.annotations.get(segment_id)
                     adopted_xml = record_markup(annotation_record)
             else:
                 adopted = session.scalar(
@@ -533,8 +568,13 @@ def preview_speech_segment_in_session(
                             "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
                         )
                 else:
-                    _assert_current(session, adopted)
-                    annotation_record = _annotations(session, adopted).get(segment_id)
+                    annotation_record = _adopted_record(
+                        session,
+                        adopted,
+                        segment,
+                        _annotations(session, adopted),
+                        plan_signature(session, revision_id),
+                    )
                     adopted_xml = record_markup(annotation_record)
             if settings.get("performance_enabled") and annotation_record is not None:
                 settings["_performance"] = record_annotation(annotation_record) or {}

@@ -318,6 +318,15 @@ PAYLOADS = {
     "update_generation_segments": {"items": [SEGMENT], "updated_count": 1, "private": "omit"},
     "select_generation_take": SEGMENT,
     "create_output_assembly": {"id": "assembly-1", "job_id": "job-2", "status": "queued"},
+    "repair_generation_timing": {
+        # The preview is a job now; its candidates are the job result.
+        "preview": True,
+        "generation_run_id": "run-1",
+        "session_id": SESSION,
+        "job_id": "job-3",
+        "status": "queued",
+        "reused_job": False,
+    },
 }
 
 
@@ -416,6 +425,11 @@ async def invoke_case(
             expected_replay.setdefault("view", "compact")
             expected_replay.setdefault("admission", True)
             expected_replay.setdefault("allow_without_speaker_plan", False)
+        if case.name in {
+            "pandrator_revise_speech_block_plan",
+            "pandrator_revise_speech_block_plan_batch",
+        }:
+            expected_replay.setdefault("view", "summary")
         assert value["next_actions"][-1]["arguments"] == expected_replay
     else:
         value = envelope(result)
@@ -463,6 +477,91 @@ async def capture_contract(root: Path) -> dict[str, Any]:
     return {"metadata": metadata, "records": records, "invalid": invalid, "timeouts": timeouts}
 
 
+def test_repair_generation_timing_registers_preview_and_queue_paths(tmp_path: Path) -> None:
+    """The repair tool previews by default and queues only with an identity key."""
+
+    async def run() -> tuple[Any, Any, list[dict[str, Any]], dict[str, Any]]:
+        runtime, calls = fixture_runtime(tmp_path)
+        async with Client(build_server(runtime), mode="auto", raise_exceptions=False) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            preview = await client.call_tool(
+                "pandrator_repair_generation_timing", {"generation_run_id": "run-1"}
+            )
+            queued = await client.call_tool(
+                "pandrator_repair_generation_timing",
+                {
+                    "generation_run_id": "run-1",
+                    "preview": False,
+                    "idempotency_key": KEY,
+                },
+            )
+            missing_key = await client.call_tool(
+                "pandrator_repair_generation_timing",
+                {"generation_run_id": "run-1", "preview": False},
+            )
+        return preview, queued, calls, {"tools": tools, "missing_key": missing_key}
+
+    preview, queued, calls, extra = asyncio.run(run())
+    tools = extra["tools"]
+    assert "pandrator_repair_generation_timing" in tools
+    schema = tools["pandrator_repair_generation_timing"].input_schema
+    assert schema["properties"]["preview"]["default"] is True
+    assert schema["required"] == ["generation_run_id"]
+    assert extra["missing_key"].is_error
+
+    preview_value = envelope(preview)["result"]
+    assert preview_value["preview"] is True
+    assert preview_value["job_id"] == "job-3"
+    # The preview is a CPU-only job; the caller polls it with get_work.
+    assert [action["tool"] for action in envelope(preview)["next_actions"]] == [
+        "pandrator_get_work"
+    ]
+    get_work = tools["pandrator_get_work"].input_schema
+    for response in (preview, queued):
+        poll = next(
+            action
+            for action in envelope(response)["next_actions"]
+            if action["tool"] == "pandrator_get_work"
+        )
+        assert poll["arguments"] == {"work_id": "job-3", "work_type": "job"}
+        # A next action the tool would reject is a dead end.
+        assert set(poll["arguments"]) <= set(get_work["properties"])
+    queued_value = envelope(queued)["result"]
+    assert queued_value["job_id"] == "job-3"
+    assert queued_value["reused_job"] is False
+    assert calls[0]["kwargs"] == {"preview": True, "idempotency_key": None}
+    assert calls[1]["kwargs"] == {"preview": False, "idempotency_key": KEY}
+
+
+def test_repair_generation_timing_reports_a_typed_validation_error(
+    tmp_path: Path,
+) -> None:
+    """Queueing without a retry identity is a typed refusal, not a raw crash."""
+
+    async def run() -> tuple[Any, list[dict[str, Any]]]:
+        runtime, calls = fixture_runtime(tmp_path)
+        async with Client(
+            build_server(runtime), mode="auto", raise_exceptions=False
+        ) as client:
+            result = await client.call_tool(
+                "pandrator_repair_generation_timing",
+                {"generation_run_id": "run-1", "preview": False},
+            )
+        return result, calls
+
+    result, calls = asyncio.run(run())
+    assert calls == []
+    assert result.is_error
+    block = next(item for item in result.content if isinstance(item, TextContent))
+    prefix = "Error executing tool pandrator_repair_generation_timing: "
+    assert block.text.startswith(prefix), block.text
+    failure = json.loads(block.text[len(prefix) :])
+    assert failure["code"] == "validation_error"
+    assert failure["request_id"]
+    assert failure["retryable"] is False
+    assert "idempotency_key" in json.dumps(failure["details"])
+
+
 def test_registered_generation_admission_schema_defaults_true(tmp_path: Path) -> None:
     async def capture() -> dict[str, Any]:
         runtime, _ = fixture_runtime(tmp_path)
@@ -494,9 +593,16 @@ def test_registered_generation_admission_schema_defaults_true(tmp_path: Path) ->
 REUSE = {
     "reusable_segment_count": 7,
     "stale_segment_count": 2,
+    "settings_changed_segment_count": 1,
+    "generation_settings_changed_segment_count": 0,
+    "voice_reference_changed_segment_count": 1,
+    "performance_changed_segment_count": 0,
+    "not_generated_segment_count": 1,
+    "identity_unknown_segment_count": 0,
     "audio_settings_stale_segment_count": 1,
     "audio_identity_unknown_segment_count": 0,
     "audio_reuse_checked": True,
+    "reuse_basis": "current_settings",
 }
 
 
@@ -505,9 +611,16 @@ def _unchecked(revision_id: str) -> dict[str, Any]:
         "id": revision_id,
         "reusable_segment_count": None,
         "stale_segment_count": None,
+        "settings_changed_segment_count": None,
+        "generation_settings_changed_segment_count": None,
+        "voice_reference_changed_segment_count": None,
+        "performance_changed_segment_count": None,
+        "not_generated_segment_count": None,
+        "identity_unknown_segment_count": None,
         "audio_settings_stale_segment_count": None,
         "audio_identity_unknown_segment_count": None,
         "audio_reuse_checked": False,
+        "reuse_basis": "current_settings",
     }
 
 

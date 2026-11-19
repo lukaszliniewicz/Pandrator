@@ -6,8 +6,10 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
@@ -21,7 +23,10 @@ from .artifact_selection import canonical_stage_key
 from .auth import Principal
 from .credentials import contains_inline_secret, is_sensitive_field
 from .database import Database
-from .export_contract import export_requires_generation_assembly
+from .export_contract import (
+    export_requires_generation_assembly,
+    export_uses_generated_audio,
+)
 from .idempotency import IdempotencyService
 from .jobs import JobQueue
 from .models import (
@@ -54,7 +59,22 @@ from .workflows import (
     _workflow_primary_source,
 )
 
+logger = logging.getLogger(__name__)
+
 PLAN_SCHEMA_VERSION = "1"
+# Export plans may all be executed side by side: an export resolves its output
+# assembly and file names at execution, so the outputs a sibling export added
+# never change what this plan produces. Plans stored before this variant
+# existed carry no marker and keep comparing against the full snapshot.
+FINGERPRINT_FULL = "full"
+FINGERPRINT_EXPORT = "export_outputs_ignored"
+FINGERPRINT_VARIANTS = frozenset({FINGERPRINT_FULL, FINGERPRINT_EXPORT})
+EXPORT_PLAN_TARGET_STAGE = "export"
+# Roles an export job registers for its own files; "export" is the generic
+# output and soundtrack/subtitle tracks add a suffix.
+EXPORT_OUTPUT_ROLE = "export"
+EXPORT_OUTPUT_ROLE_PREFIX = "export_"
+
 LOCAL_PROVIDER_IDS = frozenset(
     {
         "audio.cpp",
@@ -96,6 +116,17 @@ def canonical_json(value: Any) -> str:
 
 def canonical_digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+# Step decisions whose work the executor performs rather than reusing a
+# stored artifact.
+_RUN_DECISIONS = frozenset({"run", "rerun_explicit"})
+
+
+def _step_will_run(step: dict[str, Any]) -> bool:
+    """Return whether the plan will perform this step instead of reusing."""
+
+    return str(step.get("decision") or "") in _RUN_DECISIONS
 
 
 def _aware(value: datetime) -> datetime:
@@ -156,6 +187,94 @@ def _contains_url_credentials(value: Any) -> bool:
     )
 
 
+def _is_export_execution_output(artifact, assembly_artifact_ids: set[str]) -> bool:
+    """Return whether an export execution itself can add this artifact.
+
+    Export files carry the generic "export" role or an "export_" prefix. An
+    export that must assemble its generation run also publishes the assembly's
+    audio artifact, so the artifact an output assembly points at counts too.
+    A mixed export caches its soundtrack master, which is derived output, not
+    a reviewed input.
+    """
+
+    role = str(getattr(artifact, "role", "") or "")
+    if role == EXPORT_OUTPUT_ROLE or role.startswith(EXPORT_OUTPUT_ROLE_PREFIX):
+        return True
+    if role == "soundtrack_master":
+        return True
+    return artifact.id in assembly_artifact_ids
+
+
+_EXPORT_OUTPUT_KEYS = (
+    "audio_mode",
+    "export_mode",
+    "subtitle_mode",
+    "subtitle_selection",
+    "video_tail_extension_policy",
+)
+_EXPORT_AUDIO_KEYS = ("synchronization_speed",)
+# The keys that decide what the transcription and speech stages will do. A plan
+# reports them with their origin so an inherited engine or voice route cannot
+# pass unseen.
+_STT_DECISION_KEYS = ("stt_engine", "stt_model_quantization", "stt_language")
+_TTS_DECISION_KEYS = (
+    "service",
+    "model",
+    "voice",
+    "language",
+    "tts_concurrent_requests",
+)
+
+
+def _resolved_section(
+    snapshot: dict[str, Any], section: str, keys: tuple[str, ...]
+) -> dict[str, Any] | None:
+    """Return the resolved section, or its flat equivalent when there is none.
+
+    A section that supplies nothing is not authoritative, so it reports nothing
+    and the caller falls back to the layered session snapshot.
+    """
+
+    value = snapshot.get(section)
+    if isinstance(value, dict) and value:
+        return value
+    selected = {key: snapshot[key] for key in keys if key in snapshot}
+    return selected or None
+
+
+def _effective_output_flag(
+    resolved_snapshot: dict[str, Any],
+    snapshot: dict[str, Any],
+    key: str,
+    default: bool,
+) -> bool:
+    """Read a boolean output setting the plan did not project.
+
+    The plan's own resolution wins over the layered session snapshot, which in
+    turn wins over the built-in default the resolver starts from.
+    """
+
+    resolved_output = resolved_snapshot.get("output")
+    if isinstance(resolved_output, dict) and key in resolved_output:
+        return bool(resolved_output[key])
+    for candidate in (snapshot.get("effective"), snapshot.get("builtin")):
+        if isinstance(candidate, dict) and key in candidate:
+            return bool(candidate[key])
+    return default
+
+
+def _synchronization_multiplier(value: Any) -> float | None:
+    """Interpret a stored speed the way alignment does: multiplier or percent."""
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number if number <= 10 else number / 100
+
+
 def _reviewable_settings(value: Any) -> Any:
     """Project resolved settings without secrets or bulky runtime catalogues."""
 
@@ -177,6 +296,16 @@ def _reviewable_settings(value: Any) -> Any:
     if isinstance(value, str) and "://" in value:
         return _safe_endpoint(value) or "[configured endpoint]"
     return value
+
+
+def _by_canonical_stage(mapping: dict[str, Any] | None) -> dict[str, Any]:
+    """Key per-stage entries by the snapshot's stage names.
+
+    Freshness reports document optimisation as ``optimize_document``; the
+    snapshot and the plan call the same stage ``optimize_tts``.
+    """
+
+    return {canonical_stage_key(stage): value for stage, value in (mapping or {}).items()}
 
 
 class WorkflowPlanError(RuntimeError):
@@ -240,7 +369,12 @@ class WorkflowExecutionPlanService:
         return record
 
     @staticmethod
-    def _state_snapshot(db_session, session_id: str) -> dict[str, Any]:
+    def _state_snapshot(
+        db_session,
+        session_id: str,
+        *,
+        fingerprint_variant: str = FINGERPRINT_FULL,
+    ) -> dict[str, Any]:
         record = db_session.get(SessionRecord, session_id)
         if record is None:
             raise KeyError(session_id)
@@ -358,7 +492,17 @@ class WorkflowExecutionPlanService:
                 .order_by(OutputAssembly.id)
             ).all()
         )
-        return {
+        export_variant = fingerprint_variant == FINGERPRINT_EXPORT
+        if export_variant:
+            assembly_artifact_ids = {
+                item.artifact_id for item in output_assemblies if item.artifact_id
+            }
+            artifacts = [
+                artifact
+                for artifact in artifacts
+                if not _is_export_execution_output(artifact, assembly_artifact_ids)
+            ]
+        snapshot = {
             "session": {
                 "id": record.id,
                 "workflow_kind": record.workflow_kind,
@@ -498,14 +642,48 @@ class WorkflowExecutionPlanService:
                 for item in output_assemblies
             ],
         }
+        if export_variant:
+            # Both are resolved again when the export executes.
+            snapshot.pop("output_assemblies")
+        return snapshot
 
     @classmethod
     def _state_fingerprint(
         cls,
         db_session,
         session_id: str,
+        *,
+        fingerprint_variant: str = FINGERPRINT_FULL,
     ) -> str:
-        return canonical_digest(cls._state_snapshot(db_session, session_id))
+        return canonical_digest(
+            cls._state_snapshot(
+                db_session, session_id, fingerprint_variant=fingerprint_variant
+            )
+        )
+
+    @staticmethod
+    def _plan_fingerprint_variant(target_stage: str) -> str:
+        """Return the snapshot variant a plan for this target stage compares with.
+
+        Only an export target can execute an export step, so only that variant
+        ignores what a sibling export execution added.
+        """
+
+        return (
+            FINGERPRINT_EXPORT
+            if canonical_stage_key(target_stage) == EXPORT_PLAN_TARGET_STAGE
+            else FINGERPRINT_FULL
+        )
+
+    @staticmethod
+    def _stored_fingerprint_variant(plan_json: Any) -> str:
+        """Read the variant a stored plan was created with; old plans used all state."""
+
+        execution = plan_json.get("_execution") if isinstance(plan_json, dict) else None
+        if not isinstance(execution, dict):
+            return FINGERPRINT_FULL
+        variant = str(execution.get("fingerprint_variant") or FINGERPRINT_FULL)
+        return variant if variant in FINGERPRINT_VARIANTS else FINGERPRINT_FULL
 
     @staticmethod
     def _provider_disclosures(
@@ -588,6 +766,17 @@ class WorkflowExecutionPlanService:
                 return host not in {"localhost", "host.docker.internal"}
         return bool(provider and provider not in LOCAL_PROVIDER_IDS)
 
+    def _may_download_models(self, context: AccessContext) -> bool:
+        """Whether a run by this plan's actor may fetch a missing model.
+
+        It mirrors the acquisition gate the run itself passes
+        (``model_acquisition_for_actor``): only an Administrator, or the host.
+        """
+
+        from .accounts.model_acquisition import may_acquire_models
+
+        return may_acquire_models(self.database, context.actor)
+
     def _transcription_readiness(
         self,
         *,
@@ -648,8 +837,20 @@ class WorkflowExecutionPlanService:
         target_stage: str,
         resolved: ResolvedWorkflowStage,
         reuse_stages: set[str],
+        rerun_stages: set[str] | None = None,
         mismatched_stages: dict[str, Any] | None = None,
+        stage_freshness: dict[str, dict[str, Any]] | None = None,
+        upstream_reruns: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Decide, stage by stage, what a continuation plan runs or reuses.
+
+        ``upstream_reruns``, when given, receives each stage that runs only
+        because the plan replaces its input, mapped to the stage that does.
+        """
+
+        rerun_stages = set(rerun_stages or ())
+        stage_freshness = _by_canonical_stage(stage_freshness)
+        mismatched_stages = _by_canonical_stage(mismatched_stages)
         snapshot = self.workflows.snapshot(session_id)
         stages = list(snapshot.get("stages") or [])
         target_index = next(
@@ -703,23 +904,58 @@ class WorkflowExecutionPlanService:
                 input_choices,
                 transformations,
             )
-            allowed_keys = set(record.included_stages_json or []) | required
+            # Required stages name document optimisation ``optimize_document``.
+            allowed_keys = {
+                canonical_stage_key(stage)
+                for stage in set(record.included_stages_json or []) | required
+            }
+        includable_stages: set[str] = set()
+        for item in stages[:target_index]:
+            key = str(item.get("key") or "")
+            if key == canonical_stage_key(target_stage):
+                key = target_stage
+            if canonical_stage_key(key) in allowed_keys and item.get("executable"):
+                includable_stages.add(key)
+        unavailable = sorted(rerun_stages - includable_stages - {target_stage})
+        if unavailable:
+            raise WorkflowPlanError(
+                "validation_error",
+                f"Stage '{unavailable[0]}' cannot run in this plan.",
+                422,
+            )
         steps: list[dict[str, Any]] = []
+        # Results this plan replaces, by the stage that replaces them.
+        replaced_by: dict[str, str] = {}
         for item in stages[: target_index + 1]:
             key = str(item.get("key") or "")
             if key == canonical_stage_key(target_stage):
                 key = target_stage
-            if key not in allowed_keys or not item.get("executable"):
+            if canonical_stage_key(key) not in allowed_keys or not item.get("executable"):
                 continue
             status = str(item.get("status") or "unknown")
             selected_id = item.get("selected_artifact_id")
+            compared_input = str(
+                (stage_freshness.get(canonical_stage_key(key)) or {}).get(
+                    "source_artifact_id"
+                )
+                or ""
+            )
             if key == target_stage:
                 decision = "run"
+            elif key in rerun_stages:
+                decision = "rerun_explicit"
             elif key in reuse_stages and selected_id:
+                # Only an explicit request keeps a result across an upstream run.
                 decision = "reuse_explicit"
             elif status == "completed" and selected_id:
-                if mismatched_stages and key in mismatched_stages:
+                if canonical_stage_key(key) in mismatched_stages:
                     decision = "run"
+                elif compared_input in replaced_by:
+                    # The result matches today's input, which this plan
+                    # replaces before the stage would be skipped.
+                    decision = "run"
+                    if upstream_reruns is not None:
+                        upstream_reruns[key] = replaced_by[compared_input]
                 else:
                     decision = "reuse_if_unchanged"
             elif item.get("included") or status in {
@@ -730,16 +966,27 @@ class WorkflowExecutionPlanService:
                 decision = "run"
             else:
                 continue
-            steps.append(
-                {
-                    "order": len(steps) + 1,
-                    "stage": key,
-                    "title": str(item.get("title") or key),
-                    "decision": decision,
-                    "current_status": status,
-                    "artifact_id": selected_id,
-                }
-            )
+            if selected_id and decision in {"run", "rerun_explicit"}:
+                replaced_by[str(selected_id)] = key
+            step = {
+                "order": len(steps) + 1,
+                "stage": key,
+                "title": str(item.get("title") or key),
+                "decision": decision,
+                "current_status": status,
+                "artifact_id": selected_id,
+            }
+            if decision.startswith("reuse"):
+                if decision == "reuse_explicit":
+                    step["reuse_basis"] = "explicit"
+                else:
+                    evaluated = stage_freshness.get(canonical_stage_key(key))
+                    step["reuse_basis"] = (
+                        evaluated.get("settings_evidence")
+                        if evaluated is not None
+                        else "no_prior_check"
+                    )
+            steps.append(step)
         if not steps or steps[-1]["stage"] != target_stage:
             steps.append(
                 {
@@ -823,6 +1070,588 @@ class WorkflowExecutionPlanService:
         )
         return steps, execution_job_kind
 
+    def _export_effective_settings(
+        self,
+        session_id: str,
+        overrides: dict[str, Any],
+        resolved: ResolvedWorkflowStage,
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, Any], dict[str, Any]]:
+        """Report the export settings this plan resolved, and their raw snapshot.
+
+        The third value is the layered output snapshot, which carries values
+        this report does not project, such as ``audio_match_source_duration``.
+        """
+
+        from .workspace_settings import WorkspaceSettingsService, settings_provenance
+
+        output_override = overrides.get("output")
+        audio_override = overrides.get("audio")
+        service = WorkspaceSettingsService(self.database)
+        with self.database.snapshot_session() as db_session:
+            output = service.get_in_session(db_session, session_id, "output")
+            audio = service.get_in_session(db_session, session_id, "audio")
+            record = db_session.get(SessionRecord, session_id)
+            context = (
+                service._output_context(db_session, record)
+                if record is not None
+                else {}
+            )
+        resolved_snapshot = resolved.payload.get("resolved_settings_snapshot")
+        resolved_snapshot = (
+            resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        )
+        effective = {
+            **settings_provenance(
+                output,
+                _EXPORT_OUTPUT_KEYS,
+                output_override if isinstance(output_override, dict) else None,
+                _resolved_section(resolved_snapshot, "output", _EXPORT_OUTPUT_KEYS),
+            ),
+            **settings_provenance(
+                audio,
+                _EXPORT_AUDIO_KEYS,
+                audio_override if isinstance(audio_override, dict) else None,
+                _resolved_section(resolved_snapshot, "audio", _EXPORT_AUDIO_KEYS),
+            ),
+        }
+        return effective, context, output
+
+    def _export_speech_timing(
+        self,
+        session_id: str,
+        resolved: ResolvedWorkflowStage,
+        effective: dict[str, dict[str, Any]],
+        output_snapshot: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Report the measured speech timing of the assembly this plan reuses.
+
+        The figures appear once an assembly exists: an assembly is the only
+        place placement is measured against the source recording's timeline.
+        A plan that names a run reuses that run's matching assembly; one that
+        names none exports the session's current assembly.
+        """
+
+        settings = resolved.payload.get("settings")
+        settings = settings if isinstance(settings, dict) else {}
+        run_id = str(settings.get("generation_run_id") or "").strip()
+        if not export_uses_generated_audio(
+            workflow_kind=resolved.workflow_kind, settings=settings
+        ):
+            return None
+        from pandrator.logic.dubbing.timing_drift import block_lag_metrics
+
+        from .source_resolution import resolve_media_source
+
+        resolved_snapshot = resolved.payload.get("resolved_settings_snapshot")
+        resolved_snapshot = (
+            resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        )
+        assembly_id = ""
+        assembly_artifact_id = ""
+        duration_ms = 0
+        timing_drift: dict[str, Any] | None = None
+        source_id = ""
+        try:
+            with self.database.snapshot_session() as db_session:
+                if run_id:
+                    run = db_session.get(GenerationRun, run_id)
+                    if run is None or run.session_id != session_id:
+                        return None
+                    from .workspace import find_matching_output_assembly
+
+                    assembly, _snapshot, _hash = find_matching_output_assembly(
+                        db_session,
+                        session_id=session_id,
+                        run=run,
+                        resolved_settings_snapshot=resolved_snapshot,
+                        audio_version_side=str(
+                            settings.get("audio_version_side") or "after"
+                        ),
+                    )
+                else:
+                    assembly = self._current_session_assembly(db_session, session_id)
+                if assembly is None:
+                    return None
+                assembly_id = assembly.id
+                assembly_artifact_id = str(assembly.artifact_id or "")
+                stored = (
+                    assembly.settings_json
+                    if isinstance(assembly.settings_json, dict)
+                    else {}
+                )
+                duration_ms = int(stored.get("duration_ms") or 0)
+                synchronization = stored.get("synchronization")
+                if isinstance(synchronization, dict):
+                    summary = synchronization.get("timing_drift")
+                    if isinstance(summary, dict):
+                        timing_drift = dict(summary)
+                    elif isinstance(synchronization.get("blocks"), list):
+                        timing_drift = block_lag_metrics(synchronization["blocks"])
+                # Measure against the recording the export will render: the
+                # contract binds the edited render when the session was cut,
+                # and the attached source would be the longer, uncut one.
+                contract = resolved.payload.get("export_contract")
+                source_id = (
+                    str(contract.get("source_artifact_id") or "")
+                    if isinstance(contract, dict)
+                    else ""
+                )
+                if not source_id:
+                    source = resolve_media_source(db_session, session_id).artifact
+                    source_id = source.id if source is not None else ""
+        except Exception:
+            # A plan is a preview. A hint must never stop an otherwise valid
+            # export plan from being prepared and reviewed.
+            logger.warning(
+                "Speech timing could not be reported for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return None
+        return {
+            "assembly_id": assembly_id,
+            # Private: create() binds a no-run export to it, then drops it.
+            "_assembly_artifact_id": assembly_artifact_id,
+            "assembly_duration_ms": duration_ms,
+            "timing_drift": timing_drift,
+            "tail": self._export_tail_projection(
+                effective=effective,
+                resolved_snapshot=resolved_snapshot,
+                output_snapshot=output_snapshot,
+                source_id=source_id,
+                generated_duration_ms=duration_ms,
+            ),
+        }
+
+    @staticmethod
+    def _current_session_assembly(
+        db_session: Session, session_id: str
+    ) -> OutputAssembly | None:
+        """The assembly an export that names no run would use, if it is one."""
+
+        from .export_inputs import active_plan_assemblies
+
+        candidates = active_plan_assemblies(
+            db_session,
+            session_id,
+            tuple(
+                db_session.scalars(
+                    select(Artifact).where(
+                        Artifact.session_id == session_id,
+                        Artifact.role == "assembled_audio",
+                        Artifact.state == "current",
+                    )
+                )
+            ),
+        )
+        if len(candidates) != 1:
+            return None
+        return db_session.scalar(
+            select(OutputAssembly)
+            .where(
+                OutputAssembly.session_id == session_id,
+                OutputAssembly.artifact_id == candidates[0].id,
+                OutputAssembly.status == "completed",
+            )
+            .order_by(OutputAssembly.created_at.desc())
+            .limit(1)
+        )
+
+    def _export_tail_projection(
+        self,
+        *,
+        effective: dict[str, dict[str, Any]],
+        resolved_snapshot: dict[str, Any],
+        output_snapshot: dict[str, Any],
+        source_id: str,
+        generated_duration_ms: int,
+    ) -> dict[str, Any] | None:
+        """Predict the export's own tail decision, or say why it cannot."""
+
+        export_mode = str(
+            (effective.get("export_mode") or {}).get("effective") or ""
+        ).lower()
+        if export_mode not in {"media", "audio"}:
+            return None
+        if not _effective_output_flag(
+            resolved_snapshot,
+            output_snapshot,
+            "audio_match_source_duration",
+            True,
+        ):
+            return None
+        if not source_id:
+            return {
+                "checked": False,
+                "reason": "This session has no source recording to measure against.",
+            }
+        if self.handlers is None:
+            return {
+                "checked": False,
+                "reason": "The source recording could not be resolved.",
+            }
+        from .soundtrack_export import (
+            OVERRUN_TOLERANCE_SECONDS,
+            ceil_tail_extension_seconds,
+            probe_soundtrack_media,
+        )
+
+        try:
+            _artifact, source_path = self.handlers._resolve_input(source_id)
+        except Exception:
+            return {
+                "checked": False,
+                "reason": "The source recording could not be resolved.",
+            }
+        from .source_resolution import VIDEO_EXTENSIONS
+
+        # A media export only renders video when an attached source is a video
+        # file; otherwise the worker copies the generated speech as audio and
+        # nothing is extended or cut. This mirrors the renderer's media choice.
+        audio_only_media = (
+            export_mode == "media"
+            and Path(source_path).suffix.lower() not in VIDEO_EXTENSIONS
+        )
+        try:
+            probed = probe_soundtrack_media(source_path)
+        except Exception:
+            return {
+                "checked": False,
+                "reason": "The source recording's duration could not be probed.",
+            }
+        try:
+            # The export measures against the video stream first.
+            source_duration = float(
+                probed.get("video_duration") or probed.get("duration") or 0
+            )
+        except (TypeError, ValueError):
+            source_duration = 0.0
+        if source_duration <= 0:
+            return {
+                "checked": False,
+                "reason": "The source recording's duration could not be probed.",
+            }
+        overrun_seconds = generated_duration_ms / 1000 - source_duration
+        extension_ms = 0
+        if overrun_seconds > OVERRUN_TOLERANCE_SECONDS:
+            extension_ms = round(
+                ceil_tail_extension_seconds(overrun_seconds, probed.get("fps")) * 1000
+            )
+        policy = str(
+            (effective.get("video_tail_extension_policy") or {}).get("effective")
+            or "ask"
+        )
+        if overrun_seconds <= OVERRUN_TOLERANCE_SECONDS:
+            outcome = "fits"
+        elif export_mode == "audio":
+            # An audio export never cuts speech, so it cannot extend or stop.
+            outcome = "fails"
+        elif audio_only_media:
+            # The worker copies the whole speech file, so an overrun makes the
+            # exported audio longer and never stops the export.
+            outcome = "extend"
+        elif policy == "extend":
+            outcome = "extend"
+        else:
+            outcome = "stops"
+        tail = {
+            "checked": True,
+            "source_duration_ms": round(source_duration * 1000),
+            "overrun_ms": round(overrun_seconds * 1000),
+            "policy": policy,
+            "extension_ms": extension_ms,
+            "outcome": outcome,
+        }
+        if audio_only_media:
+            tail["audio_only"] = True
+        return tail
+
+    def _reusable_takes_warnings(
+        self,
+        steps: list[dict[str, Any]],
+        session_id: str,
+        supplied: dict[str, Any],
+    ) -> list[str]:
+        """Say when a run would synthesise takes the speech plan already holds.
+
+        Preparing the plan again after a timing-only subtitle change keeps
+        every take, but a new run synthesises every block. Assembling the
+        current takes keeps them. Reuse is counted against the saved settings,
+        so a plan that overrides speech settings is not judged by it.
+        """
+
+        if supplied.get("tts") or not any(
+            step["stage"] == "generate_audio" and _step_will_run(step)
+            for step in steps
+        ):
+            return []
+        from .generation_review import revision_history
+
+        try:
+            with self.database.snapshot_session() as db_session:
+                active_revision_id = db_session.scalar(
+                    select(GenerationPlan.active_revision_id).where(
+                        GenerationPlan.session_id == session_id
+                    )
+                )
+            if not active_revision_id:
+                return []
+            history = revision_history(
+                self.database, session_id, revision_ids=[active_revision_id], limit=1
+            )
+        except Exception:
+            # A plan is a preview; a hint must never stop it.
+            logger.warning(
+                "Take reuse could not be checked for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return []
+        item = next(iter(history.get("items") or []), {})
+        active = int(item.get("active_segment_count") or 0)
+        if not active or item.get("reusable_segment_count") != active:
+            return []
+        return [
+            f"Every block of the current speech plan ({active}) already has a "
+            "reusable take, and generating synthesises them all again. To keep "
+            "them, assemble the current takes without naming a generation run, "
+            "then export without one."
+        ]
+
+    def _apply_generation_estimate(
+        self,
+        steps: list[dict[str, Any]],
+        *,
+        session_id: str,
+        resolved: ResolvedWorkflowStage,
+        supplied: dict[str, Any],
+    ) -> None:
+        """Tell the plan how long synthesis should take, when history can say.
+
+        The pace comes from the takes of this workspace's most recent
+        completed run on the same service, model and concurrency, so it already
+        reflects parallel requests.
+        """
+
+        from .generation_estimates import block_count, plan_time_estimate
+        from .settings_identity import settings_workspace_id
+
+        snapshot = resolved.payload.get("resolved_settings_snapshot")
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        sections = resolved.payload.get("settings")
+        sections = sections if isinstance(sections, dict) else {}
+        tts_override = supplied.get("tts")
+        tts = dict(sections.get("tts") or {})
+        if isinstance(tts_override, dict):
+            tts.update(tts_override)
+        if not tts:
+            tts = dict(snapshot.get("tts") or {})
+        with self.database.snapshot_session() as session:
+            blocks = block_count(session, session_id)
+            estimate = plan_time_estimate(
+                session,
+                workspace_id=settings_workspace_id(session, session_id=session_id),
+                settings={"tts": tts},
+                blocks=blocks,
+            )
+        for step in steps:
+            if step["stage"] == "generate_audio" and _step_will_run(step):
+                step["estimated_seconds"] = estimate["estimated_seconds"]
+                step["estimate_basis"] = estimate["estimate_basis"]
+
+    @staticmethod
+    def _speech_timing_warnings(
+        speech_timing: dict[str, Any] | None,
+        effective: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        """Name a measured drift or tail overrun before the export is queued."""
+
+        if not isinstance(speech_timing, dict):
+            return []
+        from pandrator.logic.dubbing.timing_drift import drift_warnings
+
+        warnings: list[str] = []
+        metrics = speech_timing.get("timing_drift")
+        if isinstance(metrics, dict):
+            speed = (effective.get("synchronization_speed") or {}).get("effective")
+            warnings.extend(drift_warnings(metrics, speed=speed))
+        tail = speech_timing.get("tail")
+        if not isinstance(tail, dict) or not tail.get("checked"):
+            return warnings
+        overrun = float(tail.get("overrun_ms") or 0) / 1000
+        extension = float(tail.get("extension_ms") or 0) / 1000
+        outcome = str(tail.get("outcome") or "")
+        if outcome == "extend":
+            if tail.get("audio_only"):
+                warnings.append(
+                    f"Speech runs {overrun:.2f} s past the end of the source audio; "
+                    "the exported audio is that much longer."
+                )
+            else:
+                warnings.append(
+                    f"The video will be {extension:.2f} s longer: its last frame is "
+                    "held so the speech can finish. Usually only that tail is encoded."
+                )
+        elif outcome == "stops":
+            warnings.append(
+                f"Speech runs {overrun:.2f} s past the end of the video, so this export "
+                "will stop before rendering. Set video_tail_extension_policy=extend to "
+                "hold the last frame (usually only that tail is encoded), or raise "
+                "synchronization_speed."
+            )
+        elif outcome == "fails":
+            warnings.append(
+                f"Speech runs {overrun:.2f} s past the end of the recording, and an "
+                "audio export never cuts speech, so this export will fail. Turn off "
+                "audio_match_source_duration to export the full speech, or export media "
+                "with video_tail_extension_policy=extend."
+            )
+        return warnings
+
+    def _stage_effective_settings(
+        self,
+        session_id: str,
+        overrides: dict[str, Any],
+        resolved: ResolvedWorkflowStage,
+        stages: set[str],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+        """Report the decisive keys of the stages this plan runs, with origins.
+
+        The values are read from the plan's resolved snapshot, as the export
+        block does, so a run override is reflected; the layers come from the
+        session settings read, which is the only place that knows the service
+        connection and provider default layers.
+        """
+
+        from .workspace_settings import WorkspaceSettingsService, settings_provenance
+
+        wanted: list[tuple[str, tuple[str, ...]]] = []
+        if "transcribe" in stages:
+            wanted.append(("stt", _STT_DECISION_KEYS))
+        if "generate_audio" in stages:
+            wanted.append(("tts", _TTS_DECISION_KEYS))
+        if not wanted:
+            return {}, None
+        resolved_snapshot = resolved.payload.get("resolved_settings_snapshot")
+        resolved_snapshot = (
+            resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        )
+        service = WorkspaceSettingsService(self.database)
+        effective: dict[str, dict[str, Any]] = {}
+        fallbacks: dict[str, dict[str, Any]] = {}
+        with self.database.snapshot_session() as db_session:
+            for section, keys in wanted:
+                snapshot = service.get_in_session(db_session, session_id, section)
+                fallbacks[section] = dict(snapshot.get("effective") or {})
+                override = overrides.get(section)
+                effective.update(
+                    settings_provenance(
+                        snapshot,
+                        keys,
+                        override if isinstance(override, dict) else None,
+                        _resolved_section(resolved_snapshot, section, keys),
+                    )
+                )
+        support: dict[str, Any] | None = None
+        if "generate_audio" in stages:
+            from pandrator.logic.tts_language_preflight import (
+                tts_language_support_decision,
+            )
+
+            resolved_tts = resolved_snapshot.get("tts")
+            route = dict(fallbacks.get("tts", {}))
+            if isinstance(resolved_tts, dict):
+                route.update(resolved_tts)
+            support = tts_language_support_decision(route)
+            effective["language_support"] = {
+                "effective": support["decision"],
+                "origin": "derived",
+                "language": support["language"],
+            }
+        return effective, support
+
+    @staticmethod
+    def _stage_disclosure_warnings(
+        effective: dict[str, dict[str, Any]],
+        language_support: dict[str, Any] | None,
+    ) -> list[str]:
+        """Warn about an inherited engine or voice route without blocking it."""
+
+        from .settings_policy import BUILTIN_DEFAULTS
+
+        warnings: list[str] = []
+        engine = effective.get("stt_engine") or {}
+        engine_origin = str(engine.get("origin") or "")
+        engine_value = str(engine.get("effective") or "").strip()
+        builtin_engine = str(BUILTIN_DEFAULTS["stt"].get("stt_engine") or "auto")
+        if (
+            engine_origin in {"global", "service", "provider"}
+            and engine_value
+            and engine_value.casefold() != builtin_engine.casefold()
+        ):
+            warnings.append(
+                f"Speech recognition will use {engine_value}, inherited from the "
+                f"{engine_origin} settings; the built-in default is "
+                f"{builtin_engine}. Set stt.stt_engine on this session to choose "
+                "explicitly."
+            )
+        if language_support is None or language_support.get("decision") != "unverified":
+            return warnings
+        from .workspace_settings import TTS_ROUTE_KEYS, inherited_tts_route_warning
+
+        language = str(language_support.get("language") or "").strip() or str(
+            (effective.get("language") or {}).get("effective") or ""
+        ).strip()
+        warning = inherited_tts_route_warning(
+            {key: (effective.get(key) or {}).get("effective") for key in TTS_ROUTE_KEYS},
+            {
+                key: str((effective.get(key) or {}).get("origin") or "")
+                for key in TTS_ROUTE_KEYS
+            },
+            language_support="unverified",
+            language=language,
+        )
+        if warning:
+            warnings.append(warning)
+        return warnings
+
+    @staticmethod
+    def _effective_export_warnings(
+        *,
+        workflow_kind: str,
+        effective: dict[str, dict[str, Any]],
+        context: dict[str, Any],
+    ) -> list[str]:
+        """Warn about export choices that are valid but easy to misread."""
+
+        warnings: list[str] = []
+        audio_mode = effective.get("audio_mode") or {}
+        export_mode = str(
+            (effective.get("export_mode") or {}).get("effective") or ""
+        ).lower()
+        generates_speech = workflow_kind == "voiceover" or (
+            workflow_kind == "media_edit" and bool(context.get("has_generated_voiceover"))
+        )
+        if (
+            generates_speech
+            and export_mode in {"media", "audio"}
+            and context.get("has_source_audio")
+            and str(audio_mode.get("effective") or "").lower() == "dubbing_only"
+        ):
+            warnings.append(
+                "This export replaces the original soundtrack with the voiceover only "
+                f"(audio_mode=dubbing_only, from {audio_mode.get('origin')}). "
+                "Set audio_mode=mixed to keep the original under the voice."
+            )
+        speed = effective.get("synchronization_speed") or {}
+        multiplier = _synchronization_multiplier(speed.get("effective"))
+        if multiplier is not None and multiplier > 1.2:
+            warnings.append(
+                f"Synchronization speed {speed.get('effective')} may sound rushed; "
+                "above 1.2× is not recommended."
+            )
+        return warnings
+
     def create(
         self,
         *,
@@ -833,6 +1662,8 @@ class WorkflowExecutionPlanService:
         overrides: dict[str, Any] | None = None,
         continuation: bool = True,
         expires_in_minutes: int = 30,
+        reuse_stages: list[str] | None = None,
+        rerun_stages: list[str] | None = None,
     ) -> dict[str, Any]:
         context = self._context(principal)
         supplied = dict(overrides or {})
@@ -844,10 +1675,65 @@ class WorkflowExecutionPlanService:
             )
         with self.database.session() as db_session:
             require_session_access(db_session, context, session_id, ProjectAction.RUN)
+            fingerprint_variant = self._plan_fingerprint_variant(target_stage)
             before = self._state_fingerprint(
                 db_session,
                 session_id,
+                fingerprint_variant=fingerprint_variant,
             )
+        requested_reuse_stages = {
+            str(value) for value in (reuse_stages or []) if str(value)
+        }
+        requested_rerun_stages = {
+            str(value) for value in (rerun_stages or []) if str(value)
+        }
+        if not continuation and (requested_reuse_stages or requested_rerun_stages):
+            raise WorkflowPlanError(
+                "validation_error",
+                "reuse_stages and rerun_stages apply only to continuation plans.",
+                422,
+            )
+        if requested_reuse_stages & requested_rerun_stages:
+            conflict = sorted(requested_reuse_stages & requested_rerun_stages)[0]
+            raise WorkflowPlanError(
+                "validation_error",
+                f"Stage '{conflict}' cannot be both reused and re-run.",
+                422,
+            )
+        if target_stage in requested_reuse_stages:
+            raise WorkflowPlanError(
+                "validation_error",
+                f"The target stage '{target_stage}' always runs; "
+                "remove it from reuse_stages.",
+                422,
+            )
+        planned_reuse_stages = (
+            requested_reuse_stages
+            | {
+                str(value)
+                for value in supplied.get("reuse_stages", []) or []
+                if str(value)
+            }
+        ) - requested_rerun_stages
+        planned_rerun_stages = requested_rerun_stages - {target_stage}
+        if planned_reuse_stages or planned_rerun_stages:
+            snapshot = self.workflows.snapshot(session_id)
+            workflow_stages = {
+                str(item.get("key") or "")
+                for item in snapshot.get("stages") or []
+                if item.get("key")
+            }
+            unknown = sorted(
+                (planned_reuse_stages | planned_rerun_stages) - workflow_stages
+            )
+            if unknown:
+                raise WorkflowPlanError(
+                    "validation_error",
+                    f"Unknown workflow stage '{unknown[0]}'. Valid stages: "
+                    + ", ".join(sorted(workflow_stages))
+                    + ".",
+                    422,
+                )
         try:
             resolved = self.workflows.resolve_stage(
                 session_id,
@@ -874,9 +1760,31 @@ class WorkflowExecutionPlanService:
                 "The selected source has no content hash and cannot be bound to an exact execution plan.",
                 409,
             )
-        reuse_stages = {
-            str(value) for value in supplied.get("reuse_stages", []) or [] if str(value)
-        }
+        effective_export: dict[str, dict[str, Any]] | None = None
+        export_context: dict[str, Any] = {}
+        export_output_snapshot: dict[str, Any] = {}
+        speech_timing: dict[str, Any] | None = None
+        if target_stage == "export":
+            # Settings reads check access against the execution actor, so read
+            # them as the plan's principal, not as an ambient caller.
+            with execution_actor_scope(context.actor):
+                (
+                    effective_export,
+                    export_context,
+                    export_output_snapshot,
+                ) = self._export_effective_settings(
+                    session_id, supplied, resolved
+                )
+                # The measured figures appear once an assembly exists; before
+                # that, a plan has nothing placed to report.
+                speech_timing = self._export_speech_timing(
+                    session_id, resolved, effective_export, export_output_snapshot
+                )
+        reviewed_assembly_artifact_id = (
+            str(speech_timing.pop("_assembly_artifact_id", "") or "")
+            if speech_timing is not None
+            else ""
+        )
         disclosures = self._provider_disclosures(resolved)
         external = [item for item in disclosures if self._is_external(item)]
         resource_services = [
@@ -916,25 +1824,64 @@ class WorkflowExecutionPlanService:
         plan_id = str(uuid.uuid4())
         now = utcnow()
         expires_at = now + timedelta(minutes=max(1, min(int(expires_in_minutes), 60)))
-        mismatches: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        freshness: list[dict[str, Any]] = []
         if continuation and self.handlers is not None:
             try:
-                mismatches = self.handlers.settings_mismatches(session_id, target_stage)
+                freshness = self.handlers.prerequisite_freshness(session_id, target_stage)
             except Exception:
-                mismatches = []
+                logger.exception(
+                    "Workflow prerequisite freshness could not be checked for session %s",
+                    session_id,
+                )
+                freshness = []
+                warnings.append(
+                    "Prerequisite freshness could not be checked; existing "
+                    "prerequisite results are reused without verification."
+                )
+        stage_freshness = _by_canonical_stage(
+            {
+                item["stage"]: item
+                for item in freshness
+                if isinstance(item, dict) and "stage" in item
+            }
+        )
         mismatched_stages = {
-            item["stage"]: item
-            for item in mismatches
-            if isinstance(item, dict) and "stage" in item
+            stage: item
+            for stage, item in stage_freshness.items()
+            if not (item["settings_match"] and item["source_match"])
         }
+        upstream_reruns: dict[str, str] = {}
         if continuation:
             with execution_actor_scope(context.actor):
                 steps = self._ordered_steps(
                     session_id=session_id,
                     target_stage=target_stage,
                     resolved=resolved,
-                    reuse_stages=reuse_stages,
+                    reuse_stages=planned_reuse_stages,
+                    rerun_stages=planned_rerun_stages,
                     mismatched_stages=mismatched_stages,
+                    stage_freshness=stage_freshness,
+                    upstream_reruns=upstream_reruns,
+                )
+            unusable_reuse = sorted(
+                stage
+                for stage in planned_reuse_stages
+                if not any(
+                    step.get("stage") == stage
+                    and str(step.get("decision") or "").startswith("reuse")
+                    and step.get("artifact_id")
+                    for step in steps
+                )
+            )
+            if unusable_reuse:
+                # The queued payload only carries reuse for stages that have an
+                # artifact, so an honoured request would vanish silently.
+                raise WorkflowPlanError(
+                    "reuse_unavailable",
+                    f"Nothing from {unusable_reuse[0]} can be reused here; "
+                    "remove it from reuse_stages or let it run.",
+                    422,
                 )
             execution_job_kind = resolved.job_kind
         else:
@@ -943,14 +1890,20 @@ class WorkflowExecutionPlanService:
                 target_stage=target_stage,
                 resolved=resolved,
             )
-        warnings: list[str] = []
         for step in steps:
-            if (
-                step["stage"] in mismatched_stages
+            if step["decision"] == "run" and step["stage"] in upstream_reruns:
+                warnings.append(
+                    f"Prerequisite stage '{step['stage']}' will be re-run because "
+                    f"'{upstream_reruns[step['stage']]}' runs first in this plan. "
+                    "To keep the existing result instead, include "
+                    f"'{step['stage']}' in reuse_stages."
+                )
+            elif (
+                canonical_stage_key(step["stage"]) in mismatched_stages
                 and step["decision"] == "run"
                 and step["stage"] != target_stage
             ):
-                mismatch_info = mismatched_stages[step["stage"]]
+                mismatch_info = mismatched_stages[canonical_stage_key(step["stage"])]
                 reasons = ", ".join(
                     str(r)
                     for r in mismatch_info.get("reasons")
@@ -960,6 +1913,65 @@ class WorkflowExecutionPlanService:
                     f"Prerequisite stage '{step['stage']}' will be re-run ({reasons}). "
                     f"To preserve the existing artifact instead, include '{step['stage']}' in reuse_stages."
                 )
+            elif (
+                str(step.get("decision") or "").startswith("reuse")
+                and step.get("reuse_basis") == "current_settings_unavailable"
+            ):
+                warnings.append(
+                    f"Prerequisite stage '{step['stage']}' is reused, but its settings "
+                    "could not be compared with the current configuration. Include "
+                    f"'{step['stage']}' in rerun_stages to run it again."
+                )
+        if effective_export is not None:
+            warnings.extend(
+                self._effective_export_warnings(
+                    workflow_kind=resolved.workflow_kind,
+                    effective=effective_export,
+                    context=export_context,
+                )
+            )
+            warnings.extend(
+                self._speech_timing_warnings(speech_timing, effective_export)
+            )
+        if speech_timing is not None:
+            tail = speech_timing.get("tail")
+            if (
+                isinstance(tail, dict)
+                and tail.get("outcome") == "extend"
+                and not tail.get("audio_only")
+            ):
+                for step in steps:
+                    if step["stage"] == target_stage:
+                        step["tail_extension"] = tail
+        if any(step["stage"] == "generate_audio" for step in steps):
+            self._apply_generation_estimate(
+                steps,
+                session_id=session_id,
+                resolved=resolved,
+                supplied=supplied,
+            )
+            with execution_actor_scope(context.actor):
+                warnings.extend(
+                    self._reusable_takes_warnings(steps, session_id, supplied)
+                )
+        effective_stage: dict[str, dict[str, Any]] = {}
+        stage_support: dict[str, Any] | None = None
+        with execution_actor_scope(context.actor):
+            effective_stage, stage_support = self._stage_effective_settings(
+                session_id,
+                supplied,
+                resolved,
+                {
+                    str(step.get("stage") or "")
+                    for step in steps
+                    if _step_will_run(step)
+                },
+            )
+        if effective_stage:
+            warnings.extend(
+                self._stage_disclosure_warnings(effective_stage, stage_support)
+            )
+        effective_settings = {**effective_stage, **(effective_export or {})}
         public_plan = {
             "schema_version": PLAN_SCHEMA_VERSION,
             "plan_id": plan_id,
@@ -988,6 +2000,11 @@ class WorkflowExecutionPlanService:
                 "resolved_snapshot": _reviewable_settings(
                     resolved.payload.get("resolved_settings_snapshot") or {}
                 ),
+                **(
+                    {"effective": effective_settings}
+                    if effective_settings
+                    else {}
+                ),
             },
             **({"subtitle_review": {
                 "provenance": resolved.payload.get("subtitle_settings_provenance", {"status": "unknown/historical_snapshot"}),
@@ -995,6 +2012,11 @@ class WorkflowExecutionPlanService:
                 "profile_scope": resolved.payload.get("subtitle_profile_scope", "source_target_alternatives"),
                 "counts_status": "available_after_render",
             }} if target_stage == "export" else {}),
+            **(
+                {"speech_timing": speech_timing}
+                if target_stage == "export"
+                else {}
+            ),
             "ordered_steps": steps,
             "reuse_decisions": [
                 {
@@ -1027,30 +2049,68 @@ class WorkflowExecutionPlanService:
             "expires_at": _iso(expires_at),
         }
         if any(
-            step.get("stage") == "transcribe" and step.get("decision") == "run"
+            step.get("stage") == "transcribe" and _step_will_run(step)
             for step in steps
         ):
-            public_plan["transcription_readiness"] = self._transcription_readiness(
+            from pandrator.logic.dubbing.transcription_readiness import (
+                has_pending_download,
+                transcription_readiness_warnings,
+                withhold_downloads,
+            )
+
+            readiness = self._transcription_readiness(
                 session_id=session_id,
                 resolved=resolved,
                 target_stage=target_stage,
             )
+            if has_pending_download(readiness) and not self._may_download_models(context):
+                readiness = withhold_downloads(readiness)
+            public_plan["transcription_readiness"] = readiness
+            warnings.extend(transcription_readiness_warnings(readiness))
         execution_payload = dict(resolved.payload)
+        planned_settings = execution_payload.get("settings")
+        if (
+            reviewed_assembly_artifact_id
+            and not str(
+                (planned_settings if isinstance(planned_settings, dict) else {}).get(
+                    "generation_run_id"
+                )
+                or ""
+            ).strip()
+        ):
+            # An export that names no run resolves the current assembly when
+            # it runs. Bind it to the one this plan measured, so a replaced or
+            # removed assembly is refused instead of rendered unreviewed.
+            execution_payload["expected_assembly_artifact_id"] = (
+                reviewed_assembly_artifact_id
+            )
         if continuation:
-            planned_reuse_stages = {
+            reused = {
                 str(item["stage"])
                 for item in steps
                 if str(item.get("decision") or "").startswith("reuse")
                 and item.get("artifact_id")
             }
-            if planned_reuse_stages:
-                execution_payload["reuse_stages"] = sorted(planned_reuse_stages)
+            if reused:
+                execution_payload["reuse_stages"] = sorted(reused)
+            else:
+                # A legacy overrides.reuse_stages entry must not survive a plan
+                # that decided to re-run the stage.
+                execution_payload.pop("reuse_stages", None)
+            rerun = {
+                str(item["stage"])
+                for item in steps
+                if item.get("decision") == "rerun_explicit"
+            }
+            if rerun:
+                execution_payload["rerun_stages"] = sorted(rerun)
         stored_plan = {
             **public_plan,
             "_execution": {
                 "job_kind": execution_job_kind,
                 "payload": execution_payload,
                 "resource_keys": list(resolved.resource_keys),
+                "fingerprint_variant": fingerprint_variant,
             },
         }
         digest = canonical_digest(public_plan)
@@ -1059,6 +2119,7 @@ class WorkflowExecutionPlanService:
             after = self._state_fingerprint(
                 db_session,
                 session_id,
+                fingerprint_variant=fingerprint_variant,
             )
             if not hmac.compare_digest(before, after):
                 raise WorkflowPlanError(
@@ -1183,6 +2244,7 @@ class WorkflowExecutionPlanService:
             current_fingerprint = self._state_fingerprint(
                 db_session,
                 record.session_id,
+                fingerprint_variant=self._stored_fingerprint_variant(record.plan_json),
             )
             if not hmac.compare_digest(
                 record.state_fingerprint,
@@ -1229,6 +2291,22 @@ class WorkflowExecutionPlanService:
                     "plan_invalid",
                     "The stored workflow execution input is invalid.",
                 )
+            expected_assembly = str(
+                execution_payload.get("expected_assembly_artifact_id") or ""
+            )
+            if expected_assembly:
+                current_assembly = self._current_session_assembly(
+                    db_session, record.session_id
+                )
+                if (
+                    current_assembly is None
+                    or current_assembly.artifact_id != expected_assembly
+                ):
+                    raise WorkflowPlanError(
+                        "plan_stale",
+                        "The assembled audio this export plan measured was "
+                        "replaced or removed. Plan the export again.",
+                    )
             if execution_guard is not None:
                 execution_guard(db_session)
             if (
@@ -1259,7 +2337,9 @@ class WorkflowExecutionPlanService:
                 )
             record.consumed_at = utcnow()
             record.resulting_job_id = job.id
-            response = self.work.project_job(job).model_dump(mode="json")
+            response = self.work.project_job(
+                job, context=self._context(principal)
+            ).model_dump(mode="json")
             self.idempotency.complete(
                 db_session,
                 reservation,

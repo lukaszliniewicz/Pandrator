@@ -25,6 +25,9 @@ from pandrator_installer import update_jobs
 from tests.web_test_support import prepare_web_test_data_root
 
 PYTHON = Path(sys.executable)
+# Each native call starts an interpreter and imports the queue, which can
+# take several seconds on a loaded runner; these tests never wait it out.
+NATIVE_CALL_TIMEOUT = 60
 
 
 @pytest.fixture
@@ -172,7 +175,9 @@ def test_native_cancellation_preserves_lease_until_owner_acknowledges(
 ) -> None:
     database, queue, job = owned_job
     original = queue_snapshot(database)
-    update_jobs._request_job_cancellations(database.path, python=PYTHON, timeout=5)
+    update_jobs._request_job_cancellations(
+        database.path, python=PYTHON, timeout=NATIVE_CALL_TIMEOUT
+    )
     requested = queue_snapshot(database)
     before, after = original[0][0], requested[0][0]
     assert after[0] == before[0] and after[1] == "cancel_requested"
@@ -256,7 +261,9 @@ JobQueue.request_cancel_in_session = incompatible
 
     with patch.object(update_jobs.subprocess, "run", side_effect=run):
         with pytest.raises(RuntimeError, match="could not request cancellation safely") as caught:
-            update_jobs._request_job_cancellations(database.path, python=PYTHON, timeout=5)
+            update_jobs._request_job_cancellations(
+                database.path, python=PYTHON, timeout=NATIVE_CALL_TIMEOUT
+            )
     assert isinstance(caught.value.__cause__, subprocess.CalledProcessError)
     assert "Traceback" not in str(caught.value)
     assert queue_snapshot(database) == original
@@ -286,7 +293,9 @@ def test_native_empty_race_commits_no_duplicate_request(
     queue.request_cancel(job.id)
     assert queue.cancel_owned(job.id, "fixture-owner", lease_generation=job.lease_generation)
     completed = queue_snapshot(database)
-    update_jobs._request_job_cancellations(database.path, python=PYTHON, timeout=5)
+    update_jobs._request_job_cancellations(
+        database.path, python=PYTHON, timeout=NATIVE_CALL_TIMEOUT
+    )
     assert queue_snapshot(database) == completed
 
 

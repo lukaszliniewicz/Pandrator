@@ -468,6 +468,7 @@ const SETTING_ORDER: Record<string, string[]> = {
     'synchronization_delay_ms',
     'synchronization_speed',
     'synchronization_slowdown_enabled',
+    'synchronization_trim_silence',
     'synchronization_sentence_gap_ms',
     'synchronization_min_block_gap_ms'
   ],
@@ -1022,6 +1023,8 @@ export function settingLabel(key: string): string {
     synchronization_speed: 'Maximum synchronization speed-up',
     synchronization_slowdown_enabled:
       'Allow gentle voiceover slowdown (down to 0.9×)',
+    synchronization_trim_silence:
+      'Trim silence around each take before fitting',
     synchronization_sentence_gap_ms: 'Generated sentence gap',
     synchronization_min_block_gap_ms: 'Minimum gap between speech blocks (ms)',
     mix_source_gain_db: 'Source soundtrack level (dB)',

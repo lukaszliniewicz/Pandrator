@@ -20,7 +20,12 @@ from pandrator.web.accounts.identity import initial_personal_workspace
 from pandrator.web.accounts.models import Workspace
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
-from pandrator.web.generation_audio_identity import AudioIdentityContext, _hash, _material_settings
+from pandrator.web.generation_audio_identity import (
+    AudioIdentityContext,
+    _hash,
+    _material_settings,
+    identity_for_storage,
+)
 from pandrator.web.generation_cast_runtime import resolve_binding
 from pandrator.web.generation_controls import get_generation_controls, save_generation_controls
 from pandrator.web.generation_recast import _effective
@@ -175,7 +180,9 @@ def test_identity_initializes_before_cache_and_keeps_legacy_hash_shape(case):
         first = session.get(GenerationSegment, case.segments[0])
         foreign = session.get(GenerationSegment, case.segments[1])
         identity = context.for_segment(first)
-        assert identity == {
+        # The stored shape is unchanged; the legacy hashes are comparison-only.
+        assert len(identity["legacy_settings_hashes"]) == 2
+        assert identity_for_storage(identity) == {
             "schema_version": 1,
             "settings_hash": _hash({"tts": _material_settings({"tts": settings}), "rvc": {}}),
             "voice_reference_hash": _hash([]),
@@ -511,6 +518,7 @@ def test_audio_cpp_identity_resolves_own_sample_for_identical_alias(case):
         assert identities[0]["voice_reference_hash"] != identities[1]["voice_reference_hash"]
         assert identities[0]["settings_hash"] == identities[1]["settings_hash"]
         assert all(
-            set(identity) == {"schema_version", "settings_hash", "voice_reference_hash"}
+            set(identity_for_storage(identity))
+            == {"schema_version", "settings_hash", "voice_reference_hash"}
             for identity in identities
         )

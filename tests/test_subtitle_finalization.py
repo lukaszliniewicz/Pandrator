@@ -13,6 +13,7 @@ from pandrator.logic.dubbing.subtitle_finalization import (
     compose_from_crispasr_json,
     compose_transcript_segments,
     compose_transcript_segments_with_ownership,
+    diagnose_srt_content,
     finalize_srt_content,
     subtitle_timing_words,
     wrap_subtitle_text,
@@ -639,6 +640,121 @@ This cue contains forty readable characters.
             word.metadata["moss_segment_id"] for word in view
         ])
         self.assertEqual(8, len(transcript.words))
+
+    def test_composer_trims_every_overlapping_cue_end_to_the_minimum_gap(self):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "a",
+                    "start_ms": 0,
+                    "end_ms": 3000,
+                    "speaker": "A",
+                    "text": "alpha bravo charlie",
+                    "words": [
+                        {"text": "alpha", "start_ms": 0, "end_ms": 900},
+                        {"text": "bravo", "start_ms": 950, "end_ms": 1800},
+                        {"text": "charlie", "start_ms": 1850, "end_ms": 3000},
+                    ],
+                },
+                {
+                    "id": "b",
+                    "start_ms": 2840,
+                    "end_ms": 5200,
+                    "speaker": "B",
+                    "text": "delta echo foxtrot",
+                    "words": [
+                        {"text": "delta", "start_ms": 2840, "end_ms": 3600},
+                        {"text": "echo", "start_ms": 3650, "end_ms": 4300},
+                        {"text": "foxtrot", "start_ms": 4350, "end_ms": 5200},
+                    ],
+                },
+                {
+                    "id": "c",
+                    "start_ms": 4720,
+                    "end_ms": 7000,
+                    "speaker": "A",
+                    "text": "golf hotel india",
+                    "words": [
+                        {"text": "golf", "start_ms": 4720, "end_ms": 5350},
+                        {"text": "hotel", "start_ms": 5370, "end_ms": 5700},
+                        {"text": "india", "start_ms": 5720, "end_ms": 7000},
+                    ],
+                },
+                {
+                    "id": "d",
+                    "start_ms": 5960,
+                    "end_ms": 8200,
+                    "speaker": "B",
+                    "text": "juliett kilo lima",
+                    "words": [
+                        {"text": "juliett", "start_ms": 5960, "end_ms": 6600},
+                        {"text": "kilo", "start_ms": 6650, "end_ms": 7300},
+                        {"text": "lima", "start_ms": 7350, "end_ms": 8200},
+                    ],
+                },
+            ],
+        }
+        with patch(
+            "pandrator.logic.dubbing.subtitle_finalization.sentence_segmenter.predict_boundaries",
+            return_value=None,
+        ):
+            result = compose_transcript_segments_with_ownership(payload)
+
+        # 160, 480 and 1040 ms of overlap become the default 80 ms minimum gap.
+        self.assertEqual([0, 2840, 4720, 5960], [cue.start_ms for cue in result.segments])
+        self.assertEqual(
+            [2760, 4640, 5880, 8200], [cue.end_ms for cue in result.segments]
+        )
+        for previous, following in pairwise(result.segments):
+            self.assertGreaterEqual(following.start_ms - previous.end_ms, 80)
+        self.assertEqual(3, result.overlaps_clamped)
+        self.assertEqual(0, result.overlaps_unresolved)
+        self.assertEqual(
+            [
+                (0, 900), (950, 1800), (1850, 3000), (2840, 3600),
+                (3650, 4300), (4350, 5200), (4720, 5350), (5370, 5700),
+                (5720, 7000), (5960, 6600), (6650, 7300), (7350, 8200),
+            ],
+            [
+                (word.start_ms, word.end_ms)
+                for word in subtitle_timing_words(normalize_transcript(payload))
+            ],
+        )
+        self.assertEqual(
+            0, diagnose_srt_content(compose_srt(result.segments))["overlapping_cues"]
+        )
+
+    def test_composer_counts_an_untrimmable_overlap_and_keeps_the_cue(self):
+        payload = {
+            "schema": "pandrator.transcript.v1",
+            "segments": [
+                {
+                    "id": "a",
+                    "start_ms": 0,
+                    "end_ms": 1000,
+                    "speaker": "A",
+                    "text": "alpha",
+                    "words": [{"text": "alpha", "start_ms": 0, "end_ms": 1000}],
+                },
+                {
+                    "id": "b",
+                    "start_ms": 500,
+                    "end_ms": 1500,
+                    "speaker": "B",
+                    "text": "bravo",
+                    "words": [{"text": "bravo", "start_ms": 500, "end_ms": 1500}],
+                },
+            ],
+        }
+
+        result = compose_transcript_segments_with_ownership(payload)
+
+        # Trimming to 420 ms would break the 833 ms minimum duration.
+        self.assertEqual([0, 500], [cue.start_ms for cue in result.segments])
+        self.assertEqual([1000, 1500], [cue.end_ms for cue in result.segments])
+        self.assertEqual(0, result.overlaps_clamped)
+        self.assertEqual(1, result.overlaps_unresolved)
 
     def test_zero_minimum_gap_is_a_valid_explicit_setting(self):
         config = SubtitleFinalizationConfig.from_settings({"subtitle_min_gap_ms": 0})

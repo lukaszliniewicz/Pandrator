@@ -1040,6 +1040,18 @@ class SourceAwareWorkflowTests(unittest.TestCase):
     def test_url_download_rejects_local_network_targets(self):
         with self.assertRaisesRegex(ValueError, "non-public"):
             WorkflowHandlers._validate_download_url("http://127.0.0.1/private")
+        # A public hostname resolving to a private address is refused at download time,
+        # after the route has already accepted the URL's scheme and host.
+        private = [(2, 1, 6, "", ("10.1.2.3", 80))]
+        with mock.patch("socket.getaddrinfo", return_value=private):
+            with self.assertRaisesRegex(ValueError, "non-public"):
+                WorkflowHandlers._validate_download_url("https://video.invalid/watch?v=1")
+        public = [(2, 1, 6, "", ("93.184.216.34", 443))]
+        with mock.patch("socket.getaddrinfo", return_value=public):
+            self.assertEqual(
+                "https://video.invalid/watch?v=1",
+                WorkflowHandlers._validate_download_url("https://video.invalid/watch?v=1"),
+            )
 
 
 if __name__ == "__main__":

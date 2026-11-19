@@ -20,6 +20,7 @@ from ..schemas import (
     RenewDispatchBatchInput,
     SubmitDispatchBatchInput,
 )
+from ..schemas.common import WarningMessage
 
 _RUN_METADATA_KEYS = (
     "id",
@@ -61,6 +62,7 @@ _RUN_METADATA_KEYS = (
     "artifact_id",
     "finalized",
     "finalization_status",
+    "filler_check",
     "error_code",
     "error_message",
     "message",
@@ -212,6 +214,7 @@ _SUBMIT_KEYS = (
     "output_artifact_id",
     "finalized",
     "finalization_status",
+    "filler_check",
     "error_code",
     "error_message",
 )
@@ -520,6 +523,33 @@ def _get_next_action(run_id: str) -> NextAction:
     )
 
 
+def _filler_action(payload: dict[str, Any]) -> NextAction | None:
+    """Point to the passage patch tool when the declared policy left fillers."""
+
+    check = payload.get("filler_check")
+    if not isinstance(check, dict) or check.get("status") != "fillers_remaining":
+        return None
+    arguments: dict[str, Any] = {}
+    if payload.get("session_id"):
+        arguments["session_id"] = payload["session_id"]
+    artifact_id = payload.get("result_artifact_id") or payload.get("final_artifact_id")
+    if artifact_id:
+        arguments["source_artifact_id"] = artifact_id
+    arguments["dry_run"] = True
+    count = check.get("count") or 0
+    policy = check.get("policy") or "correction"
+    return NextAction(
+        tool="pandrator_patch_subtitle_passages",
+        arguments=arguments,
+        reason=(
+            f"{count} filler token(s) remain in the finalised passages although the "
+            f"{policy} correction policy removes them. Read the edit guards with "
+            "pandrator_preview_subtitle_passages (artifact_id is this source_artifact_id), "
+            "patch the listed passage_id values with dry_run first, then apply the same patch."
+        ),
+    )
+
+
 def _status(payload: dict[str, Any]) -> str:
     value = payload.get("status") or payload.get("state") or ""
     return str(value).strip().lower().replace("-", "_")
@@ -576,8 +606,14 @@ def create_dispatch_run(
     )
     run_id = _run_id(result)
     next_actions = [_claim_next_action(run_id, sequence="first")] if run_id else []
+    warnings = [
+        WarningMessage(code="source_on_pre_edit_timeline", message=str(item))
+        for item in result.get("warnings") or []
+        if str(item).strip()
+    ]
     return ToolOutcome(
         result=_metadata(result),
+        warnings=warnings,
         next_actions=next_actions,
     )
 
@@ -597,8 +633,14 @@ def list_dispatch_runs(
 def get_dispatch_run(
     runtime: McpRuntime,
     arguments: GetDispatchRunInput,
-) -> dict[str, Any]:
-    return _metadata(runtime.require_application().get_dispatch_run(arguments.run_id))
+) -> ToolOutcome:
+    payload = runtime.require_application().get_dispatch_run(arguments.run_id)
+    return ToolOutcome(
+        result=_metadata(payload),
+        next_actions=[
+            action for action in (_filler_action(payload),) if action is not None
+        ],
+    )
 
 
 def inspect_dispatch_split_boundaries(
@@ -677,6 +719,9 @@ def submit_dispatch_batch(
     projected = _submission(result)
     run_id = _run_id(result)
     next_actions: list[NextAction] = []
+    filler = _filler_action(result)
+    if filler is not None:
+        next_actions.append(filler)
     if _is_completed(result) and run_id:
         next_actions.append(_get_next_action(run_id))
     elif _is_accepted(result) and run_id:

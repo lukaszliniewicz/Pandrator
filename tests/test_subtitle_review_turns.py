@@ -603,7 +603,9 @@ def test_forged_turn_and_segment_rejected_and_explicit_new_turn_kept(review_case
             source_artifact_id=source_id,
             expected_source_hash=source_hash,
         )
-    with pytest.raises(ValueError, match="Logical source references"):
+    with pytest.raises(
+        ValueError, match="passage references do not match this cue"
+    ) as passage_guidance:
         review_case.service.save_review(
             review_case.session.id,
             "correction",
@@ -612,6 +614,8 @@ def test_forged_turn_and_segment_rejected_and_explicit_new_turn_kept(review_case
             source_artifact_id=source_id,
             expected_source_hash=source_hash,
         )
+    assert "pandrator_patch_subtitle_passages" in str(passage_guidance.value)
+    assert "pandrator_preview_subtitle_passages" in str(passage_guidance.value)
     result = review_case.service.save_review(
         review_case.session.id,
         "correction",

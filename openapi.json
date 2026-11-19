@@ -289,7 +289,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.14.5",
+            "default": "0.15.0",
             "title": "Application Version",
             "type": "string"
           },
@@ -1449,6 +1449,17 @@
             "default": null,
             "title": "Error Message"
           },
+          "filler_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DispatchFillerCheck"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "final_artifact_id": {
             "anyOf": [
               {
@@ -1652,6 +1663,7 @@
         "description": "Shared, parent-supplied or accumulated context for delegated batches.",
         "properties": {
           "decisions": {
+            "description": "Accepted decisions that later batches must respect. Empty items are ignored.",
             "items": {
               "maxLength": 2000,
               "minLength": 1,
@@ -1667,6 +1679,7 @@
               "minLength": 1,
               "type": "string"
             },
+            "description": "Named entity to a short note. Empty values are ignored.",
             "maxProperties": 500,
             "propertyNames": {
               "maxLength": 200,
@@ -1676,6 +1689,7 @@
             "type": "object"
           },
           "notes": {
+            "description": "Free-form context notes. Empty items are ignored.",
             "items": {
               "maxLength": 2000,
               "minLength": 1,
@@ -1692,6 +1706,7 @@
             "type": "string"
           },
           "style_rules": {
+            "description": "Standing style rules. Empty items are ignored.",
             "items": {
               "maxLength": 2000,
               "minLength": 1,
@@ -1707,6 +1722,7 @@
               "minLength": 1,
               "type": "string"
             },
+            "description": "Source term to preferred renderings. Empty values are ignored.",
             "maxProperties": 500,
             "propertyNames": {
               "maxLength": 200,
@@ -1724,6 +1740,7 @@
         "description": "Bounded knowledge learned while processing one delegated batch.",
         "properties": {
           "decisions": {
+            "description": "Accepted decisions that later batches must respect. Empty items are ignored.",
             "items": {
               "maxLength": 2000,
               "minLength": 1,
@@ -1739,6 +1756,7 @@
               "minLength": 1,
               "type": "string"
             },
+            "description": "Named entity to a short note. Empty values are ignored.",
             "maxProperties": 500,
             "propertyNames": {
               "maxLength": 200,
@@ -1748,6 +1766,7 @@
             "type": "object"
           },
           "notes": {
+            "description": "Free-form context notes. Empty items are ignored.",
             "items": {
               "maxLength": 2000,
               "minLength": 1,
@@ -1758,6 +1777,7 @@
             "type": "array"
           },
           "style_rules": {
+            "description": "Standing style rules. Empty items are ignored.",
             "items": {
               "maxLength": 2000,
               "minLength": 1,
@@ -1773,6 +1793,7 @@
               "minLength": 1,
               "type": "string"
             },
+            "description": "Source term to preferred renderings. Empty values are ignored.",
             "maxProperties": 500,
             "propertyNames": {
               "maxLength": 200,
@@ -2093,6 +2114,99 @@
           "context_capsule"
         ],
         "title": "DispatchDelegationContext",
+        "type": "object"
+      },
+      "DispatchFillerCheck": {
+        "additionalProperties": false,
+        "description": "Post-correction scan of the declared filler-removal policy.",
+        "properties": {
+          "count": {
+            "minimum": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "passages": {
+            "items": {
+              "$ref": "#/components/schemas/DispatchFillerCheckPassage"
+            },
+            "title": "Passages",
+            "type": "array"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "status": {
+            "enum": [
+              "clean",
+              "fillers_remaining",
+              "not_checked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "policy",
+          "count"
+        ],
+        "title": "DispatchFillerCheck",
+        "type": "object"
+      },
+      "DispatchFillerCheckPassage": {
+        "additionalProperties": false,
+        "description": "One finalised passage that still contains a filler token.",
+        "properties": {
+          "cue_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cue Id"
+          },
+          "passage_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Passage Id"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "title": "DispatchFillerCheckPassage",
         "type": "object"
       },
       "DispatchRunCreateRequest": {
@@ -3856,6 +3970,17 @@
           "status",
           "reused_job"
         ],
+        "type": "object"
+      },
+      "GenerationTimingRepairRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "preview": {
+            "default": false,
+            "description": "When true, queue a CPU-only `generation.repair-preview` job that lists the candidates, thresholds and synthesis calls a repair would make, without synthesising audio or changing the plan. Poll the returned job.",
+            "type": "boolean"
+          }
+        },
         "type": "object"
       },
       "GenerationTopologyEdit": {
@@ -14486,6 +14611,11 @@
             "maxLength": 255,
             "title": "Name",
             "type": "string"
+          },
+          "run_as_job": {
+            "default": false,
+            "title": "Run As Job",
+            "type": "boolean"
           }
         },
         "required": [
@@ -16113,6 +16243,40 @@
         "title": "WorkError",
         "type": "object"
       },
+      "WorkEstimate": {
+        "additionalProperties": false,
+        "description": "How much of a generation run is left, from its own measured pace.",
+        "properties": {
+          "blocks_done": {
+            "minimum": 0,
+            "title": "Blocks Done",
+            "type": "integer"
+          },
+          "blocks_per_minute": {
+            "minimum": 0.0,
+            "title": "Blocks Per Minute",
+            "type": "number"
+          },
+          "blocks_total": {
+            "minimum": 1,
+            "title": "Blocks Total",
+            "type": "integer"
+          },
+          "remaining_seconds": {
+            "minimum": 0.0,
+            "title": "Remaining Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "blocks_done",
+          "blocks_total",
+          "blocks_per_minute",
+          "remaining_seconds"
+        ],
+        "title": "WorkEstimate",
+        "type": "object"
+      },
       "WorkEvent": {
         "additionalProperties": false,
         "properties": {
@@ -16194,6 +16358,160 @@
         "title": "WorkEventPage",
         "type": "object"
       },
+      "WorkQueueBlocker": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "work_id": {
+            "title": "Work Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_id",
+          "kind"
+        ],
+        "title": "WorkQueueBlocker",
+        "type": "object"
+      },
+      "WorkQueueView": {
+        "additionalProperties": false,
+        "description": "Why a queued job has not started yet, and where it sits in its lane.",
+        "properties": {
+          "blocked_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkQueueBlocker"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lane": {
+            "enum": [
+              "main",
+              "delivery"
+            ],
+            "title": "Lane",
+            "type": "string"
+          },
+          "position": {
+            "minimum": 1,
+            "title": "Position",
+            "type": "integer"
+          },
+          "reason": {
+            "enum": [
+              "session_busy",
+              "resource_busy",
+              "worker_busy",
+              "scheduled"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "resource": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resource"
+          }
+        },
+        "required": [
+          "position",
+          "lane",
+          "reason"
+        ],
+        "title": "WorkQueueView",
+        "type": "object"
+      },
+      "WorkRetry": {
+        "additionalProperties": false,
+        "description": "Retries in flight inside a batch synthesis.",
+        "properties": {
+          "attempt_limit": {
+            "minimum": 1,
+            "title": "Attempt Limit",
+            "type": "integer"
+          },
+          "max_attempt": {
+            "minimum": 0,
+            "title": "Max Attempt",
+            "type": "integer"
+          },
+          "next_retry_in_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Next Retry In Seconds"
+          },
+          "pending_requests": {
+            "minimum": 0,
+            "title": "Pending Requests",
+            "type": "integer"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          }
+        },
+        "required": [
+          "pending_requests",
+          "max_attempt",
+          "attempt_limit"
+        ],
+        "title": "WorkRetry",
+        "type": "object"
+      },
       "WorkView": {
         "additionalProperties": false,
         "description": "Stable public work projection; raw job inputs are intentionally absent.",
@@ -16252,6 +16570,18 @@
             ],
             "default": null
           },
+          "estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Measured pace and remaining time, for a running generation."
+          },
           "external_effect": {
             "anyOf": [
               {
@@ -16306,6 +16636,18 @@
             "default": null,
             "title": "Progress"
           },
+          "queue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkQueueView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For queued work: its place in its lane and what it is waiting for."
+          },
           "result_summary": {
             "anyOf": [
               {
@@ -16318,6 +16660,18 @@
             ],
             "default": null,
             "title": "Result Summary"
+          },
+          "retry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkRetry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Retries in flight, for generation work that reports them."
           },
           "schema_version": {
             "const": "1",
@@ -16510,6 +16864,24 @@
             "additionalProperties": true,
             "title": "Overrides",
             "type": "object"
+          },
+          "rerun_stages": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,79}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Rerun Stages",
+            "type": "array"
+          },
+          "reuse_stages": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,79}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Reuse Stages",
+            "type": "array"
           },
           "target_stage": {
             "default": "generate_audio",
@@ -19937,7 +20309,7 @@
     },
     "/api/v1/generation-runs/{runId}/repair-timing": {
       "post": {
-        "description": "Queue one durable generation.repair-existing job for a completed voiceover on its active speech plan. The frozen settings must enable early-finish repair; audio-version and automatic second-pass children are refused. Send no body parameters; an empty JSON object is equivalent to no body. A new job returns 202, while an eligible existing job returns 200 with reused_job=true. Reusing the same Idempotency-Key replays the retained receipt.",
+        "description": "With {\"preview\": true} queue one CPU-only generation.repair-preview job whose result lists the candidate blocks, the thresholds in force and the estimated synthesis calls without staging or synthesising anything. Otherwise queue one durable generation.repair-existing job for a completed voiceover on its active speech plan, using the repair thresholds resolved at request time. The frozen automatic-pass setting is not required; audio-version and second-pass child runs are refused. A new job returns 202, while an eligible existing job returns 200 with reused_job=true. Reusing the same Idempotency-Key replays the retained receipt.",
         "operationId": "repairGenerationTiming",
         "parameters": [
           {
@@ -19964,9 +20336,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": false,
-                "maxProperties": 0,
-                "type": "object"
+                "$ref": "#/components/schemas/GenerationTimingRepairRequest"
               }
             }
           },
@@ -19981,7 +20351,7 @@
                 }
               }
             },
-            "description": "Existing eligible timing repair job reused. The receipt is a frozen snapshot of the admitting call; read the job or run for live status.",
+            "description": "Existing eligible job reused (repair or a running preview). A queued receipt is a frozen snapshot of the admitting call; read the job or run for live status.",
             "headers": {
               "Idempotency-Replayed": {
                 "description": "True when replaying the retained response for this request key.",
@@ -20031,7 +20401,7 @@
             "description": "Generation is ineligible, a previous repair is still stopping, or the retry identity conflicts"
           },
           "422": {
-            "description": "Body parameters were supplied; timing repair accepts an empty body only"
+            "description": "A body parameter is invalid or unknown"
           }
         },
         "security": [
@@ -20048,7 +20418,7 @@
             ]
           }
         ],
-        "summary": "Admit a timing-only repair for a completed voiceover",
+        "summary": "Queue a timing preview or a timing repair for a completed voiceover",
         "x-required-scopes": [
           "app.read",
           "app.run"
@@ -26990,6 +27360,16 @@
             }
           },
           {
+            "description": "Count reuse against this run's frozen settings snapshot, the same basis its segment rows use. Without it the session's current settings are the basis; reuse_basis names the one used.",
+            "in": "query",
+            "name": "generation_run_id",
+            "schema": {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -30379,7 +30759,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Effective settings and inheritance"
+            "description": "Effective settings, each key's origin, and inheritance"
           }
         },
         "security": [
@@ -33417,6 +33797,13 @@
                     "assets": {
                       "items": {
                         "properties": {
+                          "download": {
+                            "description": "A missing model this caller's run may not download.",
+                            "enum": [
+                              "administrator_required"
+                            ],
+                            "type": "string"
+                          },
                           "id": {
                             "type": "string"
                           },
@@ -33466,7 +33853,8 @@
                         "cached",
                         "missing",
                         "unresolved",
-                        "not_required"
+                        "not_required",
+                        "will_download"
                       ],
                       "type": "string"
                     }
@@ -33626,7 +34014,21 @@
                 }
               }
             },
-            "description": "Translation project state"
+            "description": "Translation project state; returned when run_as_job is false"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Creation queued as durable work"
+          },
+          "400": {
+            "description": "An idempotency key is required or invalid"
           },
           "404": {
             "description": "Session, checkpoint, or project not found"

@@ -173,6 +173,22 @@ class SpeechPlanPreparationTests(unittest.TestCase):
         cancelled.set()
         self.assertEqual(run_speech_preparation(self.services.workflow_handlers, payload, lambda *_: None, cancelled), {})
 
+    def test_preparation_records_the_subtitle_source_signatures(self):
+        response = self._prepare()
+        self.assertEqual(200, response.status_code, response.get_json())
+        result = response.get_json()
+        status = self.client.get(
+            f"/api/v1/sessions/{self.sid}/generation-plan/status"
+        ).get_json()
+        with self.services.database.session() as session:
+            revision = session.get(m.GenerationPlanRevision, result["selected_revision_id"])
+            settings = revision.settings_json
+            artifact = session.get(m.Artifact, settings["_source_artifact_id"])
+        self.assertEqual(status["current_input"]["artifact_id"], artifact.id)
+        self.assertEqual(artifact.content_hash, settings["_source_content_hash"])
+        self.assertTrue(settings["_source_text_signature"])
+        self.assertTrue(settings["_source_timing_signature"])
+
     def test_changed_settings_rejected_before_model_call(self):
         payload = self._queue()
         self._set_optimization(False)

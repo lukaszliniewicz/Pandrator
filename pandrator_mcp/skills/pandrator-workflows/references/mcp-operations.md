@@ -14,6 +14,12 @@ an operation is unfamiliar or the server differs from this reference.
 - Browse an approved root with `pandrator_browse_local_sources`, then pass the
   returned relative path to `pandrator_import_local_source`. The sidecar
   transfers bytes and attaches the source without exposing them to the model.
+  For a public video page or media URL, `pandrator_import_source_url` downloads
+  on the Pandrator host and returns a work handle; only an Administrator may
+  use it, because the host fetches the URL.
+- A transcription plan names the effective recognition engine, which may be
+  inherited from saved settings. Hotwords do not reliably fix names (with
+  Parakeet they made no visible difference in testing); plan to correct names.
 - Filter `pandrator_describe_parameters` with `sections`, `names`,
   `workflow_kind`, or `query`; at least one filter is required.
 - Inspect provider, TTS, and voice catalogues only when those choices matter.
@@ -71,6 +77,34 @@ providers, locks, and confirmations, and execute the unchanged plan/digest
 through `pandrator_execute_workflow_plan` with an idempotency key. Re-plan on
 revision conflicts, expiry, or a stale digest.
 
+## Several languages
+
+One source session feeds a translation project; each language is a branch,
+itself a voiceover session when the project generates voiceover and otherwise a
+subtitles session, with pinned copies of the source text and timeline.
+
+1. If the recording is cut, the source is a `media_edit` session (its branches
+   are still voiceover sessions). Render the reviewed media edit first
+   (`pandrator_render_media_edit`) and wait for it. Correction comes after:
+   select the render's `media_edit_subtitles`, not the pre-edit transcript.
+   `pandrator_create_dispatch_run` warns when the source is on the pre-edit
+   timeline; a correction there does not reach the edited video, and the
+   translation project refuses its text.
+2. After the correction finalises, read `filler_check` from
+   `pandrator_get_dispatch_run`. Passages listed under `fillers_remaining`
+   kept an "uh" or "um"; fix them with `pandrator_patch_subtitle_passages`.
+   Every translation copies what the source says, and later source edits do
+   not reach existing branches.
+3. `pandrator_create_translation_project` takes the corrected checkpoint and
+   returns a work handle, not the project. Poll `pandrator_get_work` to
+   terminal, then read `pandrator_get_translation_project` (summary by
+   default, `view="full"` on request). Add languages with
+   `pandrator_create_translation_branches`.
+4. Translate, generate or export several branches at once with
+   `pandrator_preview_translation_project_operation` and
+   `pandrator_execute_translation_project_operation`, or work in one branch.
+   Edit passage-based translations with `pandrator_patch_subtitle_passages`.
+
 ## Multiple-voice narration
 
 Use the packaged `multivoice-audiobooks` guide for the complete tool sequence.
@@ -94,7 +128,8 @@ Delivery analysis and pronunciation optimization remain independent.
 
 A returned `work` handle is not a finished artifact. Poll `pandrator_get_work`
 with that handle until terminal; retain it across timeouts and interruptions.
-Prefer waits short enough for the host's request timeout and progress needs.
+Every server-side wait stops at the process ceiling, 25 seconds by default, and
+reports `timed_out`; poll again while it is true instead of raising the request.
 Use `pandrator_get_work_log` for diagnosis rather than repeatedly dumping logs.
 For generation, prefer `pandrator_get_generation_operation` with the stable
 `generation_operation_id`; it follows preparation and synthesis and reports
@@ -106,6 +141,16 @@ with errors and progress; save large detailed receipts privately when needed.
 Changing this presentation view does not change a generation mutation or its
 idempotency key. Avoid repeatedly fetching full settings or catalogues while
 polling work that already supplies its identity and status.
+
+Queued work reports `queue`: its `lane`, `position` (1 is next), a `reason`
+(`session_busy`, `resource_busy`, `worker_busy` or `scheduled`) and, where the
+caller may see it, `blocked_by`. Waiting behind a render or another session's
+job is normal; do not cancel and resubmit. A job first in line with
+`worker_busy`, no `blocked_by` and nothing else running may have no worker:
+tell the operator. Running generation adds `retry`
+(provider retries in flight) and, after 10 blocks or 2 minutes, `estimate`
+with `remaining_seconds`. A workflow plan's `generate_audio` step carries
+`estimated_seconds` when comparable history exists.
 
 Call `pandrator_cancel_work` once when cancellation is requested, then inspect
 until terminal. Quick transcription has its own polling and cancellation tools.
@@ -126,6 +171,12 @@ including reused audio. Current active audio is a separate selection.
 `settings_source_run_id` to reproduce frozen settings, or
 `settings_source="matching_run"` for the latest compatible snapshot.
 `settings_source_run_id` is valid only with `settings_source="run"`.
+The named run may come from an earlier revision of the same speech plan in the
+same session (its frozen TTS settings are replayed and each take's identity is
+still checked). When it does, the result carries `settings_source_diff`: the
+material `tts` keys whose run value differs from today's resolved value, as
+`{key: {"run": …, "current": …}}`. Credentials and keys that never change the
+audio are left out.
 `generation_run_id` identifies the audio origin;
 it does not select historical settings. A missing historical snapshot fails
 instead of substituting current settings. Returned origins make this explicit.
@@ -144,15 +195,29 @@ instead of substituting current settings. Returned origins make this explicit.
    `pandrator_assemble_generation_run` and wait for it to finish.
 5. Create one `pandrator_plan_export_variant` per requested output, inspect
    its media/text/subtitle options, and execute the exact plan with
-   `pandrator_execute_workflow_plan`. For a requested bilingual video,
+   `pandrator_execute_workflow_plan`. Omitting `audio_mode` uses the session's
+   effective value; check it and its origin (a voiceover over sound normally
+   wants `mixed`). Read `speech_timing`: `timing_drift` gives the worst block
+   and cue lag and the late cues, `tail` says whether speech outruns the
+   video. `synchronization_speed` defaults to 1.15 and the plan warns above
+   1.2; for a language that runs long, condense the text rather than raise the
+   speed. Older subtitles with overlapping cues can be trimmed at export with
+   the subtitle setting `clamp_overlaps`. For a requested bilingual video,
    `subtitle_selection="dual"` selects source then translation, provided
    both documents exist: `subtitle_mode="soft"` retains separate selectable
    tracks, while `subtitle_mode="burned"` makes one bilingual overlay.
    Do not substitute a missing language or confuse this with speech-only text.
-   Poll again.
+   Pass the run's `generation_run_id`; without it the export uses the
+   assembly made from the active speech plan. Poll again.
 6. Locate outputs with `pandrator_list_artifacts` and deliver them with
    `pandrator_download_artifact`. Supply an optional plain `filename`, not a
-   destination path. The configured output root determines the destination.
+   destination path. The configured output root determines the destination;
+   without one, ask the operator to set it on the MCP host.
+
+After a subtitle change that only moves timing, prepare the speech plan again
+(every take is kept), assemble with `pandrator_assemble_generation_run` without
+a `generation_run_id`, and plan the export without one. A new generation run
+would synthesise every block again; the plan warns when every take is reusable.
 
 The downloader resumes partial transfers and verifies size and SHA-256. It
 refuses conflicting existing content. Report its final path and verification
@@ -177,6 +242,11 @@ Use the returned artifact IDs with the checked downloader for delivery.
 For voiceovers, an enabled early-finish check may run **one** automatic pass after
 synthesis. It can split an early speech block at a whole-cue boundary while
 reusing unaffected takes; changed semantic-context neighbours may be refreshed.
+A candidate whose split gain cannot cover the pause between the new halves is
+skipped as `neighbour_growth_precheck` before any call. A refreshed
+neighbour whose take comes out longer is accepted while a forward placement
+shows it does not push later speech; otherwise the attempt is rejected as
+`context_neighbour_added_delay`.
 A rejected change leaves the original selected audio active. Applied repairs
 may activate a new plan revision, while the original takes remain available.
 Repair takes precedence over passage regroup, and regroup is also disabled
@@ -194,15 +264,24 @@ a fail-closed pass with no checked blocks, not proof that timing was reviewed.
 Inspect checked, candidate,
 attempted, applied and rejected counts, plus `pass_completed` and skip reason;
 a successful synthesis job alone does not establish repair completion.
+`timing_repair.usage` is the second pass's own spending and `usage_total` is the
+whole run; `effect` reports late cues and worst lag before and after for the
+blocks the pass touched.
 
-An explicit check of an older completed voiceover is available through the
-application's `POST /api/v1/generation-runs/{run_id}/repair-timing` with an
-empty JSON body and optional idempotency key, **not** through a dedicated MCP
-tool. It requires run permission, frozen settings that enabled repair, an active
-original speech plan and a run that is **not** an assembled/recast audio version.
-Second-pass child runs are ineligible. Do not invent an MCP repair call
-or silently make a raw HTTP mutation; explain the limitation and use an
-authorized browser/application route when available. Retain history and
+An explicit check of a completed voiceover is available through
+`pandrator_repair_generation_timing`. `preview=true` (the default) queues a
+read-only `generation.repair-preview` job and returns its work handle; poll it
+with `pandrator_get_work` to read the candidate blocks, the thresholds in force
+and the estimated synthesis calls. Measuring a full dub takes about a minute,
+so previews are jobs rather than synchronous replies. `preview=false` with an
+`idempotency_key` queues the repair with the thresholds the session resolves
+now, then returns a work handle to poll with `pandrator_get_work`. The frozen
+`speech_block_early_repair_enabled` flag decides only whether the automatic
+second pass of a full run happens; it does not gate this request. It requires
+run permission, an active original speech plan and a run that is **not** an
+assembled/recast audio version. Second-pass child runs are ineligible. The same
+route exists as `POST /api/v1/generation-runs/{run_id}/repair-timing` on the
+application. Retain history and
 selection identity on retries. See [recovery](recovery.md).
 
 ## Recording edits

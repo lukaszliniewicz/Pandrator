@@ -11,6 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .models import Artifact, GenerationPlan, GenerationPlanRevision, GenerationSegment
+from .speech_plan_source import revision_source_compatibility
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +125,14 @@ def validate_generation_language_payload(
         planned_source_id = str(
             revision_settings.get("_source_artifact_id") or ""
         )
-        if planned_source_id and planned_source_id != source.id:
+        if (
+            planned_source_id
+            and planned_source_id != source.id
+            and revision_source_compatibility(
+                session, revision_settings, session.get(Artifact, source.id)
+            )
+            == "incompatible"
+        ):
             raise context.preflight_error_type()(
                 "The requested speech plan revision belongs to a different generation input. Select the matching input or prepare a new speech plan."
             )

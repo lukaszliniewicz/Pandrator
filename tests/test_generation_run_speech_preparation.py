@@ -483,7 +483,11 @@ def test_source_metadata_is_private_in_project_layers():
 
 @pytest.mark.parametrize("saved", [False, True])
 def test_current_and_selected_history_reuse_retained_narrator_and_worker_identity(project, monkeypatch, saved):
-    from pandrator.web.generation_audio_identity import IDENTITY_KEY, AudioIdentityContext
+    from pandrator.web.generation_audio_identity import (
+        IDENTITY_KEY,
+        AudioIdentityContext,
+        identity_for_storage,
+    )
     from pandrator.web.speech_input_contracts import PROJECT_SPEECH_SOURCE_KEY
 
     p, r = project, project.r
@@ -505,7 +509,7 @@ def test_current_and_selected_history_reuse_retained_narrator_and_worker_identit
         take = session.scalar(select(m.AudioTake).where(m.AudioTake.generation_run_id == run.id))
         assert segment is not None and take is not None and take.artifact_id is not None
         identity = run.settings_snapshot_json["generation_audio_identities"][segment.id]
-        assert session.get_one(m.Artifact, take.artifact_id).metadata_json[IDENTITY_KEY] == identity
+        assert session.get_one(m.Artifact, take.artifact_id).metadata_json[IDENTITY_KEY] == identity_for_storage(identity)
         assert AudioIdentityContext(session, run.settings_snapshot_json).for_segment(segment) == identity
         assert (PROJECT_SPEECH_SOURCE_KEY in run.settings_snapshot_json["tts"]) is not saved
 

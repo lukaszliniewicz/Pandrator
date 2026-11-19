@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.jobs import Worker
 from pandrator.web.models import (
     Artifact,
     Document,
@@ -417,6 +418,68 @@ def test_enabling_existing_voiceover_reconciles_outcome_once(case, saved_outcome
         "revision"] == updated["revision"]
 
 
+def _attach_media(services, session_id: str, *, name: str = "source.mp4"):
+    database, paths, artifacts = (services[key] for key in ("database", "paths", "artifacts"))
+    with database.session() as db:
+        record = db.get(SessionRecord, session_id)
+        directory = paths.sessions / record.storage_key
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_bytes(b"media fixture")
+    artifact = artifacts.register(
+        path, kind="video", role="upload", session_id=session_id,
+        metadata={"original_filename": name},
+    )
+    asset = services["source_library"].ensure_for_artifact(
+        artifact.id, display_name=name, kind="mp4",
+    )
+    services["source_library"].attach(session_id, asset.id)
+    return artifact
+
+
+def test_voiceover_branch_stamps_mixed_only_when_the_source_has_audio(case):
+    client, headers, services = case
+    with_audio = _source(
+        client, headers, name="BranchWithAudio", workflow_kind="voiceover",
+        setup={"target_languages": ["fr"], "generate_voiceover": True},
+    ).get_json()
+    _attach_media(services, with_audio["id"])
+    checkpoint = _reviewed_correction(services, with_audio["id"])
+    response = client.post(
+        f"/api/v1/sessions/{with_audio['id']}/translation-project",
+        json={"checkpoint_artifact_id": checkpoint.id,
+              "expected_revision": with_audio["revision"], "create_planned_branches": True},
+        headers={**headers, "Idempotency-Key": "audio-mode-mixed-key"},
+    )
+    assert response.status_code == 200, response.get_json()
+    branch = response.get_json()["project"]["branches"][0]
+    with services["database"].session() as db:
+        output = db.get(SessionSetting, (branch["session_id"], "output")).value_json
+        assert output["audio_mode"] == "mixed"
+        assert db.get(OutcomePlan, branch["session_id"]).value_json["export"][
+            "audio_mode"
+        ] == "mixed"
+    silent = _source(
+        client, headers, name="BranchWithoutAudio", workflow_kind="voiceover",
+        setup={"target_languages": ["fr"], "generate_voiceover": True},
+    ).get_json()
+    silent_checkpoint = _reviewed_correction(services, silent["id"])
+    response = client.post(
+        f"/api/v1/sessions/{silent['id']}/translation-project",
+        json={"checkpoint_artifact_id": silent_checkpoint.id,
+              "expected_revision": silent["revision"], "create_planned_branches": True},
+        headers={**headers, "Idempotency-Key": "audio-mode-dubbing-key"},
+    )
+    assert response.status_code == 200, response.get_json()
+    silent_branch = response.get_json()["project"]["branches"][0]
+    with services["database"].session() as db:
+        output = db.get(SessionSetting, (silent_branch["session_id"], "output")).value_json
+        assert output["audio_mode"] == "dubbing_only"
+        assert db.get(OutcomePlan, silent_branch["session_id"]).value_json["export"][
+            "audio_mode"
+        ] == "dubbing_only"
+
+
 def test_voiceover_plan_sets_target_language_and_dubbing_mode(case):
     client, headers, services = case
     source = _source(
@@ -564,14 +627,24 @@ def test_native_mcp_setup_lifecycle_with_disposable_api(case, tmp_path):
             checkpoint = _reviewed_correction(services, sid)
             ready = await call("pandrator_get_translation_project", {"session_id": sid})
             assert ready["setup_state"] == "ready"
-            project = await call("pandrator_create_translation_project", {
+            handle = await call("pandrator_create_translation_project", {
                 "session_id": sid, "checkpoint_artifact_id": checkpoint.id,
                 "expected_revision": renamed["revision"], "create_planned_branches": True,
                 "idempotency_key": "native-language-project-key",
             })
+            assert handle["kind"] == "translation_project.create"
+            worker = Worker(
+                services["jobs"], "native-language-worker",
+                services["workflow_handlers"].handlers(),
+            )
+            while worker.run_once():
+                pass
+            assert services["jobs"].get(handle["id"]).status == "succeeded"
+            project = await call(
+                "pandrator_get_translation_project", {"session_id": sid}
+            )
             assert len(project["project"]["branches"]) == 2
-            assert (await call("pandrator_get_translation_project", {"session_id": sid}))[
-                "setup_state"] == "active"
+            assert project["setup_state"] == "active"
             direct_voiceover = await call("pandrator_create_session", {
                 "name": "Native voiceover setup", "workflow_kind": "voiceover",
                 "source_language": "en", "included_stages": ["correct", "translate", "generate_audio"],

@@ -1126,7 +1126,7 @@
                   min="1"
                   max="4"
                   step="0.01"
-                  value={Number(audioValue('synchronization_speed', 1.2))}
+                  value={Number(audioValue('synchronization_speed', 1.15))}
                   oninput={(event) =>
                     setAudio(
                       'synchronization_speed',

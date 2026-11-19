@@ -69,6 +69,7 @@ from .schemas import (
     GetWorkLogInput,
     GuideTopic,
     ImportLocalSourceInput,
+    ImportSourceUrlInput,
     ImportSubtitlesInput,
     ListArtifactsInput,
     ListSourcesInput,
@@ -123,6 +124,7 @@ from .tools import (
     get_work_log,
     get_workflow,
     import_local_source,
+    import_source_url,
     import_subtitles,
     list_artifacts,
     list_sources,
@@ -152,6 +154,7 @@ from .tools.workflow_inputs import (
     get_workflow_inputs,
     select_workflow_input,
 )
+from .waits import WAIT_DESCRIPTION
 
 _STDOUT_GUARD = threading.Lock()
 
@@ -968,6 +971,26 @@ def build_server(runtime: McpRuntime):
             ),
         )
 
+    @server.tool(
+        name="pandrator_import_source_url",
+        title="Import and attach a source from a public URL",
+        annotations=revisioned_write_action,
+    )
+    def source_url_import_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        url: Annotated[str, Field(min_length=8, max_length=4_096)],
+    ) -> dict[str, Any]:
+        """Download a source from a public http(s) URL, such as a video page, on the Pandrator host with yt-dlp. Requires an Administrator, because the host fetches the URL. Every call queues a new download. Returns a work handle; poll it with pandrator_get_work."""
+
+        return _call_with_input_factory(
+            import_source_url,
+            runtime,
+            lambda: ImportSourceUrlInput(
+                session_id=session_id,
+                url=url,
+            ),
+        )
+
     register_transcription_tools(
         server,
         runtime,
@@ -1167,6 +1190,20 @@ def build_server(runtime: McpRuntime):
             Field(ge=1, le=60),
         ] = 30,
         continuation: bool = True,
+        reuse_stages: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Prerequisite stages to keep even if their settings or source "
+                    "changed, such as an accepted passive correction or translation."
+                )
+            ),
+        ] = None,
+        rerun_stages: Annotated[
+            list[str] | None,
+            Field(description="Prerequisite stages to run again even if their results are current."),
+        ] = None,
+        view: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Create an immutable plan snapshot. Use continuation=false for export-only work."""
@@ -1180,6 +1217,9 @@ def build_server(runtime: McpRuntime):
                 overrides=overrides or {},
                 expires_in_minutes=expires_in_minutes,
                 continuation=continuation,
+                reuse_stages=reuse_stages or [],
+                rerun_stages=rerun_stages or [],
+                view=view,
             ),
         )
         return _response(envelope, response_mode)
@@ -1200,7 +1240,16 @@ def build_server(runtime: McpRuntime):
         audio_version_side: Literal["before", "after"] = "after",
         overrides: dict[str, Any] | None = None,
         export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media",
-        audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
+        audio_mode: Annotated[
+            Literal["preserve", "mixed", "dubbing_only"] | None,
+            Field(
+                description=(
+                    "Omit to use the session's effective audio mode. `mixed` keeps "
+                    "the original soundtrack under the voice; `dubbing_only` "
+                    "replaces it."
+                )
+            ),
+        ] = None,
         subtitle_mode: Literal["none", "soft", "burned"] = "none",
         subtitle_text_source: Literal["current", "generation_run", "selected_artifact"] = "current",
         subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None,
@@ -1210,7 +1259,7 @@ def build_server(runtime: McpRuntime):
         context_capsule: DelegationContextCapsuleInput | None = None,
         materialize: bool = False,
         filename: Annotated[NativeNullableString, Field(max_length=255)] = None,
-        wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
+        wait_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 0,
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
         packet_format: Literal["standard", "compact"] = "compact",
         response_mode: Literal["standard", "structured"] = "standard",
@@ -1241,12 +1290,22 @@ def build_server(runtime: McpRuntime):
         generation_run_id: Annotated[NativeNullableString, Field(max_length=80)] = None,
         audio_version_side: Literal["before", "after"] = "after",
         export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media",
-        audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
+        audio_mode: Annotated[
+            Literal["preserve", "mixed", "dubbing_only"] | None,
+            Field(
+                description=(
+                    "Omit to use the session's effective audio mode. `mixed` keeps "
+                    "the original soundtrack under the voice; `dubbing_only` "
+                    "replaces it."
+                )
+            ),
+        ] = None,
         subtitle_mode: Literal["none", "soft", "burned"] = "none",
         subtitle_text_source: Literal["current", "generation_run", "selected_artifact"] = "current",
         subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None,
         subtitle_format: Literal["srt", "vtt"] = "srt",
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
+        view: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Plan rendering from existing inputs/audio without upstream language or synthesis stages."""
@@ -1265,6 +1324,7 @@ def build_server(runtime: McpRuntime):
                 subtitle_selection=subtitle_selection,
                 subtitle_format=subtitle_format,
                 expires_in_minutes=expires_in_minutes,
+                view=view,
             ),
         )
         return _response(envelope, response_mode)
@@ -1627,7 +1687,7 @@ def build_server(runtime: McpRuntime):
         work_type: Literal["job", "manager_operation"] = "job",
         include_events: bool = False,
         event_limit: Annotated[int, Field(ge=1, le=200)] = 50,
-        wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
+        wait_seconds: Annotated[int, Field(ge=0, le=3_600, description=WAIT_DESCRIPTION)] = 0,
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Inspect work, optionally polling until terminal or the wait deadline."""

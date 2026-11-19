@@ -438,6 +438,20 @@ class UpdateSessionInput(ToolInput):
         )
 
 
+class ImportSourceUrlInput(ToolInput):
+    """Download one public http(s) source on the Pandrator host."""
+
+    session_id: str = Field(min_length=1, max_length=80)
+    url: str = Field(
+        min_length=8,
+        max_length=4_096,
+        description=(
+            "Public http(s) URL to download on the Pandrator host, such as a "
+            "video page. Private, loopback and non-http(s) targets are refused."
+        ),
+    )
+
+
 class AttachExistingSourceInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     source_asset_id: str = Field(min_length=1, max_length=80)

@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from ..waits import WAIT_DESCRIPTION
 from .common import ToolInput
 
 
@@ -17,7 +18,7 @@ class GetGenerationOperationInput(ToolInput):
         max_length=120,
         description="Same as operation_id, under the name start and regenerate results use.",
     )
-    wait_seconds: int = Field(default=0, ge=0, le=60)
+    wait_seconds: int = Field(default=0, ge=0, le=60, description=WAIT_DESCRIPTION)
     include_coverage: bool = True
 
     @model_validator(mode="after")

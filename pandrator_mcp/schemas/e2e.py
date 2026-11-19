@@ -254,12 +254,19 @@ class PlanExportVariantInput(ToolInput):
     generation_run_id: str | None = Field(default=None, max_length=80)
     audio_version_side: Literal["before", "after"] = "after"
     export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media"
-    audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed"
+    audio_mode: Literal["preserve", "mixed", "dubbing_only"] | None = Field(
+        default=None,
+        description=(
+            "Omit to use the session's effective audio mode. `mixed` keeps the "
+            "original soundtrack under the voice; `dubbing_only` replaces it."
+        ),
+    )
     subtitle_mode: Literal["none", "soft", "burned"] = "none"
     subtitle_text_source: Literal["current", "generation_run", "selected_artifact"] = "current"
     subtitle_selection: Literal["auto", "source", "translation", "dual"] | None = None
     subtitle_format: Literal["srt", "vtt"] = "srt"
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
+    view: Literal["summary", "full"] = "summary"
 
 
 class DownloadArtifactInput(ToolInput):

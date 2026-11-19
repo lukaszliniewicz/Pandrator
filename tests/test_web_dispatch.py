@@ -17,6 +17,8 @@ from pandrator.web.models import (
     DispatchRun,
     Document,
     DocumentRevision,
+    MediaEditPlan,
+    MediaEditPlanRevision,
     Segment,
     SegmentLineage,
     SessionStageSelection,
@@ -342,6 +344,125 @@ class DispatchWebTests(unittest.TestCase):
         self.assertEqual(201, response.status_code, response.get_json())
         return response.get_json()
 
+    def _reviewed_media_edit(self, session_id: str, *, reviewed: bool = True) -> None:
+        with self.extension["database"].session() as session:
+            transcription = session.scalar(
+                select(Artifact)
+                .where(
+                    Artifact.session_id == session_id,
+                    Artifact.role == "transcription",
+                )
+                .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            )
+            plan = MediaEditPlan(session_id=session_id)
+            session.add(plan)
+            session.flush()
+            revision = MediaEditPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                content_hash="reviewed-edit-hash",
+                source_media_artifact_id=transcription.id,
+                editorial_transcript_artifact_id=transcription.id,
+                duration_ms=2000,
+                reviewed=reviewed,
+            )
+            session.add(revision)
+            session.flush()
+            plan.active_revision_id = revision.id
+
+    def test_correction_on_the_pre_edit_timeline_warns_and_names_the_edited_subtitles(self):
+        session_id, transcription_id = self._source()
+        media_edit_id = self._stage_artifact(
+            session_id,
+            name="reviewed-edit.srt",
+            role="media_edit_subtitles",
+            text="Edited source.",
+            parent_id=transcription_id,
+        )
+        self._reviewed_media_edit(session_id)
+
+        run = self._create(session_id, source_artifact_id=transcription_id)
+
+        self.assertEqual(1, len(run["warnings"]))
+        self.assertIn("pre-edit timeline", run["warnings"][0])
+        self.assertIn(
+            f"source_artifact_id={media_edit_id} (media_edit_subtitles)",
+            run["warnings"][0],
+        )
+
+    def test_correction_on_the_pre_edit_timeline_warns_to_render_first(self):
+        session_id, transcription_id = self._source()
+        self._reviewed_media_edit(session_id)
+
+        run = self._create(session_id, source_artifact_id=transcription_id)
+
+        self.assertEqual(1, len(run["warnings"]))
+        self.assertIn("Render the reviewed edit first", run["warnings"][0])
+        self.assertIn("media_edit_subtitles", run["warnings"][0])
+
+    def test_correction_on_the_edited_timeline_has_no_warning(self):
+        session_id, transcription_id = self._source()
+        media_edit_id = self._stage_artifact(
+            session_id,
+            name="edited.srt",
+            role="media_edit_subtitles",
+            text="Edited source.",
+            parent_id=transcription_id,
+        )
+        self._reviewed_media_edit(session_id)
+
+        on_edit = self._create(session_id, source_artifact_id=media_edit_id)
+        self.assertEqual([], on_edit["warnings"])
+        derived_id = self._stage_artifact(
+            session_id,
+            name="edited-correction.srt",
+            role="correction",
+            text="Corrected edit.",
+            parent_id=media_edit_id,
+        )
+        derived = self._create(session_id, source_artifact_id=derived_id)
+        self.assertEqual([], derived["warnings"])
+
+    def test_unreviewed_or_missing_media_edit_has_no_warning(self):
+        session_id, transcription_id = self._source()
+        self._reviewed_media_edit(session_id, reviewed=False)
+        unreviewed = self._create(session_id, source_artifact_id=transcription_id)
+        self.assertEqual([], unreviewed["warnings"])
+
+        plain_session_id, plain_transcription_id = self._source()
+        plain = self._create(plain_session_id, source_artifact_id=plain_transcription_id)
+        self.assertEqual([], plain["warnings"])
+
+    def test_translation_on_the_pre_edit_timeline_warns_and_on_the_edit_does_not(self):
+        session_id, transcription_id = self._source(target_language="pl")
+        media_edit_id = self._stage_artifact(
+            session_id,
+            name="translation-edit.srt",
+            role="media_edit_subtitles",
+            text="Edited source.",
+            parent_id=transcription_id,
+        )
+        self._reviewed_media_edit(session_id)
+
+        pre_edit = self._create(
+            session_id,
+            kind="translation",
+            target_language="pl",
+            source_artifact_id=transcription_id,
+        )
+        self.assertEqual(1, len(pre_edit["warnings"]))
+        self.assertIn(
+            f"source_artifact_id={media_edit_id} (media_edit_subtitles)",
+            pre_edit["warnings"][0],
+        )
+        on_edit = self._create(
+            session_id,
+            kind="translation",
+            target_language="pl",
+            source_artifact_id=media_edit_id,
+        )
+        self.assertEqual([], on_edit["warnings"])
+
     def test_default_correction_prefers_media_edit_subtitles_over_transcription(self):
         session_id, transcription_id = self._source()
         media_edit_id = self._stage_artifact(
@@ -432,6 +553,86 @@ class DispatchWebTests(unittest.TestCase):
             headers=self._headers(key),
         )
 
+    def test_pending_evidence_is_a_state_conflict_that_frees_the_idempotency_key(self):
+        session_id, source_id = self._source()
+        with self.extension["database"].session() as session:
+            source = session.get(Artifact, source_id)
+            revision_id = str(source.metadata_json["revision_id"])
+            segment = session.scalar(
+                select(Segment).where(
+                    Segment.revision_id == revision_id,
+                    Segment.ordinal == 0,
+                )
+            )
+            session.add(
+                SubtitleEvidence(
+                    id="evidence-pending-1",
+                    session_id=session_id,
+                    source_artifact_id=source_id,
+                    source_revision_id=revision_id,
+                    source_segment_id=segment.id,
+                    cue_id=1,
+                    start_ms=int(segment.start_ms),
+                    end_ms=int(segment.end_ms),
+                    clip_start_ms=0,
+                    clip_end_ms=int(segment.end_ms) + 2_000,
+                    reason="Confirm the title.",
+                    routes_json=["whisper"],
+                    audio_model_ids_json=[],
+                    status="running",
+                    candidates_json=[],
+                    resolution_json={},
+                )
+            )
+        run = self._create(session_id, source_artifact_id=source_id)
+        claim = self._claim(run["id"], "pending-evidence-claim")
+        uncertain = {
+            "lease_token": claim["lease_token"],
+            "result": {
+                "kind": "correction",
+                "operations": [],
+                "uncertainties": [
+                    {
+                        "cue_id": 1,
+                        "reason": "The name is not back from the listen yet.",
+                        "evidence_ids": ["evidence-pending-1"],
+                    }
+                ],
+            },
+        }
+        rejected = self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json=uncertain,
+            headers=self._headers("pending-evidence-submit"),
+        )
+        self.assertEqual(409, rejected.status_code, rejected.get_json())
+        error = rejected.get_json()["error"]
+        self.assertEqual("evidence_pending", error["code"])
+        self.assertEqual(
+            "Correction uncertainty 1 references evidence that is still running. "
+            "Wait for it with pandrator_get_subtitle_evidence, or submit the uncertainty "
+            "without evidence_ids.",
+            error["message"],
+        )
+        accepted = self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json={
+                **uncertain,
+                "result": {
+                    **uncertain["result"],
+                    "uncertainties": [
+                        {
+                            "cue_id": 1,
+                            "reason": "The name is not back from the listen yet.",
+                        }
+                    ],
+                },
+            },
+            headers=self._headers("pending-evidence-submit"),
+        )
+        self.assertIn(accepted.status_code, {200, 202}, accepted.get_json())
+        self.assertNotEqual("true", accepted.headers.get("Idempotency-Replayed"))
+
     def test_correction_end_to_end_and_redacted_metadata(self):
         session_id, source_id = self._source()
         run = self._create(session_id, source_artifact_id=source_id)
@@ -474,6 +675,42 @@ class DispatchWebTests(unittest.TestCase):
         self.assertNotIn("input_json", serialized)
         self.assertNotIn("normalized_output_json", serialized)
         self.assertNotIn("lease_token", serialized)
+
+    def test_completed_translation_registers_dispatch_settings_fingerprint(self):
+        session_id, source_id = self._source(target_language="pl")
+        run = self._create(
+            session_id,
+            kind="translation",
+            source_artifact_id=source_id,
+        )
+        claim = self._claim(run["id"], "translation-fingerprint-claim")
+        response = self.client.post(
+            f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",
+            json={
+                "lease_token": claim["lease_token"],
+                "result": {
+                    "kind": "translation",
+                    "translations": [
+                        {"cue_id": cue["cue_id"], "text": f"PL {cue['cue_id']}"}
+                        for cue in claim["batch"]["cues"]
+                    ],
+                },
+            },
+            headers=self._headers("translation-fingerprint-submit"),
+        )
+        self.assertEqual(200, response.status_code, response.get_json())
+        payload = response.get_json()
+        self.assertTrue(payload["finalized"])
+        with self.extension["database"].session() as session:
+            artifact = session.get(Artifact, payload["result_artifact_id"])
+            self.assertEqual(
+                {
+                    "executor": "dispatch",
+                    "dispatch_kind": "translation",
+                    "target_language": "pl",
+                },
+                artifact.metadata_json["settings_fingerprint"],
+            )
 
     def test_correction_can_escalate_and_materialize_a_reviewable_uncertainty(self):
         session_id, source_id = self._source(
@@ -803,6 +1040,16 @@ class DispatchWebTests(unittest.TestCase):
                 "correction", result_artifact.metadata_json["dispatch_kind"]
             )
             self.assertEqual("de", result_artifact.metadata_json["language"])
+            # It stands for the translation stage, in its own language.
+            self.assertEqual(
+                {
+                    "executor": "dispatch",
+                    "dispatch_kind": "correction",
+                    "output_role": "translation",
+                    "target_language": "de",
+                },
+                result_artifact.metadata_json["settings_fingerprint"],
+            )
 
             result_revision = session.get(
                 DocumentRevision, payload["result_revision_id"]

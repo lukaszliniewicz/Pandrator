@@ -17,9 +17,19 @@ from ..schemas.media_edit import (
     RenderMediaEditArguments,
     UpdateMediaEditArguments,
 )
+from ..waits import (
+    bounded_suggestion,
+    effective_wait_seconds,
+    requested_wait_seconds,
+    wait_receipt,
+)
 from ..work_mapping import application_work_reference
 
 _TERMINAL_JOB_STATES = frozenset({"succeeded", "failed", "cancelled", "canceled"})
+# The summary keeps the ranges a caller just submitted, up to this many; beyond
+# that the count and the kept duration are the only useful evidence.
+_SUMMARY_KEEP_RANGE_LIMIT = 50
+_SUMMARY_PLAN_OMISSIONS = ("cues", "evidence", "instructions")
 
 
 def _job_id(payload: dict[str, Any]) -> str:
@@ -48,7 +58,17 @@ def _job_outcome(
 ) -> ToolOutcome:
     application = runtime.require_application()
     job_id = _job_id(job)
-    result = application.wait_for_job(job_id, timeout_seconds=timeout_seconds) if wait else job
+    requested_seconds = requested_wait_seconds(timeout_seconds)
+    effective_seconds = effective_wait_seconds(runtime, requested_seconds)
+    result = (
+        application.wait_for_job(job_id, timeout_seconds=effective_seconds) if wait else job
+    )
+    receipt = wait_receipt(
+        requested=requested_seconds,
+        effective=effective_seconds if wait else 0,
+        terminal=_is_terminal(result),
+    )
+    result = {**result, **receipt}
     next_actions: list[NextAction] = []
     if not _is_terminal(result):
         next_actions.append(
@@ -56,7 +76,7 @@ def _job_outcome(
                 tool="pandrator_get_work",
                 arguments={
                     "work_id": job_id,
-                    "wait_seconds": timeout_seconds,
+                    "wait_seconds": bounded_suggestion(runtime, effective_seconds),
                 },
                 reason=(
                     f"Continue monitoring the durable {tool_name} job until it reaches a terminal state."
@@ -70,6 +90,51 @@ def _job_outcome(
     )
 
 
+def _plan_summary(plan: dict[str, Any], *, include_keep_ranges: bool) -> tuple[dict[str, Any], list[str]]:
+    """Project one media-edit plan without the cue or word evidence arrays.
+
+    Returns the projected plan and the dotted keys this projection left out, so
+    a compact response can say what it withheld instead of silently shrinking.
+    """
+
+    omitted = [f"plan.{key}" for key in _SUMMARY_PLAN_OMISSIONS if key in plan]
+    summary = {key: value for key, value in plan.items() if key not in {*_SUMMARY_PLAN_OMISSIONS, "keep_ranges"}}
+    summary["cue_count"] = len(plan.get("cues") or [])
+    ranges = plan.get("keep_ranges") or []
+    summary["keep_range_count"] = len(ranges)
+    summary["kept_duration_ms"] = sum(
+        max(0, int(item.get("end_ms") or 0) - int(item.get("start_ms") or 0))
+        for item in ranges if isinstance(item, dict)
+    )
+    if include_keep_ranges and len(ranges) <= _SUMMARY_KEEP_RANGE_LIMIT:
+        summary["keep_ranges"] = ranges
+    elif "keep_ranges" in plan:
+        omitted.append("plan.keep_ranges")
+    return summary, omitted
+
+
+def _media_edit_payload(
+    payload: dict[str, Any],
+    *,
+    view: str,
+    include_keep_ranges: bool = False,
+) -> dict[str, Any]:
+    """Apply the shared summary projection to a media-edit state payload."""
+
+    if view == "full":
+        return payload
+    result = {key: value for key, value in payload.items() if key != "plan"}
+    plan = payload.get("plan")
+    omitted: list[str] = []
+    if isinstance(plan, dict):
+        result["plan"], omitted = _plan_summary(plan, include_keep_ranges=include_keep_ranges)
+    elif "plan" in payload:
+        result["plan"] = plan
+    result["view"] = "summary"
+    result["omitted"] = omitted
+    return result
+
+
 def get_media_edit(
     runtime: McpRuntime,
     arguments: GetMediaEditArguments,
@@ -77,24 +142,7 @@ def get_media_edit(
     """Inspect the current media-edit readiness state and active revision."""
 
     payload = runtime.require_application().get_media_edit(arguments.session_id)
-    if arguments.view == "full":
-        return payload
-    result = {key: value for key, value in payload.items() if key != "plan"}
-    plan = payload.get("plan")
-    if isinstance(plan, dict):
-        summary = {key: value for key, value in plan.items()
-                   if key not in {"cues", "evidence", "keep_ranges", "instructions"}}
-        summary["cue_count"] = len(plan.get("cues") or [])
-        ranges = plan.get("keep_ranges") or []
-        summary["keep_range_count"] = len(ranges)
-        summary["kept_duration_ms"] = sum(
-            max(0, int(item.get("end_ms") or 0) - int(item.get("start_ms") or 0))
-            for item in ranges if isinstance(item, dict)
-        )
-        result["plan"] = summary
-    elif "plan" in payload:
-        result["plan"] = plan
-    return result
+    return _media_edit_payload(payload, view=arguments.view)
 
 
 def list_media_edit_cuts(
@@ -175,11 +223,12 @@ def prepare_media_edit(
 ) -> dict[str, Any]:
     """Prepare or refresh the media-edit plan for one session."""
 
-    return runtime.require_application().prepare_media_edit(
+    payload = runtime.require_application().prepare_media_edit(
         arguments.session_id,
         force=arguments.force,
         idempotency_key=arguments.idempotency_key,
     )
+    return _media_edit_payload(payload, view=arguments.view)
 
 
 def update_media_edit(
@@ -192,7 +241,7 @@ def update_media_edit(
         "instructions": arguments.instructions,
         "reviewed": arguments.reviewed,
     }
-    return runtime.require_application().update_media_edit(
+    payload = runtime.require_application().update_media_edit(
         arguments.session_id,
         expected_revision=arguments.expected_revision,
         idempotency_key=arguments.idempotency_key,
@@ -201,6 +250,9 @@ def update_media_edit(
         ],
         **{key: value for key, value in optional.items() if value is not None},
     )
+    # The caller just set these ranges, so the receipt echoes them rather than
+    # making it re-read state to see what was accepted.
+    return _media_edit_payload(payload, view=arguments.view, include_keep_ranges=True)
 
 
 def _queue_job(

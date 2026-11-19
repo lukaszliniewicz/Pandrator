@@ -259,7 +259,12 @@ CASES = [
         "delete_output",
         {"session_id": "session-1", "artifact_id": "artifact-1"},
     ),
-    ("pandrator_plan_workflow", "PlanWorkflowInput", "plan_workflow", {"session_id": "session-1"}),
+    (
+        "pandrator_plan_workflow",
+        "PlanWorkflowInput",
+        "plan_workflow",
+        {"session_id": "session-1", "reuse_stages": ["correct"], "rerun_stages": ["translate"]},
+    ),
     (
         "pandrator_plan_orchestrated_workflow",
         "PlanOrchestratedWorkflowInput",
@@ -409,6 +414,38 @@ def test_main_dto_validation_runs_under_request_and_stdout_guard(
     assert len(observed) == 1
     assert observed[0]["X-Request-ID"] == failure["request_id"]
     assert observed[0]["traceparent"].startswith("00-")
+
+
+# Input fields a tool does not offer. Sessions created through MCP open in the
+# simple interface.
+UNEXPOSED_FIELDS = {"pandrator_create_session": {"interface_mode"}}
+
+
+def test_main_tool_schemas_expose_every_input_field(tmp_path: Path) -> None:
+    """A registered tool must offer each field its input model accepts.
+
+    Handlers are tested with the model directly, so a parameter left out of a
+    registration would otherwise go unnoticed.
+    """
+
+    runtime, _calls, _application = fixture_runtime(tmp_path)
+
+    async def listed() -> Any:
+        async with Client(
+            adapter.build_server(runtime), mode="2026-07-28", raise_exceptions=False
+        ) as client:
+            return await client.list_tools()
+
+    schemas = {tool.name: tool.input_schema for tool in asyncio.run(listed()).tools}
+    missing = {
+        tool: sorted(
+            set(getattr(binding_for_model(model), model).model_fields)
+            - set(schemas[tool].get("properties", {}))
+            - UNEXPOSED_FIELDS.get(tool, set())
+        )
+        for tool, model, _handler, _arguments in CASES
+    }
+    assert {tool: fields for tool, fields in missing.items() if fields} == {}
 
 
 @pytest.mark.parametrize("tool,model,handler,arguments", CASES, ids=[c[0] for c in CASES])

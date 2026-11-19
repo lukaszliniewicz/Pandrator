@@ -247,7 +247,18 @@ def register_transcription_readiness_routes(
 
         from pandrator.logic.dubbing.transcription_readiness import (
             diagnose_transcription_readiness,
+            has_pending_download,
+            withhold_downloads,
         )
 
+        from .accounts.model_acquisition import may_acquire_models
+
         selected = {**stored, **overrides}
-        return jsonify(diagnose_transcription_readiness(selected))
+        report = diagnose_transcription_readiness(selected)
+        # Only an Administrator's run may download a missing model; say so to
+        # anyone else instead of promising a download that will be refused.
+        if has_pending_download(report) and not may_acquire_models(
+            context.services.database, context.guards.access_context().actor
+        ):
+            report = withhold_downloads(report)
+        return jsonify(report)

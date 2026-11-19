@@ -1326,7 +1326,14 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         if include not in {"true", "false"}:
             return error_response("validation_error", "include_coverage must be true or false", 422)
         try:
-            return jsonify(get_generation_operation(work, operation_id, include_coverage=include == "true"))
+            return jsonify(
+                get_generation_operation(
+                    work,
+                    operation_id,
+                    include_coverage=include == "true",
+                    context=context.guards.access_context(),
+                )
+            )
         except KeyError:
             return error_response("not_found", "Generation operation not found.", 404)
         except ValueError as error:

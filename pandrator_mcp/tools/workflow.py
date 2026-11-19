@@ -21,6 +21,7 @@ from ..schemas import (
     PlanOrchestratedWorkflowInput,
     PlanWorkflowInput,
 )
+from ..waits import effective_wait_seconds
 from ..work_mapping import application_work_reference
 from ..workflow_results import workflow_plan_outcome
 
@@ -502,12 +503,13 @@ def plan_orchestrated_workflow(
         merged_output.update(
             {
                 "export_mode": arguments.export_mode,
-                "audio_mode": arguments.audio_mode,
                 "subtitle_mode": arguments.subtitle_mode,
                 "subtitle_text_source": arguments.subtitle_text_source,
                 "subtitle_format": arguments.subtitle_format,
             }
         )
+        if arguments.audio_mode is not None:
+            merged_output["audio_mode"] = arguments.audio_mode
         if arguments.subtitle_selection is not None:
             merged_output["subtitle_selection"] = arguments.subtitle_selection
         if arguments.generation_run_id:
@@ -567,7 +569,7 @@ def plan_orchestrated_workflow(
             "work_type": "job",
             "work_id": "<work id returned by pandrator_execute_workflow_plan>",
             "include_events": False,
-            "wait_seconds": min(arguments.wait_seconds, 60),
+            "wait_seconds": effective_wait_seconds(runtime, arguments.wait_seconds),
         },
         "completion_condition": (
             "The returned durable work state is succeeded; inspect its error and "
@@ -671,8 +673,10 @@ def plan_workflow(
         overrides=arguments.overrides,
         expires_in_minutes=arguments.expires_in_minutes,
         continuation=arguments.continuation,
+        reuse_stages=arguments.reuse_stages,
+        rerun_stages=arguments.rerun_stages,
     )
-    return workflow_plan_outcome(plan)
+    return workflow_plan_outcome(plan, view=arguments.view)
 
 
 def execute_workflow_plan(

@@ -58,8 +58,11 @@ def freeze_speech_snapshot(
     """Freeze plan metadata and language bindings for all or selected segments.
 
     ``segment_ids=None`` validates every active segment; an explicit collection
-    restricts only the language-binding records to those requested for synthesis.
+    restricts the frozen boundaries and the language-binding records to those
+    requested for synthesis.
     ``cast_segment_ids`` restricts cast resolution while retaining whole-plan metadata.
+    A segment in ``segment_ids`` (every segment when ``None``) that its adopted
+    speaker plan no longer fits refuses the freeze, naming the block.
     """
     revision = session.get(m.GenerationPlanRevision, revision_id)
     if revision is not None and (revision.operation_json or {}).get("draft"):
@@ -102,12 +105,27 @@ def freeze_speech_snapshot(
             _missing_selection=_missing_audible_selection,
             _root_binding=bind_root if defer_root else None,
             _carried_snapshot=_carried_cast_snapshot,
+            refuse_review=True, review_scope=segment_ids,
         )
     )
     if defer_root and not snapshot.get("generation_control_snapshot"):
         snapshot["tts"] = bind_root(session, tts, True)
+    segment_query = select(m.GenerationSegment).where(
+        m.GenerationSegment.plan_revision_id == revision_id,
+        m.GenerationSegment.removed.is_(False),
+    )
+    if segment_ids is not None:
+        segment_query = segment_query.where(
+            m.GenerationSegment.id.in_(tuple(segment_ids))
+        )
+    segments = list(
+        session.scalars(segment_query.order_by(m.GenerationSegment.ordinal))
+    )
     from .speech_boundaries import freeze_boundaries
-    freeze_boundaries(session, revision_id, snapshot)
+    # A run limited to selected blocks freezes their boundaries alone: a review
+    # block left out of the run may name a character removed since, which it
+    # would otherwise fail on.
+    freeze_boundaries(session, revision_id, snapshot, segments=segments)
     if revision is not None and (
         explicit or performance_frozen or session.get(m.SpeechPlanReview, revision_id)
         or (revision.settings_json or {}).get("_prepared_for_review")
@@ -142,15 +160,6 @@ def freeze_speech_snapshot(
         records: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         bindings: dict[str, dict[str, Any]] = {}
         service_config_cache: dict = {}
-        segment_query = select(m.GenerationSegment).where(
-            m.GenerationSegment.plan_revision_id == revision_id,
-            m.GenerationSegment.removed.is_(False),
-        )
-        if segment_ids is not None:
-            segment_query = segment_query.where(
-                m.GenerationSegment.id.in_(tuple(segment_ids))
-            )
-        segments = session.scalars(segment_query.order_by(m.GenerationSegment.ordinal))
         for segment in segments:
             segment_text = segment.optimized_text or segment.text
             segment_settings = segment_performance_settings(
@@ -360,20 +369,34 @@ def speech_plan_status(services, session_id: str, *, summary: bool = False) -> d
         source_artifact = (
             session.get(m.Artifact, source["artifact_id"]) if source else None
         )
+        item_ids = [row["id"] for row in history["items"]]
+        settings_by_revision = (
+            {
+                revision_id: settings_json or {}
+                for revision_id, settings_json in session.execute(
+                    select(
+                        m.GenerationPlanRevision.id,
+                        m.GenerationPlanRevision.settings_json,
+                    ).where(m.GenerationPlanRevision.id.in_(item_ids))
+                ).tuples()
+            }
+            if item_ids
+            else {}
+        )
+        from .speech_plan_source import (
+            TIMING_ONLY_WARNING,
+            plan_source_compatibility,
+            signature_reader,
+        )
+
+        # Reading the source's signatures costs a passage build, so it happens
+        # only when a revision's exact identity does not already decide.
+        current_signatures = signature_reader(session, source_artifact)
+        compatibility = plan_source_compatibility(
+            active.settings_json if active else {}, source_artifact, current_signatures
+        )
         selected_matches = bool(
-            active
-            and source_artifact
-            and (
-                not active.settings_json.get("_source_artifact_id")
-                or (
-                    active.settings_json.get("_source_artifact_id")
-                    == source_artifact.id
-                    and active.settings_json.get(
-                        "_source_content_hash", source_artifact.content_hash
-                    )
-                    == source_artifact.content_hash
-                )
-            )
+            active and source_artifact and compatibility != "incompatible"
         )
         items = []
         for item in history["items"]:
@@ -385,18 +408,20 @@ def speech_plan_status(services, session_id: str, *, summary: bool = False) -> d
                     or review.content_hash == signature
                 )
             )
+            item_compatibility = plan_source_compatibility(
+                settings_by_revision.get(item["id"], {}),
+                source_artifact,
+                current_signatures,
+            )
             items.append(
                 {
                     **item,
                     "reviewed": reviewed,
                     "reviewed_at": review.reviewed_at.isoformat() if reviewed and review is not None else None,
                     "compatible": bool(
-                        source
-                        and (
-                            not item["source_artifact_id"]
-                            or item["source_artifact_id"] == source["artifact_id"]
-                        )
+                        source_artifact and item_compatibility != "incompatible"
                     ),
+                    "source_compatibility": item_compatibility,
                 }
             )
         blocked = None
@@ -430,10 +455,15 @@ def speech_plan_status(services, session_id: str, *, summary: bool = False) -> d
             else 0
         )
         warning = None
-        if active and not selected_matches:
+        blocking = False
+        if active and compatibility == "incompatible":
             warning = "This plan was prepared from a different text version. Select matching text or prepare a new plan."
+            blocking = True
         elif limit and longest > limit:
             warning = f"A speech block has {longest} characters, exceeding the configured {limit}-character limit. Review or rebuild the plan."
+            blocking = True
+        elif active and compatibility == "timing_only":
+            warning = TIMING_ONLY_WARNING
         return {
             **history,
             "items": items,
@@ -443,10 +473,14 @@ def speech_plan_status(services, session_id: str, *, summary: bool = False) -> d
             "selected_revision_id": history["active_revision_id"],
             "latest_revision_id": items[0]["id"] if items else None,
             "content_signature": signature,
+            "source_compatibility": compatibility,
             "can_prepare": bool(
                 source_artifact and source_artifact.kind in {"srt", "json"}
             ),
-            "can_generate": bool(selected_matches and not warning and not generation_blocked),
+            # A timing-only change keeps its audio; only its fit is stale.
+            "can_generate": bool(
+                selected_matches and not generation_blocked and not blocking
+            ),
             "generation_blocked_reason": generation_blocked,
             "blocked_reason": blocked,
             "warning": warning,
@@ -616,6 +650,8 @@ def prepare_speech_plan(
     audio_reuse = {
         "reused_audio_count": 0,
         "new_audio_needed_count": len(segment_ids),
+        "revisions_checked": 0,
+        "reused_from_older_revisions": 0,
         "reason_counts": (
             {"source_revision_unavailable": len(segment_ids)}
             if segment_ids

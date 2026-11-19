@@ -16,6 +16,7 @@ from ..schemas import (
     GetSessionInput,
     GetSessionSettingsInput,
     GetWorkflowInput,
+    ImportSourceUrlInput,
     ImportSubtitlesInput,
     ListSessionsInput,
     ListSourcesInput,
@@ -28,6 +29,8 @@ from ..schemas import (
     UpdateSessionInput,
     UpdateSessionSettingsInput,
 )
+from ..waits import wait_ceiling
+from ..work_mapping import application_work_reference
 
 _PRIVATE_SETTING_KEYS = frozenset(
     {
@@ -368,12 +371,20 @@ def get_session_settings(
         ),
         "revision": payload.get("revision"),
         "global_revision": payload.get("global_revision"),
-        **({
-            "subtitle_settings_provenance": payload.get("subtitle_settings_provenance"),
-            "subtitle_profiles": payload.get("subtitle_profiles"),
-            "subtitle_automatic_profiles": payload.get("subtitle_automatic_profiles"),
-            "subtitle_profile_scope": payload.get("subtitle_profile_scope"),
-        } if arguments.section == "subtitles" else {}),
+        # Origins only, never the raw layers, so the reply stays small.
+        "origins": (
+            payload.get("origins") if isinstance(payload.get("origins"), dict) else {}
+        ),
+        **(
+            {
+                "subtitle_settings_provenance": payload.get("subtitle_settings_provenance"),
+                "subtitle_profiles": payload.get("subtitle_profiles"),
+                "subtitle_automatic_profiles": payload.get("subtitle_automatic_profiles"),
+                "subtitle_profile_scope": payload.get("subtitle_profile_scope"),
+            }
+            if arguments.section == "subtitles"
+            else {}
+        ),
     }
 
 
@@ -449,18 +460,28 @@ def create_session(
         result=session,
         next_actions=[
             NextAction(
-                tool=("pandrator_get_translation_project" if arguments.multilingual_setup else "pandrator_list_sources"),
+                tool=(
+                    "pandrator_get_translation_project"
+                    if arguments.multilingual_setup
+                    else "pandrator_list_sources"
+                ),
                 arguments=(
                     {"session_id": result["id"]}
-                    if arguments.multilingual_setup else {
-                        "state": "current", "limit": 50,
-                        **({"workspace_id": result["workspace_id"]} if result.get("workspace_id") else {}),
+                    if arguments.multilingual_setup
+                    else {
+                        "state": "current",
+                        "limit": 50,
+                        **(
+                            {"workspace_id": result["workspace_id"]}
+                            if result.get("workspace_id")
+                            else {}
+                        ),
                     }
                 ),
                 reason=(
                     "Inspect deferred language setup and correction readiness."
-                    if arguments.multilingual_setup else
-                    "Inspect reusable sources before attaching one to the new session."
+                    if arguments.multilingual_setup
+                    else "Inspect reusable sources before attaching one to the new session."
                 ),
             )
         ],
@@ -488,6 +509,49 @@ def update_session(
                 tool="pandrator_get_workflow",
                 arguments={"session_id": arguments.session_id},
                 reason=("Inspect how the revised session changes workflow prerequisites."),
+            )
+        ],
+    )
+
+
+def import_source_url(
+    runtime: McpRuntime,
+    arguments: ImportSourceUrlInput,
+) -> ToolOutcome:
+    """Queue one public-URL download and return its durable work handle."""
+
+    payload = runtime.require_application().import_source_url(
+        arguments.session_id,
+        url=arguments.url,
+    )
+    work = application_work_reference(payload)
+    if not work.id:
+        raise PandratorMcpError(
+            "downstream_unavailable",
+            "Pandrator queued the source download without returning a work ID.",
+        )
+    wait_seconds = wait_ceiling(runtime)
+    return ToolOutcome(
+        result={
+            "schema_version": "1",
+            "session_id": arguments.session_id,
+            "url": arguments.url,
+            "kind": str(payload.get("kind") or "source.download_url"),
+            "work": work.model_dump(mode="json"),
+        },
+        work=work,
+        next_actions=[
+            NextAction(
+                tool="pandrator_get_work",
+                arguments={
+                    "work_type": "job",
+                    "work_id": work.id,
+                    "wait_seconds": wait_seconds,
+                },
+                reason=(
+                    "Poll the download until it is terminal, then inspect the workflow "
+                    "prerequisites; the download attaches the source only on success."
+                ),
             )
         ],
     )
@@ -637,33 +701,56 @@ def _public_subtitle_ordinal(cue: dict[str, Any], fallback_index: int) -> int:
 def _subtitle_review_fields(cue: dict[str, Any]) -> dict[str, Any]:
     """Carry source identity and review evidence through display-only edits."""
     return {
-        key: cue[key] for key in (
-            "id", "turn_id", "source_passage_ids", "starts_new_turn",
-            "review_state", "review_note", "evidence_ids", "uncertain_source_cue_ids",
-        ) if key in cue
+        key: cue[key]
+        for key in (
+            "id",
+            "turn_id",
+            "source_passage_ids",
+            "starts_new_turn",
+            "review_state",
+            "review_note",
+            "evidence_ids",
+            "uncertain_source_cue_ids",
+        )
+        if key in cue
     }
 
 
 def _exact_subtitle_edit_source(
-    application: Any, session_id: str, target: dict[str, Any],
+    application: Any,
+    session_id: str,
+    target: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Resolve the active document to its artifact-owned display references."""
     if not target.get("document_id") or not target.get("revision_id"):
         return target, {}
     catalog = application.get_subtitle_catalog(session_id)
-    item = next((row for row in catalog.get("items", [])
-                 if row.get("document_id") == target["document_id"]
-                 and row.get("revision_id") == target["revision_id"]), None)
+    item = next(
+        (
+            row
+            for row in catalog.get("items", [])
+            if row.get("document_id") == target["document_id"]
+            and row.get("revision_id") == target["revision_id"]
+        ),
+        None,
+    )
     if item is None:
-        raise PandratorMcpError("not_found", "The active subtitle revision has no reviewable artifact.")
+        raise PandratorMcpError(
+            "not_found", "The active subtitle revision has no reviewable artifact."
+        )
     artifact_id = item["artifact_id"]
     review = application.review_subtitles(session_id, artifact_ids=[artifact_id])
-    column = next((row for row in review.get("columns", [])
-                   if row.get("artifact_id") == artifact_id), None)
+    column = next(
+        (row for row in review.get("columns", []) if row.get("artifact_id") == artifact_id), None
+    )
     if column is None or column.get("revision_id") != target["revision_id"]:
-        raise PandratorMcpError("revision_conflict", "Subtitle source changed; refresh the preview.")
-    return column, {"source_artifact_id": artifact_id,
-                    "expected_source_hash": column["source_content_hash"]}
+        raise PandratorMcpError(
+            "revision_conflict", "Subtitle source changed; refresh the preview."
+        )
+    return column, {
+        "source_artifact_id": artifact_id,
+        "expected_source_hash": column["source_content_hash"],
+    }
 
 
 def preview_subtitles(
@@ -1063,9 +1150,7 @@ def patch_subtitle_cues(
                     "review_state": seg.get("review_state") or "clear",
                     "review_note": seg.get("review_note") or "",
                     "evidence_ids": list(seg.get("evidence_ids") or []),
-                    "uncertain_source_cue_ids": list(
-                        seg.get("uncertain_source_cue_ids") or []
-                    ),
+                    "uncertain_source_cue_ids": list(seg.get("uncertain_source_cue_ids") or []),
                 }
             )
         else:
@@ -1079,9 +1164,7 @@ def patch_subtitle_cues(
                     "review_state": seg.get("review_state") or "clear",
                     "review_note": seg.get("review_note") or "",
                     "evidence_ids": list(seg.get("evidence_ids") or []),
-                    "uncertain_source_cue_ids": list(
-                        seg.get("uncertain_source_cue_ids") or []
-                    ),
+                    "uncertain_source_cue_ids": list(seg.get("uncertain_source_cue_ids") or []),
                 }
             )
 

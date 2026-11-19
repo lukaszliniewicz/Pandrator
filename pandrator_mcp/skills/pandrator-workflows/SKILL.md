@@ -42,6 +42,12 @@ credentials and personal folders do not become shared. Can view is read-only.
   attribution, read the derived dictionary, then design and assign the cast.
   For narration, cast design, provider instructions and context, read
   [narration and providers](references/narration-and-providers.md).
+- **Several languages from one recording:** one source session, then a
+  translation project with a branch per language. Order matters: render any
+  media edit first, correct its `media_edit_subtitles` (not the pre-edit
+  transcript), fix fillers the correction left, then call
+  `pandrator_create_translation_project`, which returns a work handle. Read
+  "Several languages" in [MCP operations](references/mcp-operations.md).
 - **PDF/EPUB cleanup:** use the source-cleaning dispatcher before narration
   preparation. Read [semantic dispatch](references/semantic-dispatch.md).
 - **Recording edits:** use `pandrator_plan_media_edit_workflow` and the
@@ -125,8 +131,10 @@ for the distinct result contracts.
   uncertain responses. Re-inspect and re-plan on stale plans or revision
   conflicts; do not force an earlier snapshot onto changed work.
 - Keep `generation_operation_id` from generation/regeneration receipts. When
-  advertised, use `pandrator_get_generation_operation` with waits up to 60
-  seconds: it follows preparation and synthesis under that same ID. Inspect
+  advertised, use `pandrator_get_generation_operation` with a bounded wait (the
+  server waits at most 25 seconds per call by default; poll again while
+  `timed_out` is true): it follows preparation and synthesis under that same
+  ID. Inspect
   `coverage.export_ready` before dependent audio export. Older servers expose
   `followup_work` through `get_work`; preparation success alone is insufficient.
   Read [recovery](references/recovery.md) for uncertain responses or interruption.
@@ -146,8 +154,10 @@ for the distinct result contracts.
 
 ## Deliver the actual outcome
 
-Generated takes, assembled media, exports, and downloaded files are separate
-results. Verify the requested language, artifact role and revision, generation
+Before executing a voiceover export plan, check its effective `audio_mode`
+(normally `mixed` when the source has sound) and its `speech_timing` lag and
+tail, and pass on its warnings. Generated takes, assembled media, exports, and
+downloaded files are separate results. Verify the requested language, artifact role and revision, generation
 completeness, export format, and destination. Use the download result's size
 and checksum verification when available. Report the delivered files and any
 remaining review or incomplete work; a completed stage alone is not completion

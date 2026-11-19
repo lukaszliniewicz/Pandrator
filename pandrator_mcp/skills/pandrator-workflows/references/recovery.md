@@ -4,7 +4,8 @@
 
 Retain `generation_operation_id` from the generation or regeneration receipt.
 When advertised, poll `pandrator_get_generation_operation` with the stable
-`operation_id` and a bounded `wait_seconds` (up to 60); choose
+`operation_id` and a bounded `wait_seconds` (the server waits at most 25 seconds
+per call by default; poll again while `timed_out` is true); choose
 `response_mode="structured"` only when the host consumes `structuredContent`,
 otherwise use `standard`. Its stable ID follows preparation
 and the committed synthesis job across reloads. Phase and state describe work;
@@ -79,7 +80,10 @@ failure does not authorize an unkeyed mutation retry.
 
 - **Quota / rate limit:** record the operation and returned retry hint. Native
   voice-creation quota is separate from stock synthesis. Do not loop on a quota
-  failure or silently substitute a voice.
+  failure or silently substitute a voice. During generation, the work item's
+  `retry` and progress detail show requests waiting on rate limits and the
+  attempt reached; the job retries by itself (10 attempts by default), so wait
+  rather than cancel unless the attempts run out.
 - **Credentials / permissions / scope:** inspect the resolved route and redacted
   origin; ask only for genuinely missing configuration. Browser authentication
   does not establish application API access.

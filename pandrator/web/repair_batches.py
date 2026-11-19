@@ -18,17 +18,22 @@ from typing import Any
 
 from sqlalchemy import select
 
+from pandrator.logic.dubbing.repair_markers import (
+    EARLY_REPAIR_REASON,
+    MIXED_REASON,
+    REGROUP_REASON,
+    SECOND_PASS_REASONS,
+    UNDO_REGROUP_REASON,
+    UNDO_REPAIR_REASON,
+)
+
 from . import models as m
 from .generation_review import revision_history
 from .settings_policy import RevisionConflict, stable_hash
 from .source_management import assert_session_idle
 
-REPAIR_REASON = "early_timing_repair"
-REGROUP_REASON = "passage_regroup"
-MIXED_REASON = "mixed"
-SECOND_PASS_REASONS = frozenset({REPAIR_REASON, REGROUP_REASON})
-UNDO_REPAIR_REASON = "undo_timing_repairs"
-UNDO_REGROUP_REASON = "undo_passage_regroup"
+# Kept importable here, under the names this module has always exported.
+REPAIR_REASON = EARLY_REPAIR_REASON
 GUARD_KEY = "repair_batch_snapshot"
 GUARD_VERSION = 1
 

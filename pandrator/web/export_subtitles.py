@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from pandrator.logic.dubbing.languages import normalize_language_code, subtitle_language_title
 from pandrator.logic.dubbing.subtitle_finalization import (
@@ -17,6 +17,8 @@ from .models import Artifact, SessionRecord
 from .settings_policy import RUNTIME_SETTING_ALIASES
 
 SUBTITLE_ALIASES = RUNTIME_SETTING_ALIASES["subtitles"]
+_SUBTITLE_OVERLAP_LIMIT = 100
+_SUBTITLE_ISSUE_LIMIT = 50
 
 
 def subtitle_profile(
@@ -85,13 +87,18 @@ def subtitle_export_diagnostics(
     source: str, finalized: str, settings: dict[str, Any],
     provenance: dict[str, Any] | None, *, language: str,
     language_origin: str,
+    clamp_report: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     effective = {**settings, "subtitle_language": language}
+    report = dict(clamp_report or {})
     return {
         "profile": subtitle_profile(effective, provenance, language=language, language_origin=language_origin, text=source),
         "input": diagnose_srt_content(source, effective),
         "final": diagnose_srt_content(finalized, effective),
         "text_integrity": subtitle_text_integrity(source, finalized),
+        "clamp_overlaps": bool(settings.get("clamp_overlaps")),
+        "overlaps_clamped": int(report.get("overlaps_clamped") or 0),
+        "overlaps_unresolved": int(report.get("overlaps_unresolved") or 0),
     }
 
 
@@ -99,13 +106,76 @@ def subtitle_file_diagnostics(
     source: Path, finalized: Path, settings: dict[str, Any],
     provenance: dict[str, Any] | None, *, language: str,
     language_origin: str,
+    clamp_report: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     return subtitle_export_diagnostics(
         source.read_text(encoding="utf-8-sig"),
         finalized.read_text(encoding="utf-8-sig"),
         settings, provenance, language=language,
         language_origin=language_origin,
+        clamp_report=clamp_report,
     )
+
+
+def subtitle_issue_summary(
+    results: Iterable[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Flatten export diagnostics into shallow rows the work projection keeps.
+
+    ``_bounded_json`` truncates anything at depth six, which is exactly where the
+    nested per-issue dictionaries sit. Every row here is a flat list, so cue
+    ordinals survive the job result summary.
+    """
+
+    tracks: list[Mapping[str, Any]] = []
+    for item in results:
+        if not isinstance(item, Mapping):
+            continue
+        diagnostics = item.get("subtitle_diagnostics")
+        if isinstance(diagnostics, Mapping):
+            tracks.append(diagnostics)
+        for track in item.get("subtitle_tracks") or []:
+            if not isinstance(track, Mapping):
+                continue
+            nested = track.get("subtitle_diagnostics")
+            if isinstance(nested, Mapping):
+                tracks.append(nested)
+    if not tracks:
+        return None
+    overlapping_cues = 0
+    issues_total = 0
+    overlaps: list[list[int]] = []
+    issues: list[list[Any]] = []
+    for diagnostics in tracks:
+        final = diagnostics.get("final")
+        if not isinstance(final, Mapping):
+            continue
+        overlapping_cues += int(final.get("overlapping_cues") or 0)
+        issues_total += int(final.get("issues_total") or 0)
+        for row in final.get("overlaps") or []:
+            if len(overlaps) >= _SUBTITLE_OVERLAP_LIMIT:
+                break
+            if isinstance(row, (list, tuple)) and len(row) == 3:
+                overlaps.append([int(value) for value in row])
+        for issue in final.get("issues") or []:
+            if len(issues) >= _SUBTITLE_ISSUE_LIMIT:
+                break
+            if not isinstance(issue, Mapping):
+                continue
+            issues.append(
+                [
+                    int(issue.get("ordinal") or 0),
+                    int(issue.get("start_ms") or 0),
+                    int(issue.get("end_ms") or 0),
+                    ",".join(str(reason) for reason in issue.get("reasons") or []),
+                ]
+            )
+    return {
+        "overlapping_cues": overlapping_cues,
+        "overlaps": overlaps,
+        "issues_total": issues_total,
+        "issues": issues,
+    }
 
 
 def _effective_subtitle_language(*candidates: object) -> str:
@@ -155,3 +225,29 @@ def subtitle_track_language_origin(
         settings.get("original_language") or settings.get("source_language")
     )
     return "run_language" if _effective_subtitle_language(run_language) != "und" else "text_inference"
+
+
+def speech_track_language(
+    record: SessionRecord, settings: dict[str, Any]
+) -> tuple[str, str]:
+    """Return the language of the generated speech track, and where it came from.
+
+    A translation branch keeps its language on the session record rather than in
+    the export settings, so the dubbed track is named from the session when the
+    run itself does not say. ``output_language`` and its older ``language`` key
+    are separate candidates: an ``auto`` placeholder in one must not mask a
+    concrete language in the other. No usable value means no tag, as before.
+    """
+
+    candidates = (
+        ("output_language", settings.get("output_language")),
+        ("output_language", settings.get("language")),
+        ("session_target_language", record.target_language),
+        ("session_source_language", record.source_language),
+        ("run_language", settings.get("target_language")),
+    )
+    for origin, candidate in candidates:
+        language = _effective_subtitle_language(candidate)
+        if language != "und":
+            return language, origin
+    return "", "none"

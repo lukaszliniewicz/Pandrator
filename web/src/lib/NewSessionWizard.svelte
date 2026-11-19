@@ -420,18 +420,18 @@
             : kind === 'media_edit'
               ? {
                   export_mode: 'media',
-                  audio_mode: sourceGeneratesAudio
-                    ? 'dubbing_only'
-                    : 'preserve',
+                  // Media-edit sessions resolve to "preserve", which would drop
+                  // a generated voiceover, so keep the original under it instead.
+                  audio_mode: sourceGeneratesAudio ? 'mixed' : 'preserve',
                   subtitle_mode: subtitleMode,
                   subtitle_selection: subtitleSelection,
                   language: speechLanguage
                 }
               : {
                   export_mode: 'media',
-                  audio_mode: sourceGeneratesAudio
-                    ? 'dubbing_only'
-                    : 'preserve',
+                  // A voiceover leaves audio_mode to the server, which mixes the
+                  // voice over source audio and uses the voice alone otherwise.
+                  ...(sourceGeneratesAudio ? {} : { audio_mode: 'preserve' }),
                   subtitle_mode: subtitleMode,
                   subtitle_selection: subtitleSelection,
                   language: speechLanguage

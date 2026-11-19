@@ -35,6 +35,14 @@ configured engine. Translation may use an LLM or a translation provider. An
 exact plan should disclose remote data transfer and identify the selected input
 revision.
 
+Hotwords (`stt_hotwords`) are passed to every local engine, but they do not
+reliably fix names. With Parakeet they made no visible difference in testing,
+so check names, places and terms during correction. New transcriptions trim a
+cue's end when it would overlap the next cue, and split numbers that Parakeet
+glues to the word before them ("for16"). For subtitles made earlier, the
+subtitle setting `clamp_overlaps` trims overlaps at export without changing the
+text.
+
 ## External-model dispatch
 
 For a correction or translation that an external model will process, create a
@@ -69,6 +77,11 @@ when style needs checking; cancel or supersede an abandoned run through
 For readable source subtitles, `correction_style=publishable` removes incidental
 disfluencies. Keep meaningful repetition and utterance boundaries independently
 of speaker names. Translation preserves the cleaned source's meaning and turns.
+A passage you leave without an operation is kept verbatim, fillers included.
+After the run finalises, `pandrator_get_dispatch_run` reports `filler_check`;
+when its `status` is `fillers_remaining`, fix the listed passages with
+`pandrator_patch_subtitle_passages` before translating. The check covers
+English fillers only.
 
 Compact claims (the default `packet_format=compact`) encode cues as `cue_columns`/`cue_rows`
 and turns as a lookup table. Retain the first `manifest` by `manifest_hash` before

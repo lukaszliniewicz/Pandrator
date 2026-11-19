@@ -238,6 +238,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                         self.assertEqual("source.wav", metadata["vocal_isolation"]["original_audio_retained"])
                     revision = session.get(DocumentRevision, result["revision_id"])
                     self.assertEqual(resolved, session.get(Document, revision.document_id).language)
+                self.assertNotIn("word_timestamps_path", result)
                 aligned = json.loads(self.artifacts.resolve(result["word_timestamps_artifact_id"])[1].read_text())
                 self.assertEqual(resolved, aligned["language"])
                 self.assertEqual(result_stub.routing, aligned["metadata"]["stt_routing"])
@@ -267,6 +268,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                     patch("pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata", return_value=result_stub),
                 ):
                     result = self.handlers.transcribe({"session_id": self.session.id, "source_artifact_id": source.id, "settings": settings}, self.progress, threading.Event())
+                    self.assertNotIn("word_timestamps_path", result)
                 aligned = json.loads(self.artifacts.resolve(result["word_timestamps_artifact_id"])[1].read_text())
                 self.assertEqual(resolved, aligned["language"])
                 self.assertEqual("explicit" if requested != "auto" else "unresolved", aligned["metadata"]["alignment_language_resolution"]["source"])
@@ -310,6 +312,8 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                 threading.Event(),
             )
 
+        self.assertNotIn("word_timestamps_path", result)
+        self.assertIn("word_timestamps_artifact_id", result)
         with self.database.session() as session:
             transcription = session.get(Artifact, result["artifact_id"])
             word_artifact = session.get(

@@ -185,6 +185,23 @@ class AssembleGenerationRunInput(ToolInput):
     audio_version_side: Literal["before", "after"] = "after"
 
 
+class RepairGenerationTimingInput(ToolInput):
+    """Preview or queue an explicit repair of one completed voiceover run."""
+
+    generation_run_id: str = Field(min_length=1, max_length=80)
+    preview: bool = True
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @model_validator(mode="after")
+    def validate_queue_identity(self) -> "RepairGenerationTimingInput":
+        if not self.preview and not self.idempotency_key:
+            raise ValueError(
+                "idempotency_key is required when preview is false; queueing a repair "
+                "needs a stable retry identity."
+            )
+        return self
+
+
 class ReviseSpeechBlockPlanInput(ToolInput):
     """Strict typed immutable split, merge, restore, or resegment operation."""
 
@@ -197,6 +214,7 @@ class ReviseSpeechBlockPlanInput(ToolInput):
     left_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     right_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     target_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
+    view: Literal["summary", "full"] = "summary"
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,
@@ -307,6 +325,7 @@ class GenerationPlanBatchRequest(ToolInput):
 
 class ReviseSpeechBlockPlanBatchInput(GenerationPlanBatchRequest):
     session_id: str = Field(min_length=1, max_length=80)
+    view: Literal["summary", "full"] = "summary"
     idempotency_key: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
 
 

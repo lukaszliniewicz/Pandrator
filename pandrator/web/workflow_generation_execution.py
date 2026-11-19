@@ -32,6 +32,7 @@ from .access.generation_execution_policy import (
     require_generation_execution,
 )
 from .assembly_silences import remap_render_parts_after_rvc
+from .generation_progress import JobProgressState, open_job_progress_state
 from .jobs import JobQueue
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, new_id, utcnow
 from .speech_input_contracts import SpeechInputOwner
@@ -183,11 +184,15 @@ def run_generation(
             redact_diagnostic=context.secret_redactor.redact if context.secret_redactor else None,
         ):
             try:
-                return _run_generation(
-                    context, payload, progress, cancel_event, prove=prove,
-                    hydrate=speech.hydrate, validate=speech.validate,
-                    prepare_reference=prepare_reference,
-                )
+                with open_job_progress_state(
+                    str(payload.get("_job_id") or "") or None
+                ) as progress_state:
+                    return _run_generation(
+                        context, payload, progress, cancel_event, prove=prove,
+                        hydrate=speech.hydrate, validate=speech.validate,
+                        prepare_reference=prepare_reference,
+                        progress_state=progress_state,
+                    )
             except Exception as error:
                 if context.secret_redactor is None:
                     raise
@@ -230,6 +235,7 @@ def _run_generation(
     hydrate: Callable[[dict[str, Any]], dict[str, Any]],
     validate: Callable[[dict[str, Any]], dict[str, Any]],
     prepare_reference: Callable[[dict[str, Any]], dict[str, Any]],
+    progress_state: JobProgressState | None = None,
 ) -> dict[str, Any]:
     """Generate immutable per-segment takes with safe pause and resume boundaries."""
 
@@ -283,7 +289,11 @@ def _run_generation(
         run_sequence_number = run.sequence_number
         job_id = run.job_id or str(payload.get("_job_id") or "") or None
 
-    from .generation_audio_identity import plan_audio_identities
+    from .generation_audio_identity import (
+        identity_for_storage,
+        identity_matches,
+        plan_audio_identities,
+    )
     from .speech_plan_workspace import plan_signature
 
     # This can take minutes on a long plan. Holding a writer here would stop this
@@ -295,7 +305,19 @@ def _run_generation(
             session, plan_revision_id, settings_snapshot,
             segment_ids=audio_version["target_segment_ids"] if audio_version is not None else None,
         )
-        audio_identity_changed = bool(settings_snapshot.get("generation_audio_identities") and settings_snapshot["generation_audio_identities"] != audio_identities)
+        frozen_identities = settings_snapshot.get("generation_audio_identities") or {}
+        # Runs frozen before the derived timing key was excluded still carry the
+        # pre-fix settings hash, so compare through the shared acceptance.
+        audio_identity_changed = bool(
+            frozen_identities
+            and (
+                set(frozen_identities) != set(audio_identities)
+                or any(
+                    not identity_matches(stored, audio_identities[segment_id])
+                    for segment_id, stored in frozen_identities.items()
+                )
+            )
+        )
 
     if plan_changed or audio_identity_changed:
         # An expired lease denies voice access and the identity check can omit
@@ -596,7 +618,20 @@ def _run_generation(
                     )
                 rvc_source_sequence = source_run.sequence_number
     generated = 0
-    skipped = 0
+    # A resume keeps every block that already has a completed take. Count them
+    # all before the loop: the pace estimate must divide by the blocks that
+    # still need synthesis, and counting a kept block only when the loop
+    # reaches it made the earlier blocks look as if they had taken its time.
+    # The report below counts every kept block as done from the start, so
+    # done - kept is always the number of blocks synthesised in this attempt.
+    skipped = (
+        sum(1 for segment_id in segment_ids if segment_id in completed_take_ids)
+        if operation == "resume"
+        else 0
+    )
+    # Kept blocks the loop has already passed. They are added to the reported
+    # done count, so keeping them does not make the loop's own index lag.
+    kept_seen = 0
     # Segments the provider declined or returned without audio. The run goes
     # on and finishes partial; these are reported with their reasons.
     failed_segments: list[dict[str, Any]] = []
@@ -826,6 +861,9 @@ def _run_generation(
                     batch_size=effective_batch_size,
                     tts_urls=tts_urls,
                     cancel_event=cancel_event,
+                    retry_tracker=(
+                        progress_state.retry if progress_state is not None else None
+                    ),
                 )
                 if (
                     batch_capabilities is not None
@@ -875,7 +913,7 @@ def _run_generation(
                     **({"failed_segments": failed_segments} if failed_segments else {}),
                 }
             if operation == "resume" and segment_id in completed_take_ids:
-                skipped += 1
+                kept_seen += 1
                 progress(
                     optimization_share
                     + ((index + 1) / len(segment_ids)) * (1.0 - optimization_share),
@@ -894,8 +932,15 @@ def _run_generation(
         progress(
             optimization_share
             + (index / len(segment_ids)) * (1.0 - optimization_share),
-            f"Generating segment {index + 1} of {len(segment_ids)}",
+            f"Generating speech: {index + 1} of {len(segment_ids)}",
         )
+        if progress_state is not None:
+            # Structured counts for the running estimate; never parsed from text.
+            # Kept blocks count as done from the start, so done - kept is the
+            # number of blocks this attempt has actually synthesised.
+            progress_state.set_blocks(
+                index + (skipped - kept_seen), len(segment_ids), kept=skipped
+            )
         take_path: Path | None = None
         take_file_identity: tuple[int, int] | None = None
         take_committed = False
@@ -1226,7 +1271,9 @@ def _run_generation(
                             "generation_segment_id": segment_id,
                             "generation_run_id": output_run_id,
                             **(
-                                {"generation_audio_identity": audio_identities[segment_id]}
+                                {"generation_audio_identity": identity_for_storage(
+                                    audio_identities[segment_id]
+                                )}
                                 if operation != "rvc"
                                 else {}
                             ),

@@ -49,6 +49,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_MARKER_KEY, REGROUP_MARKER_KEY
+
 GENERATION_MODES = ("passage", "legacy")
 DEFAULT_GENERATION_MODE = "passage"
 
@@ -248,8 +250,8 @@ def select_second_pass(
         operation not in {"generate", "resume"}
         or has_selected_ids
         or workflow_kind != "voiceover"
-        or snapshot.get("early_repair_parent_run_id")
-        or snapshot.get("regroup_parent_run_id")
+        or snapshot.get(EARLY_REPAIR_MARKER_KEY)
+        or snapshot.get(REGROUP_MARKER_KEY)
     ):
         return None
     tts = snapshot.get("tts") or {}

@@ -67,6 +67,14 @@ SLOWDOWN_FLOOR = 0.9
 DEFAULT_SENTENCE_GAP_MS = 100
 #: Minimum silence between separately aligned speech blocks.
 DEFAULT_MIN_BLOCK_GAP_MS = 100
+#: Silence kept at the leading and trailing edge of a trimmed speech block.
+#: Providers pad short takes heavily; whole runs of padding would push later
+#: speech late, but a hard cut at the first sample sounds like a clipped word.
+SILENCE_TRIM_LEAD_GUARD_MS = 40
+SILENCE_TRIM_TAIL_GUARD_MS = 80
+#: Frame size and level used to find the silent runs at a block's edges.
+SILENCE_TRIM_FRAME_MS = 10
+SILENCE_TRIM_THRESHOLD_DBFS = -50.0
 #: Do not process an entire take to remove an inaudible timing discrepancy.
 #: The relative limit also protects very short cues; carried drift counts too.
 NATURAL_OVERRUN_TOLERANCE_MS = 150
@@ -136,6 +144,155 @@ def min_block_gap_ms_from_settings(
         return max(0, min(5000, int(raw)))
     except (TypeError, ValueError):
         return max(0, min(5000, int(default)))
+
+
+def trim_silence_enabled_from_settings(settings: Any) -> bool:
+    """Return whether block-edge silence is trimmed for a settings mapping.
+
+    Trim is ON unless explicitly disabled, mirroring the built-in default and
+    the slowdown resolver: a missing key resolves to ``True`` while an explicit
+    ``False`` is preserved.
+    """
+    if not isinstance(settings, dict):
+        return True
+    value = settings.get("synchronization_trim_silence")
+    if value is None:
+        return True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "none", "null"}:
+            return True
+        return normalized in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _pcm_frame_rms_fraction(frame: bytes, sample_width: int) -> float:
+    """Return one PCM frame's RMS as a fraction of full scale."""
+    if sample_width <= 0:
+        return 0.0
+    samples = len(frame) // sample_width
+    if samples <= 0:
+        return 0.0
+    total = 0.0
+    for offset in range(0, samples * sample_width, sample_width):
+        value = int.from_bytes(
+            frame[offset : offset + sample_width], "little", signed=True
+        )
+        total += float(value) * float(value)
+    full_scale = float(1 << (8 * sample_width - 1))
+    return math.sqrt(total / samples) / full_scale
+
+
+def speech_edges_ms(
+    raw: bytes,
+    *,
+    sample_rate: int,
+    channels: int,
+    sample_width: int,
+    threshold_dbfs: float = SILENCE_TRIM_THRESHOLD_DBFS,
+    frame_ms: int = SILENCE_TRIM_FRAME_MS,
+) -> tuple[int, int]:
+    """Return the leading and trailing silence of one PCM block, in ms.
+
+    Silence is measured as the run of whole frames whose RMS stays below
+    ``threshold_dbfs``, counted from each end of the buffer. Audio that is
+    silent throughout returns ``(0, 0)`` so a block is never trimmed away.
+    """
+    if sample_rate <= 0 or channels <= 0 or sample_width <= 0 or frame_ms <= 0:
+        return (0, 0)
+    frame_samples = max(1, int(round(sample_rate * frame_ms / 1000)))
+    stride = frame_samples * channels * sample_width
+    if stride <= 0 or len(raw) < stride:
+        return (0, 0)
+    frame_count = (len(raw) + stride - 1) // stride
+    threshold = 10.0 ** (float(threshold_dbfs) / 20.0)
+
+    def silent(index: int) -> bool:
+        frame = raw[index * stride : (index + 1) * stride]
+        return _pcm_frame_rms_fraction(frame, sample_width) < threshold
+
+    lead_frames = 0
+    while lead_frames < frame_count and silent(lead_frames):
+        lead_frames += 1
+    if lead_frames >= frame_count:
+        return (0, 0)
+    tail_frames = 0
+    while (
+        tail_frames < frame_count - lead_frames
+        and silent(frame_count - 1 - tail_frames)
+    ):
+        tail_frames += 1
+    # Convert whole-frame counts to milliseconds through the real sample
+    # positions. ``frame_samples`` is rounded, so a frame is not exactly
+    # ``frame_ms`` long at every rate: 10 ms at 22,050 Hz is 220 samples, and
+    # multiplying by ``frame_ms`` would overstate the measured silence and cut
+    # into speech. Flooring keeps the trim inside the silence.
+    lead_ms = lead_frames * frame_samples * 1000 // sample_rate
+    tail_ms = tail_frames * frame_samples * 1000 // sample_rate
+    return (lead_ms, tail_ms)
+
+
+def _trim_pcm_bytes(
+    raw: bytes,
+    *,
+    sample_rate: int,
+    channels: int,
+    sample_width: int,
+) -> tuple[bytes, int, int]:
+    """Trim a block's outer silence, keeping the guards.
+
+    Returns the remaining PCM, the leading cut and the trailing cut in ms. Both
+    assembly backends share this function so a block is fitted identically
+    whichever one renders it.
+    """
+    lead_ms, tail_ms = speech_edges_ms(
+        raw,
+        sample_rate=sample_rate,
+        channels=channels,
+        sample_width=sample_width,
+    )
+    lead_cut_ms = max(0, lead_ms - SILENCE_TRIM_LEAD_GUARD_MS)
+    tail_cut_ms = max(0, tail_ms - SILENCE_TRIM_TAIL_GUARD_MS)
+    if not lead_cut_ms and not tail_cut_ms:
+        return raw, 0, 0
+    frame_width = max(1, channels * sample_width)
+    total_frames = len(raw) // frame_width
+    if total_frames <= 1:
+        return raw, 0, 0
+    start_frame = min(
+        total_frames - 1, int(lead_cut_ms * sample_rate / 1000)
+    )
+    end_frame = max(
+        start_frame + 1,
+        total_frames - int(tail_cut_ms * sample_rate / 1000),
+    )
+    trimmed = raw[start_frame * frame_width : end_frame * frame_width]
+    if not trimmed:
+        return raw, 0, 0
+    return trimmed, lead_cut_ms, tail_cut_ms
+
+
+def _trim_block_wav(source: Path, destination: Path) -> tuple[Path, int, int]:
+    """Write a silence-trimmed copy of one block WAV next to the original."""
+    with wave.open(str(source), "rb") as reader:
+        sample_rate = reader.getframerate()
+        channels = reader.getnchannels()
+        sample_width = reader.getsampwidth()
+        raw = reader.readframes(reader.getnframes())
+    trimmed, lead_cut_ms, tail_cut_ms = _trim_pcm_bytes(
+        raw,
+        sample_rate=sample_rate,
+        channels=channels,
+        sample_width=sample_width,
+    )
+    if not lead_cut_ms and not tail_cut_ms:
+        return source, 0, 0
+    with wave.open(str(destination), "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(sample_width)
+        writer.setframerate(sample_rate)
+        writer.writeframes(trimmed)
+    return destination, lead_cut_ms, tail_cut_ms
 
 
 def _load_speech_blocks(speech_blocks_file: str | os.PathLike[str]) -> list[dict[str, Any]]:
@@ -465,6 +622,7 @@ def _align_audio_blocks_streaming(
     cancel_event: threading.Event | None,
     allow_slowdown: bool = True,
     min_block_gap_ms: int = DEFAULT_MIN_BLOCK_GAP_MS,
+    trim_silence: bool = False,
 ) -> str:
     from pandrator.web.audio_assembly import (
         AudioAssemblyPart,
@@ -531,6 +689,15 @@ def _align_audio_blocks_streaming(
                 cancel_event=cancel_event,
             )
             original_audio_duration = block_result.duration_ms
+            trimmed_lead_ms = 0
+            trimmed_tail_ms = 0
+            if trim_silence:
+                block_path, trimmed_lead_ms, trimmed_tail_ms = _trim_block_wav(
+                    block_path,
+                    temporary_path / f"block-{index + 1:06d}-trimmed.wav",
+                )
+                if trimmed_lead_ms or trimmed_tail_ms:
+                    original_audio_duration = _streaming_audio_duration_ms(block_path)
             if original_audio_duration <= 0:
                 raise AudioSyncError(
                     f"Speech block {block.number} contains no audible generated audio."
@@ -619,7 +786,11 @@ def _align_audio_blocks_streaming(
                     processed_duration = original_audio_duration
 
             silence_before_ms = initial_silence_ms + adjustment.start_delay_ms
+            # Absolute placement of this block's processed speech in the
+            # output timeline, after start delay and accumulated drift.
+            speech_start_ms = current_time + adjustment.start_delay_ms
             current_time += adjustment.start_delay_ms + processed_duration
+            speech_end_ms = current_time
             silence_after_ms = max(effective_gap, slot_end_ms - current_time)
             current_time += silence_after_ms
             drift_after_ms = max(0, current_time - slot_end_ms)
@@ -646,8 +817,12 @@ def _align_audio_blocks_streaming(
                     "start_delay_ms": adjustment.start_delay_ms,
                     "drift_before_ms": drift_at_start,
                     "drift_after_ms": drift_after_ms,
+                    "speech_start_ms": speech_start_ms,
+                    "speech_end_ms": speech_end_ms,
                     "min_block_gap_ms": effective_gap,
                     "silence_after_ms": silence_after_ms,
+                    "trimmed_lead_ms": trimmed_lead_ms,
+                    "trimmed_tail_ms": trimmed_tail_ms,
                 }
             )
             logger.info(
@@ -691,6 +866,15 @@ def _align_audio_blocks_streaming(
                 "block_count": len(alignment_details),
                 "speed_adjusted_block_count": len(adjusted),
                 "slowed_block_count": len(slowed),
+                "silence_trimmed_ms": sum(
+                    int(item["trimmed_lead_ms"]) + int(item["trimmed_tail_ms"])
+                    for item in alignment_details
+                ),
+                "silence_trimmed_block_count": sum(
+                    1
+                    for item in alignment_details
+                    if int(item["trimmed_lead_ms"]) or int(item["trimmed_tail_ms"])
+                ),
                 "max_effective_speed_factor": max(
                     (
                         float(item["effective_speed_factor"])
@@ -737,6 +921,7 @@ def align_audio_blocks(
     backend: str | None = None,
     cancel_event: threading.Event | None = None,
     allow_slowdown: bool = True,
+    trim_silence: bool = False,
 ) -> str:
     from pandrator.web.audio_assembly import PYDUB_BACKEND, resolve_assembly_backend
 
@@ -756,6 +941,7 @@ def align_audio_blocks(
             diagnostics=diagnostics,
             cancel_event=cancel_event,
             allow_slowdown=allow_slowdown,
+            trim_silence=trim_silence,
         )
     from pydub import AudioSegment
 
@@ -792,6 +978,22 @@ def align_audio_blocks(
             if len(block_audio) > 0:
                 block_audio += AudioSegment.silent(duration=sentence_gap)
             block_audio += AudioSegment.from_wav(wav_path)
+        trimmed_lead_ms = 0
+        trimmed_tail_ms = 0
+        if trim_silence:
+            trimmed_raw, trimmed_lead_ms, trimmed_tail_ms = _trim_pcm_bytes(
+                block_audio.raw_data or b"",
+                sample_rate=block_audio.frame_rate,
+                channels=block_audio.channels,
+                sample_width=block_audio.sample_width,
+            )
+            if trimmed_lead_ms or trimmed_tail_ms:
+                block_audio = AudioSegment(
+                    data=trimmed_raw,
+                    sample_width=block_audio.sample_width,
+                    frame_rate=block_audio.frame_rate,
+                    channels=block_audio.channels,
+                )
         original_audio_duration = len(block_audio)
         if original_audio_duration <= 0:
             raise AudioSyncError(f"Speech block {block.number} contains no audible generated audio.")
@@ -849,8 +1051,12 @@ def align_audio_blocks(
         if adjustment.start_delay_ms > 0:
             final_audio += AudioSegment.silent(duration=adjustment.start_delay_ms)
             current_time += adjustment.start_delay_ms
+        # Absolute placement of this block's processed speech in the output
+        # timeline, after start delay and accumulated drift.
+        speech_start_ms = current_time
         final_audio += processed_audio
         current_time += len(processed_audio)
+        speech_end_ms = current_time
         silence_after_ms = max(effective_gap, slot_end_ms - current_time)
         if silence_after_ms:
             final_audio += AudioSegment.silent(duration=silence_after_ms)
@@ -871,8 +1077,12 @@ def align_audio_blocks(
                 "start_delay_ms": adjustment.start_delay_ms,
                 "drift_before_ms": drift_at_start,
                 "drift_after_ms": drift_after_ms,
+                "speech_start_ms": speech_start_ms,
+                "speech_end_ms": speech_end_ms,
                 "min_block_gap_ms": effective_gap,
                 "silence_after_ms": silence_after_ms,
+                "trimmed_lead_ms": trimmed_lead_ms,
+                "trimmed_tail_ms": trimmed_tail_ms,
             }
         )
         logger.info(
@@ -904,6 +1114,15 @@ def align_audio_blocks(
                 "block_count": len(alignment_details),
                 "speed_adjusted_block_count": len(adjusted),
                 "slowed_block_count": len(slowed),
+                "silence_trimmed_ms": sum(
+                    int(item["trimmed_lead_ms"]) + int(item["trimmed_tail_ms"])
+                    for item in alignment_details
+                ),
+                "silence_trimmed_block_count": sum(
+                    1
+                    for item in alignment_details
+                    if int(item["trimmed_lead_ms"]) or int(item["trimmed_tail_ms"])
+                ),
                 "max_effective_speed_factor": max(
                     (float(item["effective_speed_factor"]) for item in alignment_details),
                     default=1.0,

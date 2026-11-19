@@ -18,6 +18,7 @@ from ..schemas import (
     ListSpeechPlanRevisionsInput,
     PrepareSpeechPlanInput,
     RegenerateSegmentsInput,
+    RepairGenerationTimingInput,
     ReviewSpeechPlanInput,
     ReviseSpeechBlockPlanBatchInput,
     ReviseSpeechBlockPlanInput,
@@ -37,6 +38,7 @@ from ..tools import (
     list_speech_plan_revisions,
     prepare_speech_plan,
     regenerate_segments,
+    repair_generation_timing,
     review_speech_plan,
     revise_speech_block_plan,
     revise_speech_block_plan_batch,
@@ -216,7 +218,7 @@ def register_generation_plan_tools(
     def speech_plan_revisions_tool(
         session_id: str, limit: int = 50, before_revision_number: int | None = None
     , response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
-        """Inspect automatic/manual revision history and ancestry as summaries; reusable/stale take counts are checked for the active revision only, when it is on the returned page. Read each item's audio_reuse_checked; the top-level flag describes the summary and stays false. If the active revision's counts time out or it is gone, its item stays unchecked and a warning names the code."""
+        """Inspect automatic/manual revision history and ancestry as summaries; reusable and stale take counts are checked for the active revision only, when it is on the returned page, and are split by reason (settings changed, not generated, identity unknown). Read each item's audio_reuse_checked; the top-level flag describes the summary and stays false. If the active revision's counts time out or it is gone, its item stays unchecked and a warning names the code."""
         return response(_call_with_validated_input(
             list_speech_plan_revisions,
             runtime,
@@ -240,6 +242,7 @@ def register_generation_plan_tools(
             list[GenerationTopologyEdit], Field(min_length=1, max_length=50)
         ],
         idempotency_key: str,
+        view: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Apply up to 50 ordered split/merge edits atomically.
@@ -359,6 +362,7 @@ def register_generation_execution_tools(
         segment_ids: list[str] | None = None,
         boundaries: list[int] | None = None,
         max_chars: int | None = None,
+        view: Literal["summary", "full"] = "summary",
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Split/merge/restore a plan, or draft a bounded audiobook resegmentation. Select contiguous segment_ids and exact joined-text boundaries or max_chars. Inspect the returned preview, then restore the draft to adopt it."""
@@ -381,6 +385,7 @@ def register_generation_execution_tools(
                 "segment_ids": segment_ids,
                 "boundaries": boundaries,
                 "max_chars": max_chars,
+                "view": view,
             },
         ), response_mode)
 
@@ -519,6 +524,32 @@ def register_generation_execution_tools(
                 admission=admission,
                 allow_without_speaker_plan=allow_without_speaker_plan,
             ),
+        ), response_mode)
+
+    @server.tool(
+        name="pandrator_repair_generation_timing",
+        title="Find and repair speech blocks that end before their subtitles",
+        annotations=execute_action,
+    )
+    def generation_repair_timing_tool(
+        generation_run_id: Annotated[str, Field(min_length=1, max_length=80)],
+        preview: bool = True,
+        idempotency_key: Annotated[
+            str | None, Field(min_length=1, max_length=120)
+        ] = None,
+        response_mode: Literal["standard", "structured"] = "standard",
+    ) -> dict[str, Any]:
+        """Find and repair speech blocks that finish well before their subtitles, on a completed voiceover run. preview=true lists the candidates and the estimated synthesis calls; preview=false queues the repair with the current repair thresholds."""
+
+        return response(_call_with_validated_input(
+            repair_generation_timing,
+            runtime,
+            RepairGenerationTimingInput,
+            {
+                key: value
+                for key, value in locals().items()
+                if key in RepairGenerationTimingInput.model_fields
+            },
         ), response_mode)
 
     @server.tool(

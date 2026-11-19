@@ -359,7 +359,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
             f"/api/v1/sessions/{voiceover['id']}/settings/audio"
         ).get_json()
         self.assertEqual(800, audio["effective"]["synchronization_delay_ms"])
-        self.assertEqual(1.2, audio["effective"]["synchronization_speed"])
+        self.assertEqual(1.15, audio["effective"]["synchronization_speed"])
 
     def test_export_contract_does_not_resurrect_a_detached_managed_source(self):
         voiceover = self.create_session(

@@ -102,14 +102,23 @@
                 ? 'File present'
                 : asset.status === 'not_required'
                   ? 'Not required'
-                  : asset.status === 'missing'
-                    ? 'Missing or empty'
-                    : 'Check required'}</strong
+                  : asset.status === 'will_download'
+                    ? 'Downloads when transcription starts'
+                    : asset.status === 'missing'
+                      ? asset.download === 'administrator_required'
+                        ? 'Missing; needs an Administrator'
+                        : 'Missing or empty'
+                      : 'Check required'}</strong
             >
           </li>
         {/each}
       </ul>
-      {#if report.status === 'missing'}
+      {#if report.status === 'will_download'}
+        <p class="mt-2">
+          A missing speech-detector model is downloaded automatically the first
+          time transcription runs, so the first run takes a little longer.
+        </p>
+      {:else if report.status === 'missing'}
         <p class="mt-2">
           An Administrator can acquire missing models or select an existing
           speech-detector file below. An installed engine alone does not include

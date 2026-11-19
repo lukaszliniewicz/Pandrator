@@ -68,6 +68,10 @@ _WEAK_CUE_ENDS = {
 
 logger = logging.getLogger(__name__)
 
+# Bounded overlap evidence for the export job summary; flat rows survive the
+# work projection's depth limit, nested issue dictionaries do not.
+_OVERLAP_ROW_LIMIT = 100
+
 
 @dataclass(frozen=True)
 class SubtitleFinalizationConfig:
@@ -137,10 +141,14 @@ class TranscriptCompositionResult:
 
     Words removed during normalization/deduplication have no owner. Keys follow
     ``NormalizedTranscript.words`` ordering, including stable timestamp ties.
+    ``overlaps_clamped`` and ``overlaps_unresolved`` report the cue ends this
+    composition moved to remove an overlap and those it could not move.
     """
 
     segments: list[SubtitleSegment]
     word_segment_ordinals: dict[int, int]
+    overlaps_clamped: int = 0
+    overlaps_unresolved: int = 0
 
 
 @dataclass(frozen=True)
@@ -720,7 +728,9 @@ def diagnose_srt_content(
     issues: list[dict[str, Any]] = []
     issue_count = 0
     overlapping_cues = 0
+    overlaps: list[list[int]] = []
     previous_end_ms = 0
+    previous_end_ordinal = 0
     detail_limit = max(0, min(detail_limit, 100))
     for ordinal, cue in enumerate(cues):
         reasons: list[str] = []
@@ -739,6 +749,18 @@ def diagnose_srt_content(
         if ordinal > 0 and cue.start_ms < previous_end_ms:
             overlapping_cues += 1
             reasons.append("overlap")
+            if len(overlaps) < _OVERLAP_ROW_LIMIT:
+                overlaps.append(
+                    [
+                        previous_end_ordinal or ordinal,
+                        ordinal + 1,
+                        # A cue nested inside an earlier span overlaps only up to
+                        # its own end; the span end would overstate it.
+                        min(previous_end_ms, cue.end_ms) - cue.start_ms,
+                    ]
+                )
+        if cue.end_ms >= previous_end_ms:
+            previous_end_ordinal = ordinal + 1
         previous_end_ms = max(previous_end_ms, cue.end_ms)
         maximum_line = max(maximum_line, *lengths) if lengths else maximum_line
         duration_ms = cue.end_ms - cue.start_ms
@@ -773,6 +795,7 @@ def diagnose_srt_content(
         "observed_max_units_per_line": maximum_line,
         "observed_max_cps": maximum_cps,
         "overlapping_cues": overlapping_cues,
+        "overlaps": overlaps,
         "issues": issues,
         "issues_total": issue_count,
         "issues_truncated": issue_count > len(issues),
@@ -780,11 +803,58 @@ def diagnose_srt_content(
     }
 
 
+def _clamp_overlaps(
+    segments: list[SubtitleSegment], config: SubtitleFinalizationConfig,
+) -> tuple[list[SubtitleSegment], int, int]:
+    """Trim overlapping cue ends to the next start minus the minimum gap.
+
+    A cue that would fall below the minimum duration is left alone and counted
+    as unresolved: an explicit export option must never invent a micro-cue.
+    """
+
+    min_gap_ms = max(0, int(config.min_gap_ms))
+    min_duration_ms = max(1, int(config.min_duration_ms))
+    output = list(segments)
+    clamped = 0
+    unresolved = 0
+    for index in range(len(output) - 1):
+        cue = output[index]
+        next_start = output[index + 1].start_ms
+        if cue.end_ms <= next_start:
+            continue
+        limit = next_start - min_gap_ms
+        if limit - cue.start_ms >= min_duration_ms:
+            output[index] = replace(cue, end_ms=limit)
+            clamped += 1
+        else:
+            unresolved += 1
+    return output, clamped, unresolved
+
+
+def clamp_overlaps_enabled(settings: dict[str, Any] | None) -> bool:
+    values = dict(settings or {})
+    return bool(values.get("clamp_overlaps") or values.get("subtitle_clamp_overlaps"))
+
+
+def clamp_cue_overlaps(
+    content: str, settings: dict[str, Any] | None = None,
+) -> tuple[str, int, int]:
+    """Return overlap-clamped SRT content with the clamped and unresolved counts."""
+
+    segments = parse_srt(content, infer_speakers=False)
+    config = SubtitleFinalizationConfig.from_settings(
+        settings, text=join_fragments(cue.text for cue in segments)
+    )
+    clamped_segments, clamped, unresolved = _clamp_overlaps(segments, config)
+    return compose_srt(clamped_segments), clamped, unresolved
+
+
 def finalize_srt_file(
     source: str | Path,
     destination: str | Path,
     settings: dict[str, Any] | None = None,
     *, preserve_timing: bool = True,
+    report: dict[str, int] | None = None,
 ) -> str:
     source_path, destination_path = Path(source), Path(destination)
     content = source_path.read_text(encoding="utf-8-sig")
@@ -794,6 +864,19 @@ def finalize_srt_file(
             "Subtitle finalization failed text preservation verification: "
             + describe_text_difference(content, finalized)
         )
+    if clamp_overlaps_enabled(settings):
+        finalized, clamped, unresolved = clamp_cue_overlaps(finalized, settings)
+        if not subtitle_text_integrity(content, finalized)["matches"]:
+            raise ValueError(
+                "Subtitle overlap clamping failed text preservation verification: "
+                + describe_text_difference(content, finalized)
+            )
+        if isinstance(report, dict):
+            report["overlaps_clamped"] = clamped
+            report["overlaps_unresolved"] = unresolved
+    elif isinstance(report, dict):
+        report.setdefault("overlaps_clamped", 0)
+        report.setdefault("overlaps_unresolved", 0)
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     destination_path.write_text(
         finalized,
@@ -1541,6 +1624,12 @@ def compose_transcript_segments_with_ownership(
         ordered.append(item)
         previous_start = start
     adjusted = _adjust_durations([item.cue for item in ordered], config)
+    # One subtitle track displays one cue at a time. Trim each cue end that
+    # still overlaps the next cue after duration adjustment; starts and word
+    # timings stay untouched because alignment and editing read them as
+    # evidence. A cue that cannot shrink to the minimum duration is left as it
+    # is and counted as unresolved.
+    adjusted, overlaps_clamped, overlaps_unresolved = _clamp_overlaps(adjusted, config)
     final_segments: list[SubtitleSegment] = []
     word_segment_ordinals: dict[int, int] = {}
     for index, (item, cue) in enumerate(zip(ordered, adjusted, strict=False), start=1):
@@ -1554,7 +1643,12 @@ def compose_transcript_segments_with_ownership(
         final_segments.append(final_cue)
         for word_ordinal in item.word_ordinals:
             word_segment_ordinals[word_ordinal] = index - 1
-    return TranscriptCompositionResult(final_segments, word_segment_ordinals)
+    return TranscriptCompositionResult(
+        final_segments,
+        word_segment_ordinals,
+        overlaps_clamped=overlaps_clamped,
+        overlaps_unresolved=overlaps_unresolved,
+    )
 
 
 def compose_transcript_segments(
@@ -1570,8 +1664,16 @@ def compose_transcript_segments(
 def compose_from_transcript_json(
     metadata_path: str | Path,
     settings: dict[str, Any] | None = None,
+    *,
+    report: dict[str, int] | None = None,
 ) -> str:
-    return compose_srt(compose_transcript_segments(metadata_path, settings))
+    """Compose one display track and, optionally, report its overlap counts."""
+
+    composition = compose_transcript_segments_with_ownership(metadata_path, settings)
+    if isinstance(report, dict):
+        report["overlaps_clamped"] = composition.overlaps_clamped
+        report["overlaps_unresolved"] = composition.overlaps_unresolved
+    return compose_srt(composition.segments)
 
 
 def compose_from_crispasr_json(
