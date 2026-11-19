@@ -1231,7 +1231,11 @@ def test_resume_reports_every_kept_block_from_the_first_estimate(case):
     assert calls == [f"Block {number}" for number in range(1, 12)]
     assert result["generated"] == 11
     assert result["skipped"] == 89
-    # Every reusable block is reported as kept before the first block runs.
-    assert records[0][0] == 0
-    assert records[0][1] == 100
-    assert records[0][2] == 89
+    # The blocks 1-11 need synthesis and 12-100 are kept. Every report counts
+    # all kept blocks as done, so done - kept is the number synthesised so far.
+    for synthesis, (done, total, kept) in enumerate(records, start=1):
+        assert total == 100
+        assert kept == 89
+        assert done == synthesis - 1 + 89
+        assert done - kept == synthesis - 1 >= 0
+    assert len(records) == 11
