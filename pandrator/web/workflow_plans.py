@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session, load_only
 from .access.contracts import AccessContext, AccessDenied, ProjectAction
 from .access.session_policy import require_session_access
 from .accounts.execution_actor import UserActor, actor_from_principal, execution_actor_scope
-from .artifact_selection import canonical_stage_key
 from .auth import Principal
 from .credentials import contains_inline_secret, is_sensitive_field
 from .database import Database
@@ -52,6 +51,7 @@ from .provider_identity import provider_namespace
 from .work import WorkService
 from .workflow_inputs import workflow_transformations
 from .workflow_prerequisites import WorkflowPrerequisiteService
+from .workflow_stage_types import stage_key_from_input
 from .workflows import (
     GenerationPreflightError,
     ResolvedWorkflowStage,
@@ -296,16 +296,6 @@ def _reviewable_settings(value: Any) -> Any:
     if isinstance(value, str) and "://" in value:
         return _safe_endpoint(value) or "[configured endpoint]"
     return value
-
-
-def _by_canonical_stage(mapping: dict[str, Any] | None) -> dict[str, Any]:
-    """Key per-stage entries by the snapshot's stage names.
-
-    Freshness reports document optimisation as ``optimize_document``; the
-    snapshot and the plan call the same stage ``optimize_tts``.
-    """
-
-    return {canonical_stage_key(stage): value for stage, value in (mapping or {}).items()}
 
 
 class WorkflowPlanError(RuntimeError):
@@ -671,7 +661,7 @@ class WorkflowExecutionPlanService:
 
         return (
             FINGERPRINT_EXPORT
-            if canonical_stage_key(target_stage) == EXPORT_PLAN_TARGET_STAGE
+            if target_stage == EXPORT_PLAN_TARGET_STAGE
             else FINGERPRINT_FULL
         )
 
@@ -849,15 +839,15 @@ class WorkflowExecutionPlanService:
         """
 
         rerun_stages = set(rerun_stages or ())
-        stage_freshness = _by_canonical_stage(stage_freshness)
-        mismatched_stages = _by_canonical_stage(mismatched_stages)
+        stage_freshness = stage_freshness or {}
+        mismatched_stages = mismatched_stages or {}
         snapshot = self.workflows.snapshot(session_id)
         stages = list(snapshot.get("stages") or [])
         target_index = next(
             (
                 index
                 for index, item in enumerate(stages)
-                if item.get("key") == canonical_stage_key(target_stage)
+                if item.get("key") == target_stage
             ),
             None,
         )
@@ -904,17 +894,13 @@ class WorkflowExecutionPlanService:
                 input_choices,
                 transformations,
             )
-            # Required stages name document optimisation ``optimize_document``.
-            allowed_keys = {
-                canonical_stage_key(stage)
-                for stage in set(record.included_stages_json or []) | required
-            }
+            allowed_keys = WorkflowPrerequisiteService._continuation_stage_keys(
+                record.included_stages_json or [], required
+            )
         includable_stages: set[str] = set()
         for item in stages[:target_index]:
             key = str(item.get("key") or "")
-            if key == canonical_stage_key(target_stage):
-                key = target_stage
-            if canonical_stage_key(key) in allowed_keys and item.get("executable"):
+            if key in allowed_keys and item.get("executable"):
                 includable_stages.add(key)
         unavailable = sorted(rerun_stages - includable_stages - {target_stage})
         if unavailable:
@@ -928,14 +914,12 @@ class WorkflowExecutionPlanService:
         replaced_by: dict[str, str] = {}
         for item in stages[: target_index + 1]:
             key = str(item.get("key") or "")
-            if key == canonical_stage_key(target_stage):
-                key = target_stage
-            if canonical_stage_key(key) not in allowed_keys or not item.get("executable"):
+            if key not in allowed_keys or not item.get("executable"):
                 continue
             status = str(item.get("status") or "unknown")
             selected_id = item.get("selected_artifact_id")
             compared_input = str(
-                (stage_freshness.get(canonical_stage_key(key)) or {}).get(
+                (stage_freshness.get(key) or {}).get(
                     "source_artifact_id"
                 )
                 or ""
@@ -948,7 +932,7 @@ class WorkflowExecutionPlanService:
                 # Only an explicit request keeps a result across an upstream run.
                 decision = "reuse_explicit"
             elif status == "completed" and selected_id:
-                if canonical_stage_key(key) in mismatched_stages:
+                if key in mismatched_stages:
                     decision = "run"
                 elif compared_input in replaced_by:
                     # The result matches today's input, which this plan
@@ -980,7 +964,7 @@ class WorkflowExecutionPlanService:
                 if decision == "reuse_explicit":
                     step["reuse_basis"] = "explicit"
                 else:
-                    evaluated = stage_freshness.get(canonical_stage_key(key))
+                    evaluated = stage_freshness.get(key)
                     step["reuse_basis"] = (
                         evaluated.get("settings_evidence")
                         if evaluated is not None
@@ -1666,6 +1650,7 @@ class WorkflowExecutionPlanService:
         rerun_stages: list[str] | None = None,
     ) -> dict[str, Any]:
         context = self._context(principal)
+        target_stage = stage_key_from_input(target_stage)
         supplied = dict(overrides or {})
         if contains_inline_secret(supplied) or _contains_url_credentials(supplied):
             raise WorkflowPlanError(
@@ -1682,10 +1667,10 @@ class WorkflowExecutionPlanService:
                 fingerprint_variant=fingerprint_variant,
             )
         requested_reuse_stages = {
-            str(value) for value in (reuse_stages or []) if str(value)
+            stage_key_from_input(str(value)) for value in (reuse_stages or []) if str(value)
         }
         requested_rerun_stages = {
-            str(value) for value in (rerun_stages or []) if str(value)
+            stage_key_from_input(str(value)) for value in (rerun_stages or []) if str(value)
         }
         if not continuation and (requested_reuse_stages or requested_rerun_stages):
             raise WorkflowPlanError(
@@ -1710,7 +1695,7 @@ class WorkflowExecutionPlanService:
         planned_reuse_stages = (
             requested_reuse_stages
             | {
-                str(value)
+                stage_key_from_input(str(value))
                 for value in supplied.get("reuse_stages", []) or []
                 if str(value)
             }
@@ -1839,13 +1824,11 @@ class WorkflowExecutionPlanService:
                     "Prerequisite freshness could not be checked; existing "
                     "prerequisite results are reused without verification."
                 )
-        stage_freshness = _by_canonical_stage(
-            {
-                item["stage"]: item
-                for item in freshness
-                if isinstance(item, dict) and "stage" in item
-            }
-        )
+        stage_freshness = {
+            item["stage"]: item
+            for item in freshness
+            if isinstance(item, dict) and "stage" in item
+        }
         mismatched_stages = {
             stage: item
             for stage, item in stage_freshness.items()
@@ -1899,11 +1882,11 @@ class WorkflowExecutionPlanService:
                     f"'{step['stage']}' in reuse_stages."
                 )
             elif (
-                canonical_stage_key(step["stage"]) in mismatched_stages
+                step["stage"] in mismatched_stages
                 and step["decision"] == "run"
                 and step["stage"] != target_stage
             ):
-                mismatch_info = mismatched_stages[canonical_stage_key(step["stage"])]
+                mismatch_info = mismatched_stages[step["stage"]]
                 reasons = ", ".join(
                     str(r)
                     for r in mismatch_info.get("reasons")

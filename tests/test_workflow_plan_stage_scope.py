@@ -288,8 +288,6 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
         self.assertEqual("reuse_if_unchanged", by_stage["generate_audio"]["decision"])
         self.assertEqual({}, upstream_reruns)
 
-    # The snapshot shows document optimisation as ``optimize_tts``; freshness
-    # and the required stages call it ``optimize_document``.
     _OPTIMISED_KEYS = ("transcribe", "optimize_tts", "generate_audio", "export")
     _OPTIMISED_STATUSES = {
         "transcribe": "completed",
@@ -322,7 +320,7 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
         )
         return {str(step["stage"]): step for step in steps}
 
-    def test_document_optimisation_freshness_reaches_its_snapshot_stage(self) -> None:
+    def test_changed_document_optimisation_runs_again(self) -> None:
         mismatch = {
             "settings_match": False,
             "source_match": True,
@@ -332,8 +330,9 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
 
         by_stage = self._optimised_steps(
             {"optimize_tts", "generate_audio", "export"},
-            mismatched_stages={"optimize_document": mismatch},
-            stage_freshness={"optimize_document": mismatch},
+            transformations={"llm_tts_document_optimization": True},
+            mismatched_stages={"optimize_tts": mismatch},
+            stage_freshness={"optimize_tts": mismatch},
         )
 
         self.assertEqual("run", by_stage["optimize_tts"]["decision"])
@@ -341,8 +340,9 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
     def test_document_optimisation_reuse_reports_its_freshness_evidence(self) -> None:
         by_stage = self._optimised_steps(
             {"optimize_tts", "generate_audio", "export"},
+            transformations={"llm_tts_document_optimization": True},
             stage_freshness={
-                "optimize_document": {
+                "optimize_tts": {
                     "settings_match": True,
                     "source_match": True,
                     "settings_evidence": "fingerprint",
@@ -361,3 +361,13 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
         )
 
         self.assertIn("optimize_tts", by_stage)
+
+    def test_included_optimisation_during_generation_is_not_a_step(self) -> None:
+        # Including the stage only turns optimisation on; while it runs
+        # inside generation it has no step of its own.
+        by_stage = self._optimised_steps(
+            {"optimize_tts", "generate_audio", "export"},
+            transformations={"llm_tts_optimization": True},
+        )
+
+        self.assertNotIn("optimize_tts", by_stage)
