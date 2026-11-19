@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import sqlite3
+import threading
 import time
 import wave
 from datetime import timedelta
@@ -377,6 +378,70 @@ def test_a_busy_heartbeat_keeps_the_pending_progress_state(case, monkeypatch):
     assert observed[1]["blocks_total"] == 40
     # The claim's attempt start survives the report that replaces the state.
     assert observed[1]["attempt_started_at"]
+    assert case.jobs.get(job.id).status == "succeeded"
+
+
+def test_a_second_heartbeat_waits_for_the_first_to_acknowledge(case, monkeypatch):
+    # Only the two threads below drive renew_lease here: the monitor would
+    # otherwise add a heartbeat of its own.
+    real_thread = threading.Thread
+    monkeypatch.setattr(
+        "pandrator.web.jobs.threading.Thread",
+        lambda *_args, **_kwargs: SimpleNamespace(start=lambda: None),
+    )
+    original = case.jobs.heartbeat
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    entries: list[int] = []
+    entries_lock = threading.Lock()
+
+    def heartbeat(*args, **kwargs):
+        with entries_lock:
+            entries.append(1)
+            position = len(entries)
+        if position == 1:
+            first_entered.set()
+            assert release_first.wait(1.0)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(case.jobs, "heartbeat", heartbeat)
+
+    def handler(payload, progress, _cancel):
+        job_id = payload["_job_id"]
+        with open_job_progress_state(job_id) as state:
+            assert state is not None
+            state.set_blocks(1, 10)
+            first_done = threading.Event()
+            second_done = threading.Event()
+
+            def first() -> None:
+                progress(0.1, "Generating speech: 1 of 10")
+                first_done.set()
+
+            def second() -> None:
+                progress(0.2, "Generating speech: 2 of 10")
+                second_done.set()
+
+            threads = [
+                real_thread(target=first),
+                real_thread(target=second),
+            ]
+            threads[0].start()
+            assert first_entered.wait(1.0)
+            threads[1].start()
+            # The second heartbeat waits for the first to write and acknowledge
+            # instead of collecting values the first one still has in flight.
+            assert not second_done.wait(0.2)
+            assert len(entries) == 1
+            release_first.set()
+            for thread in threads:
+                thread.join(1.0)
+            assert first_done.is_set() and second_done.is_set()
+            assert len(entries) == 2
+        return {}
+
+    job = case.jobs.enqueue("generation.run", max_attempts=1)
+    assert Worker(case.jobs, "worker", {"generation.run": handler}).run_once()
     assert case.jobs.get(job.id).status == "succeeded"
 
 

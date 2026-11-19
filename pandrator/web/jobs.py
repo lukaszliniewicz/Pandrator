@@ -10,7 +10,7 @@ import time
 import traceback
 from collections import deque
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, TypeGuard
@@ -1903,38 +1903,45 @@ class Worker:
             detail = progress_detail
             state_payload: Any = _UNSET
             force_detail = False
-            if state is not None:
-                # A retry that a batch worker thread recorded is folded into
-                # this heartbeat, even when the caller had no detail of its own.
-                detail_changed, composed = state.desired_detail()
-                if detail_changed:
-                    # A composed None clears an expired retry suffix; a retry-only
-                    # update must reach the job even when a late progress value
-                    # would otherwise keep its detail.
-                    detail = composed
-                    force_detail = True
-                changed, payload = state.consume_state()
-                if changed:
-                    state_payload = payload
             try:
-                renewed = self.queue.heartbeat(
-                    job.id,
-                    self.worker_id,
-                    lease_generation=lease_generation,
-                    progress=progress_value,
-                    detail=detail,
-                    progress_state=state_payload,
-                    force_detail=force_detail,
-                    lease_seconds=WORKER_LEASE_SECONDS,
-                )
-                if not renewed:
-                    lease_lost_event.set()
-                    cancel_event.set()
-                    return False
-                if state is not None:
-                    # The write landed, so the returned values may be marked as
-                    # reported; a busy writer leaves them pending for the retry.
-                    state.acknowledge()
+                # One heartbeat at a time per job: the lock spans the collection
+                # of the pending values, their write and their acknowledgement,
+                # so a concurrent heartbeat cannot acknowledge values that
+                # another one collected but has not stored yet.
+                with (
+                    state.heartbeat_lock if state is not None else nullcontext()
+                ):
+                    if state is not None:
+                        # A retry that a batch worker thread recorded is folded into
+                        # this heartbeat, even when the caller had no detail of its own.
+                        detail_changed, composed = state.desired_detail()
+                        if detail_changed:
+                            # A composed None clears an expired retry suffix; a retry-only
+                            # update must reach the job even when a late progress value
+                            # would otherwise keep its detail.
+                            detail = composed
+                            force_detail = True
+                        changed, payload = state.consume_state()
+                        if changed:
+                            state_payload = payload
+                    renewed = self.queue.heartbeat(
+                        job.id,
+                        self.worker_id,
+                        lease_generation=lease_generation,
+                        progress=progress_value,
+                        detail=detail,
+                        progress_state=state_payload,
+                        force_detail=force_detail,
+                        lease_seconds=WORKER_LEASE_SECONDS,
+                    )
+                    if not renewed:
+                        lease_lost_event.set()
+                        cancel_event.set()
+                        return False
+                    if state is not None:
+                        # The write landed, so the returned values may be marked as
+                        # reported; a busy writer leaves them pending for the retry.
+                        state.acknowledge()
                 expected_resources = {
                     _canonical_tts_resource_key(str(key).strip())
                     for key in (job.resource_keys_json or []) if str(key).strip()
