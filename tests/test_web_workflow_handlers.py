@@ -1543,7 +1543,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         translate.assert_called_once()
 
     def _continue_with_document_optimisation(
-        self, *, fresh, reuse_stages=(), rerun_stages=()
+        self, *, fresh, reuse_stages=(), rerun_stages=(), stage_settings=None
     ):
         _source, translation = self._voiceover_session_with_translation(None)
         optimised_path = self.session_dir / "optimised-translation.srt"
@@ -1583,9 +1583,9 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 {
                     "session_id": self.session.id,
                     "target_stage": "generate_audio",
-                    # Plans name the stage as the snapshot does.
                     "reuse_stages": list(reuse_stages),
                     "rerun_stages": list(rerun_stages),
+                    "stage_settings": stage_settings or {},
                 },
                 self.progress,
                 threading.Event(),
@@ -1608,6 +1608,21 @@ class WebWorkflowHandlerTests(unittest.TestCase):
     def test_document_optimisation_still_follows_freshness_without_a_choice(self):
         self._continue_with_document_optimisation(fresh=True).assert_not_called()
         self._continue_with_document_optimisation(fresh=False).assert_called_once()
+
+    def test_a_continuation_queued_under_the_retired_name_keeps_its_choices(self):
+        # Jobs queued by an earlier release name the stage optimize_document.
+        self._continue_with_document_optimisation(
+            fresh=False, reuse_stages=("optimize_document",)
+        ).assert_not_called()
+        optimise = self._continue_with_document_optimisation(
+            fresh=True,
+            rerun_stages=("optimize_document",),
+            stage_settings={"optimize_document": {"llm_tts_batch_size": 7}},
+        )
+        optimise.assert_called_once()
+        self.assertEqual(
+            7, optimise.call_args.args[0]["settings"]["llm_tts_batch_size"]
+        )
 
     def test_reuse_translation_bypasses_selected_parent_lineage_change(self):
         with self.database.session() as session:

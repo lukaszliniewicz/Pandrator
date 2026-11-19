@@ -25,7 +25,7 @@ from pandrator.logic.tts_retry import DEFAULT_TTS_MAX_ATTEMPTS, retry_reason_suf
 from pandrator.runtime import DataPaths
 
 from .access.speech_preview_policy import preview_execution_workspace
-from .artifact_selection import canonical_stage_key, selected_artifacts
+from .artifact_selection import selected_artifacts
 from .artifacts import ArtifactService, sha256_file
 from .audio_verification import add_run_rms_warning, run_rms_outliers, verify_audio
 from .audit import AuditService
@@ -138,6 +138,7 @@ from .workflow_srt_documents import _dominant_speaker as _dominant_speaker
 from .workflow_srt_documents import _hash_segments as _hash_segments
 from .workflow_srt_documents import _structured_speaker as _structured_speaker
 from .workflow_srt_documents import store_srt_document_in_session
+from .workflow_stage_types import stage_key_from_input, stage_settings_from_input
 from .workflow_subtitle_transforms import SubtitleTransformContext
 from .workflow_subtitle_transforms import correct as _correct_impl
 from .workflow_subtitle_transforms import translate as _translate_impl
@@ -941,7 +942,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             self._output_workflow_context(), delivery, cancel_event
         ).input_context()
         session_id = str(payload.get("session_id") or "")
-        target_key = str(payload.get("target_stage") or "generate_audio")
+        # A continuation queued by an earlier release may still name a stage
+        # by a retired key.
+        target_key = stage_key_from_input(str(payload.get("target_stage") or "generate_audio"))
         expected_speech_revision = str(payload.get("speech_plan_revision_id") or "")
         if expected_speech_revision:
             with self.database.session() as session:
@@ -1004,22 +1007,20 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             )
         input_choices = resolve_workflow_inputs(record, outcome_value)
         stage_settings = (
-            payload.get("stage_settings")
+            stage_settings_from_input(payload["stage_settings"])
             if isinstance(payload.get("stage_settings"), dict)
             else {}
         )
         direct_settings = (
             payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
         )
-        # Plans name stages as the snapshot does (``optimize_tts`` for document
-        # optimisation), while the definitions here say ``optimize_document``.
         reuse_stages = {
-            canonical_stage_key(str(value))
+            stage_key_from_input(str(value))
             for value in (payload.get("reuse_stages") or [])
             if str(value)
         }
         rerun_stages = {
-            canonical_stage_key(str(value))
+            stage_key_from_input(str(value))
             for value in (payload.get("rerun_stages") or [])
             if str(value)
         }
@@ -1096,9 +1097,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             with self.database.session() as session:
                 require_delivery_execution(session, delivery)
                 existing = (
-                    selected_artifacts(session, session_id).get(
-                        canonical_stage_key(definition.key)
-                    )
+                    selected_artifacts(session, session_id).get(definition.key)
                     if definition.output_role
                     else None
                 )
@@ -1137,9 +1136,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             if (
                 existing is not None
                 and definition.key != target_key
-                and canonical_stage_key(definition.key) not in rerun_stages
+                and definition.key not in rerun_stages
             ):
-                if canonical_stage_key(definition.key) in reuse_stages:
+                if definition.key in reuse_stages:
                     # The caller explicitly chose to keep the current artifact
                     # even though settings or source lineage changed. This is
                     # meaningful only for prerequisites; the target stage is
