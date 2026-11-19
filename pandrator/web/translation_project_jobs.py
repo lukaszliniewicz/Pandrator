@@ -104,6 +104,9 @@ def run_creation(
             if job is not None and (canceled() or job.status == "cancel_requested"):
                 # Cancellation wins over creation; the finally cleans any files.
                 return {}
+            # Authority can be withdrawn while the files materialise, so the
+            # writer checks it again against the state it commits on.
+            require_current_session_access(db, session_id, ProjectAction.EDIT)
             if prepared is not None:
                 prepared.revalidate(db)
             result = create_project_in_session(

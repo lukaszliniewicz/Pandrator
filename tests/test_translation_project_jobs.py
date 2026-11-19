@@ -12,7 +12,9 @@ from sqlalchemy import delete, func, select
 from pandrator.web import translation_project_jobs
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.fork_file_preparation import _PreparedForkFiles
 from pandrator.web.jobs import Worker
+from pandrator.web.model_base import utcnow
 from pandrator.web.models import (
     Artifact,
     Document,
@@ -25,6 +27,7 @@ from pandrator.web.models import (
     TranslationProjectBranch,
     WorkspaceMembership,
 )
+from pandrator.web.projects.models import ProjectMembership
 from pandrator.web.session_forks import SessionForkService
 from pandrator.web.translation_project_jobs import run_creation
 from tests.test_job_access_routes import case as case  # noqa: F401
@@ -367,6 +370,19 @@ class TranslationProjectJobTests(unittest.TestCase):
                 )
             )
 
+    def _grant_viewing(self, session_id: str, job_id: str) -> None:
+        with self.database.immediate_session() as db:
+            actor = db.get(JobActorRecord, job_id)
+            source = db.get(SessionRecord, session_id)
+            db.add(
+                ProjectMembership(
+                    project_id=source.project_id,
+                    user_id=actor.user_id,
+                    role="viewer",
+                    created_at=utcnow(),
+                )
+            )
+
     def test_revoked_edit_authority_fails_without_a_project_or_branch_files(self):
         created = self._session(setup={"target_languages": ["pl"]})
         checkpoint = self._checkpoint(created["id"])
@@ -392,6 +408,36 @@ class TranslationProjectJobTests(unittest.TestCase):
             job = db.get(Job, job_id)
         self.assertEqual("failed", job.status, job.error_message)
         self.assertIn("not found", (job.error_message or "").lower())
+        self.assertEqual(0, self._count(TranslationProject))
+        self.assertEqual(0, self._count(TranslationProjectBranch))
+        self.assertEqual(before, self._session_directory_names())
+
+    def test_authority_revoked_while_files_materialise_creates_nothing(self):
+        created = self._session(setup={"target_languages": ["pl"]})
+        checkpoint = self._checkpoint(created["id"])
+        before = self._session_directory_names()
+        queued = self._post(
+            created["id"],
+            self._queued_payload(created["id"], checkpoint.id, planned=True),
+            "revoked-while-materialising-key",
+        )
+        self.assertEqual(202, queued.status_code, queued.get_json())
+        job_id = queued.get_json()["id"]
+        materialize = _PreparedForkFiles.materialize
+
+        def materialize_then_revoke(prepared):
+            materialize(prepared)
+            # The first check has passed. The actor keeps viewing access, so
+            # only an EDIT check in the writer can refuse the commit.
+            self._revoke_edit_authority(created["id"], job_id)
+            self._grant_viewing(created["id"], job_id)
+
+        with patch.object(_PreparedForkFiles, "materialize", materialize_then_revoke):
+            self.assertTrue(self._run_queued())
+        with self.database.session() as db:
+            job = db.get(Job, job_id)
+        self.assertEqual("failed", job.status, job.error_message)
+        self.assertIn("not permitted", (job.error_message or "").lower())
         self.assertEqual(0, self._count(TranslationProject))
         self.assertEqual(0, self._count(TranslationProjectBranch))
         self.assertEqual(before, self._session_directory_names())
