@@ -18,6 +18,7 @@ from .schemas import StageSelectionUpdate
 from .sessions import SessionService
 from .subtitle_selection import SubtitleSelectionUnavailable
 from .workflow_handlers import WorkflowHandlers
+from .workflow_stage_types import stage_key_from_input
 from .workflows import WorkflowService
 
 RouteResponse = Response | tuple[Response, int]
@@ -94,6 +95,7 @@ def register_workflow_session_routes(
     @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/artifacts")
     @require_auth
     def workflow_stage_artifacts(session_id: str, stage_key: str):
+        stage_key = stage_key_from_input(stage_key)
         try:
             with database.snapshot_session() as db_session:
                 require_session_access(db_session, context.access_context(), session_id)
@@ -123,6 +125,7 @@ def register_workflow_session_routes(
         stage_key: str,
         artifact_id: str,
     ):
+        stage_key = stage_key_from_input(stage_key)
         try:
             with database.immediate_session() as db_session:
                 require_session_access(db_session, context.access_context(), session_id, ProjectAction.TRASH)
@@ -142,6 +145,7 @@ def register_workflow_session_routes(
     @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/impact")
     @require_auth
     def workflow_stage_impact(session_id: str, stage_key: str):
+        stage_key = stage_key_from_input(stage_key)
         try:
             with database.snapshot_session() as db_session:
                 require_session_access(db_session, context.access_context(), session_id)
@@ -154,6 +158,7 @@ def register_workflow_session_routes(
     @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/settings-mismatches")
     @require_auth
     def workflow_stage_settings_mismatches(session_id: str, stage_key: str):
+        stage_key = stage_key_from_input(stage_key)
         try:
             with database.snapshot_session() as db_session:
                 require_session_access(db_session, context.access_context(), session_id)
@@ -166,6 +171,7 @@ def register_workflow_session_routes(
     @app.put("/api/v1/sessions/<session_id>/stages/<stage_key>/selection")
     @require_auth
     def workflow_stage_selection(session_id: str, stage_key: str):
+        stage_key = stage_key_from_input(stage_key)
         payload = context.selection_update_type().model_validate(
             context.request().get_json(silent=True) or {}
         )
@@ -203,6 +209,7 @@ def register_workflow_session_routes(
     @app.post("/api/v1/sessions/<session_id>/stages/<stage_key>/run")
     @require_auth
     def workflow_run_stage(session_id: str, stage_key: str):
+        stage_key = stage_key_from_input(stage_key)
         try:
             with database.snapshot_session() as db_session:
                 require_session_access(

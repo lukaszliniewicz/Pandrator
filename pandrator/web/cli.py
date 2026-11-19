@@ -61,6 +61,7 @@ from .tts_providers import TtsProviderRegistry
 from .worker_shutdown import worker_termination
 from .workflow_handlers import WorkflowHandlers
 from .workflow_prerequisites import WorkflowPrerequisiteService
+from .workflow_stage_types import stage_key_from_input
 from .workflows import WorkflowService
 from .workspace_settings import WorkspaceSettingsService
 
@@ -1198,7 +1199,7 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_show.set_defaults(handler=command_workflow_show)
     workflow_run = workflow_commands.add_parser("run")
     workflow_run.add_argument("session_id")
-    workflow_run.add_argument("stage")
+    workflow_run.add_argument("stage", type=stage_key_from_input)
     workflow_run.add_argument("--settings", default="{}")
     workflow_run.add_argument(
         "--rerun-changed-prerequisites",

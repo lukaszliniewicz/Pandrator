@@ -17,7 +17,6 @@ from .access.session_policy import require_session_access
 from .accounts.execution_actor import UserActor, current_execution_actor, execution_actor_scope
 from .artifact_selection import (
     STAGE_OUTPUT_ROLES,
-    canonical_stage_key,
     selected_artifacts,
     stage_histories,
 )
@@ -277,19 +276,12 @@ DUBBING_STAGES = (
         job_kind="dubbing.translate",
     ),
     StageDefinition(
-        "optimize_document",
-        "Optimize subtitles before generation",
-        "Optionally create a separate, reviewable speech-optimized revision before audio generation. This is useful when the LLM and TTS must not share limited GPU memory.",
-        prerequisite_roles=("translation", "correction", "transcription", "upload"),
-        output_role="tts_optimized",
-        job_kind="text.optimize_tts",
-    ),
-    StageDefinition(
         "optimize_tts",
         "Optimize text for speech",
         "Choose document-level speech optimization or optimize final speech units while preparing a reviewable speech plan.",
-        executable=False,
         prerequisite_roles=("translation", "correction", "transcription", "upload"),
+        output_role="tts_optimized",
+        job_kind="text.optimize_tts",
     ),
     StageDefinition(
         "preview",
@@ -397,9 +389,9 @@ MEDIA_EDIT_STAGES = (
         job_kind="dubbing.translate",
     ),
     StageDefinition(
-        "optimize_document",
-        "Optimize subtitles before generation",
-        "Optionally create a separate, reviewable speech-optimized revision before voice generation.",
+        "optimize_tts",
+        "Optimize text for speech",
+        "Choose whether speech optimization happens before or during optional voice generation.",
         prerequisite_roles=(
             "translation",
             "correction",
@@ -407,17 +399,6 @@ MEDIA_EDIT_STAGES = (
         ),
         output_role="tts_optimized",
         job_kind="text.optimize_tts",
-    ),
-    StageDefinition(
-        "optimize_tts",
-        "Optimize text for speech",
-        "Choose whether speech optimization happens before or during optional voice generation.",
-        executable=False,
-        prerequisite_roles=(
-            "translation",
-            "correction",
-            "media_edit_subtitles",
-        ),
     ),
     StageDefinition(
         "preview",
@@ -476,19 +457,12 @@ AUDIOBOOK_STAGES = (
         job_kind="text.prepare",
     ),
     StageDefinition(
-        "optimize_document",
-        "Optimize narration before generation",
-        "Optionally create a separate before-and-after narration revision for review before any audio is generated.",
-        prerequisite_roles=("prepared_text",),
-        output_role="tts_optimized",
-        job_kind="text.optimize_tts",
-    ),
-    StageDefinition(
         "optimize_tts",
         "Optimize text for speech",
         "Choose document-level speech optimization or optimize final speech units while preparing a reviewable speech plan.",
-        executable=False,
         prerequisite_roles=("prepared_text",),
+        output_role="tts_optimized",
+        job_kind="text.optimize_tts",
     ),
     StageDefinition(
         "generate_audio",
@@ -625,7 +599,6 @@ class WorkflowService:
             "correct",
             "translate",
             "optimize_tts",
-            "optimize_document",
             "preview",
         }:
             return extension == ".srt"
@@ -685,7 +658,6 @@ class WorkflowService:
             current_artifacts_by_role=lambda session, session_id, roles: (
                 _latest_current_artifacts_by_role(session, session_id, roles)
             ),
-            canonical_stage_key=lambda stage_key: canonical_stage_key(stage_key),
             stage_output_roles=lambda: STAGE_OUTPUT_ROLES,
             stage_histories=lambda session, session_id, stage_keys, *, limit: stage_histories(
                 session, session_id, stage_keys, limit=limit
@@ -995,7 +967,6 @@ class WorkflowService:
             "correct",
             "translate",
             "optimize_tts",
-            "optimize_document",
         } or (stage_key == "clean_source" and bool(settings.get("agentic", False))):
             keys.append("service:llm")
         if stage_key == "generate_audio":

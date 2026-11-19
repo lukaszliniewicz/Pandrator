@@ -1567,7 +1567,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         outcome.update(self.session.id, current["revision"], value)
 
         def freshness(_session_id, stage_key, *_args, **_kwargs):
-            matches = fresh if stage_key == "optimize_document" else True
+            matches = fresh if stage_key == "optimize_tts" else True
             return {"settings_match": matches, "source_match": True}
 
         with mock.patch.object(
@@ -3903,11 +3903,11 @@ A single reviewed cue.
 
         with mock.patch.object(self.handlers, "optimize_tts", side_effect=fake_optimize), mock.patch("pandrator.logic.tts_handler.text_to_audio", return_value=AudioSegment.silent(duration=25)), mock.patch.object(self.handlers, "export", side_effect=AssertionError("Export must remain manual")):
             result = self.handlers.continue_workflow(
-                {"session_id": self.session.id, "target_stage": "generate_audio", "stage_settings": {"clean_source": {"agentic": False}, "prepare_text": {}, "optimize_document": {}, "generate_audio": {"service": "XTTS"}}},
+                {"session_id": self.session.id, "target_stage": "generate_audio", "stage_settings": {"clean_source": {"agentic": False}, "prepare_text": {}, "optimize_tts": {}, "generate_audio": {"service": "XTTS"}}},
                 self.progress,
                 threading.Event(),
             )
-        self.assertEqual(["clean_source", "prepare_text", "optimize_document", "generate_audio"], [item["stage"] for item in result["artifacts"]])
+        self.assertEqual(["clean_source", "prepare_text", "optimize_tts", "generate_audio"], [item["stage"] for item in result["artifacts"]])
         with self.database.session() as session:
             plan = session.scalar(
                 select(GenerationPlan).where(GenerationPlan.session_id == self.session.id)

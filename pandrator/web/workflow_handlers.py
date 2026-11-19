@@ -1044,13 +1044,14 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 raise ValueError(
                     "Review and render the media edit before running downstream stages."
                 )
+        stage_keys = self._continuation_stage_keys(included, required)
         runnable = [
             item
             for index, item in enumerate(definitions)
             if index <= target_index
             and item.executable
             and item.job_kind
-            and (item.key in included or item.key in required)
+            and item.key in stage_keys
         ]
         produced: list[dict[str, Any]] = []
         handlers = self.handler_registry
@@ -1059,7 +1060,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             "transcribe": 0.18,
             "correct": 0.10,
             "translate": 0.10,
-            "optimize_document": 0.10,
+            "optimize_tts": 0.10,
             "prepare_text": 0.05,
             # Speech synthesis is normally the dominant part of this action.
             "generate_audio": 0.65,
@@ -1183,7 +1184,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 run_kind = {
                     "correct": "correction",
                     "translate": "translation",
-                    "optimize_document": "tts_optimization",
+                    "optimize_tts": "tts_optimization",
                 }.get(definition.key)
                 if run_kind and requested_agent_runs.get(run_kind):
                     handler_payload["_agent_run_id"] = str(

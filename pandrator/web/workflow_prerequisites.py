@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
-from .artifact_selection import canonical_stage_key, selected_artifacts
+from .artifact_selection import selected_artifacts
 from .database import Database
 from .models import (
     Artifact,
@@ -182,7 +183,7 @@ class WorkflowPrerequisiteService:
                     else ("transcription", "upload")
                 )
             )
-        if definition_key not in {"optimize_document", "generate_audio"}:
+        if definition_key not in {"optimize_tts", "generate_audio"}:
             return default_roles
         if definition_key == "generate_audio" and bool(
             transformations.get("llm_tts_document_optimization")
@@ -233,8 +234,19 @@ class WorkflowPrerequisiteService:
             "generate_audio",
             "export",
         }:
-            required.add("optimize_document")
+            required.add("optimize_tts")
         return required
+
+    @staticmethod
+    def _continuation_stage_keys(included: Iterable[str], required: set[str]) -> set[str]:
+        """Name the stages a continuation may run: included ones and required ones.
+
+        Including ``optimize_tts`` only turns speech optimisation on. It runs as
+        a step of its own when it optimises the document before generation, and
+        ``_continuation_required_stages`` then requires it.
+        """
+
+        return (set(included) - {"optimize_tts"}) | required
 
     def _current_stage_fingerprint(
         self,
@@ -579,21 +591,21 @@ class WorkflowPrerequisiteService:
             input_choices,
             transformations,
         )
-        included = set(record.included_stages_json or [])
+        stage_keys = self._continuation_stage_keys(record.included_stages_json or [], required)
         runnable = [
             definition
             for index, definition in enumerate(definitions)
             if index < target_index
             and definition.executable
             and definition.job_kind
-            and (definition.key in included or definition.key in required)
+            and definition.key in stage_keys
         ]
         section_map: dict[str, tuple[str, ...]] = {
             "clean_source": ("source_cleaning", "text"),
             "transcribe": ("stt", "subtitles"),
             "correct": ("correction", "subtitles"),
             "translate": ("translation", "subtitles"),
-            "optimize_document": ("text",),
+            "optimize_tts": ("text",),
             "prepare_text": ("text", "audio"),
             "generate_audio": ("text", "tts", "audio", "rvc", "output"),
             "export": ("output", "audio", "subtitles"),
@@ -632,7 +644,7 @@ class WorkflowPrerequisiteService:
                         )
             if source is None:
                 source = self._latest_stage_input(session_id, input_roles)
-            existing = selected.get(canonical_stage_key(definition.key))
+            existing = selected.get(definition.key)
             if existing is None:
                 continue
             freshness = self._continuation_freshness(

@@ -26,7 +26,7 @@ from .models import (
 from .outcome_plans import resolve_workflow_inputs
 from .source_resolution import PrimarySourceResolution
 from .workflow_resolution_types import ResolvedWorkflowStage
-from .workflow_stage_types import StageDefinition
+from .workflow_stage_types import StageDefinition, stage_settings_from_input
 
 
 class ExportAssemblyRequirementProtocol(Protocol):
@@ -94,7 +94,6 @@ def resolve_workflow_stage_in_session(
         "transcribe": ("stt", "subtitles"),
         "correct": ("correction", "subtitles", "source_passages"),
         "translate": ("translation", "subtitles", "source_passages"),
-        "optimize_document": ("text",),
         "optimize_tts": ("text",),
         "clean_source": ("source_cleaning", "text"),
         # TTS is part of the immutable prepare snapshot because the
@@ -113,7 +112,6 @@ def resolve_workflow_stage_in_session(
             "translate",
             "clean_source",
             "prepare_text",
-            "optimize_document",
             "optimize_tts",
             "generate_audio",
         )
@@ -133,6 +131,8 @@ def resolve_workflow_stage_in_session(
     )
     explicit_requested_source = bool(requested_source_artifact_id)
     provided_stage_settings = run_values.pop("stage_settings", {})
+    if isinstance(provided_stage_settings, dict):
+        provided_stage_settings = stage_settings_from_input(provided_stage_settings)
     reuse_stages = [
         str(value)
         for value in (run_values.pop("reuse_stages", []) or [])
@@ -308,7 +308,7 @@ def resolve_workflow_stage_in_session(
             if record.workflow_kind == "media_edit"
             else ("transcription", "upload")
         )
-    elif stage_key in {"optimize_document", "generate_audio"}:
+    elif stage_key in {"optimize_tts", "generate_audio"}:
         if stage_key == "generate_audio" and bool(
             transformations.get("llm_tts_document_optimization")
         ):

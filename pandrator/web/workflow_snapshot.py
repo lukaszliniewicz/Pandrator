@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast
 
 from sqlalchemy import and_, case, func, literal, or_, select, union_all
@@ -84,7 +84,6 @@ class WorkflowSnapshotContext:
     valid_translation_source: Callable[[StageDefinition, Artifact | None, str, str, set[str]], bool]
     resolve_primary_source: Callable[[Session, str], PrimarySourceResolution]
     current_artifacts_by_role: Callable[[Session, str, set[str]], list[Artifact]]
-    canonical_stage_key: Callable[[str], str]
     stage_output_roles: Callable[[], dict[str, tuple[str, ...]]]
     stage_histories: StageHistoriesProtocol
     history_preview_limit: Callable[[], int]
@@ -249,11 +248,9 @@ def build_workflow_snapshot(
         known_artifacts = {artifact.id: artifact for artifact in artifacts}
         definitions = context.definitions(record, artifacts)
         history_stage_keys = tuple(
-            dict.fromkeys(
-                context.canonical_stage_key(definition.key)
-                for definition in definitions
-                if context.canonical_stage_key(definition.key) in context.stage_output_roles()
-            )
+            definition.key
+            for definition in definitions
+            if definition.key in context.stage_output_roles()
         )
         histories, selections = context.stage_histories(
             session,
@@ -354,8 +351,7 @@ def build_workflow_snapshot(
         agentic_job_kinds = {
             definition.job_kind
             for definition in definitions
-            if context.canonical_stage_key(definition.key)
-            in {"correct", "translate", "optimize_tts"}
+            if definition.key in {"correct", "translate", "optimize_tts"}
             and definition.job_kind
         }
         # Completed artifacts carry their AgentRun ID in immutable
@@ -493,25 +489,19 @@ def build_workflow_snapshot(
         )
         stages = []
         stage_usage_scopes: dict[str, dict[str, str]] = {}
-        document_definition = next(
-            (item for item in definitions if item.key == "optimize_document"), None
-        )
-        visible_definitions = tuple(
-            item for item in definitions if item.key != "optimize_document"
-        )
         stage_reads: list[_SnapshotStageRead] = []
-        for definition in visible_definitions:
+        for definition in definitions:
+            # Optimisation while generating runs inside audio generation, so
+            # its card is a toggle with no job or result of its own.
             effective_definition = (
-                document_definition
+                replace(definition, executable=False, output_role=None, job_kind=None)
                 if definition.key == "optimize_tts"
-                and document_optimization_enabled
-                and document_definition
+                and not document_optimization_enabled
                 else definition
             )
-            selection_key = context.canonical_stage_key(definition.key)
-            history = histories.get(selection_key)
+            history = histories.get(definition.key)
             artifact = (
-                selections.get(selection_key)
+                selections.get(definition.key)
                 if history is not None
                 else latest_roles.get(effective_definition.output_role or "")
             )
@@ -574,10 +564,9 @@ def build_workflow_snapshot(
                     if record.workflow_kind == "media_edit"
                     else ("transcription", "upload")
                 )
-            elif effective_definition.key in {
-                "optimize_document",
-                "generate_audio",
-            }:
+            elif definition.key == "generate_audio" or (
+                definition.key == "optimize_tts" and document_optimization_enabled
+            ):
                 if (
                     definition.key == "generate_audio"
                     and document_optimization_enabled
@@ -891,9 +880,7 @@ def build_workflow_snapshot(
                 "explanation": definition.explanation,
                 "status": status,
                 "stale_reason": stale_reason if status == "stale" else None,
-                "executable": bool(document_optimization_enabled)
-                if definition.key == "optimize_tts"
-                else definition.executable,
+                "executable": effective_definition.executable,
                 "toggle": definition.key == "optimize_tts",
                 "toggle_only": definition.key == "optimize_tts"
                 and not document_optimization_enabled,
@@ -1160,7 +1147,11 @@ def build_workflow_snapshot(
         )
         if source_readiness["adoption_required"]:
             for stage in stages:
-                if stage["key"] in {"correct", "translate", "optimize_document", "generate_audio"} and stage["status"] == "ready":
+                if (
+                    stage["key"] in {"correct", "translate", "optimize_tts", "generate_audio"}
+                    and stage["executable"]
+                    and stage["status"] == "ready"
+                ):
                     stage["status"] = "unavailable"
                     stage["stale_reason"] = "Register the existing subtitle source to create a timed revision first."
         return {

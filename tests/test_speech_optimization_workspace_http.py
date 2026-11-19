@@ -42,7 +42,7 @@ def _project(case, client, csrf, *, workspace=None, srt=False, stages=None):
         "name": f"Shared speech {uuid4()}",
         "workflow_kind": "voiceover" if srt else "audiobook",
         "source_language": "en",
-        "included_stages": stages or ["optimize_document"],
+        "included_stages": stages or ["optimize_tts"],
     }
     if workspace is not None:
         values["workspace_id"] = workspace
@@ -153,7 +153,7 @@ def _run(case, receipt):
 def _admit(client, csrf, sid, settings):
     return body(
         client.post(
-            f"/api/v1/sessions/{sid}/stages/optimize_document/run", json=settings, headers=csrf
+            f"/api/v1/sessions/{sid}/stages/optimize_tts/run", json=settings, headers=csrf
         ),
         202,
     )
@@ -260,7 +260,7 @@ def test_stage_denies_before_json_or_resolution(case, monkeypatch, viewer):
         scoped.setattr(Request, "get_json", parse)
         scoped.setattr(services.workflows, "resolve_stage", resolve)
         response = people.bob.post(
-            f"/api/v1/sessions/{record['id']}/stages/optimize_document/run",
+            f"/api/v1/sessions/{record['id']}/stages/optimize_tts/run",
             data="{not-json",
             content_type="application/json",
             headers=people.bh,
@@ -286,7 +286,7 @@ def test_stage_writer_rechecks_actual_source_before_enqueue(case, monkeypatch):
 
     monkeypatch.setattr(services.workflows, "resolve_stage", change_after_resolution)
     response = case.client.post(
-        f"/api/v1/sessions/{record['id']}/stages/optimize_document/run", json=settings, headers=csrf
+        f"/api/v1/sessions/{record['id']}/stages/optimize_tts/run", json=settings, headers=csrf
     )
     assert response.status_code == 404
     with case.database.snapshot_session() as unit:
@@ -344,7 +344,7 @@ def test_project_credential_uses_attached_source_bytes_without_origin_metadata(c
         runtime,
         PlanWorkflowInput(
             session_id=target["id"],
-            target_stage="optimize_document",
+            target_stage="optimize_tts",
             overrides={"text": settings},
             continuation=False,
         ),
@@ -437,7 +437,7 @@ def test_existing_mcp_plan_executes_optimizer_under_actual_continuation_lease(ca
         people.alice,
         people.ah,
         workspace=people.workspace_id,
-        stages=["optimize_document"],
+        stages=["optimize_tts"],
     )
     body(
         people.alice.post(
@@ -485,7 +485,7 @@ def test_existing_mcp_plan_executes_optimizer_under_actual_continuation_lease(ca
         runtime,
         PlanWorkflowInput(
             session_id=record["id"],
-            target_stage="optimize_document",
+            target_stage="optimize_tts",
             overrides={
                 "text": settings,
                 "stage_settings": {
@@ -508,7 +508,7 @@ def test_existing_mcp_plan_executes_optimizer_under_actual_continuation_lease(ca
     )
     assert native.call_count == 1
     artifacts = completed.result_json["artifacts"]
-    assert [item["stage"] for item in artifacts] == ["optimize_document"]
+    assert [item["stage"] for item in artifacts] == ["optimize_tts"]
     output = artifacts[-1]
     assert REVISED in people.bob.get(f"/api/v1/artifacts/{output['artifact_id']}/content").text
     _usage(case, completed.id, output["agent_run_id"])

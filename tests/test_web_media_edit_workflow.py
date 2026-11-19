@@ -232,7 +232,6 @@ class MediaEditWorkflowTests(unittest.TestCase):
                 "edit_media",
                 "correct",
                 "translate",
-                "optimize_document",
                 "optimize_tts",
                 "preview",
                 "generate_audio",
