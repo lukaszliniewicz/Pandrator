@@ -76,10 +76,11 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
 
     @staticmethod
     def _snapshot_stages(
-        included_stages: set[str], statuses: dict[str, str] | None = None
+        included_stages: set[str],
+        statuses: dict[str, str] | None = None,
+        keys: tuple[str, ...] = ("transcribe", "correct", "translate", "generate_audio", "export"),
     ) -> list[dict[str, object]]:
         statuses = statuses or {}
-        keys = ("transcribe", "correct", "translate", "generate_audio", "export")
         return [
             {
                 "key": key,
@@ -104,8 +105,14 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
         mismatched_stages: dict[str, object] | None = None,
         stage_freshness: dict[str, dict[str, object]] | None = None,
         upstream_reruns: dict[str, str] | None = None,
+        keys: tuple[str, ...] | None = None,
     ) -> list[dict[str, object]]:
-        snapshot = {"stages": self._snapshot_stages(included_stages, statuses)}
+        stages = (
+            self._snapshot_stages(included_stages, statuses, keys)
+            if keys
+            else self._snapshot_stages(included_stages, statuses)
+        )
+        snapshot = {"stages": stages}
         with patch.object(self.services.workflows, "snapshot", return_value=snapshot):
             return self.extension["workflow_plans"]._ordered_steps(
                 session_id=session_id,
@@ -280,3 +287,77 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
         # The kept correction is unchanged, so the audio made from it stays.
         self.assertEqual("reuse_if_unchanged", by_stage["generate_audio"]["decision"])
         self.assertEqual({}, upstream_reruns)
+
+    # The snapshot shows document optimisation as ``optimize_tts``; freshness
+    # and the required stages call it ``optimize_document``.
+    _OPTIMISED_KEYS = ("transcribe", "optimize_tts", "generate_audio", "export")
+    _OPTIMISED_STATUSES = {
+        "transcribe": "completed",
+        "optimize_tts": "completed",
+        "generate_audio": "completed",
+    }
+
+    def _optimised_steps(
+        self,
+        included: set[str],
+        *,
+        transformations: dict[str, bool] | None = None,
+        mismatched_stages: dict[str, object] | None = None,
+        stage_freshness: dict[str, dict[str, object]] | None = None,
+    ) -> dict[str, dict[str, object]]:
+        session_id = self._session(sorted(included))
+        self._primary_source(session_id, "wav")
+        self._set_outcome(
+            session_id,
+            inputs={"generation": "source", "translation": "source"},
+            transformations=transformations or {},
+        )
+        steps = self._ordered_steps(
+            session_id,
+            included,
+            statuses=self._OPTIMISED_STATUSES,
+            mismatched_stages=mismatched_stages,
+            stage_freshness=stage_freshness,
+            keys=self._OPTIMISED_KEYS,
+        )
+        return {str(step["stage"]): step for step in steps}
+
+    def test_document_optimisation_freshness_reaches_its_snapshot_stage(self) -> None:
+        mismatch = {
+            "settings_match": False,
+            "source_match": True,
+            "reasons": ["changed settings"],
+            "source_artifact_id": "transcribe-selected",
+        }
+
+        by_stage = self._optimised_steps(
+            {"optimize_tts", "generate_audio", "export"},
+            mismatched_stages={"optimize_document": mismatch},
+            stage_freshness={"optimize_document": mismatch},
+        )
+
+        self.assertEqual("run", by_stage["optimize_tts"]["decision"])
+
+    def test_document_optimisation_reuse_reports_its_freshness_evidence(self) -> None:
+        by_stage = self._optimised_steps(
+            {"optimize_tts", "generate_audio", "export"},
+            stage_freshness={
+                "optimize_document": {
+                    "settings_match": True,
+                    "source_match": True,
+                    "settings_evidence": "fingerprint",
+                    "source_artifact_id": "transcribe-selected",
+                }
+            },
+        )
+
+        self.assertEqual("reuse_if_unchanged", by_stage["optimize_tts"]["decision"])
+        self.assertEqual("fingerprint", by_stage["optimize_tts"]["reuse_basis"])
+
+    def test_required_document_optimisation_is_planned_when_not_included(self) -> None:
+        by_stage = self._optimised_steps(
+            {"generate_audio", "export"},
+            transformations={"llm_tts_document_optimization": True},
+        )
+
+        self.assertIn("optimize_tts", by_stage)

@@ -298,6 +298,16 @@ def _reviewable_settings(value: Any) -> Any:
     return value
 
 
+def _by_canonical_stage(mapping: dict[str, Any] | None) -> dict[str, Any]:
+    """Key per-stage entries by the snapshot's stage names.
+
+    Freshness reports document optimisation as ``optimize_document``; the
+    snapshot and the plan call the same stage ``optimize_tts``.
+    """
+
+    return {canonical_stage_key(stage): value for stage, value in (mapping or {}).items()}
+
+
 class WorkflowPlanError(RuntimeError):
     def __init__(
         self,
@@ -839,6 +849,8 @@ class WorkflowExecutionPlanService:
         """
 
         rerun_stages = set(rerun_stages or ())
+        stage_freshness = _by_canonical_stage(stage_freshness)
+        mismatched_stages = _by_canonical_stage(mismatched_stages)
         snapshot = self.workflows.snapshot(session_id)
         stages = list(snapshot.get("stages") or [])
         target_index = next(
@@ -892,13 +904,17 @@ class WorkflowExecutionPlanService:
                 input_choices,
                 transformations,
             )
-            allowed_keys = set(record.included_stages_json or []) | required
+            # Required stages name document optimisation ``optimize_document``.
+            allowed_keys = {
+                canonical_stage_key(stage)
+                for stage in set(record.included_stages_json or []) | required
+            }
         includable_stages: set[str] = set()
         for item in stages[:target_index]:
             key = str(item.get("key") or "")
             if key == canonical_stage_key(target_stage):
                 key = target_stage
-            if key in allowed_keys and item.get("executable"):
+            if canonical_stage_key(key) in allowed_keys and item.get("executable"):
                 includable_stages.add(key)
         unavailable = sorted(rerun_stages - includable_stages - {target_stage})
         if unavailable:
@@ -914,12 +930,14 @@ class WorkflowExecutionPlanService:
             key = str(item.get("key") or "")
             if key == canonical_stage_key(target_stage):
                 key = target_stage
-            if key not in allowed_keys or not item.get("executable"):
+            if canonical_stage_key(key) not in allowed_keys or not item.get("executable"):
                 continue
             status = str(item.get("status") or "unknown")
             selected_id = item.get("selected_artifact_id")
             compared_input = str(
-                ((stage_freshness or {}).get(key) or {}).get("source_artifact_id")
+                (stage_freshness.get(canonical_stage_key(key)) or {}).get(
+                    "source_artifact_id"
+                )
                 or ""
             )
             if key == target_stage:
@@ -930,7 +948,7 @@ class WorkflowExecutionPlanService:
                 # Only an explicit request keeps a result across an upstream run.
                 decision = "reuse_explicit"
             elif status == "completed" and selected_id:
-                if mismatched_stages and key in mismatched_stages:
+                if canonical_stage_key(key) in mismatched_stages:
                     decision = "run"
                 elif compared_input in replaced_by:
                     # The result matches today's input, which this plan
@@ -962,7 +980,7 @@ class WorkflowExecutionPlanService:
                 if decision == "reuse_explicit":
                     step["reuse_basis"] = "explicit"
                 else:
-                    evaluated = (stage_freshness or {}).get(key)
+                    evaluated = stage_freshness.get(canonical_stage_key(key))
                     step["reuse_basis"] = (
                         evaluated.get("settings_evidence")
                         if evaluated is not None
@@ -1821,11 +1839,13 @@ class WorkflowExecutionPlanService:
                     "Prerequisite freshness could not be checked; existing "
                     "prerequisite results are reused without verification."
                 )
-        stage_freshness = {
-            item["stage"]: item
-            for item in freshness
-            if isinstance(item, dict) and "stage" in item
-        }
+        stage_freshness = _by_canonical_stage(
+            {
+                item["stage"]: item
+                for item in freshness
+                if isinstance(item, dict) and "stage" in item
+            }
+        )
         mismatched_stages = {
             stage: item
             for stage, item in stage_freshness.items()
@@ -1879,11 +1899,11 @@ class WorkflowExecutionPlanService:
                     f"'{step['stage']}' in reuse_stages."
                 )
             elif (
-                step["stage"] in mismatched_stages
+                canonical_stage_key(step["stage"]) in mismatched_stages
                 and step["decision"] == "run"
                 and step["stage"] != target_stage
             ):
-                mismatch_info = mismatched_stages[step["stage"]]
+                mismatch_info = mismatched_stages[canonical_stage_key(step["stage"])]
                 reasons = ", ".join(
                     str(r)
                     for r in mismatch_info.get("reasons")
