@@ -18,7 +18,6 @@ _STAGES = Literal[
     "translate",
     "clean_source",
     "prepare_text",
-    "optimize_document",
     "optimize_tts",
     "generate_audio",
     "export",

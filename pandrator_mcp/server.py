@@ -1179,7 +1179,6 @@ def build_server(runtime: McpRuntime):
             "translate",
             "clean_source",
             "prepare_text",
-            "optimize_document",
             "optimize_tts",
             "generate_audio",
             "export",

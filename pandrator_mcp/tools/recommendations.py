@@ -346,7 +346,6 @@ def recommend_next_steps(
                 "translate",
                 "clean_source",
                 "prepare_text",
-                "optimize_document",
                 "optimize_tts",
                 "generate_audio",
                 "export",
