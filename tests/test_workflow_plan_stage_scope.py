@@ -102,6 +102,8 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
         statuses: dict[str, str] | None = None,
         reuse_stages: set[str] | None = None,
         mismatched_stages: dict[str, object] | None = None,
+        stage_freshness: dict[str, dict[str, object]] | None = None,
+        upstream_reruns: dict[str, str] | None = None,
     ) -> list[dict[str, object]]:
         snapshot = {"stages": self._snapshot_stages(included_stages, statuses)}
         with patch.object(self.services.workflows, "snapshot", return_value=snapshot):
@@ -111,6 +113,8 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
                 resolved=None,
                 reuse_stages=reuse_stages or set(),
                 mismatched_stages=mismatched_stages,
+                stage_freshness=stage_freshness,
+                upstream_reruns=upstream_reruns,
             )
 
     def test_source_voiceover_omits_disabled_text_stages_but_keeps_wav_transcribe(self) -> None:
@@ -220,3 +224,59 @@ class WorkflowPlanStageScopeTests(unittest.TestCase):
         self.assertEqual("reuse_if_unchanged", by_stage["generate_audio"]["decision"])
         self.assertNotIn("translate", by_stage)
         self.assertEqual("export", steps[-1]["stage"])
+
+    def _replaced_input_steps(
+        self, reuse_stages: set[str], upstream_reruns: dict[str, str]
+    ) -> dict[str, dict[str, object]]:
+        included = {"correct", "generate_audio", "export"}
+        session_id = self._session(sorted(included))
+        self._primary_source(session_id, "wav")
+        self._set_outcome(
+            session_id,
+            inputs={"generation": "source", "translation": "source"},
+            transformations={"correct": False, "translate": False},
+        )
+        steps = self._ordered_steps(
+            session_id,
+            included,
+            statuses={
+                "transcribe": "completed",
+                "correct": "completed",
+                "generate_audio": "completed",
+            },
+            reuse_stages=reuse_stages,
+            mismatched_stages={"transcribe": {"reasons": ["changed settings"]}},
+            # Each result matches the input selected today.
+            stage_freshness={
+                "correct": {"source_artifact_id": "transcribe-selected"},
+                "generate_audio": {"source_artifact_id": "correct-selected"},
+            },
+            upstream_reruns=upstream_reruns,
+        )
+        return {str(step["stage"]): step for step in steps}
+
+    def test_a_result_whose_input_the_plan_replaces_is_not_reused(self) -> None:
+        upstream_reruns: dict[str, str] = {}
+
+        by_stage = self._replaced_input_steps(set(), upstream_reruns)
+
+        self.assertEqual("run", by_stage["transcribe"]["decision"])
+        # The correction matches the transcription this plan replaces, and the
+        # audio matches that correction in turn.
+        self.assertEqual("run", by_stage["correct"]["decision"])
+        self.assertEqual("run", by_stage["generate_audio"]["decision"])
+        self.assertNotIn("reuse_basis", by_stage["correct"])
+        self.assertEqual(
+            {"correct": "transcribe", "generate_audio": "correct"}, upstream_reruns
+        )
+
+    def test_explicit_reuse_keeps_a_result_across_an_upstream_run(self) -> None:
+        upstream_reruns: dict[str, str] = {}
+
+        by_stage = self._replaced_input_steps({"correct"}, upstream_reruns)
+
+        self.assertEqual("run", by_stage["transcribe"]["decision"])
+        self.assertEqual("reuse_explicit", by_stage["correct"]["decision"])
+        # The kept correction is unchanged, so the audio made from it stays.
+        self.assertEqual("reuse_if_unchanged", by_stage["generate_audio"]["decision"])
+        self.assertEqual({}, upstream_reruns)

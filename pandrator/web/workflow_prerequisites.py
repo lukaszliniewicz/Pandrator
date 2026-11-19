@@ -652,6 +652,9 @@ class WorkflowPrerequisiteService:
                     "stored": freshness["stored"],
                     "current": freshness["current"],
                     "settings_evidence": freshness["settings_evidence"],
+                    # The input the result was compared with; a plan that
+                    # replaces it cannot reuse the result.
+                    "source_artifact_id": source.id if source is not None else None,
                 }
             )
         return evaluated

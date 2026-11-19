@@ -830,7 +830,14 @@ class WorkflowExecutionPlanService:
         rerun_stages: set[str] | None = None,
         mismatched_stages: dict[str, Any] | None = None,
         stage_freshness: dict[str, dict[str, Any]] | None = None,
+        upstream_reruns: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Decide, stage by stage, what a continuation plan runs or reuses.
+
+        ``upstream_reruns``, when given, receives each stage that runs only
+        because the plan replaces its input, mapped to the stage that does.
+        """
+
         rerun_stages = set(rerun_stages or ())
         snapshot = self.workflows.snapshot(session_id)
         stages = list(snapshot.get("stages") or [])
@@ -901,6 +908,8 @@ class WorkflowExecutionPlanService:
                 422,
             )
         steps: list[dict[str, Any]] = []
+        # Results this plan replaces, by the stage that replaces them.
+        replaced_by: dict[str, str] = {}
         for item in stages[: target_index + 1]:
             key = str(item.get("key") or "")
             if key == canonical_stage_key(target_stage):
@@ -909,15 +918,26 @@ class WorkflowExecutionPlanService:
                 continue
             status = str(item.get("status") or "unknown")
             selected_id = item.get("selected_artifact_id")
+            compared_input = str(
+                ((stage_freshness or {}).get(key) or {}).get("source_artifact_id")
+                or ""
+            )
             if key == target_stage:
                 decision = "run"
             elif key in rerun_stages:
                 decision = "rerun_explicit"
             elif key in reuse_stages and selected_id:
+                # Only an explicit request keeps a result across an upstream run.
                 decision = "reuse_explicit"
             elif status == "completed" and selected_id:
                 if mismatched_stages and key in mismatched_stages:
                     decision = "run"
+                elif compared_input in replaced_by:
+                    # The result matches today's input, which this plan
+                    # replaces before the stage would be skipped.
+                    decision = "run"
+                    if upstream_reruns is not None:
+                        upstream_reruns[key] = replaced_by[compared_input]
                 else:
                     decision = "reuse_if_unchanged"
             elif item.get("included") or status in {
@@ -928,6 +948,8 @@ class WorkflowExecutionPlanService:
                 decision = "run"
             else:
                 continue
+            if selected_id and decision in {"run", "rerun_explicit"}:
+                replaced_by[str(selected_id)] = key
             step = {
                 "order": len(steps) + 1,
                 "stage": key,
@@ -1809,6 +1831,7 @@ class WorkflowExecutionPlanService:
             for stage, item in stage_freshness.items()
             if not (item["settings_match"] and item["source_match"])
         }
+        upstream_reruns: dict[str, str] = {}
         if continuation:
             with execution_actor_scope(context.actor):
                 steps = self._ordered_steps(
@@ -1819,6 +1842,7 @@ class WorkflowExecutionPlanService:
                     rerun_stages=planned_rerun_stages,
                     mismatched_stages=mismatched_stages,
                     stage_freshness=stage_freshness,
+                    upstream_reruns=upstream_reruns,
                 )
             unusable_reuse = sorted(
                 stage
@@ -1847,7 +1871,14 @@ class WorkflowExecutionPlanService:
                 resolved=resolved,
             )
         for step in steps:
-            if (
+            if step["decision"] == "run" and step["stage"] in upstream_reruns:
+                warnings.append(
+                    f"Prerequisite stage '{step['stage']}' will be re-run because "
+                    f"'{upstream_reruns[step['stage']]}' runs first in this plan. "
+                    "To keep the existing result instead, include "
+                    f"'{step['stage']}' in reuse_stages."
+                )
+            elif (
                 step["stage"] in mismatched_stages
                 and step["decision"] == "run"
                 and step["stage"] != target_stage
