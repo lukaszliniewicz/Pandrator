@@ -1011,11 +1011,17 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         direct_settings = (
             payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
         )
+        # Plans name stages as the snapshot does (``optimize_tts`` for document
+        # optimisation), while the definitions here say ``optimize_document``.
         reuse_stages = {
-            str(value) for value in (payload.get("reuse_stages") or []) if str(value)
+            canonical_stage_key(str(value))
+            for value in (payload.get("reuse_stages") or [])
+            if str(value)
         }
         rerun_stages = {
-            str(value) for value in (payload.get("rerun_stages") or []) if str(value)
+            canonical_stage_key(str(value))
+            for value in (payload.get("rerun_stages") or [])
+            if str(value)
         }
         required = self._continuation_required_stages(
             record.workflow_kind,
@@ -1130,9 +1136,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             if (
                 existing is not None
                 and definition.key != target_key
-                and definition.key not in rerun_stages
+                and canonical_stage_key(definition.key) not in rerun_stages
             ):
-                if definition.key in reuse_stages:
+                if canonical_stage_key(definition.key) in reuse_stages:
                     # The caller explicitly chose to keep the current artifact
                     # even though settings or source lineage changed. This is
                     # meaningful only for prerequisites; the target stage is

@@ -1542,6 +1542,73 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         )
         translate.assert_called_once()
 
+    def _continue_with_document_optimisation(
+        self, *, fresh, reuse_stages=(), rerun_stages=()
+    ):
+        _source, translation = self._voiceover_session_with_translation(None)
+        optimised_path = self.session_dir / "optimised-translation.srt"
+        optimised_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nCześć.\n", encoding="utf-8"
+        )
+        self.artifacts.register(
+            optimised_path,
+            kind="srt",
+            role="tts_optimized",
+            session_id=self.session.id,
+            parent_ids=[translation.id],
+        )
+        outcome = OutcomePlanService(self.database)
+        current = outcome.get(self.session.id)
+        value = current["value"]
+        value["transformations"] = {
+            **value.get("transformations", {}),
+            "llm_tts_document_optimization": True,
+        }
+        outcome.update(self.session.id, current["revision"], value)
+
+        def freshness(_session_id, stage_key, *_args, **_kwargs):
+            matches = fresh if stage_key == "optimize_document" else True
+            return {"settings_match": matches, "source_match": True}
+
+        with mock.patch.object(
+            self.handlers, "_continuation_freshness", side_effect=freshness
+        ), mock.patch.object(self.handlers, "translate") as translate, mock.patch.object(
+            self.handlers, "optimize_tts", return_value={}
+        ) as optimise, mock.patch.object(
+            self.handlers,
+            "_run_reviewable_generation",
+            return_value={"generation_run_id": "fixture", "status": "completed"},
+        ):
+            self.handlers.continue_workflow(
+                {
+                    "session_id": self.session.id,
+                    "target_stage": "generate_audio",
+                    # Plans name the stage as the snapshot does.
+                    "reuse_stages": list(reuse_stages),
+                    "rerun_stages": list(rerun_stages),
+                },
+                self.progress,
+                threading.Event(),
+            )
+        translate.assert_not_called()
+        return optimise
+
+    def test_planned_rerun_of_document_optimisation_runs_a_fresh_result(self):
+        optimise = self._continue_with_document_optimisation(
+            fresh=True, rerun_stages=("optimize_tts",)
+        )
+        optimise.assert_called_once()
+
+    def test_planned_reuse_of_document_optimisation_keeps_a_changed_result(self):
+        optimise = self._continue_with_document_optimisation(
+            fresh=False, reuse_stages=("optimize_tts",)
+        )
+        optimise.assert_not_called()
+
+    def test_document_optimisation_still_follows_freshness_without_a_choice(self):
+        self._continue_with_document_optimisation(fresh=True).assert_not_called()
+        self._continue_with_document_optimisation(fresh=False).assert_called_once()
+
     def test_reuse_translation_bypasses_selected_parent_lineage_change(self):
         with self.database.session() as session:
             session.get(SessionRecord, self.session.id).workflow_kind = "voiceover"
