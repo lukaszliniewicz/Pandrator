@@ -26,6 +26,7 @@ from .multilingual_setup import (
 )
 from .outcome_plans import OutcomePlanService, derive_legacy_outcome
 from .projects.identity import create_session_project, sync_project_name
+from .workflow_stage_types import stage_keys_from_input
 
 
 class RevisionConflict(RuntimeError):
@@ -126,7 +127,7 @@ class SessionService:
         if interface_mode not in ("simple", "advanced"):
             raise ValueError("Interface mode must be 'simple' or 'advanced'.")
         setup = MultilingualSetup.model_validate(multilingual_setup) if multilingual_setup is not None else None
-        stages = list(included_stages or [])
+        stages = stage_keys_from_input(included_stages or [])
         if setup is not None:
             stages = validate_source(
                 setup, workflow_kind=workflow_kind, source_language=source_language,
@@ -249,6 +250,13 @@ class SessionService:
         effective_kind = changes.get("workflow_kind", record.workflow_kind)
         effective_source = changes.get("source_language", record.source_language)
         effective_target = changes.get("target_language", record.target_language)
+        if "included_stages_json" in changes:
+            changes = {
+                **changes,
+                "included_stages_json": stage_keys_from_input(
+                    changes["included_stages_json"] or []
+                ),
+            }
         effective_stages = list(changes.get("included_stages_json", record.included_stages_json) or [])
         if setup is not None:
             changes = dict(changes)

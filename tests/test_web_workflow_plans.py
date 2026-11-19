@@ -761,6 +761,32 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             self.assertEqual(["translate"], execution_payload["rerun_stages"])
             self.assertNotIn("reuse_stages", execution_payload)
 
+    def test_requests_may_still_name_document_optimisation_optimize_document(self):
+        session_id, _source_id, _asset_id = self._ready_session(
+            included_stages=["prepare_text", "optimize_document", "optimize_tts"]
+        )
+        with self.extension["database"].session() as db_session:
+            self.assertEqual(
+                ["prepare_text", "optimize_tts"],
+                db_session.get(SessionRecord, session_id).included_stages_json,
+            )
+        history = self.client.get(
+            f"/api/v1/sessions/{session_id}/stages/optimize_document/artifacts",
+            headers=self.headers,
+        )
+        self.assertEqual(200, history.status_code, history.get_json())
+        self.assertEqual("optimize_tts", history.get_json()["stage_key"])
+
+        voiceover_id, _translation_id = self._voiceover_session_with_translation()
+        plan = self._plan(
+            voiceover_id, target_stage="optimize_document", continuation=False
+        )
+
+        self.assertEqual("optimize_tts", plan["target_stage"])
+        self.assertEqual(
+            ["optimize_tts"], [step["stage"] for step in plan["ordered_steps"]]
+        )
+
     def test_stage_argument_validation_errors(self):
         session_id, _translation_id = self._voiceover_session_with_translation(
             dispatch_kind="translation",

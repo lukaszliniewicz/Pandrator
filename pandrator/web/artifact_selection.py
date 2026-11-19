@@ -43,10 +43,6 @@ DEFAULT_STAGE_HISTORY_LIMIT = 50
 MAX_STAGE_HISTORY_LIMIT = 100
 
 
-def canonical_stage_key(stage_key: str) -> str:
-    return "optimize_tts" if stage_key == "optimize_document" else stage_key
-
-
 def _edges(session: Session) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     parents: dict[str, set[str]] = {}
     children: dict[str, set[str]] = {}
@@ -111,7 +107,6 @@ def _closure(seed: str, graph: dict[str, set[str]]) -> set[str]:
 
 
 def _upsert(session: Session, session_id: str, stage_key: str, artifact_id: str) -> SessionStageSelection:
-    stage_key = canonical_stage_key(stage_key)
     record = session.get(SessionStageSelection, (session_id, stage_key))
     if record is None:
         record = SessionStageSelection(
@@ -128,7 +123,6 @@ def _upsert(session: Session, session_id: str, stage_key: str, artifact_id: str)
 
 
 def _mark_cleared(session: Session, session_id: str, stage_key: str) -> SessionStageSelection:
-    stage_key = canonical_stage_key(stage_key)
     record = session.get(SessionStageSelection, (session_id, stage_key))
     if record is None:
         record = SessionStageSelection(
@@ -193,17 +187,15 @@ def stage_histories(
     edges for that bounded result set.
     """
 
-    canonical_keys = tuple(
-        dict.fromkeys(canonical_stage_key(stage_key) for stage_key in stage_keys)
-    )
-    if not canonical_keys:
+    requested_keys = tuple(dict.fromkeys(stage_keys))
+    if not requested_keys:
         return {}, {}
-    for stage_key in canonical_keys:
+    for stage_key in requested_keys:
         if stage_key not in STAGE_OUTPUT_ROLES:
             raise ValueError(
                 f"Stage '{stage_key}' does not have selectable artifacts."
             )
-    if before_version is not None and len(canonical_keys) != 1:
+    if before_version is not None and len(requested_keys) != 1:
         raise ValueError("A history cursor can only be used for one stage.")
     page_limit = max(1, min(int(limit), MAX_STAGE_HISTORY_LIMIT))
 
@@ -213,7 +205,7 @@ def stage_histories(
             .outerjoin(Artifact, Artifact.id == SessionStageSelection.artifact_id)
             .where(
                 SessionStageSelection.session_id == session_id,
-                SessionStageSelection.stage_key.in_(canonical_keys),
+                SessionStageSelection.stage_key.in_(requested_keys),
             )
         ).all()
     )
@@ -229,7 +221,7 @@ def stage_histories(
 
     role_to_stage = {
         role: stage_key
-        for stage_key in canonical_keys
+        for stage_key in requested_keys
         for role in STAGE_OUTPUT_ROLES[stage_key]
     }
     stage_expression = case(role_to_stage, value=Artifact.role)
@@ -299,7 +291,7 @@ def stage_histories(
     rows_by_stage: dict[
         str,
         list[tuple[Artifact, int, int, int]],
-    ] = {stage_key: [] for stage_key in canonical_keys}
+    ] = {stage_key: [] for stage_key in requested_keys}
     for artifact, stage_key, version, total, recent_rank in history_rows:
         rows_by_stage[str(stage_key)].append(
             (artifact, int(version), int(total), int(recent_rank))
@@ -318,7 +310,7 @@ def stage_histories(
                 selected[stage_key] = current
 
     histories: dict[str, dict[str, Any]] = {}
-    for stage_key in canonical_keys:
+    for stage_key in requested_keys:
         rows = rows_by_stage[stage_key]
         selected_artifact = selected.get(stage_key)
         items = [
@@ -380,7 +372,6 @@ def choose_artifact(
     artifact_id: str,
 ) -> dict[str, Any]:
     """Choose an artifact, restore its ancestors, and clear incompatible descendants."""
-    stage_key = canonical_stage_key(stage_key)
     if session.get(SessionRecord, session_id) is None:
         raise KeyError(session_id)
     artifact = session.get(Artifact, artifact_id)
@@ -456,7 +447,6 @@ def trash_stage_artifact(
 ) -> dict[str, Any]:
     """Soft-delete an unselected leaf result while retaining its managed file."""
 
-    stage_key = canonical_stage_key(stage_key)
     if session.get(SessionRecord, session_id) is None:
         raise KeyError(session_id)
     artifact = session.get(Artifact, artifact_id)
@@ -573,7 +563,6 @@ def select_source_path(session: Session, session_id: str, source_artifact_id: st
 
 
 def clear_selection(session: Session, session_id: str, stage_key: str) -> dict[str, Any]:
-    stage_key = canonical_stage_key(stage_key)
     if session.get(SessionRecord, session_id) is None:
         raise KeyError(session_id)
     rank = STAGE_RANK.get(stage_key)
@@ -602,7 +591,6 @@ def stage_history(
     limit: int = DEFAULT_STAGE_HISTORY_LIMIT,
     before_version: int | None = None,
 ) -> dict[str, Any]:
-    stage_key = canonical_stage_key(stage_key)
     histories, _selected = stage_histories(
         session,
         session_id,
@@ -614,7 +602,6 @@ def stage_history(
 
 
 def rerun_impact(session: Session, session_id: str, stage_key: str) -> dict[str, Any]:
-    stage_key = canonical_stage_key(stage_key)
     history = stage_history(session, session_id, stage_key)
     selected_id = history["selected_artifact_id"]
     if not selected_id:

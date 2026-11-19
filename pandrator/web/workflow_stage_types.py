@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +27,12 @@ def stage_key_from_input(stage_key: str) -> str:
     """Return the current key for a stage named in a request or stored input."""
 
     return _RETIRED_STAGE_KEYS.get(stage_key, stage_key)
+
+
+def stage_keys_from_input(stage_keys: Iterable[str]) -> list[str]:
+    """Return current keys for a list of stages, once each and in order."""
+
+    return list(dict.fromkeys(stage_key_from_input(str(key)) for key in stage_keys))
 
 
 def stage_settings_from_input(values: Mapping[str, Any]) -> dict[str, Any]:
