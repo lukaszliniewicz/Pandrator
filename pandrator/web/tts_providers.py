@@ -266,6 +266,11 @@ def _synthesize_serial_batch(
 class LegacyTtsAdapter:
     """Adapter for the stable function-based provider implementation."""
 
+    # An adapter-level batch normally owns its own ordering and retries. An
+    # adapter whose batch still reports each item's retry sets this so the
+    # registry can pass the tracker down to it.
+    batch_reports_item_retries: bool = False
+
     def __init__(self, service_id: str):
         self.service_id = normalize_service_id(service_id)
 
@@ -565,6 +570,10 @@ class XttsAdapter(LegacyTtsAdapter):
 class AudioCppAdapter(LegacyTtsAdapter):
     """Adapter for a resident, externally managed audio.cpp server."""
 
+    # The batch is serial by definition and each item synthesises through the
+    # ordinary path, so its retry waits are reported per item.
+    batch_reports_item_retries = True
+
     def __init__(self, service_id: str):
         super().__init__(service_id)
         self._session_pool = EndpointSessionPool()
@@ -810,6 +819,8 @@ class AudioCppAdapter(LegacyTtsAdapter):
         items: list[TtsBatchItem],
         *,
         batch_size: int,
+        retry_tracker: Any = None,
+        service_name: str | None = None,
         **options: Any,
     ) -> Iterator[TtsBatchResult]:
         if not items:
@@ -817,13 +828,21 @@ class AudioCppAdapter(LegacyTtsAdapter):
         with (
             nullcontext() if "request_session" in options else self._session_pool.operation()
         ):
-            yield from self._synthesize_batch(items, batch_size=batch_size, **options)
+            yield from self._synthesize_batch(
+                items,
+                batch_size=batch_size,
+                retry_tracker=retry_tracker,
+                service_name=service_name,
+                **options,
+            )
 
     def _synthesize_batch(
         self,
         items: list[TtsBatchItem],
         *,
         batch_size: int,
+        retry_tracker: Any = None,
+        service_name: str | None = None,
         **options: Any,
     ) -> Iterator[TtsBatchResult]:
         batch_settings = self._endpoint_settings(items[0].settings, options)
@@ -845,7 +864,9 @@ class AudioCppAdapter(LegacyTtsAdapter):
                         audio = self.synthesize(
                             item.text,
                             item.settings,
-                            **batch_options,
+                            **_item_options(
+                                item, batch_options, retry_tracker, service_name
+                            ),
                         )
                         if audio is None:
                             raise TtsProviderError(
@@ -1448,8 +1469,17 @@ class TtsProviderRegistry:
         if _is_tts_batch_synthesizer(batch_method) and not (
             retry_tracker is not None and inherited_legacy_batch
         ):
-            # An adapter-level batch owns its own ordering and retries; it has
-            # no per-item attempt to report upwards.
+            # An adapter-level batch owns its own ordering and retries, so it
+            # has no per-item attempt to report upwards; audio.cpp is the
+            # exception and declares that it forwards them.
+            if getattr(adapter, "batch_reports_item_retries", False):
+                return batch_method(
+                    items,
+                    batch_size=batch_size,
+                    retry_tracker=retry_tracker,
+                    service_name=service_name,
+                    **options,
+                )
             return batch_method(
                 items,
                 batch_size=batch_size,
