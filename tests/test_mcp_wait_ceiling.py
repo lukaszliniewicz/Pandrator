@@ -131,6 +131,8 @@ def test_get_generation_operation_clamps_and_suggests_within_the_ceiling(monkeyp
     class Application:
         def __init__(self):
             self.poll_timeouts = []
+            self.poll_starts = []
+            self.clock = None
 
         def get_generation_operation(
             self,
@@ -140,6 +142,8 @@ def test_get_generation_operation_clamps_and_suggests_within_the_ceiling(monkeyp
             request_timeout_seconds=None,
         ):
             self.poll_timeouts.append(request_timeout_seconds)
+            if self.clock is not None:
+                self.poll_starts.append(self.clock[0])
             return {
                 "id": operation_id,
                 "session_id": "session-1",
@@ -158,6 +162,7 @@ def test_get_generation_operation_clamps_and_suggests_within_the_ceiling(monkeyp
     application = Application()
     runtime = settings_runtime(application)
     elapsed, _sleeps = clock(monkeypatch, generation_operations)
+    application.clock = elapsed
 
     outcome = generation_operations.get_generation_operation(
         runtime,
@@ -168,12 +173,22 @@ def test_get_generation_operation_clamps_and_suggests_within_the_ceiling(monkeyp
     assert outcome.result["wait_requested_seconds"] == 60
     assert outcome.result["wait_effective_seconds"] == 25
     assert outcome.result["timed_out"] is True
-    # No single poll waits past the ceiling or past what is left of it.
+    # No single poll waits past the ceiling or past what is left of it, and no
+    # poll starts once the ceiling has already been spent.
+    deadline = 25.0
     timeouts = application.poll_timeouts
     assert timeouts and all(
         timeout is not None and 1.0 <= timeout <= 25.0 for timeout in timeouts
     )
     assert timeouts[0] == 25.0
+    assert application.poll_starts
+    assert len(application.poll_starts) == len(timeouts)
+    for started_at, timeout in zip(
+        application.poll_starts, timeouts, strict=True
+    ):
+        assert started_at < deadline
+        assert timeout is not None
+        assert timeout <= max(1.0, deadline - started_at)
     assert outcome.next_actions[0].tool == "pandrator_get_generation_operation"
     assert outcome.next_actions[0].arguments["wait_seconds"] == 25
 

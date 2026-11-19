@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from pandrator_mcp.clients.application_generation_operations import (
     ApplicationGenerationOperationMethods,
 )
+from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.results import ToolOutcome
 from pandrator_mcp.schemas.generation_operations import (
     GetGenerationOperationInput,
@@ -56,11 +57,14 @@ class FakeServer:
 
 
 class FakeApplication:
-    def __init__(self, operations=None, coverage=None):
+    def __init__(self, operations=None, coverage=None, *, clock=None, poll_duration=0.0):
         self.operations = list(operations or [])
         self.coverage = coverage or {}
         self.operation_calls = []
         self.poll_timeouts = []
+        self.poll_starts = []
+        self.clock = clock
+        self.poll_duration = poll_duration
         self.coverage_calls = []
 
     def get_generation_operation(
@@ -72,9 +76,15 @@ class FakeApplication:
     ):
         self.operation_calls.append((operation_id, include_coverage))
         self.poll_timeouts.append(request_timeout_seconds)
+        if self.clock is not None:
+            self.poll_starts.append(self.clock[0])
+            self.clock[0] += self.poll_duration
         if not self.operations:
             raise AssertionError("No operation response remains.")
-        return self.operations.pop(0)
+        item = self.operations.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
     def get_generation_run_coverage(self, generation_run_id, audio_version_side="after"):
         self.coverage_calls.append((generation_run_id, audio_version_side))
@@ -255,12 +265,11 @@ def test_wait_polls_to_terminal_and_does_not_sleep_after_terminal(monkeypatch):
     )
     sleeps = Mock()
     monkeypatch.setattr("pandrator_mcp.tools.generation_operations.time.sleep", sleeps)
-    # started_at, then the remaining-budget read and the deadline check of
-    # each of the three polls, then the elapsed read.
-    clock_values = iter([0.0, 0.0, 0.0, 0.1, 0.1, 0.2, 0.2])
+    # The clock never moves, so both sleeps fit inside the one-second wait and
+    # the call stops only because the third snapshot is terminal.
     monkeypatch.setattr(
         "pandrator_mcp.tools.generation_operations.time.monotonic",
-        lambda: next(clock_values),
+        lambda: 0.0,
     )
 
     outcome = get_generation_operation(
@@ -283,10 +292,13 @@ def test_wait_polls_to_terminal_and_does_not_sleep_after_terminal(monkeypatch):
 def test_each_operation_poll_is_bounded_by_the_remaining_wait(monkeypatch):
     """A hung poll must not outlive the wait this call promised."""
 
-    application = FakeApplication(
-        [operation_payload(state="running") for _ in range(40)]
-    )
     clock = [0.0]
+    # Each request consumes part of the fake clock, as a real one would.
+    application = FakeApplication(
+        [operation_payload(state="running") for _ in range(40)],
+        clock=clock,
+        poll_duration=0.4,
+    )
     sleeps: list[float] = []
 
     def sleep(seconds):
@@ -307,17 +319,108 @@ def test_each_operation_poll_is_bounded_by_the_remaining_wait(monkeypatch):
     )
 
     budget = 2.0
+    deadline = budget
     assert outcome.result["timed_out"] is True
     assert outcome.result["poll_count"] == len(application.poll_timeouts)
-    elapsed = 0.0
-    for index, timeout in enumerate(application.poll_timeouts):
+    assert sleeps
+    # No poll starts once the wait budget is spent, and none asks for more
+    # time than that poll's own start still had available.
+    assert application.poll_starts
+    for started_at, timeout in zip(
+        application.poll_starts, application.poll_timeouts, strict=True
+    ):
+        assert started_at < deadline
         assert timeout is not None
         # Never more than the budget in hand, never below the client's floor.
-        assert timeout <= max(1.0, budget - elapsed)
+        assert timeout <= max(1.0, deadline - started_at)
         assert timeout >= 1.0
-        if index < len(sleeps):
-            elapsed += sleeps[index]
-    assert sleeps
+
+
+def test_a_later_timeout_keeps_the_earlier_running_snapshot(monkeypatch):
+    timeout = PandratorMcpError(
+        "application_response_timeout",
+        "The application did not answer inside the request timeout.",
+    )
+    application = FakeApplication([operation_payload(state="running"), timeout])
+    monkeypatch.setattr(
+        "pandrator_mcp.tools.generation_operations.time.sleep",
+        lambda seconds: None,
+    )
+
+    outcome = get_generation_operation(
+        make_runtime(application),
+        GetGenerationOperationInput(operation_id="stable-root-id", wait_seconds=5),
+    )
+
+    assert application.operation_calls == [
+        ("stable-root-id", True),
+        ("stable-root-id", True),
+    ]
+    assert outcome.result["id"] == "stable-root-id"
+    assert outcome.result["state"] == "running"
+    assert outcome.result["poll_count"] == 1
+    assert outcome.result["timed_out"] is True
+    assert outcome.next_actions[0].tool == "pandrator_get_generation_operation"
+    assert outcome.next_actions[0].arguments["operation_id"] == "stable-root-id"
+
+
+def test_a_timeout_on_the_first_poll_propagates():
+    application = FakeApplication(
+        [
+            PandratorMcpError(
+                "application_response_timeout",
+                "The application did not answer inside the request timeout.",
+            )
+        ]
+    )
+
+    with pytest.raises(PandratorMcpError) as raised:
+        get_generation_operation(
+            make_runtime(application),
+            GetGenerationOperationInput(operation_id="stable-root-id", wait_seconds=5),
+        )
+
+    assert raised.value.code == "application_response_timeout"
+
+
+def test_another_error_code_on_a_later_poll_propagates(monkeypatch):
+    application = FakeApplication(
+        [
+            operation_payload(state="running"),
+            PandratorMcpError("internal_error", "The application failed."),
+        ]
+    )
+    monkeypatch.setattr(
+        "pandrator_mcp.tools.generation_operations.time.sleep",
+        lambda seconds: None,
+    )
+
+    with pytest.raises(PandratorMcpError) as raised:
+        get_generation_operation(
+            make_runtime(application),
+            GetGenerationOperationInput(operation_id="stable-root-id", wait_seconds=5),
+        )
+
+    assert raised.value.code == "internal_error"
+
+
+def test_the_follow_up_wait_never_exceeds_the_schema_bound():
+    application = FakeApplication([operation_payload(state="running")])
+    runtime = SimpleNamespace(
+        require_application=lambda: application,
+        settings=SimpleNamespace(maximum_wait_seconds=3600),
+    )
+
+    outcome = get_generation_operation(
+        runtime,
+        GetGenerationOperationInput(operation_id="stable-root-id", wait_seconds=0),
+    )
+
+    assert outcome.result["state"] == "running"
+    assert outcome.result["timed_out"] is False
+    assert outcome.next_actions[0].tool == "pandrator_get_generation_operation"
+    # The ceiling is 3600, but GetGenerationOperationInput stops at 60.
+    assert outcome.next_actions[0].arguments["wait_seconds"] == 60
 
 
 def test_terminal_export_action_preserves_selected_before_audio_version():
