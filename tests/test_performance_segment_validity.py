@@ -279,6 +279,18 @@ def test_an_edit_that_turns_an_apostrophe_into_a_quotation_mark_or_back_does_not
     assert fit(plain, plain_record, "Then couldn't leave.") is not None
 
 
+def test_an_earlier_insertion_does_not_hide_a_quote_role_change():
+    # The inserted "x" shifts every later character of the changed range, so
+    # the check must read the new text at its own position. Here the
+    # apostrophe in "didn't" becomes a quotation mark when the letter after
+    # it gives way to a space.
+    assert validity._quote_changed("The plan didn't work", "The planx didn' t work")
+    # A contraction that stays one still reads as no role change.
+    assert not validity._quote_changed(
+        "The plan didn't work", "The planx couldn't work"
+    )
+
+
 def test_two_edits_beside_an_unchanged_quotation_mark_keep_the_block():
     old = "Yesterday I said “go” before dinner."
     record = xml_record(old, f'<segment id="s">{old}</segment>')

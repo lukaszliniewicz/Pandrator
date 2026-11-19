@@ -206,19 +206,21 @@ def _quotation_marks(text: str, start: int, end: int) -> bool:
     return False
 
 
-def _quote_role_changes(old: str, new: str, start: int, end: int, length: int) -> bool:
+def _quote_role_changes(
+    old: str, new: str, start: int, end: int, new_start: int, length: int
+) -> bool:
     """Whether a single quote or dash beside ``old[start:end]`` changes role.
 
-    ``length`` characters replace the change in ``new``. Only the characters on
-    either side of it gain or lose a neighbouring letter, so only an apostrophe
-    there can turn into a quotation mark ("didn't" to "didn 't") or back
-    ("'tis" to "x'tis"). A dash opens a line of dialogue by what stands before
-    it on its line, so only the first one after the change, with nothing but
-    whitespace between them, can turn into a quotation mark ("Then: — Go." to
-    "— Go.") or back.
+    ``new_start`` is where the changed part starts in ``new``, and ``length``
+    characters replace it there. Only the characters on either side of it gain
+    or lose a neighbouring letter, so only an apostrophe there can turn into a
+    quotation mark ("didn't" to "didn 't") or back ("'tis" to "x'tis"). A dash
+    opens a line of dialogue by what stands before it on its line, so only the
+    first one after the change, with nothing but whitespace between them, can
+    turn into a quotation mark ("Then: — Go." to "— Go.") or back.
     """
 
-    for old_index, new_index in ((start - 1, start - 1), (end, start + length)):
+    for old_index, new_index in ((start - 1, new_start - 1), (end, new_start + length)):
         if (
             0 <= old_index < len(old)
             and 0 <= new_index < len(new)
@@ -232,7 +234,7 @@ def _quote_role_changes(old: str, new: str, start: int, end: int, length: int) -
         dash += 1
     if dash < len(old) and old[dash] in _DIALOGUE_DASHES:
         # The text after the change is the same in both, shifted.
-        moved = dash - end + start + length
+        moved = dash - end + new_start + length
         if _quotation_marks(old, dash, dash + 1) != _quotation_marks(new, moved, moved + 1):
             return True
     return False
@@ -263,7 +265,9 @@ def _quote_changed(old: str, new: str) -> bool:
         if (
             _quotation_marks(old, start + i1, start + i2)
             or _quotation_marks(new, start + j1, start + j2)
-            or _quote_role_changes(old, new, start + i1, start + i2, j2 - j1)
+            or _quote_role_changes(
+                old, new, start + i1, start + i2, start + j1, j2 - j1
+            )
         ):
             return True
     return False
