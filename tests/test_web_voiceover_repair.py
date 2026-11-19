@@ -862,6 +862,23 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertEqual(1, result.get("repaired_blocks"))
         self.assertEqual("applied", self.repairs()[0]["repair_status"])
 
+    def test_take_speech_spans_removes_its_measurement_files(self):
+        from pandrator.web.voiceover_repair import _take_speech_spans
+
+        work = Path(self.temporary.name) / "repair-work"
+        work.mkdir()
+        source = Path(self.temporary.name) / "take.wav"
+        Sine(440).to_audio_segment(duration=250).export(source, format="wav")
+
+        duration, lead, tail = _take_speech_spans(source, work, threading.Event())
+
+        self.assertGreater(duration, 0)
+        self.assertGreaterEqual(lead, 0)
+        self.assertGreaterEqual(tail, 0)
+        # The decoded and trimmed copies belong to the measurement alone, so
+        # nothing named after a neighbour survives it.
+        self.assertEqual([], list(work.iterdir()))
+
     def test_german_clause_conjunction_regenerates_children_in_target_language(self):
         self.first = "Wir lassen den ganzen Gedanken zunächst zusammen"
         self.second = "weil natürliche Sprache hier wichtiger ist."
