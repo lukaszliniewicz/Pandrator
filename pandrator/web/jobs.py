@@ -1243,16 +1243,21 @@ class JobQueue:
             if progress_state is not _UNSET:
                 # Structured progress is replaced whole and carries no user
                 # text, so it is written even when a late progress value lost.
-                # The claim's attempt start is not a report and survives.
+                # The claim's attempt start is not a report: it survives every
+                # structured write, even one that clears the rest.
                 new_state = (
                     dict(progress_state) if isinstance(progress_state, dict) else None
                 )
-                if new_state is not None and isinstance(job.progress_state_json, dict):
-                    attempt_started_at = job.progress_state_json.get(
-                        "attempt_started_at"
-                    )
-                    if attempt_started_at is not None:
+                attempt_started_at = (
+                    job.progress_state_json.get("attempt_started_at")
+                    if isinstance(job.progress_state_json, dict)
+                    else None
+                )
+                if attempt_started_at is not None:
+                    if new_state:
                         new_state.setdefault("attempt_started_at", attempt_started_at)
+                    else:
+                        new_state = {"attempt_started_at": attempt_started_at}
                 job.progress_state_json = new_state
                 payload["state"] = job.progress_state_json
             if payload:

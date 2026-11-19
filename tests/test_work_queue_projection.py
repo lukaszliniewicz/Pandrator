@@ -306,9 +306,13 @@ def test_an_expired_retry_detail_is_cleared_with_its_structured_state(case, monk
         lambda *_args, **_kwargs: SimpleNamespace(start=lambda: None),
     )
     seen: list[Any] = []
+    attempt_starts: list[str] = []
 
     def handler(payload, progress, _cancel):
         job_id = payload["_job_id"]
+        attempt_starts.append(
+            case.jobs.get(job_id).progress_state_json["attempt_started_at"]
+        )
         with open_job_progress_state(job_id) as state:
             assert state is not None
             state.retry.record(
@@ -334,7 +338,8 @@ def test_an_expired_retry_detail_is_cleared_with_its_structured_state(case, monk
     assert Worker(case.jobs, "worker", {"generation.run": handler}).run_once()
     assert "waiting on" in seen[0]
     assert seen[1] is None
-    assert seen[2] is None
+    # Only the claim's attempt start remains: no retry and no block counts.
+    assert seen[2] == {"attempt_started_at": attempt_starts[0]}
     assert case.jobs.get(job.id).status == "succeeded"
 
 
@@ -443,6 +448,34 @@ def test_a_second_heartbeat_waits_for_the_first_to_acknowledge(case, monkeypatch
     job = case.jobs.enqueue("generation.run", max_attempts=1)
     assert Worker(case.jobs, "worker", {"generation.run": handler}).run_once()
     assert case.jobs.get(job.id).status == "succeeded"
+
+
+def test_clearing_structured_progress_keeps_the_attempt_start(case):
+    job = case.jobs.enqueue("generation.run", max_attempts=2)
+    claimed = case.jobs.claim("holder", kinds={"generation.run"})
+    assert claimed is not None and claimed.id == job.id
+    started = case.jobs.get(job.id).progress_state_json["attempt_started_at"]
+    assert started
+    assert case.jobs.heartbeat(
+        job.id,
+        "holder",
+        lease_generation=claimed.lease_generation,
+        progress_state={"blocks_done": 1, "blocks_total": 4},
+    )
+    stored = case.jobs.get(job.id).progress_state_json
+    assert stored["blocks_done"] == 1
+    assert stored["attempt_started_at"] == started
+    assert case.jobs.heartbeat(
+        job.id,
+        "holder",
+        lease_generation=claimed.lease_generation,
+        progress_state=None,
+    )
+    # The cleared state drops every count but keeps the claim's attempt start,
+    # so a reclaimed job still measures its own pace.
+    assert case.jobs.get(job.id).progress_state_json == {
+        "attempt_started_at": started
+    }
 
 
 def wav_bytes() -> bytes:
