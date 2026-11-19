@@ -43,12 +43,12 @@ COMPACT_ASSEMBLY_FIELDS = (
     "error_message", "created_at", "updated_at",
 )
 # The only run-snapshot keys the history payload path reads: the label, the
-# repair and regroup markers, the second-pass selection and the early-repair
-# probe. The compact list loads just these, extracted in SQL. Their readers
-# are `_run_label`, `_run_payload`, `_timing_repair_payload`,
-# `_snapshot_enables_early_repair`, `generation_run_history._repair_marker`
-# and `passage_regroup.select_second_pass`; a key any of them starts to read
-# must be added here, or the compact view diverges from the full one.
+# repair and regroup markers and the second-pass selection. The compact list
+# loads just these, extracted in SQL. Their readers are `_run_label`,
+# `_run_payload`, `_timing_repair_payload`,
+# `generation_run_history._repair_marker` and
+# `passage_regroup.select_second_pass`; a key any of them starts to read must
+# be added here, or the compact view diverges from the full one.
 COMPACT_RUN_SNAPSHOT_KEYS = (
     "tts", "rvc", "selected_segment_override", "audio",
     EARLY_REPAIR_MARKER_KEY, REGROUP_MARKER_KEY,
@@ -114,21 +114,6 @@ def _select_narrow_assemblies(query: Select[Any], session: Session) -> list[Outp
         )
         assemblies.append(assembly)
     return assemblies
-
-
-def _snapshot_enables_early_repair(snapshot: object) -> bool:
-    """Mirror the effective-settings merge used to select the repair pass."""
-    if not isinstance(snapshot, dict) or snapshot.get(EARLY_REPAIR_MARKER_KEY):
-        return False
-    sections = [snapshot.get("audio"), snapshot.get("tts")]
-    override = snapshot.get("selected_segment_override")
-    if isinstance(override, dict):
-        sections.append(override.get("tts"))
-    return any(
-        isinstance(section, dict)
-        and section.get("speech_block_early_repair_enabled") is True
-        for section in sections
-    )
 
 
 _REPAIR_RECEIPT_KEYS = (
@@ -528,32 +513,21 @@ class GenerationHistoryReader:
         histories = build_generation_run_history(runs, revision_by_id)
 
         job_ids = {run.job_id for run in runs if run.job_id}
-        jobs = (
-            list(session.scalars(select(Job).where(Job.id.in_(job_ids))).all())
-            if job_ids
-            else []
-        )
-        # Threads of a post-run repair have no child run until one is staged,
-        # so their job ID is not reachable through GenerationRun.job_id. Probe
-        # the session only when a frozen snapshot enables that pass. Effective
-        # settings merge audio, tts and the selected-segment override, so any
-        # of those sections can carry the enabling flag.
-        repair_enabled = any(
-            _snapshot_enables_early_repair(run.settings_snapshot_json)
-            for run in runs
-        )
-        if repair_enabled:
-            seen_job_ids = {job.id for job in jobs}
-            jobs.extend(
-                job
-                for job in session.scalars(
-                    select(Job).where(
-                        Job.session_id == session_id,
-                        Job.kind == "generation.repair-existing",
+        # A post-run repair job has no child run until one is staged, so its
+        # job ID is not reachable through GenerationRun.job_id. Load every
+        # repair job for the session in the same query: an explicit request is
+        # admitted even when the run's frozen settings disable that pass.
+        jobs = list(
+            session.scalars(
+                select(Job).where(
+                    Job.id.in_(job_ids)
+                    | (
+                        (Job.session_id == session_id)
+                        & (Job.kind == "generation.repair-existing")
                     )
-                ).all()
-                if job.id not in seen_job_ids
-            )
+                )
+            ).all()
+        )
         job_by_id = {job.id: job for job in jobs}
         repair_jobs_by_root: dict[str, list[Job]] = {}
         for repair_job in jobs:
