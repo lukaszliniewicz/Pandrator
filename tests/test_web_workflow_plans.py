@@ -787,6 +787,152 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             ["optimize_tts"], [step["stage"] for step in plan["ordered_steps"]]
         )
 
+    def _optimised_result(self, session_id, translation_id):
+        path = Path(self.temporary.name) / f"plan-optimised-{self.source_counter}.srt"
+        self.source_counter += 1
+        path.write_text("1\n00:00:00,000 --> 00:00:01,000\nCześć.\n", encoding="utf-8")
+        return ArtifactService(
+            self.extension["database"],
+            self.extension["paths"],
+        ).register(
+            path,
+            kind="srt",
+            role="tts_optimized",
+            session_id=session_id,
+            parent_ids=[translation_id],
+        )
+
+    def _optimisation_session(self, *, timing="document", included=(), optimised=True):
+        """A voiceover session whose translation is optimised for speech."""
+
+        session_id, translation_id = self._voiceover_session_with_translation()
+        flag = (
+            "llm_tts_document_optimization"
+            if timing == "document"
+            else "llm_tts_optimization"
+        )
+        with self.extension["database"].session() as db_session:
+            outcome = db_session.get(OutcomePlan, session_id)
+            value = dict(outcome.value_json)
+            value["transformations"] = {**value["transformations"], flag: True}
+            outcome.value_json = value
+            outcome.revision += 1
+            db_session.get(SessionRecord, session_id).included_stages_json = list(included)
+        if optimised:
+            self._optimised_result(session_id, translation_id)
+        return session_id, translation_id
+
+    def _plan_and_run(self, session_id, translation_id, *, changed=(), **plan_arguments):
+        """Plan generation, execute the plan, and let the worker run it.
+
+        One freshness answer serves both the plan and the worker; stages in
+        ``changed`` report changed settings.
+        """
+
+        def freshness(_session_id, stage_key, *_args, **_kwargs):
+            fresh = stage_key not in changed
+            return {
+                "settings_match": fresh,
+                "source_match": True,
+                "reasons": [] if fresh else ["settings changed"],
+                "changed_fields": [] if fresh else ["llm_tts_batch_size"],
+                "stored": {},
+                "current": {},
+                "settings_evidence": "settings_fingerprint" if fresh else None,
+            }
+
+        def optimise(_payload, _progress, _cancel):
+            return {"artifact_id": self._optimised_result(session_id, translation_id).id}
+
+        handlers = self.extension["workflow_handlers"]
+        with (
+            patch.object(handlers, "_continuation_freshness", side_effect=freshness),
+            patch.object(handlers, "optimize_tts", side_effect=optimise) as optimised,
+            patch.object(
+                handlers,
+                "translate",
+                side_effect=AssertionError("The translation is current."),
+            ),
+            patch.object(
+                handlers,
+                "_run_reviewable_generation",
+                return_value={"generation_run_id": "fixture", "status": "completed"},
+            ),
+        ):
+            plan = self._plan(session_id, **plan_arguments)
+            executed = self._execute(plan, key=f"optimisation-{session_id}")
+            self.assertEqual(202, executed.status_code, executed.get_json())
+            self._run_jobs()
+        with self.extension["database"].session() as db_session:
+            job = db_session.scalar(select(Job).where(Job.kind == "workflow.continue"))
+            self.assertIsNotNone(job)
+            self.assertEqual("succeeded", job.status, job.error_message)
+        decisions = {step["stage"]: step["decision"] for step in plan["ordered_steps"]}
+        return plan, decisions, optimised
+
+    def test_a_planned_keep_of_changed_document_optimisation_reaches_the_worker(self):
+        session_id, translation_id = self._optimisation_session()
+
+        _plan, decisions, optimised = self._plan_and_run(
+            session_id,
+            translation_id,
+            changed={"optimize_tts"},
+            reuse_stages=["optimize_tts"],
+        )
+
+        self.assertEqual("reuse_explicit", decisions["optimize_tts"])
+        optimised.assert_not_called()
+
+    def test_a_planned_rerun_of_current_document_optimisation_reaches_the_worker(self):
+        session_id, translation_id = self._optimisation_session()
+
+        _plan, decisions, optimised = self._plan_and_run(
+            session_id, translation_id, rerun_stages=["optimize_tts"]
+        )
+
+        self.assertEqual("rerun_explicit", decisions["optimize_tts"])
+        optimised.assert_called_once()
+
+    def test_changed_document_optimisation_runs_in_the_plan_and_the_worker(self):
+        session_id, translation_id = self._optimisation_session()
+
+        plan, decisions, optimised = self._plan_and_run(
+            session_id, translation_id, changed={"optimize_tts"}
+        )
+
+        self.assertEqual("run", decisions["optimize_tts"])
+        self.assertTrue(
+            any("'optimize_tts' will be re-run" in warning for warning in plan["warnings"]),
+            plan["warnings"],
+        )
+        optimised.assert_called_once()
+
+    def test_current_document_optimisation_is_kept_by_the_plan_and_the_worker(self):
+        session_id, translation_id = self._optimisation_session()
+
+        _plan, decisions, optimised = self._plan_and_run(session_id, translation_id)
+
+        self.assertEqual("reuse_if_unchanged", decisions["optimize_tts"])
+        optimised.assert_not_called()
+
+    def test_required_document_optimisation_runs_when_not_included(self):
+        session_id, translation_id = self._optimisation_session(optimised=False)
+
+        _plan, decisions, optimised = self._plan_and_run(session_id, translation_id)
+
+        self.assertEqual("run", decisions["optimize_tts"])
+        optimised.assert_called_once()
+
+    def test_included_optimisation_during_generation_has_no_step_to_run(self):
+        session_id, translation_id = self._optimisation_session(
+            timing="generation", included=("optimize_tts",), optimised=False
+        )
+
+        _plan, decisions, optimised = self._plan_and_run(session_id, translation_id)
+
+        self.assertNotIn("optimize_tts", decisions)
+        optimised.assert_not_called()
+
     def test_stage_argument_validation_errors(self):
         session_id, _translation_id = self._voiceover_session_with_translation(
             dispatch_kind="translation",
