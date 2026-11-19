@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import tempfile
 import threading
-import uuid
 from collections import Counter
 from collections.abc import Collection
 from copy import deepcopy
@@ -355,14 +354,19 @@ def _take_speech_spans(
         sample_rate_hz=sample_rate,
         channels=channels,
     )
-    token = uuid.uuid4().hex
-    decoded = work / f"neighbour-{token}.wav"
-    duration = assemble_audio_plan(
-        plan, decoded, backend="streaming", work_dir=work, cancel_event=cancel_event
-    ).duration_ms
-    _trimmed, lead_ms, tail_ms = _trim_block_wav(
-        decoded, work / f"neighbour-{token}-trimmed.wav"
-    )
+    with tempfile.TemporaryDirectory(dir=work, prefix="neighbour-") as scratch:
+        directory = Path(scratch)
+        decoded = directory / "decoded.wav"
+        duration = assemble_audio_plan(
+            plan,
+            decoded,
+            backend="streaming",
+            work_dir=directory,
+            cancel_event=cancel_event,
+        ).duration_ms
+        _trimmed, lead_ms, tail_ms = _trim_block_wav(
+            decoded, directory / "trimmed.wav"
+        )
     return duration, lead_ms, tail_ms
 
 

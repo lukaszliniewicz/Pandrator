@@ -597,9 +597,17 @@ def enrich_project_payload(
                 except ValueError as error:
                     voice.update(status="blocked", reasons=[str(error)], coverage_unverified=False)
                     if support:
+                        # The stored tag cannot be classified, so report the
+                        # support record without claiming a decision for it.
+                        try:
+                            decision = language_decision(
+                                support, resolved["tts"].get("language")
+                            )
+                        except ValueError:
+                            decision = "unverified"
                         voice["language_support"] = {
                             "language": resolved["tts"].get("language"),
-                            "decision": language_decision(support, resolved["tts"].get("language")),
+                            "decision": decision,
                             "language_support": support,
                         }
                 # An inherited route can be "ready" for a language nobody checked;
@@ -610,16 +618,23 @@ def enrich_project_payload(
                     settings_provenance,
                 )
 
-                route_language = canonical_language_tag(
-                    resolved["tts"].get("language")
-                    or resolved["tts"].get("target_language"),
-                    allow_auto=True,
-                )
-                route_decision = (
-                    language_decision(support, route_language)
-                    if support
-                    else "unverified"
-                )
+                try:
+                    route_language = canonical_language_tag(
+                        resolved["tts"].get("language")
+                        or resolved["tts"].get("target_language"),
+                        allow_auto=True,
+                    )
+                except ValueError:
+                    # The invalid value is already reported on the voice, so
+                    # the route stays unverified instead of failing readiness.
+                    route_language = None
+                    route_decision = "unverified"
+                else:
+                    route_decision = (
+                        language_decision(support, route_language)
+                        if support
+                        else "unverified"
+                    )
                 route_fields = settings_provenance(
                     snapshots["tts"],
                     TTS_ROUTE_KEYS,

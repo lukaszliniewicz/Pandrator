@@ -12,6 +12,7 @@ from pandrator.logic.dubbing.audio_sync import align_audio_blocks
 from pandrator.logic.dubbing.models import AudioAlignmentBlock
 from pandrator.web.database import Database
 from pandrator.web.generation_review import revision_history
+from pandrator.web.job_identity import job_creation_ownership
 from pandrator.web.models import (
     Artifact,
     AudioTake,
@@ -861,6 +862,23 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertEqual(1, result.get("repaired_blocks"))
         self.assertEqual("applied", self.repairs()[0]["repair_status"])
 
+    def test_take_speech_spans_removes_its_measurement_files(self):
+        from pandrator.web.voiceover_repair import _take_speech_spans
+
+        work = Path(self.temporary.name) / "repair-work"
+        work.mkdir()
+        source = Path(self.temporary.name) / "take.wav"
+        Sine(440).to_audio_segment(duration=250).export(source, format="wav")
+
+        duration, lead, tail = _take_speech_spans(source, work, threading.Event())
+
+        self.assertGreater(duration, 0)
+        self.assertGreaterEqual(lead, 0)
+        self.assertGreaterEqual(tail, 0)
+        # The decoded and trimmed copies belong to the measurement alone, so
+        # nothing named after a neighbour survives it.
+        self.assertEqual([], list(work.iterdir()))
+
     def test_german_clause_conjunction_regenerates_children_in_target_language(self):
         self.first = "Wir lassen den ganzen Gedanken zunächst zusammen"
         self.second = "weil natürliche Sprache hier wichtiger ist."
@@ -1184,6 +1202,57 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertIsNotNone(other_revision)
         self.assertEqual(other_revision, self.active())
         self.assertEqual(0, result.get("repaired_blocks"))
+
+    def test_queued_explicit_repair_is_visible_without_an_enabling_snapshot(self):
+        from pandrator.web.generation_history_reads import GenerationHistoryReader
+
+        self.plan(enabled=False)
+        initial, _ = self.generate()
+        self.assertEqual("completed", initial["status"])
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            self.assertFalse(
+                run.settings_snapshot_json["tts"]["speech_block_early_repair_enabled"]
+            )
+            # A root receipt that reports an inline repair must not stand in
+            # for the queued explicit pass, which has staged nothing yet.
+            ownership = job_creation_ownership(session, session_id=self.record.id)
+            root_job = Job(
+                session_id=self.record.id,
+                kind="generation.run",
+                status="succeeded",
+                payload_json={"generation_run_id": self.run_id},
+                result_json={
+                    "repair_checked_blocks": 7,
+                    "repair_candidate_blocks": 3,
+                    "repair_attempted_blocks": 1,
+                    "repaired_blocks": 1,
+                    "repair_completed": True,
+                },
+            )
+            root_job.workspace_id = ownership.workspace_id
+            root_job.project_id = ownership.project_id
+            session.add(root_job)
+            session.flush()
+            run.job_id = root_job.id
+
+        service = GenerationService(
+            self.database, self.handlers.jobs, WorkspaceSettingsService(self.database)
+        )
+        queued = service.request_timing_repair(self.run_id)
+        listed = next(
+            item
+            for item in GenerationHistoryReader(self.database).list_runs(self.record.id)
+            if item["id"] == self.run_id
+        )
+        self.assertEqual("queued", queued["status"])
+        self.assertEqual("running", listed["status"])
+        self.assertEqual("repairing_timing", listed["phase"])
+        self.assertEqual("running", listed["timing_repair"]["status"])
+        self.assertIsNone(listed["timing_repair"]["checked_count"])
+        self.assertIsNone(listed["timing_repair"]["candidate_count"])
+        self.assertIsNone(listed["timing_repair"]["attempted_count"])
+        self.assertEqual(0, listed["timing_repair"]["attempt_count"])
 
     def test_completed_root_can_queue_and_execute_timing_only_job(self):
         from unittest.mock import patch
