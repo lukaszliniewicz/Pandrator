@@ -299,6 +299,45 @@ def test_retry_detail_is_written_when_its_progress_value_does_not_move(case):
     assert case.jobs.get(job.id).status == "succeeded"
 
 
+def test_a_late_progress_value_keeps_the_detail_of_the_value_shown(case, monkeypatch):
+    # Only this handler drives heartbeats.
+    monkeypatch.setattr(
+        "pandrator.web.jobs.threading.Thread",
+        lambda *_args, **_kwargs: SimpleNamespace(start=lambda: None),
+    )
+    seen: list[tuple[float, str | None]] = []
+
+    def handler(payload, progress, _cancel):
+        job_id = payload["_job_id"]
+        with open_job_progress_state(job_id) as state:
+            assert state is not None
+            progress(0.2, "Block 2")
+            # An earlier block reports late: the bar stays, and so does its text.
+            progress(0.1, "Block 1")
+            stored = case.jobs.get(job_id)
+            seen.append((stored.progress, stored.progress_detail))
+            state.retry.record(
+                "block-3",
+                attempt=2,
+                attempt_limit=5,
+                delay_seconds=30,
+                provider="Google Vertex AI",
+                reason="rate_limited",
+            )
+            # A retry suffix still reaches the job beside the shown value's text.
+            progress(0.1, "Block 1")
+            stored = case.jobs.get(job_id)
+            seen.append((stored.progress, stored.progress_detail))
+        return {}
+
+    job = case.jobs.enqueue("generation.run", max_attempts=1)
+    assert Worker(case.jobs, "worker", {"generation.run": handler}).run_once()
+    assert seen[0] == (0.2, "Block 2")
+    assert seen[1][0] == 0.2
+    assert (seen[1][1] or "").startswith("Block 2; 1 request waiting on")
+    assert case.jobs.get(job.id).status == "succeeded"
+
+
 def test_an_expired_retry_detail_is_cleared_with_its_structured_state(case, monkeypatch):
     # Only this handler drives heartbeats, so the expiry below is unambiguous.
     monkeypatch.setattr(

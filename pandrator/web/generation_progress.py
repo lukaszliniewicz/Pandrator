@@ -133,6 +133,9 @@ class JobProgressState:
         # acknowledge values that another one collected.
         self.heartbeat_lock = threading.Lock()
         self._detail: str | None = None
+        # The progress value that came with ``_detail``. The queue never moves
+        # the bar back, so the text of an older value must not replace it.
+        self._detail_progress: float | None = None
         self._blocks_done: int | None = None
         self._blocks_total: int | None = None
         self._blocks_kept = 0
@@ -145,10 +148,19 @@ class JobProgressState:
         self._pending_state_signature: str | None = None
         self._has_pending_state = False
 
-    def observe(self, detail: str | None) -> None:
-        """Remember the handler's own detail text for later heartbeats."""
+    def observe(self, detail: str | None, progress: float | None = None) -> None:
+        """Remember the handler's own detail text for later heartbeats.
+
+        A late callback from an earlier unit leaves the bar where it is, so
+        its text is ignored rather than shown beside a later value.
+        """
 
         with self._lock:
+            if progress is not None:
+                value = max(0.0, min(1.0, float(progress)))
+                if self._detail_progress is not None and value < self._detail_progress:
+                    return
+                self._detail_progress = value
             self._detail = detail
 
     def set_blocks(self, done: int | None, total: int | None, *, kept: int = 0) -> None:

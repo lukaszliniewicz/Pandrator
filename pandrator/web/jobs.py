@@ -2016,7 +2016,7 @@ class Worker:
                 cancel_event.set()
             state = job_progress_state(job.id)
             if state is not None:
-                state.observe(detail)
+                state.observe(detail, value)
             renew_lease(progress_value=value, progress_detail=detail)
 
         try:
