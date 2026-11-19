@@ -8,6 +8,7 @@ from pandrator.logic import tts_handler
 from pandrator.logic.speech_performance import compile_performance, resolve_capabilities
 from pandrator.logic.tts_language_preflight import (
     resolve_tts_language_support,
+    tts_language_support_decision,
     validate_tts_language,
 )
 
@@ -256,3 +257,14 @@ def test_kobold_qwen_builder_validates_before_compiler(monkeypatch):
 
     compiler.assert_not_called()
     post.assert_not_called()
+
+
+def test_invalid_stored_language_is_unverified_for_disclosure_and_refused_for_generation():
+    route = {"service": "FishS2", "model": "fishaudio/s2-pro", "language": "not a language"}
+
+    assert tts_language_support_decision(route) == {
+        "language": None,
+        "decision": "unverified",
+    }
+    with pytest.raises(ValueError):
+        validate_tts_language(route)

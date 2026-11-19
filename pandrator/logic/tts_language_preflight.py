@@ -286,9 +286,14 @@ def tts_language_support_decision(
     Readiness, plans and receipts disclose the decision; only generation enforces
     it through ``validate_tts_language``.
     """
-    language = canonical_language_tag(
-        settings.get("language") or settings.get("target_language"), allow_auto=True
-    )
+    try:
+        language = canonical_language_tag(
+            settings.get("language") or settings.get("target_language"), allow_auto=True
+        )
+    except ValueError:
+        # A stored tag that is not a language cannot be checked against the
+        # model; generation refuses it through ``validate_tts_language``.
+        return {"language": None, "decision": "unverified"}
     support = resolve_tts_language_support(
         settings,
         endpoint=endpoint,

@@ -386,27 +386,11 @@ def test_invalid_stored_tts_language_keeps_readiness(project_case):
             "language": "not a language",
         }
 
-    # The settings route reports the language decision too, and its own
-    # canonicalisation raises on the same stored value. Keep that call
-    # tolerant here so the invalid tag reaches the readiness payload.
-    from pandrator.logic import tts_language_preflight
-
-    decision = tts_language_preflight.tts_language_support_decision
-
-    def tolerant_decision(*args, **kwargs):
-        try:
-            return decision(*args, **kwargs)
-        except ValueError:
-            return {"language": "", "decision": "unverified"}
-
-    with patch.object(
-        tts_language_preflight, "tts_language_support_decision", tolerant_decision
-    ):
-        with services.database.session() as db:
-            payload = get_project(db, project_case[-1]["id"])
-        readiness = enrich_project_payload(services, payload)["project"]["branches"][0][
-            "readiness"
-        ]
+    with services.database.session() as db:
+        payload = get_project(db, project_case[-1]["id"])
+    readiness = enrich_project_payload(services, payload)["project"]["branches"][0][
+        "readiness"
+    ]
     assert readiness["voice"]["status"] == "blocked"
     assert readiness["tts_route"]["language_support"] == "unverified"
     assert readiness["tts_route"]["language_support_language"] is None
