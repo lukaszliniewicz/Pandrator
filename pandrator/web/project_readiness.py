@@ -655,7 +655,7 @@ def enrich_project_payload(
                         for key, field in route_fields.items()
                     },
                     language_support=route_decision,
-                    language=route_language,
+                    language=route_language or "",
                 )
                 generation = _stage_state(stages.get("generate_audio"))
                 run = next(
