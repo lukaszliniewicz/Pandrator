@@ -311,8 +311,6 @@
 
   let stageSettings = $state<Record<string, Record<string, unknown>>>({});
 
-  let documentOptimizationEnabled = $state(false);
-
   let optimizationTiming = $state<'document' | 'generation'>('generation');
 
   let pdfSource = $state<{ id: string; filename: string } | null>(null);
@@ -362,13 +360,9 @@
       const speechOptimization = next?.stages.find(
         (stage) => stage.key === 'optimize_tts'
       );
-      if (speechOptimization) {
+      if (speechOptimization)
         optimizationTiming =
           speechOptimization.optimization_timing ?? 'generation';
-        documentOptimizationEnabled = Boolean(
-          speechOptimization.enabled && optimizationTiming === 'document'
-        );
-      }
     } catch {
       // WorkflowStore displays this load error and clears it on recovery.
     }
@@ -455,10 +449,6 @@
     }
     error = '';
     try {
-      const routeKey =
-        stage.key === 'optimize_tts' && documentOptimizationEnabled
-          ? 'optimize_document'
-          : stage.key;
       const body =
         stage.key === 'generate_audio'
           ? {
@@ -467,7 +457,7 @@
               ...(reuseStages?.length ? { reuse_stages: reuseStages } : {})
             }
           : (stageSettings[stage.key] ?? {});
-      await sessionApi.runStage(session.id, routeKey, body);
+      await sessionApi.runStage(session.id, stage.key, body);
       await load();
     } catch (caught) {
       error = errorMessage(caught);
@@ -806,7 +796,6 @@
         llm_tts_optimization: generationEnabled,
         llm_tts_document_optimization: documentEnabled
       });
-      documentOptimizationEnabled = documentEnabled;
       await load();
     } catch (caught) {
       error = errorMessage(caught);

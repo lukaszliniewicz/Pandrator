@@ -313,7 +313,6 @@
       transcribe: 'stt',
       correct: 'correction',
       translate: 'translation',
-      optimize_document: 'text',
       optimize_tts: 'text',
       clean_source: 'source_cleaning',
       prepare_text: 'text',
@@ -345,13 +344,9 @@
     if (stage.key === 'transcribe')
       dependencies.push(loadCapabilities(), loadSttCatalogue());
     if (
-      [
-        'correct',
-        'translate',
-        'optimize_tts',
-        'optimize_document',
-        'clean_source'
-      ].includes(stage.key)
+      ['correct', 'translate', 'optimize_tts', 'clean_source'].includes(
+        stage.key
+      )
     ) {
       dependencies.push(loadLlmModels());
     }
@@ -623,9 +618,7 @@
       false
     );
     draft.documentOptimizationEnabled = Boolean(
-      saved.llm_tts_document_optimization ??
-      (stage.key === 'optimize_document' ? stage.enabled : false) ??
-      false
+      saved.llm_tts_document_optimization ?? false
     );
     draft.optimizationTiming = draft.documentOptimizationEnabled
       ? 'document'
@@ -1589,27 +1582,6 @@
           }
         }
       ];
-    if (key === 'optimize_document')
-      return [
-        {
-          section: 'text',
-          value: {
-            llm_tts_document_optimization: draft.documentOptimizationEnabled,
-            tts_optimization_model:
-              draft.model === 'default' ? '' : draft.model,
-            speech_optimization_mode: draft.speechOptimizationMode,
-            llm_tts_annotation_mode: draft.speechAnnotationMode,
-            llm_tts_annotation_only: draft.speechAnnotationOnly,
-            llm_tts_document_batch_size: draft.documentOptimizationBatchSize,
-            llm_concurrent_calls: draft.optimizationConcurrent,
-            llm_multi_stage: draft.optimizationMultiStage,
-            combined_prompt: draft.optimizationPrompt,
-            first_prompt: draft.optimizationFirstPrompt,
-            second_prompt: draft.optimizationSecondPrompt,
-            third_prompt: draft.optimizationThirdPrompt
-          }
-        }
-      ];
     return [{ section: stageSection(key), value: stageSettings[key] }];
   }
 
@@ -1783,23 +1755,7 @@
         second_prompt: draft.optimizationSecondPrompt,
         third_prompt: draft.optimizationThirdPrompt
       };
-    } else if (key === 'optimize_document')
-      stageSettings[key] = {
-        ...common,
-        llm_tts_document_optimization: draft.documentOptimizationEnabled,
-        speech_optimization_mode: draft.speechOptimizationMode,
-        llm_tts_annotation_mode: draft.speechAnnotationMode,
-        llm_tts_annotation_only: draft.speechAnnotationOnly,
-        llm_tts_document_batch_size: draft.documentOptimizationBatchSize,
-        llm_tts_batch_size: draft.documentOptimizationBatchSize,
-        combined_prompt: draft.optimizationPrompt,
-        llm_concurrent_calls: draft.optimizationConcurrent,
-        llm_multi_stage: draft.optimizationMultiStage,
-        first_prompt: draft.optimizationFirstPrompt,
-        second_prompt: draft.optimizationSecondPrompt,
-        third_prompt: draft.optimizationThirdPrompt
-      };
-    else if (key === 'clean_source')
+    } else if (key === 'clean_source')
       stageSettings[key] = {
         ...common,
         agentic: draft.agentic,
@@ -2034,11 +1990,7 @@
               llm_tts_optimization: draft.optimizationEnabled,
               llm_tts_document_optimization: draft.documentOptimizationEnabled
             }
-          : key === 'optimize_document'
-            ? {
-                llm_tts_document_optimization: draft.documentOptimizationEnabled
-              }
-            : null;
+          : null;
     const sourceProviderId = ttsSelection.ttsSwitchSource?.id;
     const opening = settingsOpening;
     const mutation = ++settingsMutation;
@@ -2150,7 +2102,7 @@
           disabled={settingsLoading || settingsSaving}
           class="mt-6 grid min-w-0 gap-5"
         >
-          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && draft.backend === 'llm') || ['optimize_tts', 'optimize_document', 'clean_source'].includes(settingsStage.key)}<label
+          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && draft.backend === 'llm') || ['optimize_tts', 'clean_source'].includes(settingsStage.key)}<label
               class="text-sm font-semibold"
               >LLM model<select
                 bind:value={draft.model}
@@ -2187,7 +2139,7 @@
               </p>
             </div>
           {/if}
-          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && draft.backend === 'llm') || ['optimize_tts', 'optimize_document'].includes(settingsStage.key)}
+          {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && draft.backend === 'llm') || settingsStage.key === 'optimize_tts'}
             <div class="rounded-xl border border-[var(--line)] p-4">
               <label class="text-sm font-semibold"
                 >Concurrent LLM requests<input
@@ -2487,50 +2439,48 @@
                   voiceover.</span
                 ></label
               >{/if}{/if}
-          {#if ['optimize_tts', 'optimize_document'].includes(settingsStage.key)}
-            {#if settingsStage.key === 'optimize_tts'}
-              <fieldset class="rounded-xl border border-[var(--line)] p-4">
-                <legend class="px-1 text-sm font-semibold"
-                  >When should optimization run?</legend
+          {#if settingsStage.key === 'optimize_tts'}
+            <fieldset class="rounded-xl border border-[var(--line)] p-4">
+              <legend class="px-1 text-sm font-semibold"
+                >When should optimization run?</legend
+              >
+              <div class="mt-2 grid gap-2">
+                <label
+                  class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
+                  ><input
+                    type="radio"
+                    name={`${radioGroupId}-optimization-timing`}
+                    bind:group={draft.optimizationTiming}
+                    value="document"
+                  /><span
+                    ><strong class="block"
+                      >Before generation · reviewable revision</strong
+                    ><span class="muted mt-1 block text-xs"
+                      >Process the document's existing narration units, create
+                      an editable before-and-after artifact, and review it
+                      before TTS.</span
+                    ></span
+                  ></label
+                ><label
+                  class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
+                  ><input
+                    type="radio"
+                    name={`${radioGroupId}-optimization-timing`}
+                    bind:group={draft.optimizationTiming}
+                    value="generation"
+                    disabled={draft.speechAnnotationMode !== 'off'}
+                  /><span
+                    ><strong class="block"
+                      >During plan preparation · final speech units</strong
+                    ><span class="muted mt-1 block text-xs"
+                      >Optimize the final speech blocks before reviewing
+                      speakers and delivery. Generation uses the accepted
+                      wording.</span
+                    ></span
+                  ></label
                 >
-                <div class="mt-2 grid gap-2">
-                  <label
-                    class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
-                    ><input
-                      type="radio"
-                      name={`${radioGroupId}-optimization-timing`}
-                      bind:group={draft.optimizationTiming}
-                      value="document"
-                    /><span
-                      ><strong class="block"
-                        >Before generation · reviewable revision</strong
-                      ><span class="muted mt-1 block text-xs"
-                        >Process the document's existing narration units, create
-                        an editable before-and-after artifact, and review it
-                        before TTS.</span
-                      ></span
-                    ></label
-                  ><label
-                    class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
-                    ><input
-                      type="radio"
-                      name={`${radioGroupId}-optimization-timing`}
-                      bind:group={draft.optimizationTiming}
-                      value="generation"
-                      disabled={draft.speechAnnotationMode !== 'off'}
-                    /><span
-                      ><strong class="block"
-                        >During plan preparation · final speech units</strong
-                      ><span class="muted mt-1 block text-xs"
-                        >Optimize the final speech blocks before reviewing
-                        speakers and delivery. Generation uses the accepted
-                        wording.</span
-                      ></span
-                    ></label
-                  >
-                </div>
-              </fieldset>
-            {/if}
+              </div>
+            </fieldset>
             <p class="muted text-xs">
               Speaker identification and delivery directions have separate
               analysis controls in the prepared speech plan. They keep spoken

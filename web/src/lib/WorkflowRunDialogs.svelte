@@ -55,7 +55,6 @@
       transcribe: 'Transcription',
       correct: 'Correction',
       translate: 'Translation',
-      optimize_document: 'Document optimization',
       optimize_tts: 'Speech optimization',
       prepare_text: 'Text preparation'
     })[key] ?? key.replaceAll('_', ' ');
