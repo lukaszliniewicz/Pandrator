@@ -400,6 +400,47 @@ class WorkflowGenerationLanguagePreflightTests(unittest.TestCase):
                 self.assertEqual(409, response.status_code, response.get_json())
                 self.assertEqual(before, self._counts())
 
+    def test_cast_explicit_revision_that_lost_its_speaker_plan_is_refused(self):
+        notice = {
+            "plan_id": "plan-lineage",
+            "plan_revision_id": "revision-lineage",
+            "revision_number": 1,
+            "purpose": "delivery",
+            "annotation_format": "xml",
+        }
+        for lineage_plan in (True, False):
+            with self.subTest(lineage_plan=lineage_plan):
+                session_id, source_id = self._session_with_narration(language="en")
+                revision_id = self._add_plan_revision(
+                    session_id,
+                    source_artifact_id=source_id,
+                    operation_json={"prepared": True},
+                )
+                with self.extension["database"].session() as db_session:
+                    tts_setting = db_session.get(SessionSetting, (session_id, "tts"))
+                    tts_setting.value_json = {
+                        **dict(tts_setting.value_json),
+                        "casting_enabled": True,
+                        "performance_enabled": False,
+                    }
+                before = self._counts()
+                with patch(
+                    "pandrator.web.performance_plans.ancestor_adopted_plan",
+                    return_value=notice if lineage_plan else None,
+                ) as lineage:
+                    response = self._run_with_revision(session_id, revision_id)
+                # The guard read the revision the request names.
+                self.assertIn(revision_id, [call.args[1] for call in lineage.call_args_list])
+                if lineage_plan:
+                    self.assertEqual(409, response.status_code, response.get_json())
+                    message = response.get_json()["error"]["message"]
+                    self.assertIn("no adopted speaker plan", message)
+                    self.assertIn("plan-lineage", message)
+                    self.assertIn("Generate without the speaker plan", message)
+                    self.assertEqual(before, self._counts())
+                else:
+                    self.assertEqual(202, response.status_code, response.get_json())
+
     def test_matching_and_legacy_unpinned_speech_revisions_still_queue(self):
         for explicit in (True, False):
             with self.subTest(explicit=explicit):

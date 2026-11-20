@@ -34,6 +34,7 @@ from .generation_rendering import is_strict_single_voice
 from .performance_plans import (
     _annotations,
     _assert_current,
+    no_adopted_performance_plan_message,
     speech_markup_for_segment,
 )
 from .performance_validity import REVIEW, REVIEW_MESSAGE, segment_entry
@@ -543,9 +544,7 @@ def preview_speech_segment_in_session(
                 adopted = _plan_reads.adopted
                 if adopted is None:
                     if settings.get("performance_enabled"):
-                        raise ValueError(
-                            "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
-                        )
+                        raise ValueError(no_adopted_performance_plan_message(session, revision_id))
                 else:
                     annotation_record = _adopted_record(
                         session,
@@ -564,9 +563,7 @@ def preview_speech_segment_in_session(
                 )
                 if adopted is None:
                     if settings.get("performance_enabled"):
-                        raise ValueError(
-                            "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
-                        )
+                        raise ValueError(no_adopted_performance_plan_message(session, revision_id))
                 else:
                     annotation_record = _adopted_record(
                         session,

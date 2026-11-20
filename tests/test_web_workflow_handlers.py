@@ -2253,6 +2253,149 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 )))
             self.assertEqual({source.id}, parents)
 
+    def _lost_speaker_plan_notice(self):
+        return {
+            "plan_id": "plan-lineage",
+            "plan_revision_id": "revision-lineage",
+            "revision_number": 1,
+            "purpose": "delivery",
+            "annotation_format": "xml",
+        }
+
+    def _active_revision_id(self):
+        with self.database.session() as db:
+            return db.scalar(
+                select(GenerationPlan.active_revision_id).where(
+                    GenerationPlan.session_id == self.session.id
+                )
+            )
+
+    def test_standalone_automatic_generation_refuses_a_cast_run_that_lost_its_plan(self):
+        from pandrator.web.workflow_generation_automatic import generate_audio
+
+        source_path = self.session_dir / "cast-lost-plan-automatic.json"
+        source_path.write_text(json.dumps([{"text": "First narration."}]), encoding="utf-8")
+        source = self.artifacts.register(
+            source_path, kind="json", role="prepared_text", session_id=self.session.id
+        )
+        settings = {
+            "service": "XTTS", "voice": "fixture", "language": "en",
+            "casting_enabled": True, "performance_enabled": False,
+        }
+        job = self.handlers.jobs.enqueue(
+            "audiobook.generate_audio", {"session_id": self.session.id}, session_id=self.session.id
+        )
+        context = self.handlers._automatic_generation_context()
+        with (
+            mock.patch(
+                "pandrator.web.performance_plans.ancestor_adopted_plan",
+                return_value=self._lost_speaker_plan_notice(),
+            ) as lineage,
+            mock.patch("pandrator.logic.tts_handler.text_to_audio") as synthesize,
+        ):
+            with self.assertRaisesRegex(ValueError, "no adopted speaker plan") as raised:
+                generate_audio(
+                    context, self.session.id, source, source_path, settings, self.progress,
+                    threading.Event(), role="controlled_automatic_audio", job_id=job.id,
+                )
+        message = str(raised.exception)
+        self.assertIn("plan-lineage", message)
+        self.assertIn("Generate without the speaker plan", message)
+        # The guard read the revision this run would voice.
+        self.assertEqual(self._active_revision_id(), lineage.call_args.args[1])
+        synthesize.assert_not_called()
+        with self.database.session() as db:
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(AudioTake)))
+
+        # Control: the same cast settings without a lineage plan get past the refusal.
+        class PastTheGuard(Exception):
+            pass
+
+        with (
+            mock.patch(
+                "pandrator.web.performance_plans.ancestor_adopted_plan", return_value=None
+            ),
+            mock.patch(
+                "pandrator.web.speech_plan_workspace.freeze_speech_snapshot",
+                side_effect=PastTheGuard(),
+            ),
+        ):
+            with self.assertRaises(PastTheGuard):
+                generate_audio(
+                    context, self.session.id, source, source_path, settings, self.progress,
+                    threading.Event(), role="controlled_automatic_audio", job_id=job.id,
+                )
+
+    def test_standalone_generation_start_refuses_a_cast_run_that_lost_its_plan(self):
+        from pandrator.web.workflow_generation_start import (
+            GenerationStartContext,
+            run_reviewable_generation,
+        )
+
+        source_path = self.session_dir / "cast-lost-plan-start.json"
+        source_path.write_text(json.dumps([{"text": "First narration."}]), encoding="utf-8")
+        source = self.artifacts.register(
+            source_path, kind="json", role="prepared_text", session_id=self.session.id
+        )
+        payload = {
+            "session_id": self.session.id,
+            "source_artifact_id": source.id,
+            "settings": {"service": "XTTS", "voice": "fixture", "language": "en"},
+        }
+        snapshot = {
+            "tts": {
+                "service": "XTTS", "casting_enabled": True, "performance_enabled": False
+            }
+        }
+        job = self.handlers.jobs.enqueue(
+            "workflow.continue", {"session_id": self.session.id}, session_id=self.session.id
+        )
+        generated = []
+        context = GenerationStartContext(
+            database=self.database,
+            _resolve_input=lambda _artifact_id: (source, source_path),
+            _generation_language=lambda *_args: "en",
+            _materialize_subtitle_generation_plan=lambda *_args: self.fail("plan store only"),
+            _store_generation_plan=self.handlers._store_generation_plan,
+            run_generation=lambda *args: generated.append(args),
+            _secret_free_tts_settings=_secret_free_tts_settings,
+        )
+        with mock.patch(
+            "pandrator.web.performance_plans.ancestor_adopted_plan",
+            return_value=self._lost_speaker_plan_notice(),
+        ) as lineage:
+            with self.assertRaisesRegex(ValueError, "no adopted speaker plan") as raised:
+                run_reviewable_generation(
+                    context, payload, lambda value, detail=None: None, threading.Event(),
+                    resolved_snapshot=snapshot, settings_hash="caller-hash", job_id=job.id,
+                )
+        self.assertIn("Generate without the speaker plan", str(raised.exception))
+        # The guard read the revision this stage would voice.
+        self.assertEqual(self._active_revision_id(), lineage.call_args.args[1])
+        self.assertEqual([], generated)
+        with self.database.session() as db:
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationRun)))
+
+        # Control: the same cast settings without a lineage plan get past the refusal.
+        class PastTheGuard(Exception):
+            pass
+
+        with (
+            mock.patch(
+                "pandrator.web.performance_plans.ancestor_adopted_plan", return_value=None
+            ),
+            mock.patch(
+                "pandrator.web.speech_plan_workspace.freeze_speech_snapshot",
+                side_effect=PastTheGuard(),
+            ),
+        ):
+            with self.assertRaises(PastTheGuard):
+                run_reviewable_generation(
+                    context, payload, lambda value, detail=None: None, threading.Event(),
+                    resolved_snapshot=deepcopy(snapshot), settings_hash="caller-hash",
+                    job_id=job.id,
+                )
+
     def test_standalone_generation_start_freezes_native_plan_with_explicit_ports(self):
         from pandrator.web.speech_plan_workspace import plan_signature
         from pandrator.web.workflow_generation_start import (
