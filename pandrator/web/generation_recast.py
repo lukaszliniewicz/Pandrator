@@ -6,7 +6,10 @@ comes from the executor snapshot, never from today's character ledger.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable, Hashable
 from copy import deepcopy
+from functools import partial
 from typing import Any
 
 from sqlalchemy import select
@@ -49,6 +52,43 @@ from .speech_plan_workspace import freeze_speech_snapshot
 
 _BASE_KEYS = ("voice", "speaker", *_VOICE_IDENTITY_KEYS)
 _CATEGORIES = ("male", "female", "androgynous", "unspecified")
+_ASSIGNMENT_ERRORS = (ValueError, AccessDenied, WorkspaceNotFound)
+
+
+def _memo_key(value: Any) -> str:
+    """A canonical text form of JSON data, for a pass memo's key."""
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+
+
+class _PassMemo:
+    """Cast fingerprints one preview pass already computed, by their inputs.
+
+    Many segments share a few cast assignments, so each distinct one is worked
+    out once. A failure (``ValueError``, ``AccessDenied``, ``WorkspaceNotFound``)
+    is remembered too and raised again for every segment that reaches it, as if
+    each had computed it. A memo lives for one ``prepare_recast`` call, whose
+    reads come from one snapshot session, so its inputs cannot change under it.
+    """
+
+    def __init__(self) -> None:
+        self._remembered: dict[Hashable, tuple[bool, Any]] = {}
+
+    def __call__(self, key: Hashable, compute: Callable[[], str]) -> str:
+        remembered = self._remembered.get(key)
+        if remembered is None:
+            try:
+                value = compute()
+            except _ASSIGNMENT_ERRORS as error:
+                self._remembered[key] = (False, error)
+                raise
+            self._remembered[key] = (True, value)
+            return value
+        succeeded, value = remembered
+        if not succeeded:
+            raise value.with_traceback(None)
+        return value
 
 
 def collect_recast_job_guard(session, session_id: str, revision_id: str) -> list[list[str]]:
@@ -232,8 +272,12 @@ def _selectors(controls, segments):
     return result
 
 
-def _scopes(segment, entry, controls):
-    """Return literal speaker scopes and selectors whose effective cast reaches them."""
+def _scopes(segment, entry, controls, validated=None):
+    """Return literal speaker scopes and selectors whose effective cast reaches them.
+
+    ``validated`` is ``resolve_cast_voice``'s memo for ``controls``, which the
+    caller does not change while it holds the memo.
+    """
     text = segment.optimized_text or segment.text
     xml = entry.get("speech_xml")
     if xml:
@@ -284,6 +328,7 @@ def _scopes(segment, entry, controls):
             dialogue=dialogue,
             voice_category=category,
             span_voice=span.voice if span else None,
+            _validated=validated,
         )
         keys = {scope}
         if resolution["source"] == "category":
@@ -376,13 +421,14 @@ def _effective(session, context, binding, base, *, frozen=None, slot_key=None, s
     )
 
 
-def _assignment_for_scope(controls, scope):
+def _assignment_for_scope(controls, scope, validated=None):
     return resolve_cast_voice(
         controls,
         speaker_id=scope["speaker"],
         source_speaker=scope["source"],
         dialogue=scope["dialogue"],
         voice_category=scope["category"],
+        _validated=validated,
     )
 
 
@@ -519,6 +565,18 @@ def prepare_recast(
         evidence_hash = []
         historical_contexts = {}
         historical_snapshot_hashes = {}
+        # Pass-local memos (never kept across requests): segments share a few
+        # cast assignments, so each distinct fingerprint and each controls
+        # object's character and cast validation is worked out once. The
+        # current settings and context are the same for every segment, and a
+        # recording's base settings follow from its executor's snapshot and
+        # its ``_base_voice_settings``. Nothing in this loop changes a controls
+        # object, which ``resolve_cast_voice``'s memo requires.
+        new_fingerprints = _PassMemo()
+        recorded_fingerprints = _PassMemo()
+        current_validated: dict[str, tuple[object, Any]] = {}
+        # By object identity; each entry holds its controls, so the id stays its own.
+        recorded_validated: dict[int, tuple[Any, dict[str, tuple[object, Any]]]] = {}
         for segment in segments:
             # A preview only reads, so stop once its client has left (the Cast
             # panel and MCP both give up on a slow one and ask again).
@@ -528,7 +586,7 @@ def prepare_recast(
                 "speech_xml": (segment.speech_plan_json or {}).get("speech_xml"),
                 "voice_binding": segment_voice_binding(segment),
             }
-            scopes = _scopes(segment, entry, controls)
+            scopes = _scopes(segment, entry, controls, current_validated)
             baseline = provenance.get(segment.id)
             old_snapshot, old_entry, executor, recorded_segment_id, actual_identity = (
                 baseline if baseline else ({}, {}, None, None, None)
@@ -537,11 +595,18 @@ def prepare_recast(
             old_segment_frozen = segment_cast_snapshot(old_frozen, recorded_segment_id or segment.id)
             old_controls = old_entry.get("controls", old_frozen.get("controls"))
             old_base = performance_runtime_settings(old_snapshot)
-            for key, value in ((old_controls or {}).get("_base_voice_settings") or {}).items():
+            old_base_voice = (old_controls or {}).get("_base_voice_settings") or {}
+            for key, value in old_base_voice.items():
                 if value is None:
                     old_base.pop(key, None)
                 else:
                     old_base[key] = value
+            old_validated = None
+            if old_controls:
+                held = recorded_validated.get(id(old_controls))
+                if held is None:
+                    held = recorded_validated[id(old_controls)] = (old_controls, {})
+                old_validated = held[1]
             changed, unknown, affected, overrides = set(), set(), set(), set()
             missing = segment.id not in recorded
             reference_verified = True
@@ -568,24 +633,46 @@ def prepare_recast(
                     continue
                 affected.update(keys)
                 try:
-                    new_fp = _effective(
-                        session,
-                        context,
-                        scope["binding"],
-                        current_settings,
-                        slot_key=scope["slot_key"],
-                        session_id=session_id,
+                    new_fp = new_fingerprints(
+                        (_memo_key(scope["binding"]), scope["slot_key"]),
+                        partial(
+                            _effective,
+                            session,
+                            context,
+                            scope["binding"],
+                            current_settings,
+                            slot_key=scope["slot_key"],
+                            session_id=session_id,
+                        ),
                     )
                     if missing:
                         continue
                     if not old_controls:
                         unknown.update(keys)
                         continue
-                    old_assignment = _assignment_for_scope(old_controls, scope)
+                    old_assignment = _assignment_for_scope(old_controls, scope, old_validated)
                     old_binding = old_assignment["binding"]
-                    old_fp = _effective(
-                        session, context, old_binding, old_base, frozen=old_segment_frozen,
-                        slot_key=old_assignment["slot_key"], session_id=session_id,
+                    old_slot_key = old_assignment["slot_key"]
+                    # The segment's own recorded resolution belongs in the key:
+                    # a run may freeze a different one for each segment.
+                    recorded_resolution = (
+                        lookup_cast_resolution(old_segment_frozen, old_binding, old_slot_key)
+                        if old_binding
+                        else None
+                    )
+                    old_fp = recorded_fingerprints(
+                        (
+                            executor,
+                            _memo_key(old_binding),
+                            old_slot_key,
+                            _memo_key(recorded_resolution),
+                            _memo_key(old_base_voice),
+                        ),
+                        partial(
+                            _effective, session, context, old_binding, old_base,
+                            frozen=old_segment_frozen, slot_key=old_slot_key,
+                            session_id=session_id,
+                        ),
                     )
                     if old_fp != new_fp:
                         changed.update(keys)
