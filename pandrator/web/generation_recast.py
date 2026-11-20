@@ -6,7 +6,6 @@ comes from the executor snapshot, never from today's character ledger.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Hashable
 from copy import deepcopy
 from functools import partial
@@ -53,13 +52,6 @@ from .speech_plan_workspace import freeze_speech_snapshot
 _BASE_KEYS = ("voice", "speaker", *_VOICE_IDENTITY_KEYS)
 _CATEGORIES = ("male", "female", "androgynous", "unspecified")
 _ASSIGNMENT_ERRORS = (ValueError, AccessDenied, WorkspaceNotFound)
-
-
-def _memo_key(value: Any) -> str:
-    """A canonical text form of JSON data, for a pass memo's key."""
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
-    )
 
 
 class _PassMemo:
@@ -570,8 +562,9 @@ def prepare_recast(
         # object's character and cast validation is worked out once. The
         # current settings and context are the same for every segment, and a
         # recording's base settings follow from its executor's snapshot and
-        # its ``_base_voice_settings``. Nothing in this loop changes a controls
-        # object, which ``resolve_cast_voice``'s memo requires.
+        # its ``_base_voice_settings``. Neither this loop nor the target pass
+        # changes a controls object it holds a memo for, which
+        # ``resolve_cast_voice``'s memo requires.
         new_fingerprints = _PassMemo()
         recorded_fingerprints = _PassMemo()
         current_validated: dict[str, tuple[object, Any]] = {}
@@ -634,7 +627,7 @@ def prepare_recast(
                 affected.update(keys)
                 try:
                     new_fp = new_fingerprints(
-                        (_memo_key(scope["binding"]), scope["slot_key"]),
+                        (stable_hash(scope["binding"]), scope["slot_key"]),
                         partial(
                             _effective,
                             session,
@@ -663,10 +656,10 @@ def prepare_recast(
                     old_fp = recorded_fingerprints(
                         (
                             executor,
-                            _memo_key(old_binding),
+                            stable_hash(old_binding),
                             old_slot_key,
-                            _memo_key(recorded_resolution),
-                            _memo_key(old_base_voice),
+                            stable_hash(recorded_resolution),
+                            stable_hash(old_base_voice),
                         ),
                         partial(
                             _effective, session, context, old_binding, old_base,
@@ -695,7 +688,7 @@ def prepare_recast(
                             actual_identity,
                         ]
                     )
-                except (ValueError, AccessDenied, WorkspaceNotFound) as error:
+                except _ASSIGNMENT_ERRORS as error:
                     unknown.update(keys)
                     if "Unknown character ID" not in str(error):
                         scope["error"] = str(error)
@@ -771,8 +764,13 @@ def prepare_recast(
                     preserved = []
                     for scope in active_scopes:
                         is_selected = bool(scope["keys"] & selected)
-                        source_controls = controls if is_selected else recorded_controls
-                        assignment = _assignment_for_scope(source_controls, scope)
+                        # The current controls stay unchanged, so their memo
+                        # holds; each target's recorded copy is its own.
+                        assignment = (
+                            _assignment_for_scope(controls, scope, current_validated)
+                            if is_selected
+                            else _assignment_for_scope(recorded_controls, scope)
+                        )
                         binding = assignment["binding"]
                         historical_binding = binding or (
                             {"voice_id": old_base["_cast_voice_id"]}
@@ -871,7 +869,7 @@ def prepare_recast(
                         scoped_controls["_base_voice_settings"] = {
                             key: deepcopy(current_settings.get(key)) for key in _BASE_KEYS
                         }
-                except (ValueError, AccessDenied, WorkspaceNotFound) as error:
+                except _ASSIGNMENT_ERRORS as error:
                     blocked = blocked or str(error)
             elif len(selected_scopes) == len(active_scopes):
                 scoped_controls = deepcopy(controls)

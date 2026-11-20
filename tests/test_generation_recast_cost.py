@@ -11,7 +11,7 @@ resolutions, character validations and segment steps, never time.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from typing import Any
@@ -32,7 +32,15 @@ from pandrator.web.access import current_session_policy
 from pandrator.web.access.contracts import AccessDenied
 from pandrator.web.accounts.execution_actor import execution_actor_scope
 from pandrator.web.generation_audio_identity import plan_audio_identities
+from pandrator.web.generation_cast_runtime import cast_resolution_key
 from pandrator.web.projects.identity import session_project
+from pandrator.web.speech_input_contracts import (
+    PROJECT_SPEECH_BINDING_KEY,
+    PROJECT_SPEECH_INPUT_KEY,
+    PROJECT_SPEECH_SELECTOR_KEY,
+    PROJECT_SPEECH_SOURCE_KEY,
+    canonical_json,
+)
 from pandrator.web.speech_plan_workspace import freeze_speech_snapshot
 from tests.test_abandoned_reads import TurnsTrueAfter
 from tests.test_audio_identity_cost import (  # noqa: F401
@@ -202,9 +210,21 @@ def unmemoized() -> Iterator[None]:
         yield
 
 
-def _record(plan: Plan, actor, segment_ids: list[str], *, narrator: str | None = None) -> str:
+def _record(
+    plan: Plan,
+    actor,
+    segment_ids: list[str],
+    *,
+    narrator: str | None = None,
+    edit: Callable[[dict[str, Any], str], None] | None = None,
+) -> str:
     """Store one completed run's recordings for ``segment_ids`` as a generation run
-    would have left them, frozen with its own base ``narrator`` voice if given."""
+    would have left them, frozen with its own base ``narrator`` voice if given.
+
+    ``edit(frozen, segment_id)`` changes a segment's frozen entry before the
+    run's identities are worked out, as a recast run freezes each target's own
+    controls and cast resolutions.
+    """
     database = plan.c.r.f.case.database
     services = plan.c.r.f.services
     session_id = plan.c.p.source["id"]
@@ -214,6 +234,9 @@ def _record(plan: Plan, actor, segment_ids: list[str], *, narrator: str | None =
         if narrator is not None:
             snapshot["tts"]["voice"] = narrator
         freeze_speech_snapshot(session, plan.revision_id, snapshot, explicit=True)
+        if edit is not None:
+            for segment_id in segment_ids:
+                edit(snapshot["generation_control_snapshot"], segment_id)
         identities = plan_audio_identities(session, plan.revision_id, snapshot)
         snapshot["generation_audio_identities"] = identities
         run = m.GenerationRun(
@@ -282,10 +305,12 @@ def test_recorded_preview_matches_the_unmemoized_preview_with_work_per_assignmen
     # Now each distinct assignment is worked out once: three current fingerprints
     # (no cast binding, fred, wilma) and the same three per run (9); fred's and
     # wilma's pins resolve once each; the loop validates each controls object, the
-    # current one and each run's, once (9 of the 33; the freeze makes the rest).
+    # current one and each run's, once (9), and the target pass reuses the current
+    # one's (27 in all, 33 when it validated again; each target's recorded copy
+    # and the freeze make the rest).
     assert new.fingerprints <= 9, vars(new)
     assert new.project_resolutions <= 2, vars(new)
-    assert new.character_validations <= 33, vars(new)
+    assert new.character_validations <= 27, vars(new)
 
 
 @pytest.mark.parametrize("failing", ["current", "recorded"])
@@ -325,6 +350,98 @@ def test_a_failing_assignment_fails_every_segment_that_shares_it(recorded_plan, 
     # recordings (both runs froze the same resolution for fred).
     assert unmemoized_raises == fred["affected_count"]
     assert len(raised) == (1 if failing == "current" else 2)
+
+
+FRED_SLOT = "cast:" + canonical_json(["characters", "fred"])
+WILMA_SLOT = "cast:" + canonical_json(["characters", "wilma"])
+RETAINED_MARKERS = (
+    PROJECT_SPEECH_INPUT_KEY,
+    PROJECT_SPEECH_BINDING_KEY,
+    PROJECT_SPEECH_SELECTOR_KEY,
+    PROJECT_SPEECH_SOURCE_KEY,
+)
+
+
+def _own_entry(frozen: dict[str, Any], segment_id: str) -> dict[str, Any]:
+    """The segment's frozen entry, with its own copy of the run's controls and
+    cast resolutions, as a recast run freezes them for each target."""
+    entry = frozen["segments"][segment_id]
+    entry.setdefault("controls", deepcopy(frozen["controls"]))
+    entry.setdefault("resolved_bindings", deepcopy(frozen["resolved_bindings"]))
+    return entry
+
+
+def _earlier_narrator(frozen: dict[str, Any], segment_id: str) -> None:
+    # A recast freezes every base voice key; this recording's narrator had a
+    # plain voice of its own and no retained reference.
+    _own_entry(frozen, segment_id)["controls"]["_base_voice_settings"] = {
+        **dict.fromkeys(generation_recast._BASE_KEYS), "voice": "earlier-narrator",
+    }
+
+
+def _wilmas_pin_for_fred(frozen: dict[str, Any], segment_id: str) -> None:
+    binding = frozen["controls"]["cast"]["characters"]["fred"]
+    resolutions = _own_entry(frozen, segment_id)["resolved_bindings"]
+    resolutions[cast_resolution_key(binding, FRED_SLOT, schema_version=2)] = deepcopy(
+        resolutions[cast_resolution_key(binding, WILMA_SLOT, schema_version=2)]
+    )
+
+
+def _unpinned_fred(frozen: dict[str, Any], segment_id: str) -> dict[str, Any]:
+    """Freeze fred without his retained pin, as a plain voice cast records it."""
+    entry = _own_entry(frozen, segment_id)
+    binding = entry["controls"]["cast"]["characters"]["fred"]
+    key = cast_resolution_key(binding, FRED_SLOT, schema_version=2)
+    entry["resolved_bindings"][key] = {
+        name: value for name, value in entry["resolved_bindings"][key].items()
+        if name not in RETAINED_MARKERS
+    }
+    return entry
+
+
+def _described_fred(frozen: dict[str, Any], segment_id: str) -> None:
+    # The same unpinned resolution under fred's earlier description: only the
+    # recorded binding tells this recording from the others.
+    entry = _unpinned_fred(frozen, segment_id)
+    binding = entry["controls"]["cast"]["characters"]["fred"]
+    resolved = entry["resolved_bindings"][cast_resolution_key(binding, FRED_SLOT, schema_version=2)]
+    binding["voice_description"] = "An earlier description."
+    entry["resolved_bindings"][cast_resolution_key(binding, FRED_SLOT, schema_version=2)] = (
+        deepcopy(resolved)
+    )
+
+
+@pytest.mark.parametrize(
+    ("edit", "unedited", "selector"),
+    [
+        (_earlier_narrator, _own_entry, "narrator"),
+        (_wilmas_pin_for_fred, _own_entry, "character:fred"),
+        (_described_fred, _unpinned_fred, "character:fred"),
+    ],
+    ids=["base-voice", "resolution", "unpinned-binding"],
+)
+def test_recordings_of_one_run_keep_their_own_recorded_cast(
+    varied_plan, edit, unedited, selector,  # noqa: F811
+):
+    """A run may freeze different controls or resolutions for its segments, so
+    segments of one run that share a speaker can still differ in what they recorded."""
+    plan, actor = varied_plan
+    edited = plan.ids[::2]
+    _record(
+        plan, actor, plan.ids,
+        edit=lambda frozen, segment_id: (
+            edit(frozen, segment_id) if segment_id in edited else unedited(frozen, segment_id)
+        ),
+    )
+    with unmemoized():
+        reference = _preview(plan, actor)
+    preview = _preview(plan, actor)
+    assert preview == reference
+    counts = _selector(preview, selector)
+    assert "error" not in counts, counts["error"]
+    assert counts["missing_count"] == counts["unverified_count"] == 0, counts
+    # Only the edited segments recorded something other than today's cast.
+    assert 0 < counts["changed_count"] < counts["affected_count"], counts
 
 
 @contextmanager
