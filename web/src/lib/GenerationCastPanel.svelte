@@ -79,14 +79,23 @@
   let impactLoading = $state(false);
   let recastKeys = $state<string[] | null | undefined>(undefined);
   let impactController: AbortController | undefined;
-  const impactRefresh = settledRefresh(() => void refreshImpact(), {
-    settleMs: 750,
-    onwait: () => {
-      impactController?.abort();
-      impactLoading = true;
-      impactError = '';
+  // The recast dialog runs its own preview; a panel refresh due while it is
+  // open waits for the dialog to close instead of running beside it.
+  let impactHeld = false;
+  const impactRefresh = settledRefresh(
+    () => {
+      if (recastKeys !== undefined) impactHeld = true;
+      else void refreshImpact();
+    },
+    {
+      settleMs: 750,
+      onwait: () => {
+        impactController?.abort();
+        impactLoading = true;
+        impactError = '';
+      }
     }
-  });
+  );
   const impactByKey = $derived(
     new Map((impact?.selectors ?? []).map((item) => [item.key, item]))
   );
@@ -117,6 +126,11 @@
     if (blocked || !draftState().valid) return;
     if (dirty && !(await save())) return;
     recastKeys = keys;
+  }
+  function closeRecast(started: boolean) {
+    recastKeys = undefined;
+    if (started || impactHeld) impactRefresh.now();
+    impactHeld = false;
   }
   const selectedService = $derived(
     services.find((item) => item.id === service || item.name === service)
@@ -827,11 +841,10 @@
   <CastRecastDialog
     {sessionId}
     initialKeys={recastKeys}
-    onclose={() => (recastKeys = undefined)}
+    onclose={() => closeRecast(false)}
     onstarted={(run) => {
-      recastKeys = undefined;
       message = `${run.label} queued. Existing audio remains available in history.`;
-      impactRefresh.now();
+      closeRecast(true);
     }}
   />
 {/if}

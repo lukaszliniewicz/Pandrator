@@ -12,6 +12,13 @@ function setup(t) {
   return { calls, refresh };
 }
 
+test('a not-ready first change does nothing', (t) => {
+  const { calls, refresh } = setup(t);
+  refresh.change(false);
+  t.mock.timers.tick(2000);
+  assert.deepEqual(calls, { run: 0, wait: 0 });
+});
+
 test('the first ready change runs at once', (t) => {
   const { calls, refresh } = setup(t);
   refresh.change(true);
@@ -63,6 +70,17 @@ test('now runs once and drops a pending run', (t) => {
   assert.equal(calls.run, 2);
   t.mock.timers.tick(2000);
   assert.equal(calls.run, 2);
+  refresh.now();
+  assert.deepEqual(calls, { run: 3, wait: 1 });
+});
+
+test('closing the panel drops a pending settle', (t) => {
+  const { calls, refresh } = setup(t);
+  refresh.change(true);
+  refresh.settle(250);
+  refresh.change(false);
+  t.mock.timers.tick(2000);
+  assert.equal(calls.run, 1);
 });
 
 test('settle restarts on repeat and uses its own interval', (t) => {
