@@ -55,13 +55,19 @@ _ASSIGNMENT_ERRORS = (ValueError, AccessDenied, WorkspaceNotFound)
 
 
 class _PassMemo:
-    """Cast fingerprints one preview pass already computed, by their inputs.
+    """Cast fingerprints one ``prepare_recast`` call already computed, by their inputs.
 
     Many segments share a few cast assignments, so each distinct one is worked
-    out once. A failure (``ValueError``, ``AccessDenied``, ``WorkspaceNotFound``)
-    is remembered too and raised again for every segment that reaches it, as if
-    each had computed it. A memo lives for one ``prepare_recast`` call, whose
-    reads come from one snapshot session, so its inputs cannot change under it.
+    out once. A memo lives for one call, made by one actor whose database reads
+    come from one snapshot session.
+
+    Unlike the per-check memos in ``generation_cast_runtime``, which never
+    remember a failure, this one remembers a failure (``ValueError``,
+    ``AccessDenied``, ``WorkspaceNotFound``) and raises it again for every
+    segment that shares the assignment. Anything an assignment reads from
+    outside the database, such as host credentials for a designed voice, is
+    taken as fixed for the call too, so one assignment gets one answer
+    throughout a preview.
     """
 
     def __init__(self) -> None:
