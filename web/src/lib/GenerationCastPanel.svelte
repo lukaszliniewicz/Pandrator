@@ -25,6 +25,7 @@
   import { previewRecast, type RecastPreview } from './generation-recast';
   import { invalidationBus, invalidates } from './invalidation';
   import { notifySessionFlowChange } from './session-flow';
+  import { settledRefresh } from './settled-refresh';
   import { useProjectInterface } from './project-interface.svelte';
   const projectInterface = useProjectInterface();
   let {
@@ -78,7 +79,14 @@
   let impactLoading = $state(false);
   let recastKeys = $state<string[] | null | undefined>(undefined);
   let impactController: AbortController | undefined;
-  let impactTimer: ReturnType<typeof setTimeout> | undefined;
+  const impactRefresh = settledRefresh(() => void refreshImpact(), {
+    settleMs: 750,
+    onwait: () => {
+      impactController?.abort();
+      impactLoading = true;
+      impactError = '';
+    }
+  });
   const impactByKey = $derived(
     new Map((impact?.selectors ?? []).map((item) => [item.key, item]))
   );
@@ -86,10 +94,8 @@
     void service;
     void model;
     void revision;
-    if (loaded && open)
-      untrack(() => {
-        void refreshImpact();
-      });
+    const ready = loaded && open;
+    untrack(() => impactRefresh.change(ready));
   });
   async function refreshImpact() {
     impactController?.abort();
@@ -175,10 +181,7 @@
         )
       )
         return;
-      clearTimeout(impactTimer);
-      impactTimer = setTimeout(() => {
-        void refreshImpact();
-      }, 250);
+      impactRefresh.settle(250);
     });
     return () => {
       disconnect();
@@ -199,8 +202,8 @@
   let alive = true;
   onDestroy(() => {
     alive = false;
+    impactRefresh.cancel();
     impactController?.abort();
-    clearTimeout(impactTimer);
   });
   const dirty = $derived(
     loaded && JSON.stringify({ characters, cast }) !== baseline
@@ -808,7 +811,7 @@
         </p>{/if}
       {#if impactError}<p class="muted text-xs">
           Recording comparison unavailable: {impactError}
-          <button class="underline" onclick={() => void refreshImpact()}
+          <button class="underline" onclick={() => impactRefresh.now()}
             >Retry comparison</button
           >
         </p>{/if}
@@ -828,7 +831,7 @@
     onstarted={(run) => {
       recastKeys = undefined;
       message = `${run.label} queued. Existing audio remains available in history.`;
-      void refreshImpact();
+      impactRefresh.now();
     }}
   />
 {/if}
