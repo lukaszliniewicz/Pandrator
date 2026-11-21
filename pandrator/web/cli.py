@@ -24,6 +24,7 @@ import requests
 from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
+from pandrator.runtime.windows_paths import warn_if_data_root_too_long
 
 from .api import create_app
 from .api_server import ApiShutdownIncomplete
@@ -79,6 +80,14 @@ def _emit(value: Any, json_output: bool = False) -> None:
 
 def _paths(args) -> DataPaths:
     return DataPaths.from_value(getattr(args, "data_dir", None)).ensure()
+
+
+def _warn_before_creating_data_root(args) -> None:
+    # Resolve without creating anything: creating the data folders can itself
+    # fail on a root too long for Windows paths.
+    warn_if_data_root_too_long(
+        DataPaths.from_value(getattr(args, "data_dir", None)).root
+    )
 
 
 def _database(args) -> tuple[DataPaths, Database]:
@@ -430,6 +439,7 @@ def command_serve(args) -> int:
         print(str(error), file=sys.stderr)
         return 3
 
+    _warn_before_creating_data_root(args)
     paths, database = _database(args)
     initialized = False
     try:
@@ -516,10 +526,12 @@ def _delivery_lane(
         f"{worker_id}.delivery",
         {kind: handlers[kind] for kind in kinds},
         kinds=kinds,
+        data_root=paths.root,
     )
 
 
 def command_worker(args) -> int:
+    _warn_before_creating_data_root(args)
     paths, database = _database(args)
     tts_providers: TtsProviderRegistry | None = None
     try:
@@ -580,7 +592,7 @@ def command_worker(args) -> int:
                     WorkspaceSettingsService(database), project_sounds,
                 ),
             )
-            worker = Worker(queue, worker_id, handler_registry)
+            worker = Worker(queue, worker_id, handler_registry, data_root=paths.root)
             lane = None
             if not args.once and os.environ.get("PANDRATOR_DELIVERY_LANE", "1") != "0":
                 lane = _delivery_lane(database, paths, queue, tts_providers, worker_id)
