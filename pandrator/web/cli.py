@@ -24,6 +24,7 @@ import requests
 from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
+from pandrator.runtime.windows_paths import warn_if_data_root_too_long
 
 from .api import create_app
 from .api_server import ApiShutdownIncomplete
@@ -431,6 +432,7 @@ def command_serve(args) -> int:
         return 3
 
     paths, database = _database(args)
+    warn_if_data_root_too_long(paths.root)
     initialized = False
     try:
         auth = AuthService(database)
@@ -516,11 +518,13 @@ def _delivery_lane(
         f"{worker_id}.delivery",
         {kind: handlers[kind] for kind in kinds},
         kinds=kinds,
+        data_root=paths.root,
     )
 
 
 def command_worker(args) -> int:
     paths, database = _database(args)
+    warn_if_data_root_too_long(paths.root)
     tts_providers: TtsProviderRegistry | None = None
     try:
         queue = JobQueue(database)
@@ -580,7 +584,7 @@ def command_worker(args) -> int:
                     WorkspaceSettingsService(database), project_sounds,
                 ),
             )
-            worker = Worker(queue, worker_id, handler_registry)
+            worker = Worker(queue, worker_id, handler_registry, data_root=paths.root)
             lane = None
             if not args.once and os.environ.get("PANDRATOR_DELIVERY_LANE", "1") != "0":
                 lane = _delivery_lane(database, paths, queue, tts_providers, worker_id)

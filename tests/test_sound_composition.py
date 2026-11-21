@@ -196,10 +196,12 @@ def test_mcp_and_cli_composition_register_sound_contracts(case, tmp_path, monkey
     asyncio.run(list_sound_tools())
 
     registries = []
+    data_roots = []
 
     class CaptureWorker:
-        def __init__(self, _queue, _worker_id, registry):
+        def __init__(self, _queue, _worker_id, registry, *, data_root=None):
             registries.append(registry)
+            data_roots.append(data_root)
 
         def stop(self):
             return None
@@ -228,6 +230,7 @@ def test_mcp_and_cli_composition_register_sound_contracts(case, tmp_path, monkey
         )
         == 0
     )
+    assert data_roots == [case["services"]["paths"].root]
     registration = registries[0].registrations(domain="sounds")
     assert [item.kind for item in registration] == [
         "sound.generate",

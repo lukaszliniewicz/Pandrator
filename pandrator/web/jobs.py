@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import random
 import threading
 import time
@@ -22,6 +23,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from pandrator.logic.dubbing.repair_markers import EARLY_REPAIR_MARKER_KEY
 from pandrator.logic.tts_service_identity import normalize_service_id
+from pandrator.runtime.windows_paths import explain_long_path_error
 
 from .access.contracts import AccessDenied
 from .accounts.administration import PRIVILEGED_JOB_SCOPES, AdministratorRequired
@@ -1792,9 +1794,11 @@ class Worker:
         handlers: Mapping[str, JobHandler] | None = None,
         *,
         kinds: Collection[str] | None = None,
+        data_root: str | os.PathLike[str] | None = None,
     ):
         self.queue = queue
         self.worker_id = worker_id
+        self.data_root = data_root
         self.handlers = dict(handlers or {})
         # A lane worker claims only these kinds; None claims any job.
         self.kinds = frozenset(kinds) if kinds is not None else None
@@ -2154,11 +2158,23 @@ class Worker:
                     lease_generation=lease_generation,
                 )
             else:
+                long_path_message = None
+                if self.data_root is not None:
+                    try:
+                        long_path_message = explain_long_path_error(
+                            error, self.data_root
+                        )
+                    except Exception:
+                        long_path_message = None
                 self.queue.fail(
                     job.id,
                     self.worker_id,
                     type(error).__name__,
-                    safe_message,
+                    (
+                        self.queue.secret_redactor.redact(long_path_message)
+                        if long_path_message
+                        else safe_message
+                    ),
                     lease_generation=lease_generation,
                     trace=safe_trace,
                 )
