@@ -6,6 +6,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from werkzeug.utils import secure_filename
 
 from pandrator.web import (
     export_video,
@@ -15,6 +16,7 @@ from pandrator.web import (
     workflow_export,
 )
 from pandrator.web.database import Database
+from pandrator.web.export_names import export_file_stem
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -274,3 +276,47 @@ def test_source_only_video_mixes_effects_over_the_source_master(
         ("mux-run", ["mux"]),
     ]
     assert prepared.parent_ids == [upload_media.id, master_audio.id, mixed_audio.id]
+
+
+class TestExportFileStem:
+    """The export stem stays well inside file-name and path limits."""
+
+    def test_short_name_is_unchanged(self):
+        assert export_file_stem("My_Book-01", "fallback") == "My_Book-01"
+
+    def test_longest_project_name_is_capped(self):
+        stem = export_file_stem("x" * 255, "fallback")
+
+        assert len(stem) == 80
+        assert stem == "x" * 80
+
+    @pytest.mark.parametrize("separator", [".", "_", "-"])
+    def test_cap_never_leaves_a_trailing_separator(self, separator):
+        stem = export_file_stem("x" * 79 + separator + "tail", "fallback")
+
+        assert stem == "x" * 79
+        assert not stem.endswith(separator)
+
+    def test_name_without_printable_characters_uses_the_fallback(self):
+        assert export_file_stem("...", "storage-key") == "storage-key"
+        assert export_file_stem("!!!", "storage-key") == "storage-key"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Ordinary project",
+            "  leading and trailing  ",
+            "dots.and_underscores-and-dashes",
+            "ünïcode ïn ä näme",
+            "a/b\\c:d*e?f",
+            "x" * 255,
+            "x" * 79 + ".y",
+            "...",
+            "!!!",
+        ],
+    )
+    def test_result_is_already_a_secure_filename(self, name):
+        stem = export_file_stem(name, "fallback")
+
+        assert stem == secure_filename(stem)
+        assert len(stem) <= 80
