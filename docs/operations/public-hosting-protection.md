@@ -80,9 +80,10 @@ The managed child inherits it.
 
 Alternatively, set an absolute file path such as
 `PANDRATOR_SECURITY_LOG=/var/log/pandrator/security.jsonl`. Create the parent directory
-for the service account first. The application restricts the file to its owner;
-the file sink needs platform support for those permissions. Use stdout when that
-support is unavailable. The sink is inactive when the variable is unset.
+for the service account first. The application restricts the file to its owner. Windows
+cannot do that, so the file sink is not available there: use `stdout`. When a target
+cannot be used, Pandrator says so once in its log at startup and keeps the sink off. The
+sink is inactive when the variable is unset.
 
 The JSONL stream records sign-in and project-link redemption failures or
 throttling. It includes UTC time, the server-trusted client address, HTTP status,

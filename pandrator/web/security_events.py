@@ -31,14 +31,32 @@ _THROTTLE_CACHE_LIMIT = 4096
 _MAX_LINE_BYTES = 512
 
 
+def _file_sink_refusal() -> str | None:
+    """Why this platform cannot offer the owner-only file sink, if it cannot."""
+    if sys.platform == "win32":
+        # ``os.fchmod`` exists on Windows from Python 3.13, but it only
+        # toggles the read-only flag there, so the file would not be private.
+        return "Windows cannot restrict the file to its owner"
+    if getattr(os, "fchmod", None) is None:
+        return "this platform cannot restrict the file's permissions"
+    return None
+
+
 class SecurityEventSink:
     """Write tightly validated security events without affecting auth flows."""
 
     def __init__(self, target: str | None) -> None:
-        self._target = target if isinstance(target, str) else None
-        self._enabled = bool(self._target) and (
-            self._target == "stdout" or os.path.isabs(self._target)
-        )
+        self._target = target if isinstance(target, str) and target else None
+        self._refusal: str | None = None
+        self._enabled = False
+        if self._target is not None:
+            if self._target == "stdout":
+                self._enabled = True
+            elif not os.path.isabs(self._target):
+                self._refusal = "it must be 'stdout' or an absolute file path"
+            else:
+                self._refusal = _file_sink_refusal()
+                self._enabled = self._refusal is None
         self._lock = threading.Lock()
         self._warning_lock = threading.Lock()
         self._warning_emitted = False
@@ -47,6 +65,28 @@ class SecurityEventSink:
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    def announce(self) -> None:
+        """Say once, at startup, whether security events are recorded and why not."""
+        if self._target is None:
+            return
+        try:
+            if self._refusal is not None:
+                _LOGGER.warning(
+                    "Security event log is OFF: PANDRATOR_SECURITY_LOG names a target "
+                    "that cannot be used here (%s). Set PANDRATOR_SECURITY_LOG=stdout "
+                    "to record security events.",
+                    self._refusal,
+                )
+            elif self._target == "stdout":
+                _LOGGER.info("Security event log: writing to stdout.")
+            else:
+                _LOGGER.info(
+                    "Security event log: writing to the file named by PANDRATOR_SECURITY_LOG."
+                )
+        except Exception:
+            # Logging failures must not change startup.
+            pass
 
     def emit(
         self,
