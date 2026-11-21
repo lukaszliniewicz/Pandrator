@@ -171,6 +171,13 @@ def generate_audio(
                         }
                         for segment in segments
                     ]
+    from .performance_plans import refuse_missing_speaker_plan
+
+    # A direct dubbing job registers new speech blocks, so every run stores a
+    # new revision, and no plan or acknowledgement can be placed on it before it
+    # is voiced. The stage rule would refuse every unlabelled block of such a
+    # revision, so the job runs unguarded, as upstream does.
+    direct_dubbing = source_artifact.role == "speech_blocks"
     if not revision_id:
         revision_id, generation_segment_ids = context._store_generation_plan(
             session_id,
@@ -194,6 +201,10 @@ def generate_audio(
 
     performance_snapshot = {"tts": dict(settings)}
     with context.database.session() as session:
+        if not direct_dubbing:
+            refuse_missing_speaker_plan(
+                session, revision_id, settings, from_generation_start=False
+            )
         freeze_speech_snapshot(session, revision_id, performance_snapshot)
     performance_contexts = frozen_semantic_contexts(performance_snapshot)
     if performance_snapshot.get("speech_plan_frozen"):

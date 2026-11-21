@@ -39,6 +39,7 @@ from .generation_selection import _resolve_takes, collect_row_state
 from .generation_speech_inputs import retained_generation_input
 from .generation_start_preparation import snapshot_guard
 from .jobs import JobQueue
+from .performance_plans import refuse_missing_speaker_plan
 from .settings_policy import RevisionConflict, stable_hash
 from .speech_input_contracts import (
     PROJECT_SPEECH_BINDING_KEY,
@@ -489,6 +490,9 @@ def prepare_recast(
         freeze_error = None
         if not blocked:
             try:
+                refuse_missing_speaker_plan(
+                    session, revision_id, current_settings, from_generation_start=False
+                )
                 freeze_speech_snapshot(
                     session, revision_id, snapshot, explicit=True, cast_segment_ids=[]
                 )

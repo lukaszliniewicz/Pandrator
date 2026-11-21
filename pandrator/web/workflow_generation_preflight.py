@@ -137,9 +137,17 @@ def validate_generation_language_payload(
                 "The requested speech plan revision belongs to a different generation input. Select the matching input or prepare a new speech plan."
             )
         snapshot["speech_plan_revision_id"] = revision_id
+        from .generation_performance_snapshot import performance_runtime_settings
+        from .performance_plans import refuse_missing_speaker_plan
         from .speech_plan_workspace import freeze_speech_snapshot
 
         try:
+            refuse_missing_speaker_plan(
+                session,
+                revision_id,
+                performance_runtime_settings(snapshot),
+                from_generation_start=False,
+            )
             freeze_speech_snapshot(
                 session,
                 revision_id,

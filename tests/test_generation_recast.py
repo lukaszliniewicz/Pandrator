@@ -303,6 +303,75 @@ def test_old_null_narrator_keeps_recorded_base_voice(recast_case):
     assert voices(case, prepared) == ["Kore", "Fenrir"]
 
 
+def test_recast_is_blocked_when_the_revision_lost_its_speaker_plan(recast_case):
+    from pandrator.web.generation_recast_workspace import start_recast_in_session
+
+    case = recast_case
+    record(case)
+    change(case)
+    before = prepare(case, selector_keys=["character:fred"])
+    assert before["preview"]["blocked_reason"] is None
+    notice = {
+        "plan_id": "plan-lineage",
+        "plan_revision_id": "revision-lineage",
+        "revision_number": 1,
+        "purpose": "delivery",
+        "annotation_format": "xml",
+    }
+    with patch(
+        "pandrator.web.performance_plans.ancestor_adopted_plan", return_value=notice
+    ) as lineage:
+        prepared = prepare(case, selector_keys=["character:fred"])
+        # The guard read the revision being recast.
+        assert lineage.call_args.args[1] == case["revision_id"]
+        reason = prepared["preview"]["blocked_reason"]
+        assert "no adopted speaker plan" in reason
+        assert "plan-lineage" in reason
+        assert "Generate without the speaker plan" in reason
+        takes_before = _take_rows(case)
+        with case["services"]["database"].immediate_session() as session:
+            with pytest.raises(ValueError, match="no adopted speaker plan"):
+                start_recast_in_session(
+                    case["services"]["generation"],
+                    session,
+                    case["session_id"],
+                    prepared,
+                    prepared["preview"]["selection_hash"],
+                )
+        assert _take_rows(case) == takes_before
+
+
+def test_recast_is_blocked_on_a_split_of_a_revision_with_an_adopted_speaker_plan(recast_case):
+    from tests.test_performance_plans import _adopted, _set_tts
+
+    case = recast_case
+    adopted = _adopted(case)
+    # Adopting turns performance on; the speaker plan guard is for casting alone.
+    _set_tts(case, performance_enabled=False)
+    # Control: casting on with the plan adopted on this revision passes the
+    # guard (nothing is recorded yet, which is the only reason it gives).
+    assert prepare(case)["preview"]["blocked_reason"] == (
+        "No recordings need the selected voice changes."
+    )
+    case["services"]["generation"].revise_topology(
+        case["session_id"],
+        case["revision_id"],
+        {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
+    )
+    # The split is the active revision now, and it carries no adopted plan.
+    reason = prepare(case)["preview"]["blocked_reason"]
+    assert "no adopted speaker plan" in reason
+    assert adopted["id"] in reason
+    assert "Generate without the speaker plan" in reason
+
+
+def _take_rows(case):
+    with case["services"]["database"].session() as session:
+        return sorted(
+            (take.id, take.is_active, take.revision) for take in session.scalars(select(m.AudioTake))
+        )
+
+
 def test_active_run_blocks_and_changes_hash(recast_case):
     case = recast_case
     record(case)
