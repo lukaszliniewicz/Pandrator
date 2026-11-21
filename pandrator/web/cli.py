@@ -82,6 +82,14 @@ def _paths(args) -> DataPaths:
     return DataPaths.from_value(getattr(args, "data_dir", None)).ensure()
 
 
+def _warn_before_creating_data_root(args) -> None:
+    # Resolve without creating anything: creating the data folders can itself
+    # fail on a root too long for Windows paths.
+    warn_if_data_root_too_long(
+        DataPaths.from_value(getattr(args, "data_dir", None)).root
+    )
+
+
 def _database(args) -> tuple[DataPaths, Database]:
     paths = _paths(args)
     lock_path = paths.instance_lock
@@ -431,8 +439,8 @@ def command_serve(args) -> int:
         print(str(error), file=sys.stderr)
         return 3
 
+    _warn_before_creating_data_root(args)
     paths, database = _database(args)
-    warn_if_data_root_too_long(paths.root)
     initialized = False
     try:
         auth = AuthService(database)
@@ -523,8 +531,8 @@ def _delivery_lane(
 
 
 def command_worker(args) -> int:
+    _warn_before_creating_data_root(args)
     paths, database = _database(args)
-    warn_if_data_root_too_long(paths.root)
     tts_providers: TtsProviderRegistry | None = None
     try:
         queue = JobQueue(database)

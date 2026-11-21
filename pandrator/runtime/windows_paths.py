@@ -38,6 +38,10 @@ _SHORTEN_FOLDER = (
     "Windows long paths " + _LONG_PATHS_HOW
 )
 _MAX_CHAIN_STEPS = 8
+# ERROR_FILENAME_EXCED_RANGE: Windows says outright that a path is too long.
+# Folder creation can fail this way below 260 characters, because a folder
+# must leave room for an 8.3 file name inside it.
+_ERROR_FILENAME_EXCED_RANGE = 206
 
 
 def _is_windows() -> bool:
@@ -115,6 +119,9 @@ def explain_long_path_error(
         seen.add(id(current))
         steps += 1
         if isinstance(current, OSError):
+            refused = (
+                getattr(current, "winerror", None) == _ERROR_FILENAME_EXCED_RANGE
+            )
             for name in (current.filename, current.filename2):
                 if name is None:
                     continue
@@ -123,20 +130,27 @@ def explain_long_path_error(
                 except (TypeError, ValueError):
                     continue
                 length = _windows_length(text)
-                if length > WINDOWS_MAX_PATH_CHARS and _is_under(text, root_text):
-                    if root_length > LONGEST_DATA_ROOT:
-                        advice = (
-                            f"The data folder should be at most "
-                            f"{LONGEST_DATA_ROOT} characters. {_SHORTEN_FOLDER}"
-                        )
-                    else:
-                        advice = _ENABLE_LONG_PATHS
-                    return (
-                        f"{error} -- A file path under the data folder "
-                        f"{root_text} ({root_length} characters) is "
-                        f"{length} characters long, over the Windows limit of "
-                        f"{WINDOWS_MAX_PATH_CHARS}. {advice}"
+                over_limit = length > WINDOWS_MAX_PATH_CHARS
+                if not (over_limit or refused) or not _is_under(text, root_text):
+                    continue
+                if root_length > LONGEST_DATA_ROOT:
+                    advice = (
+                        f"The data folder should be at most "
+                        f"{LONGEST_DATA_ROOT} characters. {_SHORTEN_FOLDER}"
                     )
+                else:
+                    advice = _ENABLE_LONG_PATHS
+                if over_limit:
+                    detail = (
+                        f"over the Windows limit of {WINDOWS_MAX_PATH_CHARS}"
+                    )
+                else:
+                    detail = "which Windows refused as too long"
+                return (
+                    f"{error} -- A file path under the data folder "
+                    f"{root_text} ({root_length} characters) is "
+                    f"{length} characters long, {detail}. {advice}"
+                )
         pending.append(current.__context__)
         pending.append(current.__cause__)
     return None

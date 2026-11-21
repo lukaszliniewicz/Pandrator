@@ -191,6 +191,28 @@ def test_bytes_filename_is_explained(monkeypatch) -> None:
     assert explain_long_path_error(error, ROOT_OK) is not None
 
 
+def _refused(path: str) -> OSError:
+    # ERROR_FILENAME_EXCED_RANGE; set as an attribute so this runs off Windows.
+    error = OSError(22, "The filename or extension is too long", path)
+    error.winerror = 206  # type: ignore[attr-defined]
+    return error
+
+
+def test_refused_as_too_long_below_the_limit_is_explained(monkeypatch) -> None:
+    _limited(monkeypatch)
+    path = _long_file(ROOT_OK, 250)
+    message = explain_long_path_error(_refused(path), ROOT_OK)
+    assert message is not None
+    assert "is 250 characters long, which Windows refused as too long" in message
+    assert "over the Windows limit" not in message
+    assert "LongPathsEnabled" in message
+    # The same length as a plain missing file stays untranslated.
+    missing = FileNotFoundError(2, "No such file", path)
+    assert explain_long_path_error(missing, ROOT_OK) is None
+    outside = _refused(_long_file("D:\\elsewhere", 250))
+    assert explain_long_path_error(outside, ROOT_OK) is None
+
+
 def test_short_root_is_not_told_to_shorten_the_folder(monkeypatch) -> None:
     _limited(monkeypatch)
     root = "C:\\data"
@@ -332,24 +354,30 @@ def test_delivery_lane_passes_data_root(tmp_path: Path, monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("command", ["command_worker", "command_serve"])
-def test_commands_warn_with_data_root(tmp_path: Path, command: str) -> None:
+def test_commands_warn_before_creating_data_folders(
+    tmp_path: Path, command: str
+) -> None:
+    # Creating the data folders can itself fail on a root that is too long,
+    # so the warning comes first and nothing is created before it.
     sentinel = RuntimeError("stop after warning")
-    paths = web_test_support.prepare_web_test_data_root(tmp_path)
+    root = tmp_path / "not-created-yet"
     args = argparse.Namespace(
-        data_dir=str(paths.root), worker_id=None, once=True, host="127.0.0.1"
+        data_dir=str(root), worker_id=None, once=True, host="127.0.0.1"
     )
     calls: list[object] = []
 
-    def record(root):
-        calls.append(root)
+    def record(warned_root):
+        calls.append(warned_root)
         raise sentinel
 
     with (
-        patch.object(cli, "_database", return_value=(paths, object())),
+        patch.object(cli, "_database") as database,
         patch.object(cli, "warn_if_data_root_too_long", side_effect=record),
         patch.object(cli, "serve_network_profile"),
     ):
         with pytest.raises(RuntimeError) as caught:
             getattr(cli, command)(args)
     assert caught.value is sentinel
-    assert calls == [paths.root]
+    assert calls == [root.resolve()]
+    database.assert_not_called()
+    assert not root.exists()
