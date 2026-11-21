@@ -29,23 +29,23 @@ opens Pandrator in your browser. Older workspace data can still be imported.
 For the retired Qt desktop interface, use an
 [older release](https://github.com/lukaszliniewicz/Pandrator/releases).
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.15.0/PandratorManager-0.9.32-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.15.0/PandratorManager-0.9.32-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.15.1/PandratorManager-0.9.32-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.15.1/PandratorManager-0.9.32-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.15.0 / Manager 0.9.32
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.15.1 / Manager 0.9.32
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-## New in 0.15.0
+## New in 0.15.1
 
-- **Dubs keep the original sound.** New voiceovers mix the voice over the original soundtrack, and an export plan warns before it would replace it.
-- **Speech stays in sync.** Padding silence is trimmed before fitting, the default speed-up is 1.15×, and export plans report how far speech lags the picture.
-- **Less regeneration.** Takes are no longer marked stale after rebuilding a corrected or translated project, and timing-only subtitle changes keep the speech plan.
-- **Cleaner subtitles and a readable queue.** No overlapping cues from transcription, and waiting work says why and behind what.
+- **Cast runs keep their speaker plan.** The workflow's audio stage, its preflight and recast refuse a revision that lost its adopted speaker plan, and name the blocks that would be voiced as narration.
+- **Faster cast comparisons on long books.** A recast preview takes about half the time, and the Cast panel sends one comparison after a burst of changes.
+- **Windows fixes.** The security event log no longer claims to record to a file it cannot protect, and export names from long project names are capped.
+- **Updated dependencies.** Fourteen locked packages with published security advisories are updated.
 
-See the [0.15.0 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.15.0) and [detailed changes](docs/release-changes-0.15.0.md), including the upgrade notes.
+See the [0.15.1 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.15.1) and [detailed changes](docs/release-changes-0.15.1.md). 0.15.1 is a maintenance release. The larger changes came in 0.15.0: see its [release notes](docs/release-notes-0.15.0.md) and [detailed changes](docs/release-changes-0.15.0.md), which include the upgrade notes.
 
 ## Try your first workflow
 
