@@ -44,6 +44,11 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _windows_length(text: str) -> int:
+    """Length in UTF-16 code units, which is what MAX_PATH counts."""
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
 def _registry_long_paths_enabled() -> bool:
     """Read LongPathsEnabled; a missing key or value means off, the Windows default."""
     try:
@@ -67,10 +72,11 @@ def long_paths_limited() -> bool:
 def data_root_length_warning(root: str | os.PathLike[str]) -> str | None:
     """The warning for a data root over the limit, or None."""
     text = os.fspath(root)
-    if len(text) <= LONGEST_DATA_ROOT or not long_paths_limited():
+    length = _windows_length(text)
+    if length <= LONGEST_DATA_ROOT or not long_paths_limited():
         return None
     return (
-        f"The data folder {text} is {len(text)} characters long. With Windows "
+        f"The data folder {text} is {length} characters long. With Windows "
         f"long paths off, Pandrator needs a data folder of at most "
         f"{LONGEST_DATA_ROOT} characters. Exports and generation can fail with "
         f"a file-not-found error once files nest deeper. {_SHORTEN_FOLDER}"
@@ -98,6 +104,7 @@ def explain_long_path_error(
     if not long_paths_limited():
         return None
     root_text = os.fspath(root)
+    root_length = _windows_length(root_text)
     seen: set[int] = set()
     pending: list[BaseException | None] = [error]
     steps = 0
@@ -115,8 +122,9 @@ def explain_long_path_error(
                     text = os.fsdecode(name)
                 except (TypeError, ValueError):
                     continue
-                if len(text) > WINDOWS_MAX_PATH_CHARS and _is_under(text, root_text):
-                    if len(root_text) > LONGEST_DATA_ROOT:
+                length = _windows_length(text)
+                if length > WINDOWS_MAX_PATH_CHARS and _is_under(text, root_text):
+                    if root_length > LONGEST_DATA_ROOT:
                         advice = (
                             f"The data folder should be at most "
                             f"{LONGEST_DATA_ROOT} characters. {_SHORTEN_FOLDER}"
@@ -125,8 +133,8 @@ def explain_long_path_error(
                         advice = _ENABLE_LONG_PATHS
                     return (
                         f"{error} -- A file path under the data folder "
-                        f"{root_text} ({len(root_text)} characters) is "
-                        f"{len(text)} characters long, over the Windows limit of "
+                        f"{root_text} ({root_length} characters) is "
+                        f"{length} characters long, over the Windows limit of "
                         f"{WINDOWS_MAX_PATH_CHARS}. {advice}"
                     )
         pending.append(current.__context__)

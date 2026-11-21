@@ -52,6 +52,26 @@ def test_root_over_and_under_limit(monkeypatch) -> None:
     assert data_root_length_warning(ROOT_OK) is None
 
 
+def test_lengths_count_utf16_units(monkeypatch) -> None:
+    # Windows counts UTF-16 units, so a character outside the BMP counts twice.
+    _limited(monkeypatch)
+    root = "C:\\" + "r" * (LONGEST_DATA_ROOT - 4) + "\U0001f600"
+    assert len(root) == LONGEST_DATA_ROOT
+    message = data_root_length_warning(root)
+    assert message is not None
+    assert "is 56 characters long" in message
+    accented = "C:\\" + "\u00e9" * (LONGEST_DATA_ROOT - 3)
+    assert data_root_length_warning(accented) is None
+
+    path = _long_file(ROOT_OK, 258) + "\U0001f600"
+    assert len(path) == 259
+    message = explain_long_path_error(
+        FileNotFoundError(2, "No such file", path), ROOT_OK
+    )
+    assert message is not None
+    assert "is 260 characters long" in message
+
+
 def test_no_warning_with_long_paths_on_or_off_windows(monkeypatch) -> None:
     _limited(monkeypatch, long_paths=True)
     assert data_root_length_warning(ROOT_LONG) is None
