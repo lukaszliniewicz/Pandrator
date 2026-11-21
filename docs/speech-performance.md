@@ -312,16 +312,8 @@ adopted one. That revision has no edit lineage, so copying the plan to it
 (`copy_from_id`) carries no entries: the copy needs analysis and review before
 it is adopted. A retry from the same source reuses the revision.
 
-A direct dubbing audio job is not checked. It registers new speech blocks on
-every run and stores them as a new revision, so a copied plan or an
-acknowledgement has nowhere to live before the job voices it. It runs as it
-does without this guard: with casting on, a block without its own speech
-markup, block voice or speaker label is voiced by the narrator, whether or not
-an earlier revision had a speaker plan. This is a known limit.
-
 With performance on, the "no adopted performance plan" error names the earlier
-revision's plan too, except on a revision a direct dubbing job stored, where it
-keeps its original text because a copied plan cannot help that job.
+revision's plan too.
 
 Automatic post-generation split repair can use read-only semantic context,
 including configurable preceding and following blocks (for example one of

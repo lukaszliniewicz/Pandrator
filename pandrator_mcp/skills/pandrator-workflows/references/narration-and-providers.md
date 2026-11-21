@@ -62,11 +62,7 @@ and name those blocks; a revision whose spoken blocks all have one runs from
 them, without the plan's edits. They have no acknowledgement, so they refuse
 even a revision the user ran with `allow_without_speaker_plan` at the
 generation start: copy and adopt the named plan, or point the user to the
-generation start's "Generate without the speaker plan". A direct dubbing audio
-job is not checked: it stores a new revision on every run, so a copied plan or
-an acknowledgement has nowhere to live, and a cast job voices blocks without
-their own markup, block voice or speaker label by the narrator (a known
-limit). A revision
+generation start's "Generate without the speaker plan". A revision
 stored from a new source (a `tts_optimized` input or a re-prepared subtitle
 file) has no edit lineage, so `copy_from_id` carries no entries into it; the
 copy needs analysis and review before it is adopted.

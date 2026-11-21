@@ -1610,25 +1610,11 @@ def _narrated_blocks_clause(count: int) -> str:
     )
 
 
-def _stored_from_speech_blocks(session, revision_id: str) -> bool:
-    """Whether a direct dubbing job stored this revision itself, not an edit of it."""
-    revision = session.get(m.GenerationPlanRevision, revision_id)
-    if revision is not None and revision.operation_json:
-        return False
-    source_id = (revision.settings_json or {}).get("_source_artifact_id") if revision else None
-    if not source_id:
-        return False
-    artifact = session.get(m.Artifact, str(source_id))
-    return artifact is not None and artifact.role == "speech_blocks"
-
-
 def no_adopted_performance_plan_message(session, revision_id: str) -> str:
     """The performance-on refusal, naming the lineage plan when one exists."""
     message = "Performance is enabled, but this speech plan has no adopted performance plan."
     notice = ancestor_adopted_plan(session, revision_id)
-    if notice is None or _stored_from_speech_blocks(session, revision_id):
-        # A direct dubbing job stores another revision on its next run, so a
-        # plan copied to this one cannot help it.
+    if notice is None:
         return f"{message} Adopt one or disable performance."
     return (
         f"{message} {_lineage_plan_clause(notice)} "
