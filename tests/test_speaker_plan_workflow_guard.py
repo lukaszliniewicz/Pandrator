@@ -120,6 +120,15 @@ def _drop_speaker_labels(case, revision_id):
             segment.speaker = None
 
 
+def _drop_carried_plan(case, revision_id):
+    """Leave the revision as one written before plans followed the blocks."""
+    with case["services"]["database"].session() as session:
+        for plan in session.scalars(
+            select(m.PerformancePlan).where(m.PerformancePlan.plan_revision_id == revision_id)
+        ):
+            session.delete(plan)
+
+
 def _count(case, model):
     with case["services"]["database"].session() as session:
         return session.scalar(select(func.count()).select_from(model))
@@ -192,6 +201,7 @@ def test_the_reviewable_stage_refuses_a_split_of_the_adopted_revision(case):
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
     split_id = split["plan_revision_id"]
+    _drop_carried_plan(case, split_id)
     _drop_speaker_labels(case, split_id)
     handlers = services["workflow_handlers"]
     artifact = _source(case, "prepared.json", [{"text": "Unused."}], role="prepared_text")
@@ -248,6 +258,7 @@ def test_removed_and_blank_blocks_are_not_spoken(case):
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
     split_id = split["plan_revision_id"]
+    _drop_carried_plan(case, split_id)
     _drop_speaker_labels(case, split_id)
     dialogue, _left, _right, last = _segment_ids(case, split_id)
     with services["database"].session() as session:
@@ -274,6 +285,7 @@ def test_a_block_voice_or_speaker_label_is_its_own_speech(case):
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
     split_id = split["plan_revision_id"]
+    _drop_carried_plan(case, split_id)
     _drop_speaker_labels(case, split_id)
     dialogue, _left, _right, last = _segment_ids(case, split_id)
     with services["database"].session() as session:

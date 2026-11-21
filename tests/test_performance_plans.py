@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select
 
+from pandrator.logic.speech_markup import parse_speech_markup
 from pandrator.logic.speech_performance import compile_performance
 from pandrator.web import models as m
 from pandrator.web import performance_plans as plans
@@ -720,6 +721,15 @@ def _items(plan):
     return {item["id"]: item for item in plan["items"]}
 
 
+def _drop_carried_plan(case, revision_id):
+    """Leave the revision as one written before plans followed the blocks."""
+    with case["services"]["database"].session() as session:
+        for plan in session.scalars(
+            select(m.PerformancePlan).where(m.PerformancePlan.plan_revision_id == revision_id)
+        ):
+            session.delete(plan)
+
+
 @pytest.mark.parametrize("locked", [True, False])
 def test_copy_of_stale_plan_keeps_entries_whose_block_and_context_are_unchanged(case, locked):
     adopted = _adopted(case, locked=locked)
@@ -838,10 +848,11 @@ def test_restore_of_a_current_plan_with_units_made_before_structure_fields_needs
     assert not carried["stale"] and carried["review_segment_count"] == 0
 
 
-def test_a_topology_batch_carries_no_adopted_plan_and_needs_performance_review(case):
-    # A batch holds only splits and merges, which carry no adopted plan, so
-    # the new revision has none and ``performance`` is true by that reason.
-    _adopted(case)
+def test_a_topology_batch_carries_the_plan_and_reviews_only_the_new_blocks(case):
+    # A batch carries the adopted plan through its splits and merges as a
+    # single edit does. A legacy direction does not follow a split block, so
+    # exactly the blocks the batch created need a new review.
+    adopted = _adopted(case)
     revision = case["revision_id"]
     response = case["client"].post(
         f"/api/v1/sessions/{case['session_id']}/generation-plan/topology/batch",
@@ -861,14 +872,17 @@ def test_a_topology_batch_carries_no_adopted_plan_and_needs_performance_review(c
     result = response.get_json()
     assert result["plan_revision_id"] != revision
     assert result["review_required"]["performance"] is True
-    with case["services"]["database"].session() as session:
-        adopted = session.scalars(
-            select(m.PerformancePlan).where(
-                m.PerformancePlan.plan_revision_id == result["plan_revision_id"],
-                m.PerformancePlan.status == "adopted",
-            )
-        ).all()
-    assert adopted == []
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["status"] == "adopted" and carried["stale"]
+    assert carried["carried_from_id"] == adopted["id"]
+    assert carried["plan_revision_id"] == result["plan_revision_id"]
+    halves = result["lineage"][case["segment_ids"][0]]
+    source, items = _items(adopted), _items(carried)
+    assert carried["review_segment_count"] == 2
+    assert {segment["id"] for segment in carried["review_segments"]} == set(halves)
+    for old in case["segment_ids"][1:]:
+        (new,) = result["lineage"][old]
+        assert items[new]["annotation"] == source[old]["annotation"]
 
 
 @pytest.mark.parametrize("change", ["fits", "structure", "removed"])
@@ -1041,6 +1055,7 @@ def test_cast_start_is_refused_when_the_revision_lost_its_speaker_plan(case):
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
     revision_id = split["plan_revision_id"]
+    _drop_carried_plan(case, revision_id)
     settings = {"casting_enabled": True}
     with case["services"]["database"].session() as session:
         notice = plans.missing_speaker_plan(session, revision_id, settings)
@@ -1073,6 +1088,7 @@ def test_speaker_plan_refusal_has_one_rule_and_two_endings(case):
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
     revision_id = split["plan_revision_id"]
+    _drop_carried_plan(case, revision_id)
     settings = {"casting_enabled": True}
     with case["services"]["database"].session() as session:
         # The fixture labels every block with a source speaker, which the
@@ -1107,6 +1123,7 @@ def test_the_stage_refusal_names_five_blocks_and_counts_the_rest(case):
         case["revision_id"],
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
+    _drop_carried_plan(case, split["plan_revision_id"])
     narrated = [(ordinal, f"segment-{ordinal}") for ordinal in range(7)]
     with (
         case["services"]["database"].session() as session,
@@ -1147,6 +1164,7 @@ def test_performance_on_error_names_the_lineage_plan(case):
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
     split_id = split["plan_revision_id"]
+    _drop_carried_plan(case, split_id)
     with case["services"]["database"].session() as session:
         named = plans.no_adopted_performance_plan_message(session, split_id)
         bare = plans.no_adopted_performance_plan_message(session, case["revision_id"])
@@ -1206,6 +1224,7 @@ def test_copying_the_named_plan_onto_the_split_revision_clears_the_notice(case):
         case["revision_id"],
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
+    _drop_carried_plan(case, split["plan_revision_id"])
     listing = case["client"].get(
         case["base"] + "?plan_revision_id=" + split["plan_revision_id"]
     ).get_json()
@@ -1235,11 +1254,12 @@ def test_copying_the_named_plan_onto_the_split_revision_clears_the_notice(case):
 
 def test_start_route_names_the_lost_speaker_plan_and_accepts_the_acknowledgement(case):
     adopted = _adopted(case)
-    case["services"]["generation"].revise_topology(
+    split = case["services"]["generation"].revise_topology(
         case["session_id"],
         case["revision_id"],
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
+    _drop_carried_plan(case, split["plan_revision_id"])
     path = f"/api/v1/sessions/{case['session_id']}/generation-runs"
     refused = case["client"].post(
         path, json={"run_override": _cast_override()}, headers=case["headers"]
@@ -1262,6 +1282,7 @@ def test_a_stale_ancestor_plan_can_still_be_copied_across_a_split(case):
         case["revision_id"],
         {"action": "split", "segment_id": case["segment_ids"][0], "cursor": 3, "text_layer": "display"},
     )
+    _drop_carried_plan(case, split["plan_revision_id"])
     with case["services"]["database"].session() as session:
         notice = plans.ancestor_adopted_plan(
             session, split["plan_revision_id"], session_id=case["session_id"]
@@ -1346,6 +1367,7 @@ def test_an_ancestor_plan_far_back_in_the_history_can_be_named_and_copied(case):
         case["revision_id"],
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
+    _drop_carried_plan(case, split["plan_revision_id"])
     # Put 120 revisions that change nothing between the plan's revision and
     # the split, more than the copy's old walk allowed.
     with case["services"]["database"].session() as session:
@@ -1376,3 +1398,301 @@ def test_an_ancestor_plan_far_back_in_the_history_can_be_named_and_copied(case):
     )
     assert response.status_code == 201, response.get_json()
     assert (response.get_json()["copied_count"], response.get_json()["skipped_count"]) == (1, 2)
+
+
+def _revise(case, revision_id, **operation):
+    """One topology revision through the public service."""
+    return case["services"]["generation"].revise_topology(
+        case["session_id"], revision_id, operation
+    )
+
+
+def _segment_markup(case, segment_id):
+    """The markup the revision wrote for a block, before any plan."""
+    with case["services"]["database"].session() as session:
+        row = session.get(m.GenerationSegment, segment_id)
+        return (row.speech_plan_json or {}).get("speech_xml")
+
+
+def _segment_spoken(case, segment_id):
+    with case["services"]["database"].session() as session:
+        row = session.get(m.GenerationSegment, segment_id)
+        return row.optimized_text or row.text or ""
+
+
+def _entry_structure(case, segment_id, markup):
+    """An entry's public structure, without its own block ID and markup."""
+    parsed = parse_speech_markup(
+        markup,
+        expected_segment_id=segment_id,
+        expected_text=_segment_spoken(case, segment_id),
+    )
+    return {
+        key: value
+        for key, value in parsed.public().items()
+        if key not in {"segment_id", "xml"}
+    }
+
+
+def _freeze(case, revision_id):
+    snapshot: dict = {}
+    with case["services"]["database"].session() as session:
+        plans.freeze_performance_snapshot(session, revision_id, snapshot)
+    return snapshot
+
+
+def test_a_split_carries_an_xml_plan_without_a_new_review(case):
+    adopted = _adopted_xml(case)
+    first, middle, last = case["segment_ids"]
+    result = _revise(
+        case, case["revision_id"], action="split", segment_id=last, cursor=18,
+        text_layer="display",
+    )
+    assert result["review_required"]["performance"] is False
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["status"] == "adopted" and not carried["stale"]
+    assert carried["carried_from_id"] == adopted["id"]
+    assert carried["plan_revision_id"] == result["plan_revision_id"]
+    assert [item["id"] for item in carried["items"]] == result["segment_ids"]
+    source, items = _items(adopted), _items(carried)
+    # Each half's entry is the markup the split wrote for it.
+    for half in result["lineage"][last]:
+        assert items[half]["speech_xml"] == _segment_markup(case, half)
+    # Every untouched block keeps its entry with only the block ID changed.
+    for old in (first, middle):
+        (new,) = result["lineage"][old]
+        assert items[new]["speech_xml"] == source[old]["speech_xml"].replace(
+            f'id="{old}"', f'id="{new}"'
+        )
+        assert items[new]["annotation"] == source[old]["annotation"]
+    snapshot = _freeze(case, result["plan_revision_id"])
+    assert snapshot["performance_snapshot"]["id"] == carried["id"]
+    for item in carried["items"]:
+        assert plans.speech_markup_for_segment(
+            snapshot, item["id"], item["spoken_text"]
+        ) is not None
+
+
+def test_a_merge_carries_an_xml_plan_without_a_new_review(case):
+    adopted = _adopted_xml(case)
+    first, middle, last = case["segment_ids"]
+    result = _revise(
+        case, case["revision_id"], action="merge",
+        left_segment_id=first, right_segment_id=middle,
+    )
+    assert result["review_required"]["performance"] is False
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["status"] == "adopted" and not carried["stale"]
+    assert carried["carried_from_id"] == adopted["id"]
+    (merged,) = result["lineage"][first]
+    assert result["lineage"][middle] == [merged]
+    source, items = _items(adopted), _items(carried)
+    assert items[merged]["speech_xml"] == _segment_markup(case, merged)
+    (new_last,) = result["lineage"][last]
+    assert items[new_last]["speech_xml"] == source[last]["speech_xml"].replace(
+        f'id="{last}"', f'id="{new_last}"'
+    )
+    snapshot = _freeze(case, result["plan_revision_id"])
+    for item in carried["items"]:
+        assert plans.speech_markup_for_segment(
+            snapshot, item["id"], item["spoken_text"]
+        ) is not None
+
+
+def test_a_batch_of_edits_carries_an_xml_plan(case):
+    adopted = _adopted_xml(case)
+    first, middle, last = case["segment_ids"]
+    revision = case["revision_id"]
+    response = case["client"].post(
+        f"/api/v1/sessions/{case['session_id']}/generation-plan/topology/batch",
+        json={
+            "expected_revision_id": revision,
+            "operations": [
+                {"action": "split", "segment_id": last, "cursor": 18},
+                {"action": "merge", "left_segment_id": first, "right_segment_id": middle},
+            ],
+        },
+        headers={
+            **case["headers"],
+            "If-Match": f'"{revision}"',
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+    )
+    assert response.status_code == 201, response.get_json()
+    result = response.get_json()
+    assert result["review_required"]["performance"] is False
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["status"] == "adopted" and not carried["stale"]
+    assert carried["carried_from_id"] == adopted["id"]
+    # The merge and the two halves: one entry for every block.
+    assert carried["total"] == result["segment_count"]
+    assert carried["review_segment_count"] == 0
+    _freeze(case, result["plan_revision_id"])
+
+
+def test_a_split_then_merge_returns_the_original_markup(case):
+    # A plain XML entry: the split writes each half's markup, the merge joins
+    # them back, and the carried entry must read as the one it came from.
+    first, middle, last = case["segment_ids"]
+    plan = create(case, annotation_format="xml")
+    items = [
+        {
+            "segment_id": identifier,
+            "speech_xml": f'<segment id="{identifier}">{text}</segment>',
+        }
+        for identifier, text in zip(
+            (first, middle, last),
+            (
+                "The request was rejected.",
+                "Yet this defeat would be temporary.",
+                "Membership doubled soon afterwards.",
+            ),
+            strict=True,
+        )
+    ]
+    edited = case["post"](
+        "/" + plan["id"],
+        {"expected_version": plan["version"], "items": items},
+        method="patch",
+    )
+    assert edited.status_code == 200, edited.get_json()
+    adopted = adopt(case, get(case, plan))
+    split = _revise(
+        case, case["revision_id"], action="split", segment_id=last, cursor=18,
+        text_layer="display",
+    )
+    left, right = split["lineage"][last]
+    merged = _revise(
+        case, split["plan_revision_id"], action="merge",
+        left_segment_id=left, right_segment_id=right,
+    )
+    (new,) = merged["lineage"][left]
+    carried = get(case, {"id": merged["carried_performance_plan_id"]})
+    original = _items(adopted)[last]["speech_xml"]
+    assert _entry_structure(case, new, _items(carried)[new]["speech_xml"]) == (
+        _entry_structure(case, last, original)
+    )
+
+
+def test_a_split_of_a_legacy_plan_marks_only_the_new_blocks_for_review(case):
+    adopted = _adopted(case)
+    first, middle, last = case["segment_ids"]
+    result = _revise(
+        case, case["revision_id"], action="split", segment_id=last, cursor=10,
+        text_layer="display",
+    )
+    assert result["review_required"]["performance"] is True
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["status"] == "adopted" and carried["stale"]
+    assert carried["carried_from_id"] == adopted["id"]
+    halves = result["lineage"][last]
+    assert carried["review_segment_count"] == 2
+    assert {segment["id"] for segment in carried["review_segments"]} == set(halves)
+    source, items = _items(adopted), _items(carried)
+    for old in (first, middle):
+        (new,) = result["lineage"][old]
+        assert items[new]["annotation"] == source[old]["annotation"]
+
+
+def test_a_split_carries_a_stale_plan_block_by_block(case):
+    adopted = _adopted_xml(case)
+    first, middle, last = case["segment_ids"]
+    # One fitted edit and one that needs review, as the stale-plan tests use.
+    _change(case, 0, text="The request was firmly rejected.")
+    _change(case, 1, text="Temporary.")
+    source = get(case, adopted)
+    assert source["stale"] and [segment["id"] for segment in source["review_segments"]] == [middle]
+    result = _revise(
+        case, case["revision_id"], action="split", segment_id=last, cursor=18,
+        text_layer="display",
+    )
+    assert result["review_required"]["performance"] is True
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["stale"] and carried["carried_from_id"] == adopted["id"]
+    (new_middle,) = result["lineage"][middle]
+    assert [segment["id"] for segment in carried["review_segments"]] == [new_middle]
+    items = _items(carried)
+    for half in result["lineage"][last]:
+        assert items[half]["speech_xml"] == _segment_markup(case, half)
+
+
+def test_a_split_of_a_block_that_needs_review_stays_in_review(case):
+    adopted = _adopted_xml(case)
+    middle = case["segment_ids"][1]
+    _change(case, 1, speaker="B")
+    assert get(case, adopted)["review_segment_count"] == 1
+    result = _revise(
+        case, case["revision_id"], action="split", segment_id=middle, cursor=5,
+        text_layer="display",
+    )
+    assert result["review_required"]["performance"] is True
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["carried_from_id"] == adopted["id"]
+    assert carried["review_segment_count"] == 2
+    assert {segment["id"] for segment in carried["review_segments"]} == set(
+        result["lineage"][middle]
+    )
+
+
+def test_a_locked_entry_stays_locked_on_both_halves(case):
+    _adopted_xml(case)
+    first = case["segment_ids"][0]
+    result = _revise(
+        case, case["revision_id"], action="split", segment_id=first, cursor=11,
+        text_layer="display",
+    )
+    items = _items(get(case, {"id": result["carried_performance_plan_id"]}))
+    for half in result["lineage"][first]:
+        assert items[half]["annotation"]["locked"] is True
+
+
+def test_a_carried_legacy_plan_made_before_structure_fields_reviews_only_the_new_blocks(case):
+    adopted = _adopted(case)
+    with case["services"]["database"].session() as session:
+        plan = session.get(m.PerformancePlan, adopted["id"])
+        plan.units_json = [
+            {
+                key: value
+                for key, value in unit.items()
+                if key not in {"speaker", "language", "node_kind", "section_id"}
+            }
+            for unit in plan.units_json
+        ]
+    last = case["segment_ids"][2]
+    result = _revise(
+        case, case["revision_id"], action="split", segment_id=last, cursor=10,
+        text_layer="display",
+    )
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["stale"] and carried["carried_from_id"] == adopted["id"]
+    assert carried["review_segment_count"] == 2
+    assert {segment["id"] for segment in carried["review_segments"]} == set(
+        result["lineage"][last]
+    )
+
+
+def test_a_staged_revision_carries_the_plan(case):
+    adopted = _adopted_xml(case)
+    generation = case["services"]["generation"]
+    with case["services"]["database"].immediate_session() as session:
+        result = generation.revise_topology_in_session(
+            session,
+            case["session_id"],
+            case["revision_id"],
+            {
+                "action": "split",
+                "segment_id": case["segment_ids"][2],
+                "cursor": 18,
+                "text_layer": "display",
+            },
+            activate=False,
+        )
+        carried = session.scalar(
+            select(m.PerformancePlan).where(
+                m.PerformancePlan.plan_revision_id == result["plan_revision_id"],
+                m.PerformancePlan.status == "adopted",
+            )
+        )
+        assert carried is not None
+        assert carried.settings_json["carried_from_plan_id"] == adopted["id"]
+        assert [unit["id"] for unit in carried.units_json] == result["segment_ids"]

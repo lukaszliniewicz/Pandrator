@@ -147,8 +147,13 @@ def copy_unchanged_annotations(
 
 
 def _reviewed_annotations(session, revision_id: str) -> dict:
-    """Read and validate one adopted plan once per topology operation."""
+    """The adopted plan's entries that hold on this revision, read once per operation.
+
+    All of a plan that fits the revision; of a stale plan, the entries its
+    per-block judgement keeps (unchanged blocks and edits that still fit).
+    """
     from .performance_annotations import plan_annotations as _annotations
+    from .performance_validity import plan_validity
     from .speech_plan_context import plan_signature
 
     adopted = session.scalar(
@@ -157,11 +162,17 @@ def _reviewed_annotations(session, revision_id: str) -> dict:
             m.PerformancePlan.status == "adopted",
         )
     )
-    if adopted is not None and adopted.base_signature == plan_signature(
-        session, revision_id
-    ):
-        return _annotations(session, adopted)
-    return {}
+    if adopted is None:
+        return {}
+    annotations = _annotations(session, adopted)
+    if adopted.base_signature == plan_signature(session, revision_id):
+        return annotations
+    return {
+        key: entry["annotation"]
+        for key, entry in plan_validity(
+            session, adopted, revision_id, annotations=annotations
+        ).entries.items()
+    }
 
 
 def effective_markup(

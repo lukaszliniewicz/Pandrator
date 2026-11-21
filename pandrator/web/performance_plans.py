@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import secrets
 import xml.etree.ElementTree as ET
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -1273,6 +1273,12 @@ def _adopted_plan(session, revision_id: str) -> m.PerformancePlan | None:
     )
 
 
+def adopted_plan_id(session, revision_id: str) -> str | None:
+    """The ID of the plan adopted on ``revision_id``, if any."""
+    plan = _adopted_plan(session, revision_id)
+    return plan.id if plan is not None else None
+
+
 def _moved_markup(
     xml: str, old_id: str, new_id: str, text: str, characters: list[dict[str, Any]]
 ) -> str:
@@ -1289,22 +1295,66 @@ def _moved_markup(
     return remap_markup(xml, new_id, text, characters)
 
 
+def _derived_record(
+    target: m.GenerationSegment,
+    spoken: str,
+    parents: list[str],
+    usable: Mapping[str, Mapping[str, Any]],
+    characters: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """The entry of a block made from other blocks, or ``None``.
+
+    A split, merge or re-segmentation writes the new block's own markup as a
+    slice or join of its parents' effective markup, which is the parents'
+    entries when each has one that holds. Only then is the block's own markup
+    the reviewed casting, so only then does it become the block's entry. A
+    lock on any parent is kept; a reason is kept when the parents share it.
+    """
+    entries = [usable.get(parent) for parent in parents]
+    if not entries or any(entry is None or record_markup(entry) is None for entry in entries):
+        return None
+    xml = (target.speech_plan_json or {}).get("speech_xml")
+    if not isinstance(xml, str) or not xml:
+        return None
+    reasons = {str(entry.get("reason") or "") for entry in entries if entry is not None}
+    try:
+        return normalized_record(
+            spoken,
+            target.id,
+            {
+                "speech_xml": xml,
+                "locked": any(entry.get("locked") is True for entry in entries if entry is not None),
+                "reason": reasons.pop() if len(reasons) == 1 else "",
+            },
+            characters,
+        )
+    except ValueError:
+        return None
+
+
 def carry_adopted_plan(
     session, source_revision_id: str, revision_id: str, lineage: dict[str, list[str]]
 ) -> m.PerformancePlan | None:
-    """Adopt the restore target's plan on the revision a restore just wrote.
+    """Adopt the source revision's plan on a revision derived from it.
 
-    A restore copies its target's blocks exactly, so the target's adopted plan
-    fits them as it is; only the block IDs change. Nothing is remapped onto
-    different words or structure: a block that no longer matches its entry
-    carries nothing, and the restored revision then needs a plan of its own
-    as before.
+    ``lineage`` maps each source block to the blocks it became. The plan
+    follows the blocks one at a time:
 
-    A plan stale on its own revision (an edit made after adoption) carries
-    stale in the same way: each entry stays on the text it was made for, the
-    carried plan keeps the source's ``base_signature``, and ``plan_validity``
-    judges it per block on the new revision, so it reports the same changed
-    and review blocks as the source.
+    - A block that became exactly one block with the same spoken text keeps
+      its unit and entry; only the block ID changes. A plan stale on its own
+      revision (an edit made after adoption) moves the same way: each entry
+      stays on the text it was made for, so ``plan_validity`` judges the new
+      revision as it judged the source.
+    - A block made from other blocks (a split half, a merge, a re-segmented
+      range) takes its entry from its own speech markup (``_derived_record``).
+    - A block that gets no entry gets no unit, which the per-block judgement
+      reports as needing review.
+
+    The carried plan fits its revision as a whole only when the source plan
+    was current and every spoken block got an entry. Otherwise it keeps the
+    source's ``base_signature`` and is judged per block. Nothing is carried
+    when no block got an entry, or when an incomplete plan would read as
+    fitting its revision.
     """
     source = _adopted_plan(session, source_revision_id)
     if source is None:
@@ -1312,22 +1362,72 @@ def carry_adopted_plan(
     source_signature, source_hashes = plan_signature_parts(session, source_revision_id)
     stale = source.base_signature != source_signature
     signature, block_hashes = plan_signature_parts(session, revision_id)
-    segments = {
-        row.id: row
-        for row in session.scalars(
-            select(m.GenerationSegment).where(m.GenerationSegment.plan_revision_id == revision_id)
-        )
-    }
     characters = _characters(source)
     annotations = _annotations(session, source)
-    units: list[dict[str, Any]] = []
-    records: dict[str, dict[str, Any]] = {}
-    for unit in source.units_json:
-        children = lineage.get(str(unit["id"])) or []
-        target = segments.get(children[0]) if len(children) == 1 else None
-        spoken = str(unit["spoken_text"])
-        if target is None:
+    # The entries that hold on the source revision as it is now.
+    usable: Mapping[str, Mapping[str, Any]] = annotations
+    if stale:
+        usable = {
+            key: entry["annotation"]
+            for key, entry in plan_validity(
+                session, source, source_revision_id, annotations=annotations
+            ).entries.items()
+        }
+    source_units = _unit_map(source)
+    source_spoken = {
+        row.id: row.optimized_text or row.text or ""
+        for row in session.execute(
+            select(
+                m.GenerationSegment.id,
+                m.GenerationSegment.text,
+                m.GenerationSegment.optimized_text,
+            ).where(m.GenerationSegment.plan_revision_id == source_revision_id)
+        )
+    }
+    targets = {
+        row.id: row
+        for row in session.scalars(
+            select(m.GenerationSegment)
+            .where(m.GenerationSegment.plan_revision_id == revision_id)
+            .order_by(m.GenerationSegment.ordinal)
+        )
+    }
+    parents: dict[str, list[str]] = {}
+    for old, children in lineage.items():
+        for child in children:
+            parents.setdefault(child, []).append(old)
+
+    def moved_from(target: m.GenerationSegment) -> str | None:
+        """The one source block ``target`` is an unchanged copy of."""
+        olds = parents.get(target.id) or []
+        if len(olds) != 1 or len(lineage[olds[0]]) != 1:
             return None
+        spoken = target.optimized_text or target.text or ""
+        return olds[0] if source_spoken.get(olds[0]) == spoken else None
+
+    # A unit for each spoken block of the new revision, as a new plan would
+    # build it, without markup.
+    fresh_units: dict[str, dict[str, Any]] = {
+        target.id: unit
+        for target, unit in _block_units(
+            session,
+            revision_id,
+            [row for row in targets.values() if not row.removed],
+            block_hashes,
+            check_size=False,
+        )
+    }
+    units: dict[str, dict[str, Any]] = {}
+    records: dict[str, dict[str, Any]] = {}
+    copies: set[str] = set()
+    for target in targets.values():
+        old = moved_from(target)
+        if old is None:
+            continue
+        copies.add(target.id)
+        unit = source_units.get(old)
+        if unit is None:
+            continue
         if stale:
             # The unit keeps the text, hash and fields it was planned with, so
             # the new revision is judged exactly as the source was. Its block
@@ -1335,49 +1435,65 @@ def carry_adopted_plan(
             # block keeps the old hash, so ``copy_from_id`` still sees the edit.
             moved = {**deepcopy(unit), "id": target.id, "ordinal": target.ordinal}
             source_hash = unit.get("source_hash")
-            if source_hash and source_hash == source_hashes.get(str(unit["id"])):
+            if source_hash and source_hash == source_hashes.get(old):
                 moved["source_hash"] = block_hashes[target.id]
-        elif target.removed or (target.optimized_text or target.text) != spoken:
-            return None
         else:
-            # The source is current, so the restored blocks are exactly what
-            # its entries were made for: a plan made before block hashes gains
-            # them.
+            # A current plan's blocks are exactly what its entries were made
+            # for, so the unit takes its block's fields as they are now: a
+            # plan made before units recorded a block hash or the structure
+            # fields gains them, and is not sent to review for lacking them
+            # when another block of the carried plan needs one.
             moved = {
                 **deepcopy(unit),
+                **fresh_units.get(target.id, {}),
                 "id": target.id,
                 "ordinal": target.ordinal,
                 "source_hash": block_hashes[target.id],
             }
-        record = deepcopy(annotations.get(str(unit["id"])))
+        spoken = str(unit["spoken_text"])
+        record = deepcopy(annotations.get(old))
         try:
             if isinstance(unit.get("speech_xml"), str):
                 moved["speech_xml"] = _moved_markup(
-                    unit["speech_xml"], str(unit["id"]), target.id, spoken, characters
+                    unit["speech_xml"], old, target.id, spoken, characters
                 )
             if record is not None and (xml := record_markup(record)):
-                record[SPEECH_XML_KEY] = _moved_markup(
-                    xml, str(unit["id"]), target.id, spoken, characters
-                )
+                record[SPEECH_XML_KEY] = _moved_markup(xml, old, target.id, spoken, characters)
         except ValueError:
-            # Markup that no longer validates is not carried; the restore
-            # itself must still succeed.
-            return None
+            # Markup that no longer validates is not carried; the edit that
+            # wrote the revision must still succeed.
+            continue
+        units[target.id] = moved
         if record is not None:
             records[target.id] = record
-        units.append(moved)
+    for target_id, fresh in fresh_units.items():
+        if target_id in copies:
+            continue
+        record = _derived_record(
+            targets[target_id],
+            fresh["spoken_text"],
+            parents.get(target_id) or [],
+            usable,
+            characters,
+        )
+        if record is None:
+            continue
+        units[target_id] = {**fresh, "speech_xml": record_markup(record)}
+        records[target_id] = record
+    complete = not stale and all(key in records for key in fresh_units)
+    if not units or (not complete and source.base_signature == signature):
+        return None
     plan = m.PerformancePlan(
         session_id=source.session_id,
         plan_revision_id=revision_id,
-        # A stale source stays stale in the same way on the new revision.
-        base_signature=source.base_signature if stale else signature,
+        base_signature=signature if complete else source.base_signature,
         settings_json={
             **deepcopy(source.settings_json),
             "carried_from_plan_id": source.id,
             "base_adopted_plan_id": None,
             "base_adopted_plan_version": None,
         },
-        units_json=units,
+        units_json=sorted(units.values(), key=lambda unit: unit["ordinal"]),
         manual_annotations_json=records,
         status="adopted",
         adopted_at=m.utcnow(),

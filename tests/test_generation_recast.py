@@ -342,7 +342,7 @@ def test_recast_is_blocked_when_the_revision_lost_its_speaker_plan(recast_case):
 
 
 def test_recast_is_blocked_on_a_split_of_a_revision_with_an_adopted_speaker_plan(recast_case):
-    from tests.test_performance_plans import _adopted, _set_tts
+    from tests.test_performance_plans import _adopted, _drop_carried_plan, _set_tts
 
     case = recast_case
     adopted = _adopted(case)
@@ -353,11 +353,12 @@ def test_recast_is_blocked_on_a_split_of_a_revision_with_an_adopted_speaker_plan
     assert prepare(case)["preview"]["blocked_reason"] == (
         "No recordings need the selected voice changes."
     )
-    case["services"]["generation"].revise_topology(
+    split = case["services"]["generation"].revise_topology(
         case["session_id"],
         case["revision_id"],
         {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
     )
+    _drop_carried_plan(case, split["plan_revision_id"])
     # The split is the active revision now, and it carries no adopted plan.
     reason = prepare(case)["preview"]["blocked_reason"]
     assert "no adopted speaker plan" in reason

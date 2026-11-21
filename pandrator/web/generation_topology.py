@@ -22,6 +22,7 @@ from .models import (
     GenerationPlan,
     GenerationPlanRevision,
     GenerationSegment,
+    PerformancePlan,
     SessionRecord,
     utcnow,
 )
@@ -1255,8 +1256,9 @@ class GenerationTopologyService:
         lineage: dict[str, list[str]],
         boundary_mapping: dict[tuple[str, str], str | None] | None,
         activate: bool,
-    ) -> None:
-        """Carry takes and references forward, then activate the revision."""
+        plan_source_id: str,
+    ) -> PerformancePlan | None:
+        """Carry takes, references and the speaker plan forward, then activate the revision."""
 
         self._clone_available_takes_batch(session, take_copy_pairs)
         operation_json["lineage"] = lineage
@@ -1264,6 +1266,10 @@ class GenerationTopologyService:
         revision.content_hash = stable_hash({"parent_revision_id": current.id, "operation": operation_json, "segments": persisted_values})
         session.flush()
         _propagate_segment_speech_references(session, session_id, lineage)
+        # After the references, which a block's signature hash covers.
+        from .performance_plans import carry_adopted_plan
+
+        carried = carry_adopted_plan(session, plan_source_id, revision.id, lineage)
         if activate:
             plan.active_revision_id = revision.id
             plan.updated_at = utcnow()
@@ -1278,6 +1284,7 @@ class GenerationTopologyService:
             from .sound_project_revisions import rebase_sound_plan
 
             rebase_sound_plan(session, session_id, revision.id, boundary_mapping)
+        return carried
 
     def topology_batch(
         self,
@@ -1375,11 +1382,17 @@ class GenerationTopologyService:
             mappings.append(mapping)
         elif action == "resegment":
             from .audiobook_resegmentation import prepare_resegmentation
+            from .performance_plans import adopted_plan_id
             from .speech_plan_workspace import plan_signature
             replacement_by_old, mappings = prepare_resegmentation(
                 self, session, session_id, current, active_segments, operation,
             )
-            operation = {**operation, "draft": True, "base_signature": plan_signature(session, current.id)}
+            operation = {
+                **operation,
+                "draft": True,
+                "base_signature": plan_signature(session, current.id),
+                "base_adopted_plan_id": adopted_plan_id(session, current.id),
+            }
         else:
             target_id = str(operation.get("target_revision_id") or "").strip()
             target = session.get(GenerationPlanRevision, target_id)
@@ -1387,11 +1400,21 @@ class GenerationTopologyService:
                 raise KeyError(target_id)
             revision_source = target
             if (target.operation_json or {}).get("draft"):
+                from .performance_plans import adopted_plan_id
                 from .source_management import assert_session_idle
                 from .speech_plan_workspace import plan_signature
                 assert_session_idle(session, session_id)
                 if target.parent_revision_id != current.id or (target.operation_json or {}).get("base_signature") != plan_signature(session, current.id):
                     raise RevisionConflict("The audiobook changed after this draft was prepared. Create a fresh resegmentation draft.")
+                draft_operation = target.operation_json or {}
+                # Drafts prepared before this key existed are not checked.
+                if "base_adopted_plan_id" in draft_operation and draft_operation[
+                    "base_adopted_plan_id"
+                ] != adopted_plan_id(session, current.id):
+                    raise RevisionConflict(
+                        "The speaker plan changed after this draft was prepared. "
+                        "Create a fresh resegmentation draft."
+                    )
             target_segments = list(
                 session.scalars(
                     select(GenerationSegment)
@@ -1561,7 +1584,7 @@ class GenerationTopologyService:
                 if len(children) == 1:
                     boundary_mapping[(source_id, "before_segment")] = children[0]
                     boundary_mapping[(source_id, "after_segment")] = children[0]
-        self._finish_revision(
+        carried = self._finish_revision(
             session,
             session_id,
             plan,
@@ -1573,17 +1596,13 @@ class GenerationTopologyService:
             lineage=lineage,
             boundary_mapping=boundary_mapping,
             activate=activate,
+            plan_source_id=revision_source.id,
         )
-        carried = None
-        review_performance = True
-        if action == "restore" and activate:
-            # A restore is an exact copy of its target, so the target's adopted
-            # speaker and delivery plan still fits and needs no new review,
-            # except for the blocks that already needed one on the target.
-            from .performance_plans import carry_adopted_plan, has_review_blocks
+        # The speaker plan follows the blocks through every edit. A review is
+        # needed when nothing was carried or a carried block has no entry.
+        from .performance_plans import has_review_blocks
 
-            carried = carry_adopted_plan(session, revision_source.id, revision.id, lineage)
-            review_performance = carried is None or has_review_blocks(session, carried)
+        review_performance = carried is None or has_review_blocks(session, carried)
         return {
             "id": plan.id,
             "lineage": lineage,
@@ -1747,7 +1766,7 @@ class TopologyBatch:
                 boundary_mapping[(original, "before_segment")] = saved[row.id]
             for original in self.ends[row.id]:
                 boundary_mapping[(original, "after_segment")] = saved[row.id]
-        service._finish_revision(
+        carried = service._finish_revision(
             self.session,
             self.session_id,
             self.plan,
@@ -1759,13 +1778,15 @@ class TopologyBatch:
             lineage=lineage,
             boundary_mapping=boundary_mapping,
             activate=True,
+            plan_source_id=self.current.id,
         )
         affected = [saved[row.id] for row in self.rows if row.id in self.created]
-        # Only a restore carries the adopted speaker plan to the new revision
-        # (``carry_adopted_plan``); a batch holds only splits and merges, which
-        # carry none, as a single split or merge does not. The new revision has
-        # no adopted plan, so it needs one: ``performance`` is true for the same
-        # reason as a restore that carries nothing (``carried is None``).
+        # The speaker plan follows the blocks through a batch as it does
+        # through a single edit. A review is needed when nothing was carried
+        # or a carried block has no entry.
+        from .performance_plans import has_review_blocks
+
+        review_performance = carried is None or has_review_blocks(self.session, carried)
         return {
             "id": self.plan.id,
             "plan_revision_id": revision.id,
@@ -1778,5 +1799,6 @@ class TopologyBatch:
             "affected_segment_ids": affected,
             "segment_count": len(new_segments),
             "is_draft": False,
-            "review_required": {"performance": True, "changed_audio": len(affected)},
+            "review_required": {"performance": review_performance, "changed_audio": len(affected)},
+            "carried_performance_plan_id": carried.id if carried is not None else None,
         }

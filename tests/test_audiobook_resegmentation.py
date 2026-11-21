@@ -375,3 +375,70 @@ def test_cut_after_a_closing_corner_bracket_is_a_sentence_end(case):
     head = rows(case, split.get_json()["plan_revision_id"])[0]
     assert head.text == "「はい。」"
     assert head.silence_after_ms == 250
+
+
+def test_adopting_a_draft_carries_the_plan_through_the_range(case):
+    from tests.test_performance_plans import _adopted_xml, _items, get
+
+    adopted = _adopted_xml(case)
+    first, middle, last = case["segment_ids"]
+    draft = topology(
+        case,
+        case["revision_id"],
+        action="resegment",
+        segment_ids=[first],
+        boundaries=[11],
+    ).get_json()
+    assert draft["is_draft"]
+    restored = topology(
+        case,
+        case["revision_id"],
+        action="restore",
+        target_revision_id=draft["plan_revision_id"],
+    )
+    assert restored.status_code == 201, restored.get_json()
+    result = restored.get_json()
+    assert result["review_required"]["performance"] is False
+    carried = get(case, {"id": result["carried_performance_plan_id"]})
+    assert carried["status"] == "adopted" and not carried["stale"]
+    assert carried["carried_from_id"] == draft["carried_performance_plan_id"]
+    source, items = _items(get(case, adopted)), _items(carried)
+    markup = {
+        row.id: (row.speech_plan_json or {}).get("speech_xml")
+        for row in rows(case, result["plan_revision_id"])
+    }
+    # The ranges outside the draft keep their entries.
+    for old in (middle, last):
+        (in_draft,) = draft["lineage"][old]
+        (new,) = result["lineage"][in_draft]
+        assert items[new]["speech_xml"] == source[old]["speech_xml"].replace(
+            f'id="{old}"', f'id="{new}"'
+        )
+    # The two blocks the draft made carry the markup it wrote for them.
+    for in_draft in draft["lineage"][first]:
+        (new,) = result["lineage"][in_draft]
+        assert items[new]["speech_xml"] == markup[new]
+
+
+def test_a_draft_is_refused_after_another_plan_is_adopted(case):
+    from tests.test_performance_plans import _adopted_xml, create
+
+    _adopted_xml(case)
+    draft = topology(
+        case,
+        case["revision_id"],
+        action="resegment",
+        segment_ids=[case["segment_ids"][0]],
+        boundaries=[11],
+    ).get_json()
+    assert draft["is_draft"]
+    # A different plan adopted on the revision the draft was prepared from.
+    adopt(case, create(case, annotation_format="xml"))
+    refused = topology(
+        case,
+        case["revision_id"],
+        action="restore",
+        target_revision_id=draft["plan_revision_id"],
+    )
+    assert refused.status_code == 409, refused.get_json()
+    assert "speaker plan changed" in str(refused.get_json())
