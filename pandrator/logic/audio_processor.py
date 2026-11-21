@@ -20,6 +20,7 @@ from .media_input_policy import (
     CONCAT_MEMBER_OPTIONS,
     GENERATED_CONCAT_INPUT_OPTIONS,
     LOCAL_MEDIA_INPUT_OPTIONS,
+    media_work_timeout_seconds,
 )
 
 
@@ -103,7 +104,13 @@ def save_output(
     ffmpeg_command.append(output_path)
 
     try:
-        subprocess.run(ffmpeg_command, check=True, capture_output=True, text=True)
+        subprocess.run(
+            ffmpeg_command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=media_work_timeout_seconds(current_time_ms / 1000),
+        )
         
         # Apply metadata and cover art
         _save_metadata_and_cover(output_path, output_format, metadata, cover_image_path)
@@ -268,7 +275,13 @@ def _add_chapters_to_m4b(
             "-c", "copy", "-y", temp_output_path
         ]
         
-        subprocess.run(ffmpeg_command, check=True, capture_output=True, text=True)
+        subprocess.run(
+            ffmpeg_command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=media_work_timeout_seconds(total_duration_sec),
+        )
         os.replace(temp_output_path, file_path)
         logging.info(f"Successfully added {len(chapters)} chapters to {file_path}")
         return True

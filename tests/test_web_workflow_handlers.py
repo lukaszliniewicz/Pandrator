@@ -6286,6 +6286,34 @@ A single reviewed cue.
             )
         self.assertEqual(0, exported)
 
+    def test_source_probe_timeout_is_reported_as_an_inspection_failure(self):
+        voiceover = self.sessions.create("Probe timeout", workflow_kind="voiceover")
+        session_dir = self.paths.sessions / voiceover.storage_key
+        session_dir.mkdir()
+        media_path = session_dir / "source.mp4"
+        media_path.write_bytes(b"not really a video")
+        self.artifacts.register(media_path, kind="source", role="upload", session_id=voiceover.id)
+        dubbing_path = session_dir / "voiceover.wav"
+        Sine(660).to_audio_segment(duration=800).apply_gain(-12).export(dubbing_path, format="wav").close()
+        self.artifacts.register(dubbing_path, kind="audio", role="assembled_audio", session_id=voiceover.id)
+
+        with (
+            mock.patch.dict(os.environ, {"PANDRATOR_FFPROBE_EXE": "ffprobe-test"}),
+            mock.patch(
+                "pandrator.logic.dubbing.audio_sync.media_has_audio_stream",
+                side_effect=subprocess.TimeoutExpired(["ffprobe"], 60),
+            ),
+            self.assertRaisesRegex(ValueError, "could not be inspected"),
+        ):
+            self.handlers.export(
+                {
+                    "session_id": voiceover.id,
+                    "settings": {"export_mode": "media", "audio_mode": "mixed"},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

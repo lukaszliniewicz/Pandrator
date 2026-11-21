@@ -8,7 +8,11 @@ import re
 import threading
 from dataclasses import dataclass
 
-from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+from pandrator.logic.media_input_policy import (
+    LOCAL_MEDIA_INPUT_OPTIONS,
+    MEDIA_PROBE_TIMEOUT_SECONDS,
+    media_work_timeout_seconds,
+)
 
 from .media_process import (
     MediaProcessCancelled,
@@ -119,6 +123,9 @@ def generate_waveform_peaks(
         ],
         cancel_event=cancel_event,
         capture_stdout=True,
+        timeout_seconds=media_work_timeout_seconds(
+            window_duration_ms / 1000, allowance_seconds=MEDIA_PROBE_TIMEOUT_SECONDS
+        ),
     )
     if cancel_event is not None and cancel_event.is_set():
         raise MediaProcessCancelled("Waveform generation was canceled.")

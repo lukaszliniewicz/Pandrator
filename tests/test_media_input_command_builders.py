@@ -178,16 +178,21 @@ def test_media_command_builders_restrict_each_file_input(
 
 def test_audio_sync_speedup_commands_restrict_inputs(tmp_path, monkeypatch):
     captured: list[list[str]] = []
+    timeouts: list[float | None] = []
     marker = object()
 
     class FakeAudioSegment:
+        def __len__(self) -> int:
+            return 2000
+
         def export(self, _path: Path, *, format: str) -> None:
             assert format == "wav"
 
     monkeypatch.setattr(AudioSegment, "from_wav", lambda _path: marker)
 
-    def capture_audio_segment(command, **_kwargs):
+    def capture_audio_segment(command, **kwargs):
         captured.append(list(command))
+        timeouts.append(kwargs.get("timeout"))
         return SimpleNamespace()
 
     result = audio_sync._speed_up_audio_segment(
@@ -198,6 +203,7 @@ def test_audio_sync_speedup_commands_restrict_inputs(tmp_path, monkeypatch):
         run_func=capture_audio_segment,
     )
     assert result is marker
+    assert timeouts == [602.0]
     _assert_local_inputs(captured[0], [str(tmp_path / "temp_speedup_input.wav")])
     assert captured[0][-1] == str(tmp_path / "temp_speedup_output.wav")
 

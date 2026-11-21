@@ -7,7 +7,10 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable
 
-from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+from pandrator.logic.media_input_policy import (
+    LOCAL_MEDIA_INPUT_OPTIONS,
+    MEDIA_PROBE_TIMEOUT_SECONDS,
+)
 
 from .audio_assembly import preferred_pcm_format
 from .media_process import MediaProcessError, resolve_ffprobe_executable, run_media_process
@@ -68,6 +71,7 @@ def _probe_audio_geometry(
             str(path),
         ],
         capture_stdout=True,
+        timeout_seconds=MEDIA_PROBE_TIMEOUT_SECONDS,
     )
     try:
         payload = json.loads(result.stdout)

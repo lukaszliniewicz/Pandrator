@@ -10,6 +10,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
+from pandrator.logic.media_input_policy import media_work_timeout_seconds
+
 from .export_inputs import (
     resolve_export_inputs,
     select_generated_audio,
@@ -201,7 +203,7 @@ def export(
                     source_media_path,
                     ffprobe_executable=ffprobe_executable,
                 )
-            except subprocess.CalledProcessError as error:
+            except subprocess.SubprocessError as error:
                 raise ValueError(
                     "The source video soundtrack could not be inspected. "
                     "Verify the source file and submit the export again."
@@ -516,7 +518,13 @@ def export(
                         max(reference_probe["duration"], speech_probe["duration"]) * 1000,
                     ), label="standalone audio mix")
                     subprocess.run(
-                        command, check=True, capture_output=True, text=True
+                        command,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=media_work_timeout_seconds(
+                            max(reference_probe["duration"], speech_probe["duration"])
+                        ),
                     )
                     parents = [upload_audio.id, dubbing_audio.id]
                     role = "export_mixed_audio"

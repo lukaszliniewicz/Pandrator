@@ -293,3 +293,33 @@ def test_truncated_pcm_uses_only_restricted_native_fallback(tmp_path, monkeypatc
     assert decoder.load_local_audio_segment(path).raw_data == b"\x01\x00"
     assert runner.call_count == 2
     no_pydub_native.assert_not_called()
+
+
+def test_native_probe_and_decode_launches_carry_deadlines(tmp_path, monkeypatch):
+    source = tmp_path / "clip.mp3"
+    source.write_bytes(b"not a wav")
+    timeouts = []
+
+    def fake_run(command, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        if len(timeouts) == 1:
+            stdout = json.dumps(
+                {
+                    "streams": [
+                        {
+                            "sample_fmt": "s16",
+                            "bits_per_sample": 16,
+                            "sample_rate": "8000",
+                            "channels": 1,
+                        }
+                    ]
+                }
+            ).encode()
+        else:
+            stdout = b"\x00\x00" * 8
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+
+    monkeypatch.setattr(decoder, "run_cancellable", fake_run)
+    segment = decoder.load_local_audio_segment(source)
+    assert segment.raw_data == b"\x00\x00" * 8
+    assert timeouts == [60.0, 3600.0]

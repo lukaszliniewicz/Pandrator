@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from ..media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+from ..media_input_policy import (
+    LOCAL_MEDIA_INPUT_OPTIONS,
+    MEDIA_PROBE_TIMEOUT_SECONDS,
+    media_work_timeout_seconds,
+)
 from .models import AudioAlignmentBlock
 from .srt_utils import parse_srt
 
@@ -468,6 +472,7 @@ def _speed_up_audio_segment(
             ],
             check=True,
             capture_output=True,
+            timeout=media_work_timeout_seconds(len(audio_segment) / 1000),
         )
         return AudioSegment.from_wav(temp_output)
     finally:
@@ -1548,6 +1553,7 @@ def media_has_audio_stream(
         check=True,
         capture_output=True,
         text=True,
+        timeout=MEDIA_PROBE_TIMEOUT_SECONDS,
     )
     return bool(str(getattr(result, "stdout", "") or "").strip())
 
