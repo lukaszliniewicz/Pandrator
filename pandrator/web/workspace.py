@@ -2265,6 +2265,22 @@ class GenerationService(GenerationHistoryReader):
                 "This generation is already an automatic second-pass result; "
                 "timing repair runs at most once."
             )
+        # The automatic pass skips casting and performance voiceovers
+        # (``select_second_pass``): a repair replaces blocks, and the speaker
+        # plan is reviewed block by block. The explicit request follows the
+        # same rule, for the preview too, so it never offers a repair that
+        # would activate a revision without its speaker plan.
+        from .generation_performance_snapshot import performance_runtime_settings
+
+        directed = performance_runtime_settings(snapshot)
+        if directed.get("performance_enabled") or directed.get("casting_enabled"):
+            raise ValueError(
+                "Timing repair is not available for a voiceover generated with "
+                "casting or performance directions. A repair replaces speech "
+                "blocks, and the speaker plan is reviewed block by block. Split "
+                "the affected blocks in the speech plan, review the speaker "
+                "plan, and regenerate them instead."
+            )
         # An explicit request is a separate decision from the run's frozen
         # automatic-pass flag: it uses the thresholds resolved right now, so a
         # finished voiceover can be repaired without re-synthesising it.

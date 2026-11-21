@@ -58,9 +58,10 @@ For comparison, tools panes and draft handling, see [Reviewing and previewing wo
 
 [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases) has the
 latest downloads, checksums, and release notes. Read the
-[0.15.0 release notes](release-notes-0.15.0.md) and [detailed changes](release-changes-0.15.0.md) for the current release.
+[0.15.1 release notes](release-notes-0.15.1.md) and [detailed changes](release-changes-0.15.1.md) for the current release.
 The [next release notes](release-notes-next.md) track further development.
-Earlier changes are described in the [0.14.5 notes](release-notes-0.14.5.md)
+Earlier changes are described in the [0.15.0 notes](release-notes-0.15.0.md)
+and [detailed changes](release-changes-0.15.0.md), the [0.14.5 notes](release-notes-0.14.5.md)
 and [detailed changes](release-changes-0.14.5.md), the [0.14.4 notes](release-notes-0.14.4.md)
 and [detailed changes](release-changes-0.14.4.md),
 [0.14.3 notes](release-notes-0.14.3.md)

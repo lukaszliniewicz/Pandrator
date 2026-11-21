@@ -328,8 +328,11 @@ refreshed neighbour that is longer than the take it replaces rejects that block'
 repair; raw take duration is compared with no tolerance, so even a small growth is
 refused rather than assuming cue slack. Other blocks can still be repaired.
 The original takes and plan remain available. Automatic regroup is still
-disabled with semantic context, and performance/casting-bound plans require
-explicit review and regeneration because their directions are bound to IDs.
+disabled with semantic context. A voiceover generated with casting or
+performance directions is not repaired or regrouped at all, automatically or
+on request (`repair-timing` answers `409 invalid_state`), because its speaker
+plan is reviewed block by block: split the block in the speech plan, review the
+speaker plan and regenerate instead.
 
 ## MCP and API
 

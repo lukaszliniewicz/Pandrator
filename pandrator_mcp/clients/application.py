@@ -179,6 +179,7 @@ _APPLICATION_CONFLICT_CODES = frozenset(
         "evidence_conflict",
         "export_conflict",
         "generation_admission_stale_inputs",
+        "generation_preflight_required",
         "generation_unavailable",
         "invalid_artifact",
         "invalid_state",

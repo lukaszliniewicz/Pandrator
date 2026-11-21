@@ -25,6 +25,7 @@ from .artifacts import sha256_file
 from .assembly_silences import frozen_silences
 from .audio_assembly import silence_frame_offsets
 from .export_inputs import ExportInputs
+from .export_names import export_file_stem
 from .export_publication import publish_video_export
 from .models import (
     Artifact,
@@ -455,8 +456,6 @@ def export_book(
     cancel_event: Event,
 ) -> dict:
     """Publish synchronized book subtitles and optional video without changing audio."""
-    from werkzeug.utils import secure_filename
-
     from pandrator.logic.book_cues import (
         BookPassage,
         clip_book_cues,
@@ -636,7 +635,7 @@ def export_book(
             "cue_artifact_id": cue_artifact.id,
         }
         parents = [audio.id, cue_artifact.id, *dict.fromkeys(used_caches)]
-        name = secure_filename(inputs.record.name) or inputs.record.storage_key
+        name = export_file_stem(inputs.record.name, inputs.record.storage_key)
         if preview:
             name += "-preview"
         subtitle_format = str(settings.get("subtitle_format") or "srt")

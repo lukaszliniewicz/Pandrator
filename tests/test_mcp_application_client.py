@@ -1456,6 +1456,55 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertNotIn(host_path, str(unknown.exception))
         self.assertEqual({"status": 409}, unknown.exception.details)
 
+    def test_workflow_plan_preflight_conflict_keeps_the_application_reason(self):
+        reason = (
+            "This workflow needs a prepared speech plan before it can run. "
+            "Prepare the speech plan and plan the workflow again."
+        )
+        session = FakeSession([
+            FakeResponse(409, {"error": {
+                "code": "generation_preflight_required",
+                "message": reason,
+            }}),
+            FakeResponse(409, {"error": {
+                "code": "generation_preflight_required",
+                "message": reason,
+            }}),
+        ])
+        client = ApplicationClient(
+            local_registry("http://127.0.0.1:8097").bind("local"),
+            CredentialResolver(()), session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        with self.assertRaises(PandratorMcpError) as caught:
+            client.create_workflow_plan(
+                "session-1",
+                target_stage="export",
+                overrides={},
+                expires_in_minutes=15,
+            )
+        # Not a revision race: re-reading does not help, preparing the speech
+        # plan does, so the reason must reach agent context.
+        self.assertEqual("state_conflict", caught.exception.code)
+        self.assertEqual(reason, str(caught.exception))
+        self.assertEqual(
+            {"status": 409, "downstream_code": "generation_preflight_required"},
+            caught.exception.details,
+        )
+        with self.assertRaises(PandratorMcpError) as executing:
+            client.execute_workflow_plan(
+                "plan-1",
+                plan_digest="a" * 64,
+                accepted_confirmations=(),
+                idempotency_key="workflow-plan:execute-1",
+            )
+        self.assertEqual("state_conflict", executing.exception.code)
+        self.assertEqual(reason, str(executing.exception))
+        self.assertEqual(
+            {"status": 409, "downstream_code": "generation_preflight_required"},
+            executing.exception.details,
+        )
+
     def test_bounded_post_uses_csrf_idempotency_and_typed_errors(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(

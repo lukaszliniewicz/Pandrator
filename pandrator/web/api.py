@@ -79,9 +79,9 @@ def create_app(
         app.extensions["pandrator"] = services.extension_mapping()
         from .security_events import SecurityEventSink
 
-        app.extensions["pandrator_security_events"] = SecurityEventSink(
-            os.environ.get("PANDRATOR_SECURITY_LOG")
-        )
+        security_event_sink = SecurityEventSink(os.environ.get("PANDRATOR_SECURITY_LOG"))
+        app.extensions["pandrator_security_events"] = security_event_sink
+        security_event_sink.announce()
         guards = ApiGuards(
             app,
             services,

@@ -221,7 +221,10 @@ Read the export plan before executing it:
 - **Timing repair after generation.** `pandrator_repair_generation_timing`
   checks a completed run with the current thresholds. `preview=true`, the
   default, queues a read-only check and returns a work handle; `preview=false`
-  with an `idempotency_key` queues the repair itself.
+  with an `idempotency_key` queues the repair itself. It is refused
+  (`state_conflict`) for a voiceover generated with casting or performance
+  directions; split the block in the speech plan and review the speaker plan
+  instead.
 - **Overlapping cues.** New transcriptions no longer produce overlapping cues.
   For subtitles made earlier, set the subtitle setting `clamp_overlaps` to trim
   each cue's end before the next cue starts; the text never changes, and the
