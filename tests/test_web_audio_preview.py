@@ -460,6 +460,24 @@ class AudioPreviewTests(unittest.TestCase):
             job = session.get(Job, response.get_json()["job_id"])
             self.assertEqual("audio.waveform", job.kind)
 
+    def test_bounded_waveform_timeout_falls_back_to_queue(self):
+        from pandrator.web.media_process import MediaProcessTimeout
+
+        source = self._source("waveform-timeout.wav")
+        with mock.patch.object(
+            self.handlers,
+            "generate_waveform",
+            side_effect=MediaProcessTimeout("Media processing exceeded its 601-second timeout."),
+        ):
+            response = self._prepare(
+                f"/api/v1/artifacts/{source.id}/waveform?start_ms=0&end_ms=1000"
+            )
+
+        self.assertEqual(202, response.status_code)
+        with self.database.session() as session:
+            job = session.get(Job, response.get_json()["job_id"])
+            self.assertEqual("audio.waveform", job.kind)
+
     def test_workflow_snapshot_projects_resumed_generation_job_and_segment_progress(
         self,
     ):

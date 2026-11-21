@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Sequence
 
-from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+from pandrator.logic.media_input_policy import (
+    LOCAL_MEDIA_INPUT_OPTIONS,
+    MEDIA_PROBE_TIMEOUT_SECONDS,
+    media_work_timeout_seconds,
+)
 
 
 class MediaProcessCancelled(RuntimeError):
@@ -65,7 +69,10 @@ def _stop_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=2)
+        try:
+            process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            return
 
 
 class _ProgressLog:
@@ -240,6 +247,7 @@ def probe_audio_stream(
         ],
         cancel_event=cancel_event,
         capture_stdout=True,
+        timeout_seconds=MEDIA_PROBE_TIMEOUT_SECONDS,
     )
     try:
         payload = json.loads(result.stdout)
@@ -310,6 +318,7 @@ def find_first_audible_seconds(
             os.devnull,
         ],
         cancel_event=cancel_event,
+        timeout_seconds=media_work_timeout_seconds(bounded_scan),
     )
     starts = re.findall(r"silence_start:\s*([0-9]+(?:\.[0-9]+)?)", result.stderr)
     if not starts or float(starts[0]) > 0.05:

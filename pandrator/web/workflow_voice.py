@@ -20,7 +20,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
-from pandrator.logic.media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+from pandrator.logic.media_input_policy import (
+    LOCAL_MEDIA_INPUT_OPTIONS,
+    media_work_timeout_seconds,
+)
 from pandrator.runtime import DataPaths
 
 from .access.contracts import AccessDenied
@@ -420,7 +423,11 @@ def normalize_voice_recording(
                 run_media_process(resample_command, cancel_event=cancel_event)
             else:
                 subprocess.run(
-                    resample_command, check=True, capture_output=True, text=True
+                    resample_command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=media_work_timeout_seconds(None),
                 )
             if cancel_event.is_set():
                 return {}
@@ -488,7 +495,13 @@ def normalize_voice_recording(
         if reference_trim is not None:
             run_media_process(command, cancel_event=cancel_event)
         else:
-            subprocess.run(command, check=True, capture_output=True, text=True)
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=media_work_timeout_seconds(None),
+            )
         if cancel_event.is_set():
             return {}
         recheck()

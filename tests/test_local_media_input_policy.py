@@ -61,6 +61,29 @@ def _write_local_wav(path: Path) -> None:
         writer.writeframes(struct.pack(f"<{len(samples)}h", *samples))
 
 
+@pytest.fixture(autouse=True)
+def _bounded_media_processes(monkeypatch):
+    """A hung native launch fails its own test instead of the lane."""
+
+    real_runner = media_process.run_media_process
+
+    def bounded(command, *args, **kwargs):
+        if kwargs.get("timeout_seconds") is None:
+            kwargs["timeout_seconds"] = 120
+        return real_runner(command, *args, **kwargs)
+
+    # workflow_audio_preview imports the runner lazily from media_process.
+    monkeypatch.setattr(media_process, "run_media_process", bounded)
+    for module in (
+        audio_assembly,
+        sound_mix_manifest,
+        video_previews,
+        voice_reference_trim,
+        waveform,
+    ):
+        monkeypatch.setattr(module, "run_media_process", bounded)
+
+
 def _recording_runner(monkeypatch, *modules):
     real_runner = media_process.run_media_process
     commands: list[tuple[str, ...]] = []
@@ -250,7 +273,8 @@ def test_hls_and_concat_inputs_are_rejected_by_the_audio_probe(
             "-f",
             "mpegts",
             str(child),
-        ]
+        ],
+        timeout_seconds=60,
     )
     playlist = tmp_path / "remote.m3u8"
     playlist.write_text(

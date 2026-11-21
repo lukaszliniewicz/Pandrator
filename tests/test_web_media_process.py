@@ -171,6 +171,125 @@ def test_watchdog_stops_process_and_progress_reader(tmp_path):
     )
 
 
+def test_never_exiting_child_is_stopped_at_the_deadline(monkeypatch):
+    import psutil
+
+    from pandrator.web import media_process
+    from pandrator.web.media_process import MediaProcessTimeout
+
+    spawned = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        spawned.append((process, psutil.Process(process.pid).create_time()))
+        return process
+
+    monkeypatch.setattr(media_process.subprocess, "Popen", recording_popen)
+    command = [
+        getattr(sys, "_base_executable", sys.executable),
+        "-c",
+        "import time; time.sleep(600)",
+    ]
+    started = time.monotonic()
+    with pytest.raises(MediaProcessTimeout, match="timeout"):
+        run_media_process(command, timeout_seconds=2)
+    assert time.monotonic() - started < 10
+    process, created = spawned[0]
+    assert process.poll() is not None
+    try:
+        assert psutil.Process(process.pid).create_time() != created
+    except psutil.NoSuchProcess:
+        pass
+
+
+def test_stuck_child_still_surfaces_the_timeout(monkeypatch):
+    from pandrator.web import media_process
+    from pandrator.web.media_process import MediaProcessTimeout
+
+    class StuckProcess:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            time.sleep(min(timeout or 0.01, 0.01))
+            raise subprocess.TimeoutExpired("stuck", timeout)
+
+    monkeypatch.setattr(media_process.subprocess, "Popen", lambda *a, **k: StuckProcess())
+    with pytest.raises(MediaProcessTimeout):
+        run_media_process(["stuck"], timeout_seconds=0.05)
+
+
+def test_media_work_timeout_scales_with_duration():
+    from pandrator.logic.media_input_policy import (
+        MEDIA_PROBE_TIMEOUT_SECONDS,
+        media_work_timeout_seconds,
+    )
+
+    assert MEDIA_PROBE_TIMEOUT_SECONDS == 60.0
+    assert media_work_timeout_seconds(120) == 720.0
+    assert media_work_timeout_seconds(0) == 600.0
+    assert media_work_timeout_seconds(30, allowance_seconds=60.0) == 90.0
+    assert media_work_timeout_seconds(-5) == 600.0
+    for unknown in (None, float("inf"), float("-inf"), float("nan"), "bad"):
+        assert media_work_timeout_seconds(unknown) == 3600.0
+
+
+def test_probe_and_audible_scan_pass_their_deadlines(tmp_path):
+    from pandrator.web import media_process
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        return media_process.MediaProcessResult(
+            0,
+            json.dumps(
+                {
+                    "streams": [{"duration": "2.0", "sample_rate": "8000", "channels": 1}],
+                    "format": {},
+                }
+            ),
+            "",
+        )
+
+    with patch.object(media_process, "run_media_process", fake_run):
+        media_process.probe_audio_stream(tmp_path / "a.wav", ffprobe_executable="ffprobe")
+        media_process.find_first_audible_seconds(tmp_path / "a.wav", ffmpeg_executable="ffmpeg")
+    assert calls[0]["timeout_seconds"] == 60.0
+    assert calls[1]["timeout_seconds"] == 600.0 + 600.0
+
+
+def test_waveform_window_passes_a_duration_scaled_deadline(tmp_path):
+    from pandrator.web import media_process, waveform
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        return media_process.MediaProcessResult(0, "", "")
+
+    info = media_process.AudioStreamInfo(duration_ms=60000, sample_rate_hz=8000, channels=1)
+    with (
+        patch.object(waveform, "probe_audio_stream", return_value=info),
+        patch.object(waveform, "run_media_process", fake_run),
+        patch.object(waveform, "_parse_peak_levels", return_value=[0.0]),
+    ):
+        peaks = waveform.generate_waveform_peaks(
+            tmp_path / "a.wav", start_ms=10000, end_ms=40000, max_points=128
+        )
+    assert (peaks.start_ms, peaks.end_ms) == (10000, 40000)
+    assert calls[0]["timeout_seconds"] == 90.0
+
+
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), 10**400, "bad", []])
 def test_watchdog_requires_positive_finite_timeout(timeout):
     with pytest.raises(ValueError, match="finite and positive"):

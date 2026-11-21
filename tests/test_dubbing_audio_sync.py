@@ -280,6 +280,16 @@ Wrong.
             )
         )
 
+    def test_audio_stream_probe_has_a_deadline(self):
+        seen = {}
+
+        def run(*_args, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(stdout="0\n")
+
+        audio_sync.media_has_audio_stream("video.mp4", run_func=run)
+        self.assertEqual(60.0, seen["timeout"])
+
     def test_alignment_adjustment_accounts_for_existing_drift_and_current_overrun(self):
         decision = audio_sync.alignment_adjustment(
             1200,

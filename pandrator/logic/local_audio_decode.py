@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from .cancellable_process import run_cancellable
-from .media_input_policy import LOCAL_MEDIA_INPUT_OPTIONS
+from .media_input_policy import (
+    LOCAL_MEDIA_INPUT_OPTIONS,
+    MEDIA_PROBE_TIMEOUT_SECONDS,
+    media_work_timeout_seconds,
+)
 
 if TYPE_CHECKING:
     from pydub import AudioSegment
@@ -130,6 +134,7 @@ def load_local_audio_segment(path: str | os.PathLike[str]) -> AudioSegment:
             capture_output=True,
             text=False,
             stdin=subprocess.DEVNULL,
+            timeout=MEDIA_PROBE_TIMEOUT_SECONDS,
         )
         metadata = json.loads(probe.stdout)
         streams = metadata.get("streams") if isinstance(metadata, dict) else None
@@ -169,6 +174,7 @@ def load_local_audio_segment(path: str | os.PathLike[str]) -> AudioSegment:
             capture_output=True,
             text=False,
             stdin=subprocess.DEVNULL,
+            timeout=media_work_timeout_seconds(None),
         )
         if not isinstance(decoded.stdout, bytes) or not decoded.stdout:
             raise ValueError(_DECODE_ERROR)
