@@ -13,6 +13,7 @@ from .voice_identity import voice_creation_workspace
 
 def snapshot_guard(session: Session, session_id: str, revision_id: str) -> str:
     from .generation_controls import get_generation_controls
+    from .performance_plans import SPEAKER_PLAN_WAIVER_KEY
     from .settings_policy import stable_hash
     from .speech_plan_workspace import plan_signature
 
@@ -66,7 +67,14 @@ def snapshot_guard(session: Session, session_id: str, revision_id: str) -> str:
     return stable_hash({
         "session_revision": record.revision if record else None,
         "plan": plan_signature(session, revision_id),
-        "revision": [revision.settings_json, revision.operation_json] if revision else None,
+        "revision": [
+            {
+                key: value
+                for key, value in (revision.settings_json or {}).items()
+                if key != SPEAKER_PLAN_WAIVER_KEY
+            },
+            revision.operation_json,
+        ] if revision else None,
         "review": review.content_hash if review else None,
         "controls": get_generation_controls(session, session_id),
         "performance": [tuple(row) for row in performance],

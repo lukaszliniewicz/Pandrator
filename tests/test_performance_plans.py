@@ -1080,7 +1080,7 @@ def test_cast_start_is_refused_when_the_revision_lost_its_speaker_plan(case):
     assert started["id"]
 
 
-def test_speaker_plan_refusal_has_one_rule_and_two_endings(case):
+def test_speaker_plan_refusal_has_one_rule(case):
     adopted = _adopted(case)
     split = case["services"]["generation"].revise_topology(
         case["session_id"],
@@ -1091,59 +1091,180 @@ def test_speaker_plan_refusal_has_one_rule_and_two_endings(case):
     _drop_carried_plan(case, revision_id)
     settings = {"casting_enabled": True}
     with case["services"]["database"].session() as session:
-        # The fixture labels every block with a source speaker, which the
-        # workflow stage would voice without the plan; plain text has none.
-        for segment in session.scalars(
-            select(m.GenerationSegment).where(m.GenerationSegment.plan_revision_id == revision_id)
-        ):
-            segment.speaker = None
-    with case["services"]["database"].session() as session:
-        with pytest.raises(ValueError) as start:
+        notice = plans.missing_speaker_plan(session, revision_id, settings)
+        assert notice is not None
+        with pytest.raises(ValueError) as refused:
             plans.refuse_missing_speaker_plan(session, revision_id, settings)
-        with pytest.raises(ValueError) as stage:
-            plans.refuse_missing_speaker_plan(
-                session, revision_id, settings, from_generation_start=False
-            )
-        plans.refuse_missing_speaker_plan(
-            session, revision_id, {}, from_generation_start=False
-        )
-    assert "start again with allow_without_speaker_plan" in str(start.value)
-    assert "Generate without the speaker plan" not in str(start.value)
-    assert 'generation start with "Generate without the speaker plan"' in str(stage.value)
-    assert "(allow_without_speaker_plan)" in str(stage.value)
-    for error in (start, stage):
-        assert adopted["id"] in str(error.value)
-        assert "adopted one (performance plan" in str(error.value)
+        # No casting, no guard.
+        plans.refuse_missing_speaker_plan(session, revision_id, {})
+        # The acknowledgement is the other way through.
+        plans.waive_speaker_plan(session, revision_id, adopted["id"])
+        plans.refuse_missing_speaker_plan(session, revision_id, settings)
+    message = str(refused.value)
+    assert message.startswith(
+        "Casting is on, but this speech plan has no adopted speaker plan, so its "
+        "dialogue would be voiced as narration. "
+    )
+    assert f"Speech plan revision {notice['revision_number']} adopted one" in message
+    assert f"(performance plan {adopted['id']})" in message
+    assert '"Generate without the speaker plan" (allow_without_speaker_plan)' in message
+    assert "that choice is kept for this revision and the revisions edited from it" in message
 
 
-def test_the_stage_refusal_names_five_blocks_and_counts_the_rest(case):
-    _adopted(case)
-    split = case["services"]["generation"].revise_topology(
-        case["session_id"],
-        case["revision_id"],
-        {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
+def _lost_plan_revision(case):
+    """A revision on the lineage of an adopted plan that carries no plan itself."""
+    split = _revise(
+        case, case["revision_id"], action="split",
+        segment_id=case["segment_ids"][1], cursor=3, text_layer="display",
     )
     _drop_carried_plan(case, split["plan_revision_id"])
-    narrated = [(ordinal, f"segment-{ordinal}") for ordinal in range(7)]
-    with (
-        case["services"]["database"].session() as session,
-        patch.object(plans, "blocks_without_own_speech", return_value=narrated),
-    ):
-        with pytest.raises(ValueError) as refused:
+    return split["plan_revision_id"]
+
+
+def _first_segment_id(case, revision_id):
+    with case["services"]["database"].session() as session:
+        return session.scalar(
+            select(m.GenerationSegment.id)
+            .where(m.GenerationSegment.plan_revision_id == revision_id)
+            .order_by(m.GenerationSegment.ordinal)
+        )
+
+
+def _last_segment_id(case, revision_id):
+    with case["services"]["database"].session() as session:
+        return session.scalar(
+            select(m.GenerationSegment.id)
+            .where(m.GenerationSegment.plan_revision_id == revision_id)
+            .order_by(m.GenerationSegment.ordinal.desc())
+        )
+
+
+def test_a_start_without_the_speaker_plan_is_remembered(case):
+    adopted = _adopted(case)
+    revision_id = _lost_plan_revision(case)
+    generation = case["services"]["generation"]
+    with pytest.raises(ValueError, match="no adopted speaker plan"):
+        generation.start(case["session_id"], run_override=_cast_override())
+    started = generation.start(
+        case["session_id"], run_override=_cast_override(), allow_without_speaker_plan=True
+    )
+    assert started["id"]
+    with case["services"]["database"].session() as session:
+        assert plans.missing_speaker_plan(
+            session, revision_id, {"casting_enabled": True}
+        ) is None
+        settings = session.get(m.GenerationPlanRevision, revision_id).settings_json
+        assert settings[plans.SPEAKER_PLAN_WAIVER_KEY] == {"plan_id": adopted["id"]}
+    preview = generation.preview_selection(
+        case["session_id"], run_override=_cast_override()
+    )
+    assert preview["missing_speaker_plan"] is None
+    # A second start without the flag is not refused by this guard.
+    restarted = generation.start(case["session_id"], run_override=_cast_override())
+    assert restarted["id"] != started["id"]
+
+
+def test_a_preview_or_refused_start_does_not_store_the_choice(case):
+    _adopted(case)
+    revision_id = _lost_plan_revision(case)
+    generation = case["services"]["generation"]
+    preview = generation.preview_selection(
+        case["session_id"], run_override=_cast_override()
+    )
+    assert preview["missing_speaker_plan"] is not None
+    prepared = generation.prepare_start(
+        case["session_id"], run_override=_cast_override(), allow_without_speaker_plan=True
+    )
+    try:
+        assert prepared["speaker_plan_waiver"]
+    finally:
+        generation.cleanup_prepared_start(prepared)
+    with case["services"]["database"].session() as session:
+        assert not plans.speaker_plan_waived(session, revision_id)
+
+
+def test_the_choice_follows_topology_edits(case):
+    adopted = _adopted(case)
+    revision_id = _lost_plan_revision(case)
+    with case["services"]["database"].session() as session:
+        plans.waive_speaker_plan(session, revision_id, adopted["id"])
+    split = _revise(
+        case, revision_id, action="split",
+        segment_id=_first_segment_id(case, revision_id), cursor=3, text_layer="display",
+    )
+    with case["services"]["database"].session() as session:
+        assert plans.speaker_plan_waived(session, split["plan_revision_id"])
+    with case["services"]["database"].immediate_session() as session:
+        staged = case["services"]["generation"].revise_topology_in_session(
+            session,
+            case["session_id"],
+            split["plan_revision_id"],
+            {
+                "action": "split",
+                "segment_id": _last_segment_id(case, split["plan_revision_id"]),
+                "cursor": 10,
+                "text_layer": "display",
+            },
+            activate=False,
+        )
+        assert plans.speaker_plan_waived(session, staged["plan_revision_id"])
+
+
+def test_restoring_an_unacknowledged_revision_is_not_acknowledged(case):
+    adopted = _adopted(case)
+    first = _lost_plan_revision(case)
+    second = _revise(
+        case, first, action="split",
+        segment_id=_first_segment_id(case, first), cursor=3, text_layer="display",
+    )["plan_revision_id"]
+    with case["services"]["database"].session() as session:
+        plans.waive_speaker_plan(session, second, adopted["id"])
+    restored = _revise(
+        case, second, action="restore", target_revision_id=first
+    )["plan_revision_id"]
+    with case["services"]["database"].session() as session:
+        # The restore writes the target's settings, which never held the choice.
+        assert not plans.speaker_plan_waived(session, restored)
+        with pytest.raises(ValueError, match="no adopted speaker plan"):
             plans.refuse_missing_speaker_plan(
-                session,
-                split["plan_revision_id"],
-                {"casting_enabled": True},
-                from_generation_start=False,
+                session, restored, {"casting_enabled": True}
             )
-    message = str(refused.value)
-    assert (
-        "7 spoken blocks have no speech markup, block voice or speaker label of their "
-        "own, so they would be voiced by the narrator: block 1 (segment-0), "
-        "block 2 (segment-1), block 3 (segment-2), block 4 (segment-3), "
-        "block 5 (segment-4) and 2 more. "
-    ) in message
-    assert "segment-5" not in message and "segment-6" not in message
+
+
+def test_storing_the_choice_keeps_the_snapshot_guard(case):
+    from pandrator.web.generation_start_preparation import snapshot_guard
+
+    adopted = _adopted(case)
+    revision_id = _lost_plan_revision(case)
+    with case["services"]["database"].session() as session:
+        before = snapshot_guard(session, case["session_id"], revision_id)
+        plans.waive_speaker_plan(session, revision_id, adopted["id"])
+        session.flush()
+        after = snapshot_guard(session, case["session_id"], revision_id)
+    assert before == after
+
+
+def test_the_guard_is_off_without_casting_or_with_performance(case):
+    _adopted(case)
+    revision_id = _lost_plan_revision(case)
+    base = {"service": "gemini", "model": "gemini-2.5-flash-tts", "voice": "Kore", "language": "en"}
+    with case["services"]["database"].session() as session:
+        # Casting on: this is the freeze the guard protects.
+        with pytest.raises(ValueError, match="no adopted speaker plan"):
+            freeze_speech_snapshot(
+                session, revision_id, {"tts": {**base, "casting_enabled": True}}
+            )
+        # No casting: a lost plan changes nothing about how blocks are voiced.
+        freeze_speech_snapshot(
+            session, revision_id, {"tts": {**base, "casting_enabled": False}}
+        )
+        # With performance on the refusal is the performance one.
+        with pytest.raises(ValueError, match="no adopted performance plan"):
+            freeze_speech_snapshot(
+                session,
+                revision_id,
+                {"tts": {**base, "casting_enabled": True, "performance_enabled": True}},
+            )
 
 
 def _set_tts(case, **values):

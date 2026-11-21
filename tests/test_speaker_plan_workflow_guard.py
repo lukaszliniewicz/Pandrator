@@ -1,9 +1,8 @@
-"""The workflow speaker plan guard reads each block's own markup on real lineages.
+"""The workflow speaker plan guard refuses any cast revision that lost its plan.
 
-The generation start refuses any revision that lost its lineage's adopted plan.
-The workflow audio stage can run from a source that carries its own speech
-markup, so it refuses only when a spoken block has none, nor a block voice or a
-speaker label, and names those blocks.
+Every path that synthesises from a revision passes ``freeze_speech_snapshot``,
+so the workflow audio stage refuses a revision that lost its lineage's adopted
+plan until the generation start acknowledges it once for that revision.
 """
 
 import dataclasses
@@ -100,26 +99,6 @@ def _active_revision(case):
         return revision.id, revision.parent_revision_id
 
 
-def _segment_ids(case, revision_id):
-    with case["services"]["database"].session() as session:
-        return list(
-            session.scalars(
-                select(m.GenerationSegment.id)
-                .where(m.GenerationSegment.plan_revision_id == revision_id)
-                .order_by(m.GenerationSegment.ordinal)
-            )
-        )
-
-
-def _drop_speaker_labels(case, revision_id):
-    """The fixture labels every block with a source speaker; plain audiobook text has none."""
-    with case["services"]["database"].session() as session:
-        for segment in session.scalars(
-            select(m.GenerationSegment).where(m.GenerationSegment.plan_revision_id == revision_id)
-        ):
-            segment.speaker = None
-
-
 def _drop_carried_plan(case, revision_id):
     """Leave the revision as one written before plans followed the blocks."""
     with case["services"]["database"].session() as session:
@@ -134,27 +113,24 @@ def _count(case, model):
         return session.scalar(select(func.count()).select_from(model))
 
 
-def test_a_source_with_markup_on_every_spoken_block_runs_from_it(case):
+def test_a_source_with_markup_on_every_spoken_block_still_needs_the_choice(case):
     adopted, xml = seed_cast(case)
     artifact = _source(case, "marked.json", _records(xml, second_marked=True))
 
-    generated = _generate(case, artifact)
-    # The source's own cast markup is not refused and the stage reaches the
-    # generation run once.
-    assert len(generated) == 1
+    generated = []
+    with pytest.raises(ValueError, match="no adopted speaker plan"):
+        _generate(case, artifact, generated)
     revision_id, parent_id = _active_revision(case)
     # The run's revision descends from the adopted one and has no plan of its
-    # own, so the lineage rule applied and the per-block rule let it through.
+    # own; its own cast markup is no longer enough.
     assert parent_id == adopted["plan_revision_id"]
     with case["services"]["database"].session() as session:
         assert plans.missing_speaker_plan(session, revision_id, SETTINGS) is not None
-        assert plans.blocks_without_own_speech(session, revision_id) == []
-        # The generation start keeps its broader rule on the same revision.
-        with pytest.raises(ValueError, match="start again with allow_without_speaker_plan"):
-            plans.refuse_missing_speaker_plan(session, revision_id, SETTINGS)
+    assert generated == []
+    assert _count(case, m.GenerationRun) == 0
 
 
-def test_a_mixed_source_is_refused_naming_its_blocks_without_markup(case):
+def test_a_source_stored_from_new_text_is_refused_with_the_one_message(case):
     adopted, xml = seed_cast(case)
     artifact = _source(case, "mixed.json", _records(xml, second_marked=False))
 
@@ -163,28 +139,22 @@ def test_a_mixed_source_is_refused_naming_its_blocks_without_markup(case):
         _generate(case, artifact, generated)
     message = str(refused.value)
     revision_id, parent_id = _active_revision(case)
-    # The job drops the blank record before storing the source.
-    first, second = _segment_ids(case, revision_id)
-    assert "1 spoken block has no speech markup, block voice or speaker label of its own" in message
-    assert f"block 2 ({second})" in message
-    # The marked dialogue block is not named.
-    assert first not in message
+    assert "no adopted speaker plan" in message
     assert adopted["id"] in message
-    assert '"Generate without the speaker plan" (allow_without_speaker_plan)' in message
-    # This revision came from new source text, so a copy of the plan starts empty.
-    assert (
-        "Copy it to this revision and adopt it (a revision stored from new source text "
-        "keeps none of its entries, so the copy needs analysis and review first), or "
-    ) in message
+    assert "(allow_without_speaker_plan)" in message
+    assert "that choice is kept for this revision and the revisions edited from it" in message
+    # One rule: the message no longer names blocks that would be narrated.
+    assert "spoken block" not in message
     assert _count(case, m.AudioTake) == 0
     # The refused run never reached synthesis.
     assert generated == []
+    assert _count(case, m.GenerationRun) == 0
     # The source's revision was stored before the stage could check it: it is
     # stored and active, beside the adopted one; a retry reuses it.
     assert parent_id == adopted["plan_revision_id"]
     revisions = _count(case, m.GenerationPlanRevision)
     # A retry from the same source is refused again.
-    with pytest.raises(ValueError, match="1 spoken block has no speech markup"):
+    with pytest.raises(ValueError, match="no adopted speaker plan"):
         _generate(case, artifact, generated)
     assert _count(case, m.GenerationPlanRevision) == revisions
     assert _active_revision(case)[0] == revision_id
@@ -202,7 +172,6 @@ def test_the_reviewable_stage_refuses_a_split_of_the_adopted_revision(case):
     )
     split_id = split["plan_revision_id"]
     _drop_carried_plan(case, split_id)
-    _drop_speaker_labels(case, split_id)
     handlers = services["workflow_handlers"]
     artifact = _source(case, "prepared.json", [{"text": "Unused."}], role="prepared_text")
     generated = []
@@ -228,13 +197,9 @@ def test_the_reviewable_stage_refuses_a_split_of_the_adopted_revision(case):
     with pytest.raises(ValueError) as refused:
         run(SETTINGS)
     message = str(refused.value)
-    # The dialogue block's cast lived only in the plan, so it has no markup;
-    # the split's two halves start from the plan's markup and are not named.
-    dialogue, left, right, last = _segment_ids(case, split_id)
-    assert "2 spoken blocks have no speech markup, block voice or speaker label of their own" in message
-    assert f"block 1 ({dialogue})" in message and f"block 4 ({last})" in message
-    assert left not in message and right not in message
+    assert "no adopted speaker plan" in message
     assert adopted["id"] in message
+    assert "(allow_without_speaker_plan)" in message
     assert generated == []
     assert _count(case, m.GenerationRun) == 0
 
@@ -249,7 +214,9 @@ def test_the_reviewable_stage_refuses_a_split_of_the_adopted_revision(case):
             run({**SETTINGS, "casting_enabled": False})
 
 
-def test_removed_and_blank_blocks_are_not_spoken(case):
+def test_the_stage_passes_once_the_revision_is_acknowledged(case):
+    from pandrator.web.workflow_generation_start import run_reviewable_generation
+
     adopted, _xml = seed_cast(case)
     services = case["services"]
     split = services["generation"].revise_topology(
@@ -259,45 +226,36 @@ def test_removed_and_blank_blocks_are_not_spoken(case):
     )
     split_id = split["plan_revision_id"]
     _drop_carried_plan(case, split_id)
-    _drop_speaker_labels(case, split_id)
-    dialogue, _left, _right, last = _segment_ids(case, split_id)
-    with services["database"].session() as session:
-        assert plans.blocks_without_own_speech(session, split_id) == [(0, dialogue), (3, last)]
-        removed = session.get(m.GenerationSegment, dialogue)
-        removed.removed = True
-        blank = session.get(m.GenerationSegment, last)
-        blank.text, blank.optimized_text = "  ", None
-    with services["database"].session() as session:
-        # Nothing is left to voice as narration, so the per-block rule lets it run.
-        assert plans.blocks_without_own_speech(session, split_id) == []
-        plans.refuse_missing_speaker_plan(session, split_id, SETTINGS, from_generation_start=False)
-        # The generation start keeps refusing on the lineage alone.
-        with pytest.raises(ValueError, match="start again with allow_without_speaker_plan"):
-            plans.refuse_missing_speaker_plan(session, split_id, SETTINGS)
-
-
-def test_a_block_voice_or_speaker_label_is_its_own_speech(case):
-    adopted, _xml = seed_cast(case)
-    services = case["services"]
-    split = services["generation"].revise_topology(
-        case["session_id"],
-        adopted["plan_revision_id"],
-        {"action": "split", "segment_id": case["segment_ids"][1], "cursor": 3, "text_layer": "display"},
+    handlers = services["workflow_handlers"]
+    artifact = _source(case, "prepared.json", [{"text": "Unused."}], role="prepared_text")
+    generated = []
+    context = dataclasses.replace(
+        handlers._generation_start_context(),
+        run_generation=lambda *args: generated.append(args),
     )
-    split_id = split["plan_revision_id"]
-    _drop_carried_plan(case, split_id)
-    _drop_speaker_labels(case, split_id)
-    dialogue, _left, _right, last = _segment_ids(case, split_id)
+    job = services["jobs"].enqueue(
+        "workflow.continue", {"session_id": case["session_id"]}, session_id=case["session_id"]
+    )
+
+    def run():
+        return run_reviewable_generation(
+            context,
+            {"session_id": case["session_id"], "source_artifact_id": artifact.id, "settings": {}},
+            lambda value, detail=None: None,
+            threading.Event(),
+            resolved_snapshot={"tts": dict(SETTINGS)},
+            settings_hash="caller-hash",
+            job_id=job.id,
+        )
+
+    with pytest.raises(ValueError) as refused:
+        run()
+    assert "no adopted speaker plan" in str(refused.value)
+    assert '"Generate without the speaker plan" (allow_without_speaker_plan)' in str(
+        refused.value
+    )
     with services["database"].session() as session:
-        assert plans.blocks_without_own_speech(session, split_id) == [(0, dialogue), (3, last)]
-    with services["database"].session() as session:
-        # A diarised speaker label is cast through source_speakers, and a block
-        # voice applies to the whole block: neither falls back to the narrator.
-        session.get(m.GenerationSegment, dialogue).speaker = "SPEAKER_01"
-        session.get(m.GenerationSegment, last).voice = "Puck"
-    with services["database"].session() as session:
-        assert plans.blocks_without_own_speech(session, split_id) == []
-        plans.refuse_missing_speaker_plan(session, split_id, SETTINGS, from_generation_start=False)
-        # The generation start keeps refusing on the lineage alone.
-        with pytest.raises(ValueError, match="start again with allow_without_speaker_plan"):
-            plans.refuse_missing_speaker_plan(session, split_id, SETTINGS)
+        plans.waive_speaker_plan(session, split_id, adopted["id"])
+    # The same stage now reaches the run.
+    run()
+    assert len(generated) == 1

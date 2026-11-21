@@ -21,6 +21,7 @@ from .generation_performance_snapshot import (
 from .generation_performance_snapshot import (
     segment_performance_settings as segment_performance_settings,
 )
+from .performance_plans import refuse_missing_speaker_plan
 from .settings_policy import RevisionConflict, adapt_runtime_settings, stable_hash
 from .source_management import ACTIVE_JOB, DISPATCH_MODELS, TERMINAL, assert_session_idle
 from .speech_input_contracts import (
@@ -49,6 +50,7 @@ def freeze_speech_snapshot(
     snapshot: dict[str, Any],
     *,
     explicit: bool = False,
+    allow_without_speaker_plan: bool = False,
     segment_ids: Collection[str] | None = None,
     cast_segment_ids: Collection[str] | None = None,
     _missing_narrator_selection: MissingSpeechSelection | None = None,
@@ -63,10 +65,18 @@ def freeze_speech_snapshot(
     ``cast_segment_ids`` restricts cast resolution while retaining whole-plan metadata.
     A segment in ``segment_ids`` (every segment when ``None``) that its adopted
     speaker plan no longer fits refuses the freeze, naming the block.
+    With casting on, a revision that lost its lineage's speaker plan refuses the
+    freeze unless it was acknowledged (``allow_without_speaker_plan`` for the
+    request that acknowledges it).
     """
     revision = session.get(m.GenerationPlanRevision, revision_id)
     if revision is not None and (revision.operation_json or {}).get("draft"):
         raise RevisionConflict("Adopt this resegmentation draft with a topology restore before generation.")
+    if revision is not None and not allow_without_speaker_plan:
+        # One refusal for every path that synthesises from this revision.
+        refuse_missing_speaker_plan(
+            session, revision_id, performance_runtime_settings(snapshot)
+        )
     tts = snapshot.get("tts") or {}
     from .generation_rendering import is_strict_single_voice
     from .project_tts_settings import bind_project_tts_reference

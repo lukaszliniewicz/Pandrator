@@ -1537,19 +1537,26 @@ class GenerationService(GenerationHistoryReader):
                         if retained and not has_selected_voice_override(snapshot):
                             carried_cast = candidate
 
-                if operation != "rvc" and not allow_without_speaker_plan:
-                    # Before the freeze, so a refused start does no heavy work.
+                if operation != "rvc" and allow_without_speaker_plan:
+                    # Remember, for the start that creates the run, which
+                    # lineage plan this revision was acknowledged without.
                     from .generation_performance_snapshot import performance_runtime_settings
-                    from .performance_plans import refuse_missing_speaker_plan
+                    from .performance_plans import missing_speaker_plan
 
-                    refuse_missing_speaker_plan(
+                    waiver = missing_speaker_plan(
                         session, revision_id, performance_runtime_settings(snapshot)
+                    )
+                    prepared["speaker_plan_waiver"] = (
+                        waiver["plan_id"] if waiver is not None else None
                     )
                 freeze_speech_snapshot(
                     session,
                     revision_id,
                     snapshot,
                     explicit=bool(speech_plan_revision_id),
+                    allow_without_speaker_plan=(
+                        allow_without_speaker_plan or operation == "rvc"
+                    ),
                     segment_ids=requested_segment_ids or None,
                     cast_segment_ids=(requested_segment_ids or None) if retain_speech_inputs else None,
                     _missing_audible_selection=(missing_audible_selection if retain_speech_inputs else None),
@@ -2065,6 +2072,12 @@ class GenerationService(GenerationHistoryReader):
                 or stable_hash(snapshot) != prepared["snapshot_input_hash"]
                 or snapshot_guard(session, session_id, plan_revision_id) != prepared["snapshot_guard"]):
             raise RevisionConflict(SNAPSHOT_GUARD_CONFLICT)
+        if prepared.get("speaker_plan_waiver"):
+            # Only a start that creates a run stores the choice: a preview or a
+            # refused start never reaches this.
+            from .performance_plans import waive_speaker_plan
+
+            waive_speaker_plan(session, plan_revision_id, prepared["speaker_plan_waiver"])
         if prepared.get("selection_state") is not None:
             # Lightweight write-stage guard: recheck captured row/take/run
             # state and fresh resolved settings without recompiling per-row
