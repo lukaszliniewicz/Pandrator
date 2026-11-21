@@ -1,0 +1,1 @@
+import"../chunks/DsnmJJEf.js";import"../chunks/CGVAc7Qi.js";import{a as m,c as t,g as s,r as i}from"../chunks/iRdx_7hS.js";import{A as c}from"../chunks/BYwWxrpV.js";var d=t('<div class="mx-auto max-w-7xl"><!></div>');function l(a){var o=d(),r=s(o);c(r,{mode:"rvc",onback:()=>history.back()}),i(o),m(a,o)}export{l as component};

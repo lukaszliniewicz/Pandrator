@@ -695,7 +695,8 @@
         />
         <span
           >Generate without the speaker plan. Characters it assigned will not
-          get their own voices.</span
+          get their own voices. The choice is kept for this revision and the
+          revisions edited from it.</span
         >
       </label>
     {/if}
