@@ -1284,10 +1284,21 @@ class DurableJobTests(unittest.TestCase):
             "Processed 4 of 10 units", progress_events[-1].payload_json["detail"]
         )
 
+    def test_worker_fails_a_queued_legacy_generation_kind_without_a_handler(self):
+        job = self.queue.enqueue(
+            "dubbing.generate_audio",
+            {"session_id": "legacy-session"},
+        )
+        Worker(self.queue, "worker-one", {"noop": noop_handler}).run_once()
+
+        failed = self.queue.get(job.id)
+        self.assertEqual("failed", failed.status)
+        self.assertEqual("unknown_job_kind", failed.error_code)
+
     def test_generation_progress_invalidates_incremental_audio_takes(self):
         session_record = self.sessions.create("Incremental generation")
         job = self.queue.enqueue(
-            "audiobook.generate_audio",
+            "workflow.continue",
             {"generation_run_id": "run-one"},
             session_id=session_record.id,
         )

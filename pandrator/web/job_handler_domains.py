@@ -103,8 +103,6 @@ def register_generation_handlers(
         _bind_many(
             handlers,
             {
-                "dubbing.generate_audio": "generate_dubbing_audio",
-                "audiobook.generate_audio": "generate_audiobook_audio",
                 "generation.run": "run_generation",
                 "generation.repair-existing": "run_repair_existing_generation",
                 "generation.repair-preview": "run_repair_preview",
@@ -118,14 +116,6 @@ def register_generation_handlers(
         ),
         payload_contracts=_contracts(
             {
-                "dubbing.generate_audio": (
-                    "session_id",
-                    "source_artifact_id",
-                ),
-                "audiobook.generate_audio": (
-                    "session_id",
-                    "source_artifact_id",
-                ),
                 "generation.run": ("generation_run_id",),
                 "generation.repair-existing": ("generation_run_id", "session_id"),
                 "generation.repair-preview": ("generation_run_id", "session_id"),

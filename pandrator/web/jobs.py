@@ -165,8 +165,6 @@ class JobQueue:
                 kind.startswith("generation.")
                 or kind
                 in {
-                    "audiobook.generate_audio",
-                    "dubbing.generate_audio",
                     "workflow.continue",
                 }
                 or (kind == "rvc.convert" and bool(job.session_id))
@@ -192,8 +190,6 @@ class JobQueue:
                 "text.optimize_tts",
                 "speech.prepare",
                 "speech.performance",
-                "audiobook.generate_audio",
-                "dubbing.generate_audio",
                 "workflow.continue",
             }
             or (kind == "rvc.convert" and bool(job.session_id))

@@ -1264,38 +1264,6 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 else:
                     self.assertEqual([], leftovers)
 
-    def test_audiobook_audio_uses_the_shared_tts_engine_and_registers_output(self):
-        prepared_path = self.session_dir / "prepared.json"
-        prepared_path.write_text(
-            json.dumps([{"original_sentence": "First."}, {"original_sentence": "Second."}]),
-            encoding="utf-8",
-        )
-        prepared = self.artifacts.register(prepared_path, kind="json", role="prepared_text", session_id=self.session.id)
-        with mock.patch("pandrator.logic.tts_handler.text_to_audio", return_value=AudioSegment.silent(duration=25)) as generate:
-            result = self.handlers.generate_audiobook_audio(
-                {
-                    "session_id": self.session.id,
-                    "source_artifact_id": prepared.id,
-                    "settings": {
-                        "service": "XTTS",
-                        "max_attempts": 1,
-                        "generation_prompt": "Read with quiet intensity.",
-                    },
-                },
-                self.progress,
-                threading.Event(),
-            )
-        self.assertEqual(generate.call_count, 2)
-        self.assertTrue(
-            all(
-                call.args[1]["generation_prompt"] == "Read with quiet intensity."
-                for call in generate.call_args_list
-            )
-        )
-        artifact, output = self.artifacts.resolve(result["artifact_id"])
-        self.assertEqual(artifact.role, "audiobook_audio")
-        self.assertTrue(output.is_file())
-
     def test_deepl_translation_resolves_database_credential_at_runtime(self):
         source_path = self.paths.uploads / "source.srt"
         source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
@@ -1939,335 +1907,6 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(first_file_bytes, first_path.read_bytes())
         self.assertEqual(source_bytes, source_path.read_bytes())
 
-    def test_automatic_retry_preserves_old_audio_and_selects_only_new_takes(self):
-        source_path = self.session_dir / "automatic-retry.json"
-        source_bytes = json.dumps(
-            [{"text": "First paid narration."}, {"text": "Second paid narration."}]
-        ).encode()
-        source_path.write_bytes(source_bytes)
-        source = self.artifacts.register(
-            source_path, kind="json", role="prepared_text", session_id=self.session.id
-        )
-        with self.database.session() as db:
-            upsert_credential(
-                db,
-                tts_service_credential_key("elevenlabs"),
-                "Synthetic retry fixture",
-                "synthetic-retry-key",
-            )
-        settings = {
-            "service": "ElevenLabs",
-            "model": "eleven_multilingual_v2",
-            "voice": "fixture-voice",
-            "language": "en",
-            "max_attempts": 1,
-            "tts_concurrent_requests": 1,
-            "sentence_silence_ms": 30,
-        }
-        original_register = self.handlers.artifacts.register
-        old = {}
-
-        def reject_output(path, **kwargs):
-            if kwargs.get("role") == "controlled_automatic_audio":
-                with self.database.session() as db:
-                    for take in db.scalars(select(AudioTake)):
-                        artifact = db.get(Artifact, take.artifact_id)
-                        take_path = self.paths.managed_path(artifact.relative_path)
-                        old[take.id] = (take.artifact_id, take_path, take_path.read_bytes())
-                raise RuntimeError("injected final output registration failure")
-            return original_register(path, **kwargs)
-
-        failed_job = self.handlers.jobs.enqueue(
-            "audiobook.generate_audio", {"session_id": self.session.id}, session_id=self.session.id
-        )
-        claimed = self.handlers.jobs.claim("automatic-failure-fixture")
-        with (
-            mock.patch(
-                "pandrator.logic.tts_handler.text_to_audio",
-                return_value=AudioSegment.silent(duration=40),
-            ),
-            mock.patch.object(self.handlers.artifacts, "register", side_effect=reject_output),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "injected final output"):
-                self.handlers._generate_audio(
-                    self.session.id,
-                    source,
-                    source_path,
-                    settings,
-                    self.progress,
-                    threading.Event(),
-                    role="controlled_automatic_audio",
-                    job_id=failed_job.id,
-                )
-        self.assertTrue(
-            self.handlers.jobs.fail(
-                failed_job.id,
-                "automatic-failure-fixture",
-                "fixture",
-                "injected final output registration failure",
-                lease_generation=claimed.lease_generation,
-            )
-        )
-        self.assertEqual(2, len(old))
-        retry_job = self.handlers.jobs.enqueue(
-            "audiobook.generate_audio", {"session_id": self.session.id}, session_id=self.session.id
-        )
-        claimed_retry = self.handlers.jobs.claim("automatic-retry-fixture")
-        with mock.patch(
-            "pandrator.logic.tts_handler.text_to_audio",
-            return_value=AudioSegment.silent(duration=60),
-        ) as synthesize:
-            result = self.handlers._generate_audio(
-                self.session.id,
-                source,
-                source_path,
-                settings,
-                self.progress,
-                threading.Event(),
-                role="controlled_automatic_audio",
-                job_id=retry_job.id,
-            )
-        self.assertEqual(2, synthesize.call_count)
-        self.handlers.jobs.complete(
-            retry_job.id,
-            "automatic-retry-fixture",
-            result,
-            lease_generation=claimed_retry.lease_generation,
-        )
-        with self.database.session() as db:
-            takes = list(db.scalars(select(AudioTake)))
-            self.assertEqual(4, len(takes))
-            for segment_id in {take.generation_segment_id for take in takes}:
-                current = [
-                    take
-                    for take in takes
-                    if take.generation_segment_id == segment_id and take.is_active
-                ]
-                self.assertEqual(1, len(current))
-                self.assertEqual(60, current[0].duration_ms)
-                self.assertEqual(1, current[0].revision)
-                self.assertEqual("completed", db.get(GenerationSegment, segment_id).status)
-            for take_id, (artifact_id, path, content) in old.items():
-                previous = db.get(AudioTake, take_id)
-                self.assertFalse(previous.is_active)
-                self.assertEqual(2, previous.revision)
-                self.assertEqual(artifact_id, previous.artifact_id)
-                self.assertEqual(40, previous.duration_ms)
-                self.assertEqual("completed", previous.status)
-                self.assertEqual(content, path.read_bytes())
-            usage = list(db.scalars(select(UsageEvent)))
-            self.assertEqual(4, len(usage))
-            self.assertEqual({failed_job.id, retry_job.id}, {row.job_id for row in usage})
-            self.assertEqual(
-                {take.artifact_id for take in takes}, {row.artifact_id for row in usage}
-            )
-            parents = set(
-                db.scalars(
-                    select(ArtifactEdge.parent_artifact_id).where(
-                        ArtifactEdge.child_artifact_id == result["artifact_id"]
-                    )
-                )
-            )
-            self.assertEqual(
-                {source.id, *(take.artifact_id for take in takes if take.is_active)}, parents
-            )
-        output, path = self.artifacts.resolve(result["artifact_id"])
-        with path.open("rb") as stream:
-            self.assertEqual(150, len(AudioSegment.from_wav(stream)))
-        self.assertEqual(source_bytes, source_path.read_bytes())
-
-    def test_automatic_take_failure_rolls_back_previous_selection(self):
-        from sqlalchemy.orm import Session
-
-        source_path = self.session_dir / "automatic-take-rollback.json"
-        source_path.write_text(json.dumps([{"text": "Keep the original selection."}]))
-        source = self.artifacts.register(
-            source_path, kind="json", role="prepared_text", session_id=self.session.id
-        )
-        with self.database.session() as db:
-            upsert_credential(
-                db,
-                tts_service_credential_key("elevenlabs"),
-                "Synthetic take rollback fixture",
-                "synthetic-take-rollback-key",
-            )
-        settings = {
-            "service": "ElevenLabs",
-            "model": "eleven_multilingual_v2",
-            "voice": "fixture-voice",
-            "language": "en",
-            "max_attempts": 1,
-            "tts_concurrent_requests": 1,
-        }
-        with mock.patch(
-            "pandrator.logic.tts_handler.text_to_audio",
-            return_value=AudioSegment.silent(duration=40),
-        ):
-            self.handlers._generate_audio(
-                self.session.id,
-                source,
-                source_path,
-                settings,
-                self.progress,
-                threading.Event(),
-                role="controlled_automatic_audio",
-            )
-        with self.database.session() as db:
-            original = db.scalar(select(AudioTake))
-            old_id, old_artifact_id = original.id, original.artifact_id
-        old_path = self.artifacts.resolve(old_artifact_id)[1]
-        old_content = old_path.read_bytes()
-
-        def reject_new_take(db, _context, _instances):
-            if any(isinstance(row, AudioTake) for row in db.new):
-                raise RuntimeError("injected new automatic take flush failure")
-
-        event.listen(Session, "before_flush", reject_new_take)
-        try:
-            with mock.patch(
-                "pandrator.logic.tts_handler.text_to_audio",
-                return_value=AudioSegment.silent(duration=60),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "injected new automatic take"):
-                    self.handlers._generate_audio(
-                        self.session.id,
-                        source,
-                        source_path,
-                        settings,
-                        self.progress,
-                        threading.Event(),
-                        role="controlled_automatic_audio",
-                    )
-        finally:
-            event.remove(Session, "before_flush", reject_new_take)
-        with self.database.session() as db:
-            takes = list(db.scalars(select(AudioTake)))
-            self.assertEqual(1, len(takes))
-            original = db.get(AudioTake, old_id)
-            self.assertTrue(original.is_active)
-            self.assertEqual(1, original.revision)
-            self.assertEqual(
-                (old_artifact_id, 40, "completed"),
-                (original.artifact_id, original.duration_ms, original.status),
-            )
-            artifacts = list(db.scalars(select(Artifact).where(Artifact.role == "generation_take")))
-            usage = list(db.scalars(select(UsageEvent)))
-            # Artifact and paid accounting already committed before take publication.
-            self.assertEqual(2, len(artifacts))
-            self.assertEqual(2, len(usage))
-            self.assertEqual({row.id for row in artifacts}, {row.artifact_id for row in usage})
-            for artifact in artifacts:
-                self.assertTrue(self.paths.managed_path(artifact.relative_path).is_file())
-        self.assertEqual(old_content, old_path.read_bytes())
-
-    def test_standalone_automatic_generation_publishes_real_wav_and_take_lineage(self):
-        from pandrator.web import workflow_handlers
-        from pandrator.web.workflow_generation_automatic import (
-            AutomaticGenerationContext,
-            generate_audio,
-        )
-
-        source_path = self.session_dir / "standalone-automatic.json"
-        records = [{"text": "First narration."}, {"text": "Second narration."}]
-        source_bytes = json.dumps(records).encode("utf-8")
-        source_path.write_bytes(source_bytes)
-        source = self.artifacts.register(
-            source_path, kind="json", role="prepared_text", session_id=self.session.id
-        )
-        key = tts_service_credential_key("elevenlabs")
-        with self.database.session() as db:
-            upsert_credential(db, key, "Synthetic legacy fixture", "synthetic-legacy-key")
-        settings = {
-            "service": "ElevenLabs", "model": "eleven_multilingual_v2", "voice": "fixture-voice",
-            "language": "en", "max_attempts": 1, "tts_concurrent_requests": 1,
-            "sentence_silence_ms": 30, "tts_batch_size": 1,
-        }
-        original_settings = deepcopy(settings)
-        job = self.handlers.jobs.enqueue(
-            "audiobook.generate_audio", {"session_id": self.session.id, "source_artifact_id": source.id},
-            session_id=self.session.id,
-        )
-        context = AutomaticGenerationContext(
-            database=self.handlers.database,
-            paths=self.handlers.paths,
-            artifacts=self.handlers.artifacts,
-            manager_bridge=self.handlers.manager_bridge,
-            tts_providers=self.handlers.tts_providers,
-            _session_dir=self.handlers._session_dir,
-            _operation_dir=self.handlers._operation_dir,
-            _store_generation_plan=self.handlers._store_generation_plan,
-            _usable_language=self.handlers._usable_language,
-            _optimize_generation_texts=self.handlers._optimize_generation_texts,
-            _tts_urls=self.handlers._tts_urls,
-            _negotiated_tts_batch_size=self.handlers._negotiated_tts_batch_size,
-            prepare_audio_cpp_voice_reference=self.handlers.prepare_audio_cpp_voice_reference,
-            _ensure_qwen_cloned_voice=self.handlers._ensure_qwen_cloned_voice,
-            _start_streaming_tts_batch=self.handlers._start_streaming_tts_batch,
-            _verification_metadata=self.handlers._verification_metadata,
-            _record_tts_usage=self.handlers._record_tts_usage,
-            _is_subtitle_generation_record=self.handlers._is_subtitle_generation_record,
-            _hydrate_tts_settings=workflow_handlers.hydrate_tts_settings,
-            _apply_segment_tts_overrides=workflow_handlers._apply_segment_tts_overrides,
-            _secret_free_tts_settings=workflow_handlers._secret_free_tts_settings,
-            _default_silence_after_ms=workflow_handlers._default_silence_after_ms,
-            _logger=workflow_handlers.logger,
-        )
-
-        with mock.patch(
-            "pandrator.logic.tts_handler.text_to_audio", return_value=AudioSegment.silent(duration=40)
-        ) as synthesize:
-            result = generate_audio(
-                context, self.session.id, source, source_path, settings, self.progress, threading.Event(),
-                role="controlled_automatic_audio", job_id=job.id,
-            )
-        self.assertEqual(2, synthesize.call_count)
-        self.assertEqual(["First narration.", "Second narration."],
-                         [call.args[0] for call in synthesize.call_args_list])
-        self.assertEqual(original_settings, settings)
-        self.assertEqual(source_bytes, source_path.read_bytes())
-        output_artifact, output_path = self.artifacts.resolve(result["artifact_id"])
-        self.assertEqual("controlled_automatic_audio", output_artifact.role)
-        with output_path.open("rb") as source_audio:
-            self.assertEqual(110, len(AudioSegment.from_wav(source_audio)))
-        self.assertEqual(2, result["segments"])
-        self.assertTrue(output_artifact.settings_hash)
-        self.assertTrue(all(call.args[1]["service"] == "ElevenLabs" for call in synthesize.call_args_list))
-        self.assertTrue(all(call.args[1]["sentence_silence_ms"] == 30 for call in synthesize.call_args_list))
-        with self.database.session() as db:
-            plan = db.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
-            self.assertEqual(plan.active_revision_id, result["generation_plan_revision_id"])
-            revision = db.get(GenerationPlanRevision, plan.active_revision_id)
-            self.assertEqual("ElevenLabs", revision.settings_json["service"])
-            self.assertEqual(30, revision.settings_json["sentence_silence_ms"])
-            self.assertFalse(contains_inline_secret(revision.settings_json))
-            takes = list(db.scalars(select(AudioTake)))
-            self.assertEqual(2, len(takes))
-            self.assertTrue(all(take.is_active and take.status == "completed" for take in takes))
-            take_ids = {take.artifact_id for take in takes}
-            take_settings_hashes = {take.artifact_id: take.settings_hash for take in takes}
-            usage = list(db.scalars(select(UsageEvent)))
-            self.assertEqual(2, len(usage))
-            self.assertEqual({job.id}, {event.job_id for event in usage})
-            self.assertEqual(take_ids, {event.artifact_id for event in usage})
-            parents = set(db.scalars(select(ArtifactEdge.parent_artifact_id).where(
-                ArtifactEdge.child_artifact_id == output_artifact.id
-            )))
-            self.assertEqual({source.id, *take_ids}, parents)
-            self.assertEqual(0, db.scalar(select(func.count()).select_from(OutputAssembly)))
-            self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationRun)))
-        for artifact_id in take_ids:
-            artifact, path = self.artifacts.resolve(artifact_id)
-            self.assertEqual("generation_take", artifact.role)
-            with path.open("rb") as source_audio:
-                self.assertEqual(40, len(AudioSegment.from_wav(source_audio)))
-            self.assertTrue(artifact.settings_hash)
-            self.assertEqual(take_settings_hashes[artifact_id], artifact.settings_hash)
-            with self.database.session() as db:
-                parents = set(db.scalars(select(ArtifactEdge.parent_artifact_id).where(
-                    ArtifactEdge.child_artifact_id == artifact_id
-                )))
-            self.assertEqual({source.id}, parents)
-
     def _lost_speaker_plan_notice(self):
         return {
             "plan_id": "plan-lineage",
@@ -2284,62 +1923,6 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                     GenerationPlan.session_id == self.session.id
                 )
             )
-
-    def test_standalone_automatic_generation_refuses_a_cast_run_that_lost_its_plan(self):
-        from pandrator.web.workflow_generation_automatic import generate_audio
-
-        source_path = self.session_dir / "cast-lost-plan-automatic.json"
-        source_path.write_text(json.dumps([{"text": "First narration."}]), encoding="utf-8")
-        source = self.artifacts.register(
-            source_path, kind="json", role="prepared_text", session_id=self.session.id
-        )
-        settings = {
-            "service": "XTTS", "voice": "fixture", "language": "en",
-            "casting_enabled": True, "performance_enabled": False,
-        }
-        job = self.handlers.jobs.enqueue(
-            "audiobook.generate_audio", {"session_id": self.session.id}, session_id=self.session.id
-        )
-        context = self.handlers._automatic_generation_context()
-        with (
-            mock.patch(
-                "pandrator.web.performance_plans.ancestor_adopted_plan",
-                return_value=self._lost_speaker_plan_notice(),
-            ) as lineage,
-            mock.patch("pandrator.logic.tts_handler.text_to_audio") as synthesize,
-        ):
-            with self.assertRaisesRegex(ValueError, "no adopted speaker plan") as raised:
-                generate_audio(
-                    context, self.session.id, source, source_path, settings, self.progress,
-                    threading.Event(), role="controlled_automatic_audio", job_id=job.id,
-                )
-        message = str(raised.exception)
-        self.assertIn("plan-lineage", message)
-        self.assertIn("Generate without the speaker plan", message)
-        # The guard read the revision this run would voice.
-        self.assertEqual(self._active_revision_id(), lineage.call_args.args[1])
-        synthesize.assert_not_called()
-        with self.database.session() as db:
-            self.assertEqual(0, db.scalar(select(func.count()).select_from(AudioTake)))
-
-        # Control: the same cast settings without a lineage plan get past the refusal.
-        class PastTheGuard(Exception):
-            pass
-
-        with (
-            mock.patch(
-                "pandrator.web.performance_plans.ancestor_adopted_plan", return_value=None
-            ),
-            mock.patch(
-                "pandrator.web.speech_plan_workspace.freeze_speech_snapshot",
-                side_effect=PastTheGuard(),
-            ),
-        ):
-            with self.assertRaises(PastTheGuard):
-                generate_audio(
-                    context, self.session.id, source, source_path, settings, self.progress,
-                    threading.Event(), role="controlled_automatic_audio", job_id=job.id,
-                )
 
     def test_standalone_generation_start_refuses_a_cast_run_that_lost_its_plan(self):
         from pandrator.web.workflow_generation_start import (
@@ -2548,52 +2131,6 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             ):
                 self.assertAlmostEqual(expected_value, value)
                 self.assertEqual("controlled synthesis", detail)
-
-    def test_generation_plan_does_not_persist_hydrated_provider_credentials(self):
-        secret = "synthetic-plan-credential"
-        key = tts_service_credential_key("elevenlabs")
-        reference = database_reference(key)
-        with self.database.session() as db:
-            upsert_credential(db, key, "Synthetic only", secret)
-        source_path = self.session_dir / "credential-source.json"
-        source_path.write_text(json.dumps([{"text": "Narration."}]), encoding="utf-8")
-        source = self.artifacts.register(
-            source_path, kind="json", role="tts_optimized", session_id=self.session.id
-        )
-        settings = {
-            "service": "ElevenLabs", "voice": "fixture-voice",
-            "provider_configs": [{"id": "elevenlabs", "secret_ref": reference, "connection_mode": "external"}],
-        }
-        original_settings = deepcopy(settings)
-        store = self.handlers._store_generation_plan
-        captured = {}
-
-        class StopBeforeSynthesis(Exception):
-            pass
-
-        def store_then_stop(*args, **kwargs):
-            captured["runtime"] = kwargs["settings"]
-            captured["revision_id"], _ = store(*args, **kwargs)
-            raise StopBeforeSynthesis()
-
-        with mock.patch.object(self.handlers, "manager_bridge", SimpleNamespace(configured=False)), mock.patch.object(
-            self.handlers, "_store_generation_plan", side_effect=store_then_stop
-        ):
-            with self.assertRaises(StopBeforeSynthesis):
-                self.handlers.generate_audiobook_audio(
-                    {"session_id": self.session.id, "source_artifact_id": source.id, "settings": settings},
-                    self.progress, threading.Event(),
-                )
-        self.assertEqual(secret, captured["runtime"]["provider_configs"][0]["api_key"])
-        self.assertEqual(original_settings, settings)
-        with self.database.session() as db:
-            saved = db.get(GenerationPlanRevision, captured["revision_id"]).settings_json
-            self.assertFalse(contains_inline_secret(saved))
-            self.assertNotIn(secret, json.dumps(saved))
-            self.assertEqual(reference, saved["provider_configs"][0]["secret_ref"])
-            self.assertEqual("fixture-voice", saved["voice"])
-            self.assertEqual(source.id, saved["_source_artifact_id"])
-            self.assertEqual(secret, db.get(StoredCredential, (initial_personal_workspace(db).id, key)).secret_value)
 
     def test_generation_plan_redacts_nested_secrets_without_mutating_runtime_settings(self):
         settings = {
@@ -3779,17 +3316,6 @@ A single reviewed cue.
         )
         self.assertEqual(1.0, progress_updates[-1][0])
 
-    def test_audiobook_generation_rejects_unsegmented_text_with_actionable_error(self):
-        raw_path = self.session_dir / "raw.txt"
-        raw_path.write_text("Raw narration", encoding="utf-8")
-        raw = self.artifacts.register(raw_path, kind="text", role="upload", session_id=self.session.id)
-        with self.assertRaisesRegex(ValueError, "Segment narration"):
-            self.handlers.generate_audiobook_audio(
-                {"session_id": self.session.id, "source_artifact_id": raw.id, "settings": {}},
-                self.progress,
-                threading.Event(),
-            )
-
     def test_audiobook_continuation_segments_raw_text_before_generation(self):
         raw_path = self.paths.uploads / "raw-book.txt"
         raw_path.write_text("Chapter One\n\nA short first paragraph.", encoding="utf-8")
@@ -3823,80 +3349,6 @@ A single reviewed cue.
             self.assertEqual("completed", run.status)
             self.assertEqual(len(segments), len(takes))
             self.assertEqual([], combined)
-
-    def test_automatic_audio_generation_uses_the_same_streaming_batch_contract(self):
-        prepared_path = self.session_dir / "batch-ready.json"
-        prepared_path.write_text(
-            json.dumps(
-                [
-                    {"original_sentence": "First batch sentence."},
-                    {"original_sentence": "Second batch sentence."},
-                    {"original_sentence": "Third batch sentence."},
-                ]
-            ),
-            encoding="utf-8",
-        )
-        prepared = self.artifacts.register(
-            prepared_path,
-            kind="json",
-            role="prepared_text",
-            session_id=self.session.id,
-        )
-        streamed_ids = []
-
-        def stream(items, *, batch_size, **_options):
-            self.assertEqual(2, batch_size)
-            streamed_ids.extend(item.id for item in items)
-            yield from (
-                TtsBatchResult(
-                    id=item.id,
-                    audio=AudioSegment.silent(duration=25),
-                )
-                for item in items
-            )
-
-        with (
-            mock.patch.object(
-                self.handlers.tts_providers,
-                "synthesis_capabilities",
-                return_value=TtsCapabilities(
-                    batch_synthesis=True,
-                    streaming_batch=True,
-                    default_batch_size=10,
-                    max_batch_size=32,
-                ),
-            ),
-            mock.patch.object(
-                self.handlers.tts_providers,
-                "synthesize_batch",
-                side_effect=stream,
-            ) as generate_batch,
-            mock.patch.object(
-                self.handlers.tts_providers,
-                "synthesize",
-                side_effect=AssertionError("ordinary synthesis must not be used"),
-            ),
-        ):
-            result = self.handlers.generate_audiobook_audio(
-                {
-                    "session_id": self.session.id,
-                    "source_artifact_id": prepared.id,
-                    "settings": {
-                        "service": "kobold_qwen",
-                        "model": "Prebuilt Voices",
-                        "voice": "Ryan",
-                        "tts_batch_size": 2,
-                    },
-                },
-                self.progress,
-                threading.Event(),
-            )
-
-        self.assertEqual(3, result["segments"])
-        self.assertEqual(3, len(streamed_ids))
-        generate_batch.assert_called_once()
-        with self.database.session() as session:
-            self.assertEqual(3, session.scalar(select(func.count()).select_from(AudioTake)))
 
     def test_automatic_generation_runs_document_optimization_but_stops_before_export(self):
         raw_path = self.paths.uploads / "automatic-book.txt"
@@ -3938,9 +3390,11 @@ A single reviewed cue.
             )
 
     def test_llm_speech_optimization_runs_per_segment_without_mutating_plan_text(self):
-        prepared_path = self.session_dir / "optimized-input.json"
-        prepared_path.write_text(json.dumps([{"original_sentence": "Chapter 3."}]), encoding="utf-8")
-        prepared = self.artifacts.register(prepared_path, kind="json", role="prepared_text", session_id=self.session.id)
+        revision_id, _segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"original_sentence": "Chapter 3."}],
+            settings={},
+        )
         hydrated = {
             "llm_tts_optimization": True,
             "llm_provider_configs": [],
@@ -3953,15 +3407,30 @@ A single reviewed cue.
                 on_batch([(0, "Chapter three.")])
             return ["Chapter three."], OptimizationUsage()
 
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                status="queued",
+                settings_snapshot_json={
+                    "text": {"llm_tts_optimization": True},
+                    "tts": {"service": "XTTS"},
+                },
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+
         with mock.patch.object(self.handlers, "_with_database_llm_settings", return_value=hydrated), mock.patch(
             "pandrator.web.tts_optimization.optimize_texts",
             side_effect=optimize,
         ), mock.patch("pandrator.logic.tts_handler.text_to_audio", return_value=AudioSegment.silent(duration=25)) as generate:
-            self.handlers.generate_audiobook_audio(
-                {"session_id": self.session.id, "source_artifact_id": prepared.id, "settings": {"llm_tts_optimization": True, "service": "XTTS"}},
+            result = self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "generate"},
                 self.progress,
                 threading.Event(),
             )
+        self.assertEqual("completed", result["status"])
         self.assertEqual(generate.call_args.args[0], "Chapter three.")
         with self.database.session() as session:
             segment = session.scalar(select(GenerationSegment))
@@ -5910,10 +5379,8 @@ A single reviewed cue.
             }
         self.assertEqual({source.id, dubbed.id}, parents)
 
-    def test_dubbing_audio_forwards_speech_block_settings_separately(self):
+    def test_subtitle_plan_forwards_speech_block_settings_separately(self):
         voiceover = self.sessions.create("Speech block fixture", workflow_kind="voiceover")
-        session_dir = self.paths.sessions / voiceover.storage_key
-        session_dir.mkdir()
         source_path = self.paths.uploads / "speech-source.srt"
         source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
         source = self.artifacts.register(
@@ -5922,40 +5389,41 @@ A single reviewed cue.
             role="transcription",
             session_id=voiceover.id,
         )
-        captured = {}
 
-        def fake_generate(output_dir, _source, **kwargs):
-            captured.update(kwargs)
-            output = Path(output_dir) / "blocks.json"
-            output.write_text("[]", encoding="utf-8")
-            return str(output)
+        from pandrator.logic.dubbing.speech_blocks import create_speech_blocks
 
         with mock.patch(
-            "pandrator.logic.dubbing.speech_blocks.generate_speech_blocks_file",
-            side_effect=fake_generate,
-        ), mock.patch.object(
-            self.handlers,
-            "_generate_audio",
-            return_value={"artifact_id": "audio"},
-        ):
-            self.handlers.generate_dubbing_audio(
+            "pandrator.logic.dubbing.speech_blocks.create_speech_blocks",
+            wraps=create_speech_blocks,
+        ) as blocks:
+            self.handlers._materialize_subtitle_generation_plan(
+                voiceover.id,
+                source,
+                source_path,
                 {
-                    "session_id": voiceover.id,
-                    "source_artifact_id": source.id,
-                    "settings": {
-                        "target_language": "pl",
-                        "speech_block_min_chars": 14,
-                        "speech_block_max_chars": 120,
-                        "speech_block_merge_threshold": 425,
-                        "subtitle_max_chars_per_line": 48,
-                    },
+                    "target_language": "pl",
+                    "speech_block_min_chars": 14,
+                    "speech_block_max_chars": 120,
+                    "speech_block_merge_threshold": 425,
+                    "subtitle_max_chars_per_line": 48,
                 },
-                self.progress,
-                threading.Event(),
+                "pl",
             )
 
+        forwarded = blocks.call_args_list[0].kwargs
         self.assertEqual(
-            captured,
+            {
+                key: forwarded.get(key)
+                for key in (
+                    "target_language",
+                    "min_chars",
+                    "max_chars",
+                    "merge_threshold",
+                    "continuation_threshold_ms",
+                    "max_internal_gap_ms",
+                    "generation_mode",
+                )
+            },
             {
                 "target_language": "pl",
                 "min_chars": 14,
@@ -6010,28 +5478,31 @@ A single reviewed cue.
         self.assertEqual("alice", segments[-1].voice)
 
     def test_segment_language_and_voice_override_reach_tts_runtime(self):
-        prepared_path = self.session_dir / "segment-overrides.json"
-        prepared_path.write_text(
-            json.dumps([{"original_sentence": "Cześć.", "language": "pl", "voice": "alice"}]),
-            encoding="utf-8",
+        revision_id, _segment_ids = self.handlers._store_generation_plan(
+            self.session.id,
+            [{"original_sentence": "Cześć.", "language": "pl", "voice": "alice"}],
+            settings={},
         )
-        prepared = self.artifacts.register(
-            prepared_path,
-            kind="json",
-            role="prepared_text",
-            session_id=self.session.id,
-        )
+
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision_id,
+                status="queued",
+                settings_snapshot_json={
+                    "tts": {"service": "XTTS", "language": "en", "voice": "default"},
+                },
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
 
         with mock.patch(
             "pandrator.logic.tts_handler.text_to_audio",
             return_value=AudioSegment.silent(duration=25),
         ) as generate:
-            self.handlers.generate_audiobook_audio(
-                {
-                    "session_id": self.session.id,
-                    "source_artifact_id": prepared.id,
-                    "settings": {"service": "XTTS", "language": "en", "voice": "default"},
-                },
+            self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "generate"},
                 self.progress,
                 threading.Event(),
             )

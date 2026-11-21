@@ -295,7 +295,7 @@ DUBBING_STAGES = (
         "Generate audio",
         "Record the selected speech plan with the current voices and delivery settings. Review the takes before assembly.",
         prerequisite_roles=("translation", "correction", "transcription", "upload"),
-        job_kind="dubbing.generate_audio",
+        job_kind="workflow.continue",
     ),
     StageDefinition(
         "export",
@@ -420,7 +420,7 @@ MEDIA_EDIT_STAGES = (
             "correction",
             "media_edit_subtitles",
         ),
-        job_kind="dubbing.generate_audio",
+        job_kind="workflow.continue",
     ),
     StageDefinition(
         "export",
@@ -469,7 +469,7 @@ AUDIOBOOK_STAGES = (
         "Generate audio",
         "Run missing document preparation, then create reviewable narration takes from editable segments. Assembly remains manual.",
         prerequisite_roles=("prepared_text", "clean_text", "upload"),
-        job_kind="audiobook.generate_audio",
+        job_kind="workflow.continue",
     ),
     StageDefinition(
         "export",

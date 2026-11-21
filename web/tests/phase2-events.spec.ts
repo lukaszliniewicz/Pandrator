@@ -178,7 +178,7 @@ test('event cursor and batched invalidation avoid progress fan-out', async ({
     for (let index = 0; index < 5; index += 1) {
       window.__emitPandratorEvent?.('job.succeeded', {
         job_id: `phase2-burst-${index}`,
-        job_kind: 'audiobook.generate_audio',
+        job_kind: 'workflow.continue',
         session_id: sessionId,
         status: 'succeeded',
         progress: 1,
@@ -215,7 +215,7 @@ test('event cursor and batched invalidation avoid progress fan-out', async ({
     for (let index = 0; index < 5; index += 1) {
       window.__emitPandratorEvent?.('job.progress', {
         job_id: 'phase2-live-generation',
-        job_kind: 'audiobook.generate_audio',
+        job_kind: 'workflow.continue',
         session_id: sessionId,
         status: 'running',
         progress: (index + 1) / 10,

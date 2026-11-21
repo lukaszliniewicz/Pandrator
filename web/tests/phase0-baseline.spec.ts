@@ -178,7 +178,7 @@ test('records API request fan-out caused by one job event', async ({
     (sessionId) =>
       window.__emitPandratorEvent?.('job.progress', {
         job_id: 'phase0-event-job',
-        job_kind: 'audiobook.generate_audio',
+        job_kind: 'workflow.continue',
         session_id: sessionId,
         progress: 0.5
       }) ?? 0,

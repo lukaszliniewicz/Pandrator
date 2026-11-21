@@ -3,8 +3,7 @@
 The generation start refuses any revision that lost its lineage's adopted plan.
 The workflow audio stage can run from a source that carries its own speech
 markup, so it refuses only when a spoken block has none, nor a block voice or a
-speaker label, and names those blocks. A direct dubbing job stores a new
-revision on every run, so it is not checked, as upstream runs it.
+speaker label, and names those blocks.
 """
 
 import dataclasses
@@ -14,7 +13,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from pydub import AudioSegment
 from sqlalchemy import func, select
 
 from pandrator.web import models as m
@@ -62,18 +60,35 @@ def _records(xml, *, second_marked):
     ]
 
 
-def _generate(case, artifact, synthesize):
-    handlers = case["services"]["workflow_handlers"]
-    with patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize):
-        return handlers.generate_audiobook_audio(
-            {
-                "session_id": case["session_id"],
-                "source_artifact_id": artifact.id,
-                "settings": dict(SETTINGS),
-            },
-            lambda *_args: None,
-            threading.Event(),
-        )
+def _generate(case, artifact, generated=None):
+    """Run the live reviewable stage from the test's own source artifact."""
+    from pandrator.web.workflow_generation_start import run_reviewable_generation
+
+    services = case["services"]
+    handlers = services["workflow_handlers"]
+    recorded = [] if generated is None else generated
+    context = dataclasses.replace(
+        handlers._generation_start_context(),
+        run_generation=lambda *args: recorded.append(args),
+    )
+    job = services["jobs"].enqueue(
+        "workflow.continue",
+        {"session_id": case["session_id"]},
+        session_id=case["session_id"],
+    )
+    run_reviewable_generation(
+        context,
+        {
+            "session_id": case["session_id"],
+            "source_artifact_id": artifact.id,
+            "settings": dict(SETTINGS),
+        },
+        lambda *_args: None,
+        threading.Event(),
+        resolved_snapshot={"tts": dict(SETTINGS)},
+        job_id=job.id,
+    )
+    return recorded
 
 
 def _active_revision(case):
@@ -113,15 +128,11 @@ def _count(case, model):
 def test_a_source_with_markup_on_every_spoken_block_runs_from_it(case):
     adopted, xml = seed_cast(case)
     artifact = _source(case, "marked.json", _records(xml, second_marked=True))
-    requests = []
 
-    def synthesize(text, settings, **_kwargs):
-        requests.append((text, settings["voice"]))
-        return AudioSegment.silent(duration=20)
-
-    assert _generate(case, artifact, synthesize)["artifact_id"]
-    # The source's own cast markup voiced the dialogue.
-    assert [voice for _text, voice in requests] == ["Kore", "Puck", "Kore", "Kore"]
+    generated = _generate(case, artifact)
+    # The source's own cast markup is not refused and the stage reaches the
+    # generation run once.
+    assert len(generated) == 1
     revision_id, parent_id = _active_revision(case)
     # The run's revision descends from the adopted one and has no plan of its
     # own, so the lineage rule applied and the per-block rule let it through.
@@ -138,11 +149,9 @@ def test_a_mixed_source_is_refused_naming_its_blocks_without_markup(case):
     adopted, xml = seed_cast(case)
     artifact = _source(case, "mixed.json", _records(xml, second_marked=False))
 
-    def synthesize(*_args, **_kwargs):
-        raise AssertionError("a refused run must not synthesise")
-
+    generated = []
     with pytest.raises(ValueError) as refused:
-        _generate(case, artifact, synthesize)
+        _generate(case, artifact, generated)
     message = str(refused.value)
     revision_id, parent_id = _active_revision(case)
     # The job drops the blank record before storing the source.
@@ -159,13 +168,15 @@ def test_a_mixed_source_is_refused_naming_its_blocks_without_markup(case):
         "keeps none of its entries, so the copy needs analysis and review first), or "
     ) in message
     assert _count(case, m.AudioTake) == 0
+    # The refused run never reached synthesis.
+    assert generated == []
     # The source's revision was stored before the stage could check it: it is
     # stored and active, beside the adopted one; a retry reuses it.
     assert parent_id == adopted["plan_revision_id"]
     revisions = _count(case, m.GenerationPlanRevision)
     # A retry from the same source is refused again.
     with pytest.raises(ValueError, match="1 spoken block has no speech markup"):
-        _generate(case, artifact, synthesize)
+        _generate(case, artifact, generated)
     assert _count(case, m.GenerationPlanRevision) == revisions
     assert _active_revision(case)[0] == revision_id
 
@@ -278,67 +289,3 @@ def test_a_block_voice_or_speaker_label_is_its_own_speech(case):
         # The generation start keeps refusing on the lineage alone.
         with pytest.raises(ValueError, match="start again with allow_without_speaker_plan"):
             plans.refuse_missing_speaker_plan(session, split_id, SETTINGS)
-
-
-def test_direct_dubbing_runs_unguarded_and_keeps_upstream_performance_text(case):
-    from pandrator.web.workflow_generation_automatic import generate_audio
-
-    adopted, _xml = seed_cast(case)
-    current = adopted["plan_revision_id"]
-    revisions = _count(case, m.GenerationPlanRevision)
-    # Unlabelled records that repeat the plan's marked-up dialogue.
-    artifact = _source(
-        case,
-        "dubbing.json",
-        [{"text": "He said, “Bah!” Then left."}],
-        role="speech_blocks",
-    )
-    handlers = case["services"]["workflow_handlers"]
-    _artifact, path = handlers._resolve_input(artifact.id)
-    frozen = []
-
-    class PastTheFreeze(Exception):
-        pass
-
-    def freeze(_session, revision_id, _snapshot):
-        frozen.append(revision_id)
-        raise PastTheFreeze()
-
-    with patch("pandrator.web.speech_plan_workspace.freeze_speech_snapshot", side_effect=freeze):
-        with pytest.raises(PastTheFreeze):
-            generate_audio(
-                handlers._automatic_generation_context(),
-                case["session_id"],
-                artifact,
-                path,
-                dict(SETTINGS),
-                lambda *_args, **_kwargs: None,
-                threading.Event(),
-                role="dubbing_audio",
-            )
-    stored = frozen[0]
-    assert _count(case, m.GenerationPlanRevision) == revisions + 1
-    assert _active_revision(case) == (stored, current)
-    with case["services"]["database"].session() as session:
-        # The stage rule would refuse this revision; the job is not subject to it.
-        with pytest.raises(ValueError, match="no adopted speaker plan"):
-            plans.refuse_missing_speaker_plan(
-                session, stored, SETTINGS, from_generation_start=False
-            )
-        # Performance on: upstream's text, since a copied plan cannot help a job
-        # that stores another revision on its next run.
-        assert plans.no_adopted_performance_plan_message(session, stored) == (
-            "Performance is enabled, but this speech plan has no adopted performance plan. "
-            "Adopt one or disable performance."
-        )
-    # An edit of the stored revision is no longer the job's own: it names the plan.
-    segment_id = _segment_ids(case, stored)[0]
-    split = case["services"]["generation"].revise_topology(
-        case["session_id"],
-        stored,
-        {"action": "split", "segment_id": segment_id, "cursor": 3, "text_layer": "display"},
-    )
-    with case["services"]["database"].session() as session:
-        message = plans.no_adopted_performance_plan_message(session, split["plan_revision_id"])
-    assert adopted["id"] in message
-    assert "Copy it to this revision" in message

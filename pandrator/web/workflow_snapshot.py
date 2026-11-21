@@ -430,11 +430,6 @@ def build_workflow_snapshot(
                 current.id,
             ):
                 job_by_kind[job.kind] = job
-        if "workflow.continue" in job_by_kind and generation_job is None:
-            job_by_kind["dubbing.generate_audio"] = job_by_kind["workflow.continue"]
-            job_by_kind["audiobook.generate_audio"] = job_by_kind[
-                "workflow.continue"
-            ]
         generation_plan_revision_id = (
             generation_run.plan_revision_id
             if generation_job is not None and generation_run is not None

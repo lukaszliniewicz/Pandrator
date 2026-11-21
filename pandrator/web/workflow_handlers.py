@@ -15,7 +15,7 @@ import unicodedata
 from collections import OrderedDict
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
@@ -42,7 +42,6 @@ from .generation_plan_store import (
     prepare_generation_plan_rows as _prepare_generation_plan_rows_impl,
 )
 from .generation_plan_store import store_generation_plan as _store_generation_plan_impl
-from .generation_progress import open_job_progress_state
 from .google_voice_design import design_google_voice as _design_google_voice_impl
 from .job_inputs import artifact_job_ownership
 from .jobs import JobQueue
@@ -89,8 +88,6 @@ from .workflow_caption_alignment import (
 from .workflow_export import export as _export
 from .workflow_fingerprints import _research_fingerprint as _research_fingerprint
 from .workflow_fingerprints import _stage_settings_fingerprint as _stage_settings_fingerprint
-from .workflow_generation_automatic import AutomaticGenerationContext
-from .workflow_generation_automatic import generate_audio as _automatic_generate_audio
 from .workflow_generation_binding import GenerationBindingContext
 from .workflow_generation_binding import generation_language as _binding_generation_language
 from .workflow_generation_binding import (
@@ -173,10 +170,6 @@ logger = logging.getLogger(__name__)
 
 CLAUSE_PAUSE_RATIO = 1 / 3
 GENERATION_SEGMENT_POLICY_VERSION = 5
-
-
-class _SpeechBlockSpeakerOptions(TypedDict, total=False):
-    speaker_by_subtitle: dict[int, str]
 
 
 def _required_media_edit_time(record: dict[str, Any], field: str) -> int:
@@ -1156,7 +1149,6 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             job_kind = definition.job_kind
             if job_kind is None:
                 raise RuntimeError("An executable continuation stage requires a job kind.")
-            handler = handlers[job_kind]
             width = weights[index] / weight_total
             start = completed_weight / weight_total
 
@@ -1198,12 +1190,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     handler_payload["display_subtitle_snapshot"] = payload[
                         "display_subtitle_snapshot"
                     ]
-            if definition.key == "export":
-                entry = "export_variant" if deferred_export_assembly else "export"
-                export_handler = self.export_variant if deferred_export_assembly else handler
-                with delivery_child_scope(delivery, entry, handler_payload):
-                    result = export_handler(handler_payload, stage_progress, cancel_event)
-            elif definition.key == "generate_audio":
+            if definition.key == "generate_audio":
+                # The audio stage has no handler of its own: it runs as
+                # reviewable generation inside this continuation.
                 handler_payload["speech_plan_revision_id"] = expected_speech_revision or None
                 result = self._run_reviewable_generation(
                     handler_payload,
@@ -1213,11 +1202,24 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     settings_hash=str(payload.get("settings_hash") or "") or None,
                     job_id=str(payload.get("_job_id") or "") or None,
                 )
-            elif job_kind in {"source.clean", "text.prepare", "text.optimize_tts"}:
-                with source_processing_child_scope(delivery, job_kind, handler_payload):
-                    result = handler(handler_payload, stage_progress, cancel_event)
             else:
-                result = handler(handler_payload, stage_progress, cancel_event)
+                handler = handlers[job_kind]
+                if definition.key == "export":
+                    entry = "export_variant" if deferred_export_assembly else "export"
+                    export_handler = (
+                        self.export_variant if deferred_export_assembly else handler
+                    )
+                    with delivery_child_scope(delivery, entry, handler_payload):
+                        result = export_handler(
+                            handler_payload, stage_progress, cancel_event
+                        )
+                elif job_kind in {"source.clean", "text.prepare", "text.optimize_tts"}:
+                    with source_processing_child_scope(
+                        delivery, job_kind, handler_payload
+                    ):
+                        result = handler(handler_payload, stage_progress, cancel_event)
+                else:
+                    result = handler(handler_payload, stage_progress, cancel_event)
             if result:
                 produced.append({"stage": definition.key, **result})
             completed_weight += weights[index]
@@ -1907,34 +1909,6 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 "estimated": False,
                 **usage,
             }
-
-    def _record_tts_usage(
-        self,
-        session_id: str,
-        settings: dict[str, Any],
-        text: str,
-        duration_ms: int,
-        *,
-        job_id: str | None = None,
-        artifact_id: str | None = None,
-        generation_run_id: str | None = None,
-    ) -> None:
-        event = self._tts_usage_event(
-            session_id,
-            settings,
-            text,
-            duration_ms,
-            job_id=job_id,
-            artifact_id=artifact_id,
-            generation_run_id=generation_run_id,
-        )
-        if event is None:
-            return
-        from .usage_identity import bind_usage_ownership
-
-        with self.database.immediate_session() as session:
-            bind_usage_ownership(session, event)
-            session.add(event)
 
     @staticmethod
     def _tts_usage_event(
@@ -2980,138 +2954,6 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             pronunciation_settings=pronunciation_settings,
             pronunciation_language=pronunciation_language,
             pronunciation_voice_language=pronunciation_voice_language,
-        )
-
-    def _automatic_generation_context(self) -> AutomaticGenerationContext:
-        return AutomaticGenerationContext(
-            database=self.database,
-            paths=self.paths,
-            artifacts=self.artifacts,
-            manager_bridge=self.manager_bridge,
-            tts_providers=self.tts_providers,
-            _session_dir=self._session_dir,
-            _operation_dir=self._operation_dir,
-            _store_generation_plan=self._store_generation_plan,
-            _usable_language=self._usable_language,
-            _optimize_generation_texts=self._optimize_generation_texts,
-            _tts_urls=self._tts_urls,
-            _negotiated_tts_batch_size=self._negotiated_tts_batch_size,
-            prepare_audio_cpp_voice_reference=self.prepare_audio_cpp_voice_reference,
-            _ensure_qwen_cloned_voice=self._ensure_qwen_cloned_voice,
-            _start_streaming_tts_batch=self._start_streaming_tts_batch,
-            _verification_metadata=self._verification_metadata,
-            _record_tts_usage=self._record_tts_usage,
-            _is_subtitle_generation_record=self._is_subtitle_generation_record,
-            _hydrate_tts_settings=hydrate_tts_settings,
-            _apply_segment_tts_overrides=_apply_segment_tts_overrides,
-            _secret_free_tts_settings=_secret_free_tts_settings,
-            _default_silence_after_ms=_default_silence_after_ms,
-            _logger=logger,
-        )
-
-    def _generate_audio(
-        self,
-        session_id: str,
-        source_artifact: Artifact,
-        source_path: Path,
-        settings: dict[str, Any],
-        progress,
-        cancel_event,
-        *,
-        role: str,
-        job_id: str | None = None,
-    ) -> dict[str, Any]:
-        with open_job_progress_state(job_id) as progress_state:
-            return _automatic_generate_audio(
-                self._automatic_generation_context(),
-                session_id,
-                source_artifact,
-                source_path,
-                settings,
-                progress,
-                cancel_event,
-                role=role,
-                job_id=job_id,
-                progress_state=progress_state,
-            )
-
-    def generate_dubbing_audio(self, payload, progress, cancel_event):
-        from pandrator.logic.dubbing.speech_blocks import generate_speech_blocks_file
-
-        session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
-        )
-        settings = dict(payload.get("settings") or {})
-        if source_path.suffix.lower() != ".srt":
-            raise ValueError(
-                "Dubbing audio requires a transcription, correction, or translation SRT artifact."
-            )
-        language = self._generation_language(session_id, source_artifact, settings)
-        settings = {**settings, "language": language, "target_language": language}
-        speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
-        speaker_options: _SpeechBlockSpeakerOptions = {}
-        if speaker_by_subtitle:
-            speaker_options["speaker_by_subtitle"] = speaker_by_subtitle
-        (
-            min_chars,
-            max_chars,
-            merge_threshold,
-            continuation_threshold,
-            max_internal_gap,
-        ) = _speech_block_settings(settings)
-        blocks_path = Path(
-            generate_speech_blocks_file(
-                str(self._operation_dir(session_id, "speech-blocks")),
-                str(source_path),
-                target_language=language,
-                min_chars=min_chars,
-                max_chars=max_chars,
-                merge_threshold=merge_threshold,
-                continuation_threshold_ms=continuation_threshold,
-                max_internal_gap_ms=max_internal_gap,
-                generation_mode=_speech_block_generation_mode(settings),
-                **speaker_options,
-            )
-        )
-        blocks_artifact = self.artifacts.register(
-            blocks_path,
-            kind="json",
-            role="speech_blocks",
-            session_id=session_id,
-            parent_ids=[source_artifact.id],
-            settings=settings,
-        )
-        return self._generate_audio(
-            session_id,
-            blocks_artifact,
-            blocks_path,
-            settings,
-            progress,
-            cancel_event,
-            role="dubbing_audio",
-            job_id=str(payload.get("_job_id") or "") or None,
-        )
-
-    def generate_audiobook_audio(self, payload, progress, cancel_event):
-        session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
-        )
-        settings = dict(payload.get("settings") or {})
-        if source_artifact.role not in {"prepared_text", "tts_optimized"}:
-            raise ValueError(
-                "Audiobook generation requires a current Segment narration artifact or its reviewed speech-optimized revision."
-            )
-        return self._generate_audio(
-            session_id,
-            source_artifact,
-            source_path,
-            settings,
-            progress,
-            cancel_event,
-            role="audiobook_audio",
-            job_id=str(payload.get("_job_id") or "") or None,
         )
 
     def _generation_start_context(self) -> GenerationStartContext:

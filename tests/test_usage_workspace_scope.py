@@ -151,9 +151,12 @@ def test_sessionless_preview_accounting_uses_its_job_and_artifact(
         "pandrator.logic.tts_handler.estimate_tts_usage",
         lambda *_args: {"provider": "synthetic", "model": "test", "cost_usd": 0.02},
     )
-    case.handlers._record_tts_usage(
+    event = case.handlers._tts_usage_event(
         "", {}, "Synthetic text", 1000, job_id=job.id, artifact_id=artifact.id
     )
+    with case.database.immediate_session() as session:
+        bind_usage_ownership(session, event)
+        session.add(event)
     (event,) = case.rows()
     assert (event.workspace_id, event.project_id) == (case.workspaces["beta"], None)
     assert event.session_id is None and event.cost_usd == 0.02

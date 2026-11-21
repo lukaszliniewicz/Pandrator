@@ -240,7 +240,7 @@ def _job(
             "segment_ids": [],
         }
     )
-    if kind in {"workflow.continue", "audiobook.generate_audio", "dubbing.generate_audio"}:
+    if kind == "workflow.continue":
         payload = (
             stored
             if stored is not None
@@ -715,9 +715,7 @@ def test_timing_repair_job_proves_every_staged_lineage_hop(case: Any):
 
 
 
-@pytest.mark.parametrize(
-    "kind", ["workflow.continue", "audiobook.generate_audio", "dubbing.generate_audio"]
-)
+@pytest.mark.parametrize("kind", ["workflow.continue"])
 @pytest.mark.parametrize("injected", [True, False])
 def test_linked_bridge_accepts_only_internal_generate_request(case: Any, kind: str, injected: bool):
     actor = credential(case, "member").actor

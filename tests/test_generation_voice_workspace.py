@@ -7,7 +7,6 @@ import json
 import threading
 import wave
 from dataclasses import dataclass, replace
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -345,7 +344,6 @@ def test_preview_forwards_owner_and_publishes_owned_artifact(case, monkeypatch):
     monkeypatch.setattr(
         case.handlers.tts_providers, "synthesize", Mock(return_value=AudioSegment.silent(40))
     )
-    monkeypatch.setattr(case.handlers, "_record_tts_usage", Mock())
     payload = {
         "text": "Preview.",
         "settings": {"service": "Silero"},
@@ -383,12 +381,10 @@ def test_preview_forwards_owner_and_publishes_owned_artifact(case, monkeypatch):
         case.handlers.preview_tts_voice(payload, lambda *_args: None, threading.Event())
 
 
-@pytest.mark.parametrize("runner", ["automatic", "resumable"])
 @pytest.mark.parametrize("batch_size", [1, 2])
 @execution_actor_scope(HostActor("pandrator-cli"))
-def test_generation_callbacks_receive_persisted_owner(case, monkeypatch, runner, batch_size):
+def test_generation_callbacks_receive_persisted_owner(case, monkeypatch, batch_size):
     from pandrator.web import speech_plan_workspace
-    from pandrator.web.workflow_generation_automatic import generate_audio
     from pandrator.web.workflow_generation_execution import run_generation
 
     class ReachedScopedCallback(Exception):
@@ -406,56 +402,37 @@ def test_generation_callbacks_receive_persisted_owner(case, monkeypatch, runner,
     monkeypatch.setattr(
         speech_plan_workspace, "freeze_speech_snapshot", lambda *_args, **_kwargs: None
     )
-    if runner == "automatic":
-        context = replace(
-            case.handlers._automatic_generation_context(),
-            **common,
-            _optimize_generation_texts=lambda _sid, _ids, texts, *_args, **_kwargs: (texts, ""),
+    with case.database.session() as session:
+        run = GenerationRun(
+            session_id=case.sessions[1],
+            plan_revision_id=case.revisions[1],
+            settings_snapshot_json={"tts": settings, "speech_plan_frozen": True},
         )
-        source = case.paths.uploads / "prepared.json"
-        source.write_text(json.dumps([{"text": "Test text."}]))
-        artifact = Artifact(id=case.artifacts[1].id, role="prepared_text", metadata_json={})
-
-        def invoke():
-            return generate_audio(
-                context,
-                case.sessions[1],
-                artifact,
-                source,
-                settings,
-                lambda *_args: None,
-                threading.Event(),
-                role="audiobook_audio",
-            )
-    else:
-        with case.database.session() as session:
-            run = GenerationRun(
-                session_id=case.sessions[1],
-                plan_revision_id=case.revisions[1],
-                settings_snapshot_json={"tts": settings, "speech_plan_frozen": True},
-            )
-            session.add(run)
-            session.flush()
-            run_id = run.id
-        context = replace(
-            case.handlers._generation_execution_context(),
-            **common,
-            _voiceover_second_pass=lambda *_args, **_kwargs: None,
-        )
-
-        def invoke():
-            return run_generation(
-                context, {"generation_run_id": run_id}, lambda *_args: None, threading.Event()
-            )
+        session.add(run)
+        session.flush()
+        run_id = run.id
+    context = replace(
+        case.handlers._generation_execution_context(),
+        **common,
+        _voiceover_second_pass=lambda *_args, **_kwargs: None,
+    )
 
     with pytest.raises(ReachedScopedCallback):
-        invoke()
+        run_generation(
+            context, {"generation_run_id": run_id}, lambda *_args: None, threading.Event()
+        )
     assert prepare.call_args.kwargs["workspace_id"] == case.owners[1]
     assert ensure.call_args.kwargs["workspace_id"] == case.owners[1]
 
 
+@execution_actor_scope(HostActor("pandrator-cli"))
 def test_invalid_roots_fail_before_identity_cache_and_generation_hydration(case, monkeypatch):
-    from pandrator.web.workflow_generation_automatic import generate_audio
+    from pandrator.web import speech_plan_workspace
+    from pandrator.web.access.contracts import AccessDenied
+    from pandrator.web.workflow_generation_execution import run_generation
+
+    class ReachedHydration(Exception):
+        pass
 
     with case.database.session() as session:
         context = AudioIdentityContext(session, {"tts": {"service": "Silero"}})
@@ -463,20 +440,49 @@ def test_invalid_roots_fail_before_identity_cache_and_generation_hydration(case,
         segment = GenerationSegment(plan_revision_id="missing", ordinal=1, text="Missing root.")
         with pytest.raises(ValueError, match="speech plan"):
             context.for_segment(segment)
-        session.get(Workspace, case.owners[0]).state = "archived"
-    hydrate = Mock(side_effect=AssertionError("Provider hydration must not run"))
-    context = replace(case.handlers._automatic_generation_context(), _hydrate_tts_settings=hydrate)
-    with pytest.raises(ValueError, match="inactive"):
-        generate_audio(
-            context,
-            case.sessions[0],
-            case.artifacts[0],
-            Path("unused.json"),
-            {},
-            lambda *_args: None,
-            threading.Event(),
-            role="audiobook_audio",
+
+    monkeypatch.setattr(
+        speech_plan_workspace, "freeze_speech_snapshot", lambda *_args, **_kwargs: None
+    )
+
+    def queued_run(sequence_number: int) -> str:
+        with case.database.session() as session:
+            run = GenerationRun(
+                session_id=case.sessions[0],
+                plan_revision_id=case.revisions[0],
+                sequence_number=sequence_number,
+                settings_snapshot_json={
+                    "tts": {"service": "Silero", "voice": "en_0", "model": "v3_en"},
+                    "speech_plan_frozen": True,
+                },
+            )
+            session.add(run)
+            session.flush()
+            return run.id
+
+    hydrate = Mock(side_effect=ReachedHydration)
+    execution = replace(
+        case.handlers._generation_execution_context(),
+        _hydrate_tts_settings=hydrate,
+        _voiceover_second_pass=lambda *_args, **_kwargs: None,
+    )
+
+    def run(run_id: str) -> None:
+        run_generation(
+            execution, {"generation_run_id": run_id}, lambda *_args: None, threading.Event()
         )
+
+    # Control: in an active workspace the run gets as far as provider hydration.
+    active_run, archived_run = queued_run(1), queued_run(2)
+    with pytest.raises(ReachedHydration):
+        run(active_run)
+    hydrate.reset_mock()
+    with case.database.session() as session:
+        session.get(Workspace, case.owners[0]).state = "archived"
+    # The runner proves the run's workspace first, so an archived one is
+    # denied before any provider secret is hydrated.
+    with pytest.raises(AccessDenied):
+        run(archived_run)
     hydrate.assert_not_called()
 
 

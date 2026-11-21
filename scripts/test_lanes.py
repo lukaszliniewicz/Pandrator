@@ -398,7 +398,6 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_assembly_silences.py",
         "tests/test_playlist_pause_projection.py",
         "tests/test_generation_identity_settings_copy.py",
-        "tests/test_legacy_generation_cast.py",
         "tests/test_speaker_plan_workflow_guard.py",
     ),
     "web-17-serial": (
@@ -457,7 +456,6 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_web_workflow_handlers.py",
         "tests/test_generation_plan_store_bulk.py",
         "tests/test_web_workflow_prerequisites.py",
-        "tests/test_automatic_generation_output.py",
     ),
     "web-04-serial": (
         "tests/test_audio_cpp_catalogue_api.py",

@@ -1,4 +1,3 @@
-import json
 import tempfile
 import threading
 import unittest
@@ -418,46 +417,6 @@ class GenerationRegenerationTests(unittest.TestCase):
             )
         self.assertCountEqual(["One", "Three"], calls)
         self.assertEqual("completed", result["status"])
-
-    def test_automatic_cloud_failure_preserves_other_results_in_final_wave(self):
-        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
-        source_path = handlers._session_dir(self.session_id) / "prepared.json"
-        source_path.write_text(
-            json.dumps([{"text": "One"}, {"text": "Two"}, {"text": "Three"}]),
-            encoding="utf-8",
-        )
-        source = handlers.artifacts.register(
-            source_path, kind="json", role="prepared_text", session_id=self.session_id
-        )
-        calls = []
-        error = TtsProviderError(
-            "openai", "synthesize", "Invalid voice", retryable=False
-        )
-
-        def synthesize(text, _settings, **_options):
-            calls.append(text)
-            if text == "One":
-                raise error
-            return AudioSegment.silent(duration=20)
-
-        with patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize):
-            with self.assertRaises(TtsProviderError) as raised:
-                handlers._generate_audio(
-                    self.session_id,
-                    source,
-                    source_path,
-                    {"service": "openai", "tts_concurrent_requests": 3},
-                    self._progress,
-                    threading.Event(),
-                    role="generated_audio",
-                )
-        self.assertIs(error, raised.exception)
-        self.assertCountEqual(["One", "Two", "Three"], calls)
-        with self.database.session() as session:
-            takes = list(session.scalars(select(AudioTake)))
-            self.assertCountEqual(
-                self.segment_ids[1:], [take.generation_segment_id for take in takes]
-            )
 
     def test_repeated_default_regeneration_replaces_single_root_baton(self):
         root = self._start()

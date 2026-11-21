@@ -210,7 +210,7 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                     older_job = Job(
                         workspace_id=job_owner.workspace_id,
                         project_id=job_owner.project_id,
-                        kind="dubbing.generate_audio",
+                        kind="workflow.continue",
                         session_id=record.id,
                         status="succeeded",
                         created_at=started,
@@ -220,7 +220,7 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                     newer_job = Job(
                         workspace_id=job_owner.workspace_id,
                         project_id=job_owner.project_id,
-                        kind="dubbing.generate_audio",
+                        kind="workflow.continue",
                         session_id=record.id,
                         status="succeeded",
                         created_at=started + timedelta(hours=1),
@@ -296,14 +296,14 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                     first_job = Job(
                         workspace_id=first_owner.workspace_id,
                         project_id=first_owner.project_id,
-                        kind="dubbing.generate_audio",
+                        kind="workflow.continue",
                         session_id=first.id,
                         status="succeeded",
                     )
                     second_job = Job(
                         workspace_id=second_owner.workspace_id,
                         project_id=second_owner.project_id,
-                        kind="dubbing.generate_audio",
+                        kind="workflow.continue",
                         session_id=second.id,
                         status="succeeded",
                     )
@@ -312,7 +312,7 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
                     jobs = _latest_jobs_by_kind(
                         session,
                         first.id,
-                        {"dubbing.generate_audio"},
+                        {"workflow.continue"},
                         include_ids={first_job.id, second_job.id},
                     )
 

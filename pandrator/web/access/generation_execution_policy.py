@@ -45,7 +45,7 @@ from .project_visibility import project_ids_for_user
 
 _INJECTED = frozenset({"_job_id", "_lease_generation"})
 _LEASE_KEYS = frozenset({"job_id", "owner_id", "lease_generation"})
-_BRIDGES = frozenset({"workflow.continue", "audiobook.generate_audio", "dubbing.generate_audio"})
+_BRIDGES = frozenset({"workflow.continue"})
 _BRIDGE_KEYS = frozenset({"generation_run_id", "operation", "segment_ids"}) | _INJECTED
 #: The explicit repair request freezes its four thresholds into the job payload.
 #: Bounds come from the settings policy so admission and storage agree.

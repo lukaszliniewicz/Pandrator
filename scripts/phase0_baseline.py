@@ -357,7 +357,7 @@ def benchmark_workflow_snapshot(
         "source.clean",
         "text.prepare",
         "text.optimize_tts",
-        "audiobook.generate_audio",
+        "workflow.continue",
         "export.create",
     )
     with database.session() as session:

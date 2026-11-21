@@ -76,20 +76,6 @@ class NegotiatedTtsBatchProtocol(Protocol):
     ) -> int: ...
 
 
-class RecordTtsUsageProtocol(Protocol):
-    def __call__(
-        self,
-        session_id: str,
-        settings: dict[str, Any],
-        text: str,
-        duration_ms: int,
-        *,
-        job_id: str | None = None,
-        artifact_id: str | None = None,
-        generation_run_id: str | None = None,
-    ) -> None: ...
-
-
 class TtsUsageEventProtocol(Protocol):
     def __call__(
         self,

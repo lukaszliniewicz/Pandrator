@@ -382,86 +382,6 @@ class BackendArchitectureTests(unittest.TestCase):
         for name in names:
             self.assertIsNot(getattr(contexts[0], name), getattr(contexts[1], name))
 
-    def test_automatic_generation_facade_recaptures_all_ports_and_forwards_identity(self):
-        from dataclasses import FrozenInstanceError, fields
-
-        from pandrator.web import workflow_handlers
-        from pandrator.web.workflow_generation_automatic import AutomaticGenerationContext
-
-        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
-        names = (
-            "database",
-            "paths",
-            "artifacts",
-            "manager_bridge",
-            "tts_providers",
-            "_session_dir",
-            "_operation_dir",
-            "_store_generation_plan",
-            "_usable_language",
-            "_optimize_generation_texts",
-            "_tts_urls",
-            "_negotiated_tts_batch_size",
-            "prepare_audio_cpp_voice_reference",
-            "_ensure_qwen_cloned_voice",
-            "_start_streaming_tts_batch",
-            "_verification_metadata",
-            "_record_tts_usage",
-            "_is_subtitle_generation_record",
-            "_hydrate_tts_settings",
-            "_apply_segment_tts_overrides",
-            "_secret_free_tts_settings",
-            "_default_silence_after_ms",
-            "_logger",
-        )
-        self.assertEqual(names, tuple(field.name for field in fields(AutomaticGenerationContext)))
-        global_names = {
-            "_hydrate_tts_settings": "hydrate_tts_settings",
-            "_apply_segment_tts_overrides": "_apply_segment_tts_overrides",
-            "_secret_free_tts_settings": "_secret_free_tts_settings",
-            "_default_silence_after_ms": "_default_silence_after_ms",
-            "_logger": "logger",
-        }
-        progress, cancel = lambda *_args: None, threading.Event()
-        expected = {"result": []}
-        contexts = []
-        source, source_path, settings = object(), Path("prepared.json"), {"unchanged": []}
-        arguments = ("session", source, source_path, settings, progress, cancel)
-        for explicit in (False, True):
-            ports = {name: object() for name in names}
-            instance_values = {name: value for name, value in ports.items() if name not in global_names}
-            helper_values = {global_names[name]: ports[name] for name in global_names}
-            with patch.multiple(handlers, **instance_values), patch.multiple(
-                workflow_handlers, **helper_values
-            ), patch.object(workflow_handlers, "_automatic_generate_audio") as owner:
-                owner.return_value = expected
-                optional = {"role": "controlled-role", **({"job_id": "controlled-job"} if explicit else {})}
-                self.assertIs(expected, handlers._generate_audio(*arguments, **optional))
-                forwarded = dict(owner.call_args.kwargs)
-                progress_state = forwarded.pop("progress_state")
-                self.assertEqual(
-                    {"role": "controlled-role", "job_id": "controlled-job" if explicit else None},
-                    forwarded,
-                )
-                if explicit:
-                    self.assertEqual("controlled-job", progress_state.job_id)
-                else:
-                    self.assertIsNone(progress_state)
-                owner.assert_called_once()
-                context, *sent_arguments = owner.call_args.args
-                contexts.append(context)
-                self.assertEqual(len(arguments), len(sent_arguments))
-                for original, sent in zip(arguments, sent_arguments, strict=True):
-                    self.assertIs(original, sent)
-                for name, value in ports.items():
-                    self.assertIs(value, getattr(context, name))
-                self.assertFalse(hasattr(context, "__dict__"))
-                with self.assertRaises(FrozenInstanceError):
-                    context.database = object()
-        self.assertIsNot(contexts[0], contexts[1])
-        for name in names:
-            self.assertIsNot(getattr(contexts[0], name), getattr(contexts[1], name))
-
     def test_generation_postpasses_keep_original_facade_and_argument_identity(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         progress, cancel = lambda *_args: None, threading.Event()
@@ -495,7 +415,7 @@ class BackendArchitectureTests(unittest.TestCase):
     def test_workflow_job_registry_has_domain_ownership_and_late_binding(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         registry = handlers.handler_registry
-        self.assertEqual(51, len(registry))
+        self.assertEqual(49, len(registry))
         self.assertIn("generation.admit", registry)
         self.assertIn("voice.google_design", registry)
         self.assertIn("translation_project.create", registry)
