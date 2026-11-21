@@ -12,6 +12,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from pandrator.web import security_events
 from pandrator.web.security_events import SecurityEventSink
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -79,6 +80,74 @@ class SecurityEventLogTests(unittest.TestCase):
                 ):
                     self.assertFalse(self.emit(sink))
                 self.assertEqual(output.getvalue(), "")
+
+    def test_refused_file_sink_stays_off_and_creates_no_file(self):
+        root = self.temporary_directory()
+        target = root / "refused.jsonl"
+        refusal = "this platform cannot restrict the file's permissions"
+        with (
+            patch(
+                "pandrator.web.security_events._file_sink_refusal",
+                return_value=refusal,
+            ),
+            self.assertLogs("pandrator.web.security_events", level=logging.WARNING) as captured,
+        ):
+            sink = SecurityEventSink(str(target))
+            self.assertFalse(sink.enabled)
+            self.assertFalse(self.emit(sink))
+            sink.announce()
+
+        self.assertEqual(len(captured.records), 1)
+        message = captured.records[0].getMessage()
+        self.assertIn("OFF", message)
+        self.assertIn("stdout", message)
+        self.assertIn(refusal, message)
+        self.assertNotIn(str(target), message)
+        self.assertFalse(target.exists())
+
+    def test_windows_is_named_as_the_reason_where_fchmod_exists(self):
+        with patch.object(security_events.sys, "platform", "win32"):
+            refusal = security_events._file_sink_refusal()
+        self.assertIsNotNone(refusal)
+        self.assertIn("Windows", refusal)
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows is refused by name; this covers the missing-function fallback.",
+    )
+    def test_missing_fchmod_is_a_refusal(self):
+        with patch.object(security_events.os, "fchmod", None, create=True):
+            refusal = security_events._file_sink_refusal()
+        self.assertIsNotNone(refusal)
+        self.assertIn("permissions", refusal)
+
+    def test_relative_target_is_off_and_announced(self):
+        with self.assertLogs("pandrator.web.security_events", level=logging.WARNING) as captured:
+            sink = SecurityEventSink("relative-security-events.jsonl")
+            self.assertFalse(sink.enabled)
+            self.assertFalse(self.emit(sink))
+            sink.announce()
+
+        self.assertEqual(len(captured.records), 1)
+        message = captured.records[0].getMessage()
+        self.assertIn("OFF", message)
+        self.assertIn("stdout", message)
+
+    def test_stdout_and_unset_targets_announce_once_or_not_at_all(self):
+        with self.assertLogs("pandrator.web.security_events", level=logging.INFO) as captured:
+            SecurityEventSink("stdout").announce()
+
+        self.assertEqual(len(captured.records), 1)
+        self.assertEqual(captured.records[0].levelno, logging.INFO)
+        self.assertEqual(
+            captured.records[0].getMessage(),
+            "Security event log: writing to stdout.",
+        )
+
+        for target in (None, "", 17):
+            with self.subTest(target=target):
+                with self.assertNoLogs("pandrator.web.security_events", level=logging.DEBUG):
+                    SecurityEventSink(target).announce()  # type: ignore[arg-type]
 
     def test_stdout_is_resolved_at_write_time_and_records_are_ordered_jsonl(self):
         sink = SecurityEventSink("stdout")
@@ -152,8 +221,7 @@ class SecurityEventLogTests(unittest.TestCase):
 
     @unittest.skipIf(
         os.name == "nt",
-        "The file sink requires POSIX descriptor permission hardening "
-        "(os.fchmod), which Windows does not provide.",
+        "The file sink is not offered on Windows.",
     )
     def test_file_target_is_private_and_symlinks_are_rejected(self):
         root = self.temporary_directory()
@@ -178,7 +246,10 @@ class SecurityEventLogTests(unittest.TestCase):
     def test_file_write_errors_are_soft_and_warn_once_without_path(self):
         root = self.temporary_directory()
         private_path = root / "private-path-marker.jsonl"
-        sink = SecurityEventSink(str(private_path))
+        # The write path is the same wherever the file sink is offered, so
+        # this also runs on Windows, where the sink would otherwise be off.
+        with patch("pandrator.web.security_events._file_sink_refusal", return_value=None):
+            sink = SecurityEventSink(str(private_path))
         output = io.StringIO()
         with (
             patch(
@@ -198,8 +269,7 @@ class SecurityEventLogTests(unittest.TestCase):
 
     @unittest.skipIf(
         os.name == "nt",
-        "The file sink requires POSIX descriptor permission hardening "
-        "(os.fchmod), which Windows does not provide.",
+        "The file sink is not offered on Windows.",
     )
     def test_concurrent_authentication_failures_are_individual_json_lines(self):
         root = self.temporary_directory()

@@ -15,6 +15,7 @@ from .export_inputs import (
     select_generated_audio,
     select_media_export,
 )
+from .export_names import export_file_stem
 from .export_subtitles import (
     subtitle_file_diagnostics,
     subtitle_issue_summary,
@@ -45,8 +46,6 @@ def export(
     cancel_event: threading.Event,
 ) -> dict[str, Any]:
     """Create immutable, managed exports from the explicitly selected inputs."""
-    from werkzeug.utils import secure_filename
-
     from pandrator.logic.dubbing.audio_sync import (
         build_mix_audio_command,
         media_has_audio_stream,
@@ -94,7 +93,7 @@ def export(
     # allocated below use these subfolders.
     audio_dir = output_dir / "audio"
     subtitle_dir = output_dir / "subtitles"
-    export_name = secure_filename(record.name) or record.storage_key
+    export_name = export_file_stem(record.name, record.storage_key)
     progress(0.1, "Preparing export")
     produced: list[Artifact] = []
     subtitle_diagnostic_results: list[dict[str, Any]] = []

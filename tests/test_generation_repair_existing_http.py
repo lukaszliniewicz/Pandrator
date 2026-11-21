@@ -266,6 +266,74 @@ def test_timing_repair_rejects_active_runs_and_extra_body_parameters(design):
     assert response.status_code == 409
 
 
+_DIRECTED_REFUSAL = (
+    "Timing repair is not available for a voiceover generated with casting or "
+    "performance directions. A repair replaces speech blocks, and the speaker "
+    "plan is reviewed block by block. Split the affected blocks in the speech "
+    "plan, review the speaker plan, and regenerate them instead."
+)
+
+
+def _set_direction(design, p, key: str) -> None:
+    with design.case.database.immediate_session() as session:
+        run = session.get(GenerationRun, p.run_id)
+        run.settings_snapshot_json = {
+            **run.settings_snapshot_json,
+            "tts": {**run.settings_snapshot_json["tts"], key: True},
+        }
+
+
+def _count_jobs(design, p, kind: str) -> int:
+    with design.case.database.snapshot_session() as session:
+        return int(
+            session.scalar(
+                select(func.count())
+                .select_from(Job)
+                .where(Job.session_id == p.source["id"], Job.kind == kind)
+            )
+            or 0
+        )
+
+
+def test_timing_repair_refuses_a_casting_voiceover(design):
+    """A repair replaces blocks whose speaker plan was reviewed by hand."""
+
+    p = _ready(design)
+    _set_direction(design, p, "casting_enabled")
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    response = design.users.owner.post(url, json={}, headers=design.users.oh)
+    error = body(response, 409)["error"]
+    assert error["code"] == "invalid_state"
+    assert error["message"] == _DIRECTED_REFUSAL
+    assert _count_jobs(design, p, "generation.repair-existing") == 0
+    # The same fixture without the direction is still accepted, so the refusal
+    # is the casting flag and not the fixture.
+    with design.case.database.immediate_session() as session:
+        run = session.get(GenerationRun, p.run_id)
+        tts = dict(run.settings_snapshot_json["tts"])
+        tts.pop("casting_enabled")
+        run.settings_snapshot_json = {**run.settings_snapshot_json, "tts": tts}
+    accepted = body(
+        design.users.owner.post(url, json={}, headers=design.users.oh), 202
+    )
+    assert accepted["generation_run_id"] == p.run_id
+
+
+def test_timing_repair_preview_refuses_a_performance_voiceover(design):
+    """The preview must not offer a repair the repair itself would refuse."""
+
+    p = _ready(design)
+    _set_direction(design, p, "performance_enabled")
+    url = f"/api/v1/generation-runs/{p.run_id}/repair-timing"
+    response = design.users.owner.post(
+        url, json={"preview": True}, headers=design.users.oh
+    )
+    error = body(response, 409)["error"]
+    assert error["code"] == "invalid_state"
+    assert error["message"] == _DIRECTED_REFUSAL
+    assert _count_jobs(design, p, "generation.repair-preview") == 0
+
+
 def test_timing_repair_failure_is_visible_and_keeps_root_generation_job(design):
     p = _ready(design)
     root_job_id = _install_completed_root_job(design, p)

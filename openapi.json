@@ -289,7 +289,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.15.0",
+            "default": "0.15.1",
             "title": "Application Version",
             "type": "string"
           },
