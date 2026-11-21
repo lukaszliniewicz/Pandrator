@@ -14,5 +14,7 @@ def export_file_stem(name: str, fallback: str) -> str:
     extension and sometimes a version suffix, and Windows counts the whole
     path against 260 characters, so the stem is capped.
     """
-    stem = secure_filename(name)[:EXPORT_STEM_MAX_CHARS].rstrip("._-")
-    return stem or fallback
+    capped = secure_filename(name)[:EXPORT_STEM_MAX_CHARS].rstrip("._-")
+    # Trimming can leave a Windows device name ("CON-" becomes "CON"), so the
+    # trimmed stem is made safe once more.
+    return secure_filename(capped) or fallback

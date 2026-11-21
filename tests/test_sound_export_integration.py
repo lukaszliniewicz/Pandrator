@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from werkzeug.utils import secure_filename
@@ -319,4 +321,26 @@ class TestExportFileStem:
         stem = export_file_stem(name, "fallback")
 
         assert stem == secure_filename(stem)
+        assert len(stem) <= 80
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("CON-", "_CON"),
+            ("nul--", "_nul"),
+            ("COM1" + "-" * 120, "_COM1"),
+            ("CON", "_CON"),
+            ("Ordinary project", "Ordinary_project"),
+            ("x" * 255, "x" * 80),
+        ],
+    )
+    def test_trimming_never_leaves_a_windows_device_name(self, name, expected):
+        # Werkzeug prefixes device names only on Windows; the stem is pure
+        # string work, so the platform can be simulated.
+        with patch.object(os, "name", "nt"):
+            stem = export_file_stem(name, "fallback")
+            again = secure_filename(stem)
+
+        assert stem == expected
+        assert stem == again
         assert len(stem) <= 80
