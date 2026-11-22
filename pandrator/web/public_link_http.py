@@ -80,6 +80,7 @@ _SESSION_RULES: dict[str, frozenset[str]] = {
     "/generation-plan/prepare": frozenset({"POST"}),
     "/generation-plan/select": frozenset({"POST"}),
     "/generation-plan/review": frozenset({"POST"}),
+    "/export-audio": frozenset({"GET"}),
     "/generation-controls": frozenset({"GET", "PUT"}),
     "/generation-admissions": frozenset({"POST"}),
     "/generation-recast": frozenset({"POST"}),

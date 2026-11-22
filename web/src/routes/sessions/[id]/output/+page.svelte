@@ -26,6 +26,7 @@
   } from '@lucide/svelte';
   import type {
     ArtifactRecord,
+    ExportAudioDescription,
     GenerationRun,
     JobRecord,
     SessionRecord,
@@ -53,6 +54,7 @@
   import { useProjectInterface } from '$lib/project-interface.svelte';
   import OutputSettingsSnapshot from '$lib/OutputSettingsSnapshot.svelte';
   import BookExportNotice from '$lib/BookExportNotice.svelte';
+  import { exportAudioNote } from '$lib/export-audio-version';
   import {
     exportIntent,
     selectedSubtitleTracks,
@@ -64,6 +66,7 @@
   const simpleMode = $derived(projectInterface?.mode === 'simple');
   let artifacts = $state<ArtifactRecord[]>([]);
   let runs = $state<GenerationRun[]>([]);
+  let exportAudio = $state<ExportAudioDescription | null>(null);
   let exportJobs = $state<JobRecord[]>([]);
   let session = $state<SessionRecord | null>(null);
   let outputProfile = $state<SettingsPayload | null>(null);
@@ -96,6 +99,7 @@
       ? (outputProfile.context as Record<string, unknown>)
       : {}
   );
+  const exportAudioHint = $derived(exportAudioNote(exportAudio, runs));
   const hasSourceVideo = $derived(Boolean(outputContext.has_source_video));
   const hasSourceAudio = $derived(Boolean(outputContext.has_source_audio));
   const outputValues = $derived(
@@ -216,15 +220,20 @@
       runPayload,
       sessionPayload,
       settingsPayload,
-      jobPayload
+      jobPayload,
+      exportAudioPayload
     ] = await Promise.all([
       artifactApi.list({ sessionId, limit: 300, outputOnly: true }),
       generationApi.runs(sessionId),
       sessionApi.get(sessionId),
       sessionApi.settings(sessionId, 'output'),
-      jobApi.exports(sessionId)
+      jobApi.exports(sessionId),
+      // Naming the version is a hint: a failed read shows nothing and never
+      // blocks the page or the export.
+      generationApi.exportAudio(sessionId).catch(() => null)
     ]);
     if (revision !== loadRevision) return;
+    exportAudio = exportAudioPayload;
     artifacts = artifactPayload.items
       .filter(
         (item) =>
@@ -838,6 +847,21 @@
             {#if selectedRun?.id}
               <dd class="muted mt-1 font-mono text-xs" title={selectedRun.id}>
                 {selectedRun.id.slice(0, 8)}
+              </dd>
+            {:else if exportAudioHint && intendedExport.usesGeneratedAudio}
+              <dd
+                class="mt-1 text-xs"
+                class:text-amber-600={exportAudioHint.status !== 'named'}
+                data-testid="export-audio-version"
+              >
+                {exportAudioHint.headline}
+                {#if exportAudioHint.versions.length}
+                  <ul class="mt-1 list-disc space-y-1 pl-4">
+                    {#each exportAudioHint.versions as label, index (index)}
+                      <li>{label}</li>
+                    {/each}
+                  </ul>
+                {/if}
               </dd>
             {/if}
           </div>

@@ -164,6 +164,11 @@ assuming “latest.” For each deliverable, call
 selection, and the run's `generation_run_id`: the plan then lists the assembly
 it reuses or prepares and reports `speech_timing`. Without a run ID the export
 uses the session's current assembly, the one made from the active speech plan.
+Read `export_audio` before executing: it names the version the export will use
+(its run, assembly time and plan revision), or, when it cannot tell, lists
+`candidates`; pick one and plan again with its `generation_run_id`, or, for a
+candidate with no run, remove the assemblies you do not want with
+`pandrator_delete_output` and plan again.
 Execute that immutable plan and poll it to terminal before planning another
 dependent output.
 

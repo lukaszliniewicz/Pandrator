@@ -197,7 +197,11 @@ instead of substituting current settings. Returned origins make this explicit.
    its media/text/subtitle options, and execute the exact plan with
    `pandrator_execute_workflow_plan`. Omitting `audio_mode` uses the session's
    effective value; check it and its origin (a voiceover over sound normally
-   wants `mixed`). Read `speech_timing`: `timing_drift` gives the worst block
+   wants `mixed`). Read `export_audio` before executing: it names the audio
+   version the export will use (run, assembly time, plan revision), or lists
+   `candidates` when it cannot tell: plan again with a candidate's
+   `generation_run_id`, or, for one with no run, remove the assemblies you do
+   not want with `pandrator_delete_output` and plan again. Read `speech_timing`: `timing_drift` gives the worst block
    and cue lag and the late cues, `tail` says whether speech outruns the
    video. `synchronization_speed` defaults to 1.15 and the plan warns above
    1.2; for a language that runs long, condense the text rather than raise the

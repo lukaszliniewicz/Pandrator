@@ -2450,6 +2450,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/export-audio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Audio version an export with no run chosen would use
+         * @description Read-only. Names the one current assembled audio an export that selects no generation run would use, or lists the candidates when it cannot tell, each with its run, assembly time and plan revision. Never changes the choice.
+         */
+        get: operations["getExportAudioVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/forks": {
         parameters: {
             query?: never;
@@ -19250,6 +19270,72 @@ export interface operations {
         responses: {
             /** @description Document and subtitle revisions */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getExportAudioVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The version, the candidates, or neither */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        candidates: {
+                            active_revision: boolean;
+                            artifact_id: string;
+                            assembled_at: string;
+                            assembly_id: string | null;
+                            generation_run_id: string | null;
+                            plan_revision_id: string | null;
+                            plan_revision_number: number | null;
+                            run_sequence_number: number | null;
+                        }[];
+                        /** @enum {string} */
+                        status: "named" | "ambiguous" | "none";
+                        version: {
+                            active_revision: boolean;
+                            artifact_id: string;
+                            assembled_at: string;
+                            assembly_id: string | null;
+                            generation_run_id: string | null;
+                            plan_revision_id: string | null;
+                            plan_revision_number: number | null;
+                            run_sequence_number: number | null;
+                        } | null;
+                    };
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

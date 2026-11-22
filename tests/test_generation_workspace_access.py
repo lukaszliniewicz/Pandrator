@@ -49,6 +49,7 @@ def requests_for(p):
         ("get", prefix + "/generation-runs?limit=invalid"),
         ("get", f"/api/v1/generation-runs/{p.run_id}"),
         ("get", prefix + "/output-assemblies/latest"),
+        ("get", prefix + "/export-audio"),
         ("get", prefix + "/generation-controls"),
         ("get", prefix + "/settings/tts"),
         ("post", prefix + "/settings/resolve"),
@@ -134,6 +135,13 @@ def test_member_reads_and_edits_another_members_project(design):
         "settings/tts",
     ):
         body(f.users.bob.get(f"{prefix}/{suffix}"))
+    # Naming the export's audio version is a read: a member sees it, and with
+    # no assembly it names none.
+    assert body(f.users.bob.get(f"{prefix}/export-audio")) == {
+        "status": "none",
+        "version": None,
+        "candidates": [],
+    }
     body(f.users.bob.get(f"/api/v1/generation-runs/{p.run_id}"))
     body(
         f.users.bob.put(
@@ -177,6 +185,8 @@ def test_can_view_reads_content_but_cannot_edit_process_or_cancel(design):
     body(f.users.alice.get(f"/api/v1/generation-runs/{p.run_id}"))
     body(f.users.alice.get(prefix + "/generation-controls"))
     body(f.users.alice.get(prefix + "/settings/tts"))
+    # Naming the export's audio version is a read, so a can-view user has it.
+    assert body(f.users.alice.get(prefix + "/export-audio"))["status"] == "none"
     before = counts(f)
     for method, path in requests_for(p):
         if method == "get" or path.endswith(
@@ -339,3 +349,74 @@ def test_member_project_overrides_select_connections_without_configuring_them(de
             )
             assert response.status_code == 422, (suffix, response.get_json())
         assert counts(f) == before
+
+
+def add_assembly(f, p, name, *, run_id, plan_revision_id, created_at):
+    from pandrator.web.projects.artifact_identity import resolve_artifact_ownership
+
+    with f.case.database.immediate_session() as session:
+        ownership = resolve_artifact_ownership(session, session_id=p.source["id"])
+        artifact = m.Artifact(
+            session_id=p.source["id"],
+            workspace_id=ownership.workspace_id,
+            project_id=ownership.project_id,
+            kind="audio",
+            role="assembled_audio",
+            relative_path=f"{name}.wav",
+            content_hash=name.ljust(64, "0"),
+            state="current",
+        )
+        session.add(artifact)
+        session.flush()
+        session.add(
+            m.OutputAssembly(
+                session_id=p.source["id"],
+                generation_run_id=run_id,
+                status="completed",
+                artifact_id=artifact.id,
+                settings_json={"plan_revision_id": plan_revision_id},
+                created_at=created_at,
+            )
+        )
+
+
+def test_export_audio_route_matches_its_published_schema(design):
+    from datetime import UTC, datetime
+
+    from pandrator.web.openapi import build_openapi_document
+
+    f = design
+    p = project(f)
+    path = f"/api/v1/sessions/{p.source['id']}/export-audio"
+    document = build_openapi_document()
+    schema = document["paths"]["/api/v1/sessions/{sessionId}/export-audio"]["get"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]
+
+    def check(payload, node):
+        assert set(payload) == set(node["required"]) == set(node["properties"])
+        version = node["properties"]["version"]["anyOf"][0]
+        for item in [payload["version"], *payload["candidates"]]:
+            if item is not None:
+                assert set(item) == set(version["required"]) == set(version["properties"])
+
+    revision = p.plan["active_revision_id"]
+    add_assembly(
+        f, p, "first", run_id=p.run_id, plan_revision_id=revision,
+        created_at=datetime(2026, 11, 21, 10, 0, tzinfo=UTC),
+    )
+    named = body(f.users.owner.get(path))
+    assert named["status"] == "named" and named["candidates"] == []
+    assert named["version"]["generation_run_id"] == p.run_id
+    assert named["version"]["active_revision"] is True
+    check(named, schema)
+
+    # A second assembly on the active revision too: neither is singled out.
+    add_assembly(
+        f, p, "second", run_id=None, plan_revision_id=revision,
+        created_at=datetime(2026, 11, 21, 11, 0, tzinfo=UTC),
+    )
+    ambiguous = body(f.users.owner.get(path))
+    assert ambiguous["status"] == "ambiguous" and ambiguous["version"] is None
+    assert [item["generation_run_id"] for item in ambiguous["candidates"]] == [None, p.run_id]
+    check(ambiguous, schema)

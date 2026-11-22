@@ -570,6 +570,118 @@ test('Create export keeps the selected audio version when saved effective defaul
   expect(selectedExportCalls).toBe(1);
 });
 
+test('with no audio version selected the page names the version an export would use', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'audiobook');
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
+    async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'run-three',
+              sequence_number: 3,
+              status: 'completed',
+              label: 'Run 3: Regenerated chapter'
+            }
+          ]
+        })
+      });
+    }
+  );
+  const candidate = (overrides: Record<string, unknown>) => ({
+    assembly_id: 'assembly',
+    artifact_id: 'artifact',
+    generation_run_id: 'run-three',
+    run_sequence_number: 3,
+    plan_revision_id: 'revision-two',
+    plan_revision_number: 2,
+    active_revision: true,
+    assembled_at: '2026-11-21T10:09:00+00:00',
+    ...overrides
+  });
+  type Reply =
+    | { status: 'named' | 'ambiguous' | 'none'; [key: string]: unknown }
+    | 'failure';
+  let reply: Reply = {
+    status: 'ambiguous',
+    version: null,
+    candidates: [
+      candidate({}),
+      candidate({
+        generation_run_id: 'run-two',
+        run_sequence_number: 2,
+        plan_revision_number: 1,
+        active_revision: false,
+        assembled_at: '2026-11-20T08:00:00+00:00'
+      })
+    ]
+  };
+  await page.route(
+    `**/api/v1/sessions/${session.id}/export-audio`,
+    async (route) => {
+      if (reply === 'failure') {
+        await route.fulfill({ status: 500, body: 'failed' });
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(reply)
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  const versionSelect = page.getByRole('combobox', {
+    name: 'Audio version',
+    exact: true
+  });
+  await expect(versionSelect).toHaveValue('run-three', { timeout: 20_000 });
+  // A chosen run is the version; the page has nothing more to name.
+  await expect(page.getByTestId('export-audio-version')).toHaveCount(0);
+  await versionSelect.selectOption('');
+  const note = page.getByTestId('export-audio-version');
+  await expect(note).toContainText('Select a run under Audio version');
+  await expect(note.getByRole('listitem')).toHaveCount(2);
+  await expect(note).toContainText('Run 3: Regenerated chapter');
+  await expect(note).toContainText('plan revision 2 (active)');
+  await expect(note).toContainText('plan revision 1');
+
+  reply = {
+    status: 'named',
+    version: candidate({}),
+    candidates: []
+  };
+  await page.reload();
+  await versionSelect.selectOption('');
+  await expect(page.getByTestId('export-audio-version')).toContainText(
+    'This export will use'
+  );
+  await expect(page.getByTestId('export-audio-version')).toContainText(
+    'Run 3: Regenerated chapter · assembled'
+  );
+
+  reply = { status: 'none', version: null, candidates: [] };
+  await page.reload();
+  await versionSelect.selectOption('');
+  await expect(page.getByTestId('export-audio-version')).toContainText(
+    'Assemble the current recordings in Generation'
+  );
+
+  // A failed read shows nothing and never blocks the export.
+  reply = 'failure';
+  await page.reload();
+  await versionSelect.selectOption('');
+  await expect(page.getByTestId('export-audio-version')).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Create export' })
+  ).toBeEnabled();
+});
+
 test('soundtrack mix preview uses the selected version and current unsaved controls', async ({
   page
 }) => {

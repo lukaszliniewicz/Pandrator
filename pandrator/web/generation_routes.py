@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from .access.contracts import ProjectAction
 from .access.generation_resource_policy import require_generation_resource_access
 from .domain_blueprints import DomainBlueprints
+from .export_audio_version import describe_export_audio
 from .generation_admission import (
     GenerationAdmissionStaleInputs,
     admit_generation_in_session,
@@ -954,6 +955,17 @@ def register_generation_routes(
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         return public_response({"item": generation.latest_assembly(session_id)})
+
+    @app.get("/api/v1/sessions/<session_id>/export-audio")
+    @require_auth
+    @require_session_action(context, ProjectAction.READ)
+    def export_audio_version(session_id: str):
+        try:
+            sessions.get(session_id)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        with database.snapshot_session() as db_session:
+            return public_response(describe_export_audio(db_session, session_id))
 
     @app.post("/api/v1/sessions/<session_id>/output-assemblies")
     @require_auth
