@@ -249,6 +249,7 @@ def test_project_read_edit_run_and_export_routes(case: Case, manager) -> None:
         ("/generation-admissions", "POST"),
         ("/stages/<stage_key>/run", "POST"),
         ("/output-assemblies", "POST"),
+        ("/export-audio", "GET"),
         ("/workflow-plans", "POST"),
         ("/media-edit/render", "POST"),
         ("/comparison-exports", "POST"),

@@ -156,7 +156,9 @@ for the distinct result contracts.
 
 Before executing a voiceover export plan, check its effective `audio_mode`
 (normally `mixed` when the source has sound) and its `speech_timing` lag and
-tail, and pass on its warnings. Generated takes, assembled media, exports, and
+tail, and pass on its warnings. Before executing any export plan that uses
+generated audio, read `export_audio`, which names the assembled version it will
+use or lists `candidates`. Generated takes, assembled media, exports, and
 downloaded files are separate results. Verify the requested language, artifact role and revision, generation
 completeness, export format, and destination. Use the download result's size
 and checksum verification when available. Report the delivered files and any

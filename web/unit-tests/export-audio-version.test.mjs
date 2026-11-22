@@ -95,6 +95,34 @@ test('an ambiguous export lists every candidate and asks to select one', () => {
   assert.match(note.versions[1], /^Run 2: generate/);
 });
 
+test('a time without an offset is read as UTC', () => {
+  const label = labelOf(version({ assembled_at: '2026-11-21T10:09:00' }), runs);
+  assert.ok(
+    label.includes(` · assembled ${stamp('2026-11-21T10:09:00Z')} · `),
+    label
+  );
+});
+
+test('with no selectable candidate the ambiguous note asks only for a removal', () => {
+  const candidates = [
+    version({ generation_run_id: null, run_sequence_number: null }),
+    version({ generation_run_id: 'run-2', run_sequence_number: 2 })
+  ];
+  const note = exportAudioNote(
+    { status: 'ambiguous', version: null, candidates },
+    runs,
+    []
+  );
+  assert.doesNotMatch(note.headline, /Select a run/);
+  assert.match(note.headline, /To export, remove the assemblies/);
+  const offered = exportAudioNote(
+    { status: 'ambiguous', version: null, candidates },
+    runs,
+    ['run-2']
+  );
+  assert.match(offered.headline, /Select a run under Audio version/);
+});
+
 test('no assembly says there is none, and a missing read says nothing', () => {
   const none = exportAudioNote(
     { status: 'none', version: null, candidates: [] },

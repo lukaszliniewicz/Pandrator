@@ -20,6 +20,8 @@ without first writing a temporary host file. Its normal stages are:
    included by an exact workflow plan.
 5. **Assemble** — select takes and construct the intended audio sequence.
 6. **Export** — package assembled audio with format, metadata, and cover choices.
+   Before executing an export plan, read its `export_audio`: the assembled
+   version it will use, or the `candidates` to choose from by `generation_run_id`.
 
 Whole-document speech optimization and generation-time batch optimization are
 alternative places to perform the same kind of transformation. Review the plan

@@ -205,7 +205,8 @@ def _candidate_line(item: Mapping[str, Any]) -> str:
         number = item.get("run_sequence_number")
         label = f"run {number} ({run_id})" if number is not None else f"run {run_id}"
     else:
-        label = "no run"
+        # No run can choose it, so name the file's artifact for removal.
+        label = f"no run (artifact {item.get('artifact_id')})"
     parts = [label, f"assembled {item.get('assembled_at')}"]
     revision = item.get("plan_revision_number")
     if revision is not None:

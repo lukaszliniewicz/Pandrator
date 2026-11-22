@@ -682,6 +682,121 @@ test('with no audio version selected the page names the version an export would 
   ).toBeEnabled();
 });
 
+test('run-less candidates are marked in the assemblies list and removing one renames the version', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'audiobook');
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [] })
+      })
+  );
+  const assembly = (id: string, createdAt: string) => ({
+    id,
+    session_id: session.id,
+    kind: 'audio',
+    role: 'assembled_audio',
+    state: 'current',
+    relative_path: `sessions/${session.id}/${id}.wav`,
+    mime_type: 'audio/wav',
+    size_bytes: 1024,
+    created_at: createdAt
+  });
+  let listed = [
+    assembly('artifact-new', '2026-11-21T10:09:00'),
+    assembly('artifact-old', '2026-11-20T08:00:00')
+  ];
+  await page.route('**/api/v1/artifacts?**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('session_id') !== session.id) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: listed })
+    });
+  });
+  const runLess = (artifactId: string, assembledAt: string) => ({
+    assembly_id: `assembly-${artifactId}`,
+    artifact_id: artifactId,
+    generation_run_id: null,
+    run_sequence_number: null,
+    plan_revision_id: 'revision-two',
+    plan_revision_number: 2,
+    active_revision: true,
+    // Stored without an offset, as SQLite returns it: the time is UTC.
+    assembled_at: assembledAt
+  });
+  let reply: Record<string, unknown> = {
+    status: 'ambiguous',
+    version: null,
+    candidates: [
+      runLess('artifact-new', '2026-11-21T10:09:00'),
+      runLess('artifact-old', '2026-11-20T08:00:00')
+    ]
+  };
+  await page.route(`**/api/v1/sessions/${session.id}/export-audio`, (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(reply)
+    })
+  );
+  let removed = '';
+  await page.route(
+    `**/api/v1/sessions/${session.id}/outputs/*`,
+    async (route) => {
+      if (route.request().method() !== 'DELETE') {
+        await route.fallback();
+        return;
+      }
+      removed = new URL(route.request().url()).pathname.split('/').at(-1) ?? '';
+      listed = listed.filter((item) => item.id !== removed);
+      reply = {
+        status: 'named',
+        version: runLess('artifact-old', '2026-11-20T08:00:00'),
+        candidates: []
+      };
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ deleted: true })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  const note = page.getByTestId('export-audio-version');
+  // No run can be selected, so the page asks only for a removal.
+  await expect(note).toContainText('To export, remove the assemblies', {
+    timeout: 20_000
+  });
+  await expect(note).not.toContainText('Select a run');
+  const utcAsLocal = new Date(
+    Date.parse('2026-11-21T10:09:00Z')
+  ).toLocaleString();
+  await expect(note).toContainText(`assembled ${utcAsLocal}`);
+  const marks = page.getByTestId('export-audio-candidate');
+  await expect(marks).toHaveCount(2);
+  await expect(marks.first()).toContainText(
+    `Export candidate: Assembled without a run · assembled ${utcAsLocal}`
+  );
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await page
+    .getByRole('button', { name: /^Remove assembly / })
+    .first()
+    .click();
+  await expect(page.getByText('Assembly removed.')).toBeVisible();
+  expect(removed).toBe('artifact-new');
+  // The page reads the version again without a reload.
+  await expect(note).toContainText('This export will use');
+  await expect(marks).toHaveCount(0);
+});
+
 test('soundtrack mix preview uses the selected version and current unsaved controls', async ({
   page
 }) => {
@@ -1580,6 +1695,9 @@ for (const target of ['media', 'subtitles']) {
         await page
           .getByRole('combobox', { name: 'Audio version', exact: true })
           .selectOption('');
+        if (target === 'subtitles')
+          // Subtitle text alone uses no generated audio, so nothing names one.
+          await expect(page.getByTestId('export-audio-version')).toHaveCount(0);
         await page
           .getByRole('button', { name: 'Create export', exact: true })
           .click();

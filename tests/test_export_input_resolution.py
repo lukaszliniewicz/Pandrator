@@ -577,10 +577,14 @@ class ExportInputResolutionTests(unittest.TestCase):
         self.new_audiobook_session("No run")
         revisions = self.add_plan_with_revisions()
         self.add_assembly("with-run", revisions[0], minutes=2, run_number=1)
-        self.add_assembly("without-run", revisions[0], minutes=6)
+        without_run, *_ = self.add_assembly("without-run", revisions[0], minutes=6)
         with self.assertRaises(ValueError) as refused:
             self.handlers.export(self.unpinned_payload(), mock.Mock(), threading.Event())
-        self.assertRegex(str(refused.exception), r"no run, assembled .*plan revision 1")
+        # The artifact id is what removing a run-less candidate needs.
+        self.assertRegex(
+            str(refused.exception),
+            rf"no run \(artifact {without_run.id}\), assembled .*plan revision 1",
+        )
 
     def test_active_revision_follows_the_stored_revision_the_rule_counts(self):
         """A run on the active revision does not make an unstored assembly active."""

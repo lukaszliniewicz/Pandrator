@@ -54,7 +54,11 @@
   import { useProjectInterface } from '$lib/project-interface.svelte';
   import OutputSettingsSnapshot from '$lib/OutputSettingsSnapshot.svelte';
   import BookExportNotice from '$lib/BookExportNotice.svelte';
-  import { exportAudioNote } from '$lib/export-audio-version';
+  import {
+    exportAudioNote,
+    exportAudioVersionLabel
+  } from '$lib/export-audio-version';
+  import { apiTimestamp } from '$lib/run-metrics';
   import {
     exportIntent,
     selectedSubtitleTracks,
@@ -99,7 +103,32 @@
       ? (outputProfile.context as Record<string, unknown>)
       : {}
   );
-  const exportAudioHint = $derived(exportAudioNote(exportAudio, runs));
+  // The runs the Audio version select below offers, in the same order.
+  const selectableRuns = $derived(
+    session?.workflow_kind === 'subtitles'
+      ? []
+      : historyRuns.filter(
+          (item) => item.status === 'completed' || item.audio_version
+        )
+  );
+  const exportAudioHint = $derived(
+    exportAudioNote(
+      exportAudio,
+      runs,
+      selectableRuns.map((item) => item.id)
+    )
+  );
+  // Marks each ambiguous candidate in the assemblies list with its label.
+  const exportAudioCandidates = $derived(
+    new Map(
+      exportAudio?.status === 'ambiguous'
+        ? exportAudio.candidates.map((item) => [
+            item.artifact_id,
+            exportAudioVersionLabel(item, runs)
+          ])
+        : []
+    )
+  );
   const hasSourceVideo = $derived(Boolean(outputContext.has_source_video));
   const hasSourceAudio = $derived(Boolean(outputContext.has_source_audio));
   const outputValues = $derived(
@@ -458,6 +487,11 @@
       artifacts = artifacts.filter((item) => item.id !== artifact.id);
       if (preview?.id === artifact.id) preview = null;
       message = assembly ? 'Assembly removed.' : 'Export removed.';
+      // Removing an assembly can settle which version an export uses.
+      if (assembly)
+        exportAudio = await generationApi
+          .exportAudio(sessionId)
+          .catch(() => null);
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -675,8 +709,7 @@
             }}
             class="mt-1 block max-w-sm rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3 py-2 text-sm font-normal"
             ><option value="">Do not select generated audio</option
-            >{#each historyRuns.filter((item) => item.status === 'completed' || item.audio_version) as item}<option
-                value={item.id}
+            >{#each selectableRuns as item}<option value={item.id}
                 >{item.label}{item.timing_repair
                   ? ` · ${generationHistoryStatus(item)}`
                   : ''}</option
@@ -1066,7 +1099,7 @@
                         >
                           <time datetime={artifact.created_at}
                             >{new Date(
-                              artifact.created_at
+                              apiTimestamp(artifact.created_at)
                             ).toLocaleString()}</time
                           ><span
                             >· {artifact.mime_type ||
@@ -1076,6 +1109,14 @@
                               >· {formatBytes(artifact.size_bytes)}</span
                             >{/if}
                         </div>
+                        {#if exportAudioCandidates.has(artifact.id)}<div
+                            class="mt-1 text-xs text-amber-600"
+                            data-testid="export-audio-candidate"
+                          >
+                            Export candidate: {exportAudioCandidates.get(
+                              artifact.id
+                            )}
+                          </div>{/if}
                       </button>
                       <div
                         class="col-span-2 flex items-center justify-end gap-1 border-t border-[var(--line)] pt-2 sm:col-span-1 sm:border-0 sm:pt-0"

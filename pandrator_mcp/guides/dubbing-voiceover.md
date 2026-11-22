@@ -167,8 +167,9 @@ uses the session's current assembly, the one made from the active speech plan.
 Read `export_audio` before executing: it names the version the export will use
 (its run, assembly time and plan revision), or, when it cannot tell, lists
 `candidates`; pick one and plan again with its `generation_run_id`, or, for a
-candidate with no run, remove the assemblies you do not want with
-`pandrator_delete_output` and plan again.
+candidate with no run, ask the user before removing the assemblies they do not
+want with `pandrator_delete_output` (permanent), then plan again. A plan that
+names a run reports `status: "chosen_run"` and that run under `chosen_run`.
 Execute that immutable plan and poll it to terminal before planning another
 dependent output.
 
