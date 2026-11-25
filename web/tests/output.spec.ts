@@ -1045,6 +1045,86 @@ test('removing an export keeps the version read of an earlier assembly removal',
   await expect(marks).toHaveCount(0);
 });
 
+test('a slow version read does not hold the page back', async ({ page }) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'audiobook');
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [] })
+      })
+  );
+  await page.route('**/api/v1/artifacts?**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('session_id') !== session.id) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: 'artifact-a',
+            session_id: session.id,
+            kind: 'audio',
+            role: 'assembled_audio',
+            state: 'current',
+            relative_path: `sessions/${session.id}/artifact-a.wav`,
+            mime_type: 'audio/wav',
+            size_bytes: 1024,
+            created_at: '2026-11-21T10:09:00'
+          }
+        ]
+      })
+    });
+  });
+  let releaseHeld = () => {};
+  const held = new Promise<void>((resolve) => {
+    releaseHeld = resolve;
+  });
+  await page.route(
+    `**/api/v1/sessions/${session.id}/export-audio`,
+    async (route) => {
+      await held;
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'named',
+          version: {
+            assembly_id: 'assembly-a',
+            artifact_id: 'artifact-a',
+            generation_run_id: null,
+            run_sequence_number: null,
+            plan_revision_id: 'revision-two',
+            plan_revision_number: 2,
+            active_revision: true,
+            assembled_at: '2026-11-21T10:09:00'
+          },
+          candidates: []
+        })
+      });
+    }
+  );
+
+  try {
+    await page.goto(`/sessions/${session.id}/output`);
+    // The outputs render while the version read is still unanswered.
+    await expect(
+      page.getByRole('button', { name: /^Remove assembly / })
+    ).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId('export-audio-version')).toHaveCount(0);
+    releaseHeld();
+    await expect(page.getByTestId('export-audio-version')).toContainText(
+      'This export will use'
+    );
+  } finally {
+    releaseHeld();
+  }
+});
+
 test('soundtrack mix preview uses the selected version and current unsaved controls', async ({
   page
 }) => {

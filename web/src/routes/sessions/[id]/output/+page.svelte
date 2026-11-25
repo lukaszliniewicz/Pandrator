@@ -248,6 +248,15 @@
     const revision = ++loadRevision;
     const audioRevision = ++exportAudioRevision;
     const progressRevision = jobProgressRevision;
+    // Naming the version is a hint: the page does not wait for it, a failed
+    // read shows nothing, and it is published as soon as it answers, so a
+    // slow or failed sibling read neither delays nor holds it back.
+    void generationApi
+      .exportAudio(sessionId)
+      .catch(() => null)
+      .then((described) => {
+        if (audioRevision === exportAudioRevision) exportAudio = described;
+      });
     const [
       artifactPayload,
       runPayload,
@@ -259,16 +268,7 @@
       generationApi.runs(sessionId),
       sessionApi.get(sessionId),
       sessionApi.settings(sessionId, 'output'),
-      jobApi.exports(sessionId),
-      // Naming the version is a hint: a failed read shows nothing and never
-      // blocks the page or the export. It is published as soon as it
-      // answers, so a failed sibling read cannot hold back a newer version.
-      generationApi
-        .exportAudio(sessionId)
-        .catch(() => null)
-        .then((described) => {
-          if (audioRevision === exportAudioRevision) exportAudio = described;
-        })
+      jobApi.exports(sessionId)
     ]);
     if (revision !== loadRevision) return;
     artifacts = artifactPayload.items
