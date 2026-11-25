@@ -26,6 +26,7 @@ import type {
   AuthStatus,
   DocumentRecord,
   EventSnapshot,
+  ExportAudioDescription,
   ForkedSessionRecord,
   TranslationProjectPayload,
   ProjectOperation,
@@ -1379,6 +1380,15 @@ export const generationApi = {
       'get',
       { item: OutputAssembly | null }
     >('/api/v1/sessions/{sessionId}/output-assemblies/latest', 'get', {
+      path: { sessionId },
+      signal
+    }),
+  exportAudio: (sessionId: string, signal?: AbortSignal) =>
+    typedApiJson<
+      '/api/v1/sessions/{sessionId}/export-audio',
+      'get',
+      ExportAudioDescription
+    >('/api/v1/sessions/{sessionId}/export-audio', 'get', {
       path: { sessionId },
       signal
     }),

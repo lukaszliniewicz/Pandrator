@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from .artifact_selection import selected_artifacts
+from .export_audio_version import (
+    active_plan_assemblies,
+    ambiguous_versions_message,
+    describe_assemblies,
+)
 from .export_contract import (
     ExportContract,
     export_uses_generated_audio,
@@ -22,7 +26,6 @@ from .export_subtitle_selection import (
 )
 from .models import (
     Artifact,
-    GenerationPlan,
     GenerationRun,
     MediaEditPlan,
     MediaEditPlanRevision,
@@ -55,6 +58,8 @@ class ExportInputs:
     assembled_audio_candidates: tuple[Artifact, ...]
     media_edit_plan: MediaEditPlan | None
     active_media_edit_revision: MediaEditPlanRevision | None
+    # Run, time and plan revision of each ambiguous candidate, for the refusal.
+    assembled_audio_details: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,11 +313,16 @@ def resolve_export_inputs(
         assembled_audio_candidates = tuple(
             item for item in current if item.role == "assembled_audio"
         )
+        assembled_audio_details: tuple[dict[str, Any], ...] = ()
         if not selected_run_id:
             # Read in the same snapshot as the candidates themselves.
             assembled_audio_candidates = active_plan_assemblies(
                 session, session_id, assembled_audio_candidates
             )
+            if uses_generated_audio and len(assembled_audio_candidates) > 1:
+                assembled_audio_details = tuple(
+                    describe_assemblies(session, session_id, assembled_audio_candidates)
+                )
             expected_assembly = str(
                 payload.get("expected_assembly_artifact_id") or ""
             ).strip()
@@ -338,10 +348,7 @@ def resolve_export_inputs(
         and len(assembled_audio_candidates) > 1
         and uses_generated_audio
     ):
-        raise ValueError(
-            "Multiple assembled audio versions are available. Select a completed "
-            "audio version and export again."
-        )
+        raise ValueError(ambiguous_versions_message(assembled_audio_details))
     # Every workflow, including audiobook, must honor queued export intent.
     # Legacy direct calls without a contract retain their existing behavior.
     contract = (
@@ -365,47 +372,8 @@ def resolve_export_inputs(
         assembled_audio_candidates=assembled_audio_candidates,
         media_edit_plan=media_edit_plan,
         active_media_edit_revision=active_media_edit_revision,
+        assembled_audio_details=assembled_audio_details,
     )
-
-
-def active_plan_assemblies(
-    session: Session,
-    session_id: str,
-    candidates: tuple[Artifact, ...],
-) -> tuple[Artifact, ...]:
-    """Prefer the one assembly made from the active speech plan.
-
-    Earlier assemblies stay current as audio versions of their runs. After a
-    timing-only subtitle change the plan is prepared again, keeping every take,
-    and assembled without a run, so no run can name that assembly. It is the
-    session's audio, and an export that names no run uses it. When the active
-    plan does not single out one assembly, every candidate is kept and the
-    caller's ambiguity check still applies.
-    """
-
-    if len(candidates) < 2:
-        return candidates
-    active_revision_id = session.scalar(
-        select(GenerationPlan.active_revision_id).where(
-            GenerationPlan.session_id == session_id
-        )
-    )
-    if not active_revision_id:
-        return candidates
-    active_artifact_ids = {
-        assembly.artifact_id
-        for assembly in session.scalars(
-            select(OutputAssembly).where(
-                OutputAssembly.session_id == session_id,
-                OutputAssembly.status == "completed",
-                OutputAssembly.artifact_id.in_([item.id for item in candidates]),
-            )
-        )
-        if isinstance(assembly.settings_json, dict)
-        and assembly.settings_json.get("plan_revision_id") == active_revision_id
-    }
-    narrowed = tuple(item for item in candidates if item.id in active_artifact_ids)
-    return narrowed if len(narrowed) == 1 else candidates
 
 
 def select_generated_audio(
@@ -419,10 +387,7 @@ def select_generated_audio(
         return inputs.selected_audio
     candidates = inputs.assembled_audio_candidates
     if len(candidates) > 1:
-        raise ValueError(
-            "Multiple assembled audio versions are available. Select a completed "
-            "audio version and export again."
-        )
+        raise ValueError(ambiguous_versions_message(inputs.assembled_audio_details))
     if candidates:
         return candidates[0]
     return inputs.by_role.get(legacy_role)

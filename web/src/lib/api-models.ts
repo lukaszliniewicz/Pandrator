@@ -1635,6 +1635,23 @@ export type OutputAssembly = {
   updated_at?: string;
 };
 
+export type ExportAudioVersion = {
+  assembly_id: string | null;
+  artifact_id: string;
+  generation_run_id: string | null;
+  run_sequence_number: number | null;
+  plan_revision_id: string | null;
+  plan_revision_number: number | null;
+  active_revision: boolean;
+  assembled_at: string;
+};
+
+export type ExportAudioDescription = {
+  status: 'named' | 'ambiguous' | 'none';
+  version: ExportAudioVersion | null;
+  candidates: ExportAudioVersion[];
+};
+
 export type UsageSummary = {
   total_cost_usd?: number | null;
   commercial?: boolean;

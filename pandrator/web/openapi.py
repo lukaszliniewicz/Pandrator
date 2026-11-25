@@ -7,6 +7,7 @@ import re
 from .account_openapi import ACCOUNT_SCHEMAS, account_paths
 from .audiobook_openapi import AUDIOBOOK_SCHEMAS, VOICE_SETUP_SCHEMAS, audiobook_paths
 from .comparison_export_openapi import COMPARISON_EXPORT_SCHEMAS, comparison_export_paths
+from .export_audio_openapi import export_audio_paths
 from .generation_control_openapi import (
     GENERATION_CONTROL_SCHEMAS,
     generation_control_paths,
@@ -4279,6 +4280,7 @@ def build_openapi_document() -> dict:
     paths.update(comparison_export_paths())
     paths.update(generation_control_paths())
     paths.update(generation_recast_paths())
+    paths.update(export_audio_paths())
     paths.update(audiobook_paths())
     paths.update(speech_selection_paths())
     paths.update(sound_paths())

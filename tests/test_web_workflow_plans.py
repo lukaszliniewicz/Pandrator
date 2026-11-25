@@ -1896,6 +1896,17 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
 
         self.assertEqual(current_id, plan["speech_timing"]["assembly_id"])
         self.assertNotIn("_assembly_artifact_id", plan["speech_timing"])
+        export_audio = plan["export_audio"]
+        self.assertEqual("named", export_audio["status"])
+        self.assertEqual([], export_audio["candidates"])
+        version = export_audio["version"]
+        # The field and the measured figures agree on the assembly.
+        self.assertEqual(current_id, version["assembly_id"])
+        self.assertIsNone(version["generation_run_id"])
+        self.assertEqual(2, version["plan_revision_number"])
+        self.assertTrue(version["active_revision"])
+        self.assertTrue(version["assembled_at"])
+        self.assertNotIn("relative_path", str(export_audio))
         self.assertEqual(
             400, plan["speech_timing"]["timing_drift"]["worst_block_lag_ms"]
         )
@@ -1941,6 +1952,294 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                 response = self._execute(plan, key=f"no-run-assembly-{name}")
                 self.assertEqual(409, response.status_code, response.get_json())
                 self.assertEqual("plan_stale", response.get_json()["error"]["code"])
+
+    def test_a_no_run_export_plan_binds_the_named_version_without_timing(self):
+        """The version the plan names is the one bound, figures or not."""
+
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        session_id, _source_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        self._assembly_for_plan(session_id, output)
+        artifact_id, _assembly_id = self._current_takes_assembly(session_id)
+        with patch.object(
+            WorkflowExecutionPlanService, "_export_speech_timing", return_value=None
+        ):
+            plan = self._plan(
+                session_id,
+                target_stage="export",
+                overrides={"output": output},
+                continuation=False,
+            )
+        self.assertEqual("named", plan["export_audio"]["status"])
+        self.assertEqual(artifact_id, plan["export_audio"]["version"]["artifact_id"])
+        with self.extension["database"].session() as db_session:
+            stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            self.assertEqual(
+                artifact_id,
+                stored.plan_json["_execution"]["payload"]["expected_assembly_artifact_id"],
+            )
+
+    def test_export_plan_drops_figures_measured_on_another_assembly(self):
+        """An assembly made between the two reads leaves no mismatched figures."""
+
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        real = WorkflowExecutionPlanService._export_audio_version
+
+        def another_assembly(service, session_id, resolved):
+            described = real(service, session_id, resolved)
+            if described["status"] == "chosen_run":
+                described["chosen_run"]["assembly_id"] = "assembly-made-in-between"
+            else:
+                described["version"] = {
+                    **described["version"],
+                    "artifact_id": "artifact-made-in-between",
+                }
+            return described
+
+        for chosen in (False, True):
+            with self.subTest(chosen_run=chosen):
+                session_id, _source_id, _asset_id = self._ready_session(
+                    workflow_kind="voiceover",
+                    suffix="mp4",
+                )
+                run_id = self._assembly_for_plan(session_id, output)
+                if not chosen:
+                    self._current_takes_assembly(session_id)
+                overrides = {**output, "generation_run_id": run_id} if chosen else output
+                with patch.object(
+                    WorkflowExecutionPlanService,
+                    "_export_audio_version",
+                    another_assembly,
+                ):
+                    plan = self._plan(
+                        session_id,
+                        target_stage="export",
+                        overrides={"output": overrides},
+                        continuation=False,
+                    )
+                self.assertIsNone(plan.get("speech_timing"))
+                if not chosen:
+                    with self.extension["database"].session() as db_session:
+                        stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+                        self.assertEqual(
+                            "artifact-made-in-between",
+                            stored.plan_json["_execution"]["payload"][
+                                "expected_assembly_artifact_id"
+                            ],
+                        )
+
+    def test_export_plan_drops_figures_when_no_single_version_is_named(self):
+        """An assembly added or removed between the reads leaves no figures or binding."""
+
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        # The third: the measured assembly was removed and the read names
+        # other audio that has no assembly record.
+        without_assembly = {
+            "assembly_id": None,
+            "artifact_id": "artifact-without-assembly",
+            "generation_run_id": None,
+            "run_sequence_number": None,
+            "plan_revision_id": None,
+            "plan_revision_number": None,
+            "active_revision": False,
+            "assembled_at": "2026-11-21T10:09:00+00:00",
+        }
+        for status, version in (
+            ("ambiguous", None),
+            ("none", None),
+            ("named", without_assembly),
+        ):
+            with self.subTest(status=status):
+                session_id, _source_id, _asset_id = self._ready_session(
+                    workflow_kind="voiceover",
+                    suffix="mp4",
+                )
+                self._assembly_for_plan(session_id, output)
+                self._current_takes_assembly(session_id)
+                described = {"status": status, "version": version, "candidates": []}
+                with patch.object(
+                    WorkflowExecutionPlanService,
+                    "_export_audio_version",
+                    return_value=described,
+                ):
+                    plan = self._plan(
+                        session_id,
+                        target_stage="export",
+                        overrides={"output": output},
+                        continuation=False,
+                    )
+                self.assertEqual(status, plan["export_audio"]["status"])
+                self.assertIsNone(plan.get("speech_timing"))
+                with self.extension["database"].session() as db_session:
+                    stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+                    self.assertNotIn(
+                        "expected_assembly_artifact_id",
+                        stored.plan_json["_execution"]["payload"],
+                    )
+
+    def test_a_no_run_export_of_audio_without_an_assembly_record_is_not_bound(self):
+        """Legacy assembled audio with no assembly row still exports."""
+
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        session_id, _source_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        database = self.extension["database"]
+        with database.session() as db_session:
+            ownership = resolve_artifact_ownership(db_session, session_id=session_id)
+            artifact = Artifact(
+                session_id=session_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
+                kind="audio",
+                role="assembled_audio",
+                relative_path=f"legacy-{session_id}.wav",
+                content_hash=hashlib.sha256(f"legacy{session_id}".encode()).hexdigest(),
+                state="current",
+            )
+            db_session.add(artifact)
+            db_session.flush()
+            artifact_id = artifact.id
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={"output": output},
+            continuation=False,
+        )
+        self.assertEqual("named", plan["export_audio"]["status"])
+        self.assertEqual(artifact_id, plan["export_audio"]["version"]["artifact_id"])
+        self.assertIsNone(plan["export_audio"]["version"]["assembly_id"])
+        with database.session() as db_session:
+            stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            self.assertNotIn(
+                "expected_assembly_artifact_id",
+                stored.plan_json["_execution"]["payload"],
+            )
+        response = self._execute(plan, key="legacy-assembled-audio")
+        self.assertEqual(202, response.status_code, response.get_json())
+
+    def test_export_plan_with_a_run_names_the_run_and_its_assembly(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        run_id = self._assembly_for_plan(session_id, output)
+
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={"output": {**output, "generation_run_id": run_id}},
+            continuation=False,
+        )
+
+        export_audio = plan["export_audio"]
+        self.assertEqual("chosen_run", export_audio["status"])
+        self.assertIsNone(export_audio["version"])
+        chosen = export_audio["chosen_run"]
+        self.assertEqual(run_id, chosen["generation_run_id"])
+        self.assertEqual(1, chosen["run_sequence_number"])
+        self.assertEqual(1, chosen["plan_revision_number"])
+        self.assertEqual(plan["speech_timing"]["assembly_id"], chosen["assembly_id"])
+        self.assertTrue(chosen["assembled_at"])
+
+        # With no matching assembly the run is still named; the export will
+        # assemble it, so there is no assembly or time to report yet.
+        database = self.extension["database"]
+        with database.session() as db_session:
+            for assembly in db_session.scalars(
+                select(OutputAssembly).where(OutputAssembly.generation_run_id == run_id)
+            ):
+                assembly.status = "stale"
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={"output": {**output, "generation_run_id": run_id}},
+            continuation=False,
+        )
+        chosen = plan["export_audio"]["chosen_run"]
+        self.assertEqual("chosen_run", plan["export_audio"]["status"])
+        self.assertEqual(run_id, chosen["generation_run_id"])
+        self.assertIsNone(chosen["assembly_id"])
+        self.assertIsNone(chosen["assembled_at"])
+
+    def test_export_plan_lists_the_candidates_when_none_is_singled_out(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        self._assembly_for_plan(session_id, output)
+        # Two more on later revisions, the newest of which is active but has
+        # no assembly of its own.
+        _first, second_id = self._current_takes_assembly(
+            session_id, revision_number=2, name="second"
+        )
+        _third, third_id = self._current_takes_assembly(
+            session_id, revision_number=3, name="third"
+        )
+        with self.extension["database"].session() as db_session:
+            generation_plan = db_session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            )
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=4,
+                settings_json={},
+                content_hash=f"active-without-assembly-{session_id}",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={"output": output},
+            continuation=False,
+        )
+
+        export_audio = plan["export_audio"]
+        self.assertEqual("ambiguous", export_audio["status"])
+        self.assertIsNone(export_audio["version"])
+        candidates = export_audio["candidates"]
+        self.assertEqual(3, len(candidates))
+        self.assertTrue(
+            {second_id, third_id} <= {item["assembly_id"] for item in candidates}
+        )
+        self.assertEqual(
+            sorted((item["assembled_at"] for item in candidates), reverse=True),
+            [item["assembled_at"] for item in candidates],
+        )
+        self.assertFalse(any(item["active_revision"] for item in candidates))
+        self.assertEqual(
+            {1, 2, 3}, {item["plan_revision_number"] for item in candidates}
+        )
+        # Nothing is measured when the export cannot tell which one to use.
+        self.assertIsNone(plan["speech_timing"])
+
+    def test_export_plan_without_generated_audio_carries_no_export_audio(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={
+                "output": {
+                    "export_mode": "media",
+                    "audio_mode": "preserve",
+                    "subtitle_mode": "none",
+                }
+            },
+            continuation=False,
+        )
+
+        self.assertNotIn("export_audio", plan)
 
     def test_export_plan_skips_the_tail_when_the_timeline_is_not_matched(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
@@ -2057,6 +2356,10 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
 
         self.assertIn("speech_timing", plan)
         self.assertIsNone(plan["speech_timing"])
+        self.assertEqual("chosen_run", plan["export_audio"]["status"])
+        self.assertEqual(run_id, plan["export_audio"]["chosen_run"]["generation_run_id"])
+        self.assertIsNone(plan["export_audio"]["chosen_run"]["assembly_id"])
+        self.assertIsNone(plan["export_audio"]["chosen_run"]["assembled_at"])
         export_step = next(
             step for step in plan["ordered_steps"] if step["stage"] == "export"
         )

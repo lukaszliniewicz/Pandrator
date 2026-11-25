@@ -418,6 +418,14 @@ class WorkflowPlanSummaryTests(unittest.TestCase):
                 "timing_drift": {"worst_block_lag_ms": 14_500, "blocks": 522},
                 "tail": {"checked": True, "outcome": "fits"},
             },
+            "export_audio": {
+                "status": "ambiguous",
+                "version": None,
+                "candidates": [
+                    {"generation_run_id": "run-3", "run_sequence_number": 3},
+                    {"generation_run_id": "run-2", "run_sequence_number": 2},
+                ],
+            },
             "required_confirmations": ["provider"],
             "expires_at": "2026-11-18T12:00:00+00:00",
         }
@@ -444,9 +452,29 @@ class WorkflowPlanSummaryTests(unittest.TestCase):
         self.assertEqual(["settings.resolved_snapshot"], plan["omitted"])
         # The timing figures are aggregates, so the compact view keeps them.
         self.assertEqual(522, plan["speech_timing"]["timing_drift"]["blocks"])
+        # The audio version an export would use, or its candidates, reaches the caller.
+        self.assertEqual("ambiguous", plan["export_audio"]["status"])
+        self.assertEqual(
+            ["run-3", "run-2"],
+            [item["generation_run_id"] for item in plan["export_audio"]["candidates"]],
+        )
         self.assertEqual(
             "pandrator_execute_workflow_plan", outcome.next_actions[0].tool
         )
+
+    def test_plan_export_variant_passes_export_audio_through(self):
+        for view in ("summary", "full"):
+            with self.subTest(view=view):
+                outcome = plan_export_variant(
+                    self.runtime,
+                    PlanExportVariantInput(
+                        session_id="session-1", export_mode="audio", view=view
+                    ),
+                )
+                self.assertEqual("ambiguous", outcome.result["export_audio"]["status"])
+                self.assertEqual(
+                    2, len(outcome.result["export_audio"]["candidates"])
+                )
 
     def test_full_view_keeps_the_snapshot(self):
         outcome = plan_export_variant(

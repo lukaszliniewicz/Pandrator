@@ -26672,6 +26672,193 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/export-audio": {
+      "get": {
+        "description": "Read-only. Names the one current assembled audio an export that selects no generation run would use, or lists the candidates when it cannot tell, each with its run, assembly time and plan revision. Never changes the choice.",
+        "operationId": "getExportAudioVersion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "candidates": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "active_revision": {
+                            "type": "boolean"
+                          },
+                          "artifact_id": {
+                            "type": "string"
+                          },
+                          "assembled_at": {
+                            "type": "string"
+                          },
+                          "assembly_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "generation_run_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "plan_revision_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "plan_revision_number": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "run_sequence_number": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "assembly_id",
+                          "artifact_id",
+                          "generation_run_id",
+                          "run_sequence_number",
+                          "plan_revision_id",
+                          "plan_revision_number",
+                          "active_revision",
+                          "assembled_at"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "status": {
+                      "enum": [
+                        "named",
+                        "ambiguous",
+                        "none"
+                      ],
+                      "type": "string"
+                    },
+                    "version": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "active_revision": {
+                              "type": "boolean"
+                            },
+                            "artifact_id": {
+                              "type": "string"
+                            },
+                            "assembled_at": {
+                              "type": "string"
+                            },
+                            "assembly_id": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "generation_run_id": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "plan_revision_id": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "plan_revision_number": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "run_sequence_number": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "assembly_id",
+                            "artifact_id",
+                            "generation_run_id",
+                            "run_sequence_number",
+                            "plan_revision_id",
+                            "plan_revision_number",
+                            "active_revision",
+                            "assembled_at"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "version",
+                    "candidates"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The version, the candidates, or neither"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Session not found"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Audio version an export with no run chosen would use"
+      }
+    },
     "/api/v1/sessions/{sessionId}/forks": {
       "post": {
         "operationId": "forkSession",

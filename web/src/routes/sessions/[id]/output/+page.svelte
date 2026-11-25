@@ -26,6 +26,7 @@
   } from '@lucide/svelte';
   import type {
     ArtifactRecord,
+    ExportAudioDescription,
     GenerationRun,
     JobRecord,
     SessionRecord,
@@ -54,6 +55,11 @@
   import OutputSettingsSnapshot from '$lib/OutputSettingsSnapshot.svelte';
   import BookExportNotice from '$lib/BookExportNotice.svelte';
   import {
+    exportAudioNote,
+    exportAudioVersionLabel
+  } from '$lib/export-audio-version';
+  import { apiTimestamp } from '$lib/run-metrics';
+  import {
     exportIntent,
     selectedSubtitleTracks,
     subtitleSelectionIssue,
@@ -64,6 +70,7 @@
   const simpleMode = $derived(projectInterface?.mode === 'simple');
   let artifacts = $state<ArtifactRecord[]>([]);
   let runs = $state<GenerationRun[]>([]);
+  let exportAudio = $state<ExportAudioDescription | null>(null);
   let exportJobs = $state<JobRecord[]>([]);
   let session = $state<SessionRecord | null>(null);
   let outputProfile = $state<SettingsPayload | null>(null);
@@ -89,12 +96,41 @@
   let deleting = $state<Record<string, boolean>>({});
   let copiedPath = $state('');
   let loadRevision = 0;
+  // Version reads only: a load or an assembly removal starts one, and only
+  // the latest may set exportAudio. Removing an export starts none.
+  let exportAudioRevision = 0;
   let jobProgressRevision = 0;
   const jobProgressRevisions = new Map<string, number>();
   const outputContext = $derived(
     outputProfile?.context && typeof outputProfile.context === 'object'
       ? (outputProfile.context as Record<string, unknown>)
       : {}
+  );
+  // The runs the Audio version select below offers, in the same order.
+  const selectableRuns = $derived(
+    session?.workflow_kind === 'subtitles'
+      ? []
+      : historyRuns.filter(
+          (item) => item.status === 'completed' || item.audio_version
+        )
+  );
+  const exportAudioHint = $derived(
+    exportAudioNote(
+      exportAudio,
+      runs,
+      selectableRuns.map((item) => item.id)
+    )
+  );
+  // Marks each ambiguous candidate in the assemblies list with its label.
+  const exportAudioCandidates = $derived(
+    new Map(
+      exportAudio?.status === 'ambiguous'
+        ? exportAudio.candidates.map((item) => [
+            item.artifact_id,
+            exportAudioVersionLabel(item, runs)
+          ])
+        : []
+    )
   );
   const hasSourceVideo = $derived(Boolean(outputContext.has_source_video));
   const hasSourceAudio = $derived(Boolean(outputContext.has_source_audio));
@@ -210,7 +246,17 @@
   }
   async function load() {
     const revision = ++loadRevision;
+    const audioRevision = ++exportAudioRevision;
     const progressRevision = jobProgressRevision;
+    // Naming the version is a hint: the page does not wait for it, a failed
+    // read shows nothing, and it is published as soon as it answers, so a
+    // slow or failed sibling read neither delays nor holds it back.
+    void generationApi
+      .exportAudio(sessionId)
+      .catch(() => null)
+      .then((described) => {
+        if (audioRevision === exportAudioRevision) exportAudio = described;
+      });
     const [
       artifactPayload,
       runPayload,
@@ -449,6 +495,15 @@
       artifacts = artifacts.filter((item) => item.id !== artifact.id);
       if (preview?.id === artifact.id) preview = null;
       message = assembly ? 'Assembly removed.' : 'Export removed.';
+      // Removing an assembly can settle which version an export uses. A
+      // later assembly removal or load supersedes this read.
+      if (assembly) {
+        const audioRevision = ++exportAudioRevision;
+        const described = await generationApi
+          .exportAudio(sessionId)
+          .catch(() => null);
+        if (audioRevision === exportAudioRevision) exportAudio = described;
+      }
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -666,8 +721,7 @@
             }}
             class="mt-1 block max-w-sm rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3 py-2 text-sm font-normal"
             ><option value="">Do not select generated audio</option
-            >{#each historyRuns.filter((item) => item.status === 'completed' || item.audio_version) as item}<option
-                value={item.id}
+            >{#each selectableRuns as item}<option value={item.id}
                 >{item.label}{item.timing_repair
                   ? ` · ${generationHistoryStatus(item)}`
                   : ''}</option
@@ -838,6 +892,21 @@
             {#if selectedRun?.id}
               <dd class="muted mt-1 font-mono text-xs" title={selectedRun.id}>
                 {selectedRun.id.slice(0, 8)}
+              </dd>
+            {:else if exportAudioHint && intendedExport.usesGeneratedAudio}
+              <dd
+                class="mt-1 text-xs"
+                class:text-amber-600={exportAudioHint.status !== 'named'}
+                data-testid="export-audio-version"
+              >
+                {exportAudioHint.headline}
+                {#if exportAudioHint.versions.length}
+                  <ul class="mt-1 list-disc space-y-1 pl-4">
+                    {#each exportAudioHint.versions as label, index (index)}
+                      <li>{label}</li>
+                    {/each}
+                  </ul>
+                {/if}
               </dd>
             {/if}
           </div>
@@ -1042,7 +1111,7 @@
                         >
                           <time datetime={artifact.created_at}
                             >{new Date(
-                              artifact.created_at
+                              apiTimestamp(artifact.created_at)
                             ).toLocaleString()}</time
                           ><span
                             >· {artifact.mime_type ||
@@ -1052,6 +1121,14 @@
                               >· {formatBytes(artifact.size_bytes)}</span
                             >{/if}
                         </div>
+                        {#if exportAudioCandidates.has(artifact.id)}<div
+                            class="mt-1 text-xs text-amber-600"
+                            data-testid="export-audio-candidate"
+                          >
+                            Export candidate: {exportAudioCandidates.get(
+                              artifact.id
+                            )}
+                          </div>{/if}
                       </button>
                       <div
                         class="col-span-2 flex items-center justify-end gap-1 border-t border-[var(--line)] pt-2 sm:col-span-1 sm:border-0 sm:pt-0"

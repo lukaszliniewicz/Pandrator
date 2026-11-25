@@ -23,6 +23,7 @@ from .artifact_selection import canonical_stage_key
 from .auth import Principal
 from .credentials import contains_inline_secret, is_sensitive_field
 from .database import Database
+from .export_audio_version import active_plan_assemblies, describe_export_audio
 from .export_contract import (
     export_requires_generation_assembly,
     export_uses_generated_audio,
@@ -1223,13 +1224,79 @@ class WorkflowExecutionPlanService:
             ),
         }
 
+    def _export_audio_version(
+        self,
+        session_id: str,
+        resolved: ResolvedWorkflowStage,
+    ) -> dict[str, Any] | None:
+        """Name the audio version this export plan will use, or its candidates.
+
+        A plan that names a run reports that run; one that names none reports
+        what ``describe_export_audio`` finds, the same read the Output page
+        uses and the same narrowing the export applies.
+        """
+
+        settings = resolved.payload.get("settings")
+        settings = settings if isinstance(settings, dict) else {}
+        if not export_uses_generated_audio(
+            workflow_kind=resolved.workflow_kind, settings=settings
+        ):
+            return None
+        run_id = str(settings.get("generation_run_id") or "").strip()
+        resolved_snapshot = resolved.payload.get("resolved_settings_snapshot")
+        resolved_snapshot = (
+            resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
+        )
+        try:
+            with self.database.snapshot_session() as db_session:
+                if not run_id:
+                    return describe_export_audio(db_session, session_id)
+                run = db_session.get(GenerationRun, run_id)
+                if run is None or run.session_id != session_id:
+                    return None
+                from .workspace import find_matching_output_assembly
+
+                assembly, _snapshot, _hash = find_matching_output_assembly(
+                    db_session,
+                    session_id=session_id,
+                    run=run,
+                    resolved_settings_snapshot=resolved_snapshot,
+                    audio_version_side=str(settings.get("audio_version_side") or "after"),
+                )
+                revision_number = db_session.scalar(
+                    select(GenerationPlanRevision.revision_number).where(
+                        GenerationPlanRevision.id == run.plan_revision_id
+                    )
+                )
+                return {
+                    "status": "chosen_run",
+                    "version": None,
+                    "candidates": [],
+                    "chosen_run": {
+                        "generation_run_id": run.id,
+                        "run_sequence_number": run.sequence_number,
+                        "plan_revision_id": run.plan_revision_id,
+                        "plan_revision_number": revision_number,
+                        "assembly_id": assembly.id if assembly is not None else None,
+                        "assembled_at": (
+                            _iso(assembly.created_at) if assembly is not None else None
+                        ),
+                    },
+                }
+        except Exception:
+            # A plan is a preview; naming the version must never stop it.
+            logger.warning(
+                "The audio version could not be named for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return None
+
     @staticmethod
     def _current_session_assembly(
         db_session: Session, session_id: str
     ) -> OutputAssembly | None:
         """The assembly an export that names no run would use, if it is one."""
-
-        from .export_inputs import active_plan_assemblies
 
         candidates = active_plan_assemblies(
             db_session,
@@ -1764,6 +1831,7 @@ class WorkflowExecutionPlanService:
         export_context: dict[str, Any] = {}
         export_output_snapshot: dict[str, Any] = {}
         speech_timing: dict[str, Any] | None = None
+        export_audio: dict[str, Any] | None = None
         if target_stage == "export":
             # Settings reads check access against the execution actor, so read
             # them as the plan's principal, not as an ambient caller.
@@ -1780,11 +1848,57 @@ class WorkflowExecutionPlanService:
                 speech_timing = self._export_speech_timing(
                     session_id, resolved, effective_export, export_output_snapshot
                 )
+                export_audio = self._export_audio_version(session_id, resolved)
         reviewed_assembly_artifact_id = (
             str(speech_timing.pop("_assembly_artifact_id", "") or "")
             if speech_timing is not None
             else ""
         )
+        named_version = (
+            export_audio.get("version")
+            if export_audio is not None and export_audio.get("status") == "named"
+            else None
+        )
+        # Only a version with a completed assembly can be bound: execution
+        # checks the binding against that assembly, and audio without one
+        # keeps the export's own single-artifact selection.
+        named_artifact_id = (
+            str(named_version.get("artifact_id") or "")
+            if isinstance(named_version, dict) and named_version.get("assembly_id")
+            else ""
+        )
+        if named_artifact_id:
+            # Bind the export to the version the plan names, also when the
+            # timing figures could not be read. Figures measured on another
+            # assembly (one replaced between the two reads) are dropped.
+            if (
+                reviewed_assembly_artifact_id
+                and reviewed_assembly_artifact_id != named_artifact_id
+            ):
+                speech_timing = None
+            reviewed_assembly_artifact_id = named_artifact_id
+        elif export_audio is not None and export_audio.get("status") in {
+            "named",
+            "ambiguous",
+            "none",
+        }:
+            # The version read found no single version with an assembly (one
+            # was added or removed after the figures were measured): the
+            # figures and their binding describe none of what the plan lists.
+            speech_timing = None
+            reviewed_assembly_artifact_id = ""
+        chosen_run = (
+            export_audio.get("chosen_run")
+            if export_audio is not None and export_audio.get("status") == "chosen_run"
+            else None
+        )
+        if isinstance(chosen_run, dict) and speech_timing is not None:
+            # Two reads of the chosen run's assembly: drop figures measured on
+            # another one than the plan names (one assembled between them).
+            if str(chosen_run.get("assembly_id") or "") != str(
+                speech_timing.get("assembly_id") or ""
+            ):
+                speech_timing = None
         disclosures = self._provider_disclosures(resolved)
         external = [item for item in disclosures if self._is_external(item)]
         resource_services = [
@@ -2017,6 +2131,7 @@ class WorkflowExecutionPlanService:
                 if target_stage == "export"
                 else {}
             ),
+            **({"export_audio": export_audio} if export_audio is not None else {}),
             "ordered_steps": steps,
             "reuse_decisions": [
                 {
