@@ -921,6 +921,130 @@ test('a version read held from an earlier removal does not replace a later one',
   await expect(marks).toHaveCount(0);
 });
 
+test('removing an export keeps the version read of an earlier assembly removal', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'audiobook');
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [] })
+      })
+  );
+  const times: Record<string, string> = {
+    'artifact-a': '2026-11-21T10:09:00',
+    'artifact-b': '2026-11-20T08:00:00'
+  };
+  const output = (id: string, role: string, createdAt: string) => ({
+    id,
+    session_id: session.id,
+    kind: role === 'export' ? 'export' : 'audio',
+    role,
+    state: 'current',
+    relative_path: `sessions/${session.id}/${id}.${role === 'export' ? 'm4b' : 'wav'}`,
+    mime_type: role === 'export' ? 'audio/mp4' : 'audio/wav',
+    size_bytes: 1024,
+    created_at: createdAt
+  });
+  let listed = [
+    ...Object.entries(times).map(([id, createdAt]) =>
+      output(id, 'assembled_audio', createdAt)
+    ),
+    output('export-x', 'export', '2026-11-21T11:00:00')
+  ];
+  await page.route('**/api/v1/artifacts?**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('session_id') !== session.id) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: listed })
+    });
+  });
+  const runLess = (artifactId: string) => ({
+    assembly_id: `assembly-${artifactId}`,
+    artifact_id: artifactId,
+    generation_run_id: null,
+    run_sequence_number: null,
+    plan_revision_id: 'revision-two',
+    plan_revision_number: 2,
+    active_revision: true,
+    assembled_at: times[artifactId]
+  });
+  const removed: string[] = [];
+  let releaseHeld = () => {};
+  const held = new Promise<void>((resolve) => {
+    releaseHeld = resolve;
+  });
+  let heldDelivered = false;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/export-audio`,
+    async (route) => {
+      const reply = (body: unknown) =>
+        route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify(body)
+        });
+      if (!removed.includes('artifact-a')) {
+        await reply({
+          status: 'ambiguous',
+          version: null,
+          candidates: ['artifact-a', 'artifact-b'].map(runLess)
+        });
+        return;
+      }
+      // The read after the assembly removal answers only once an export
+      // has been removed meanwhile.
+      await held;
+      await reply({
+        status: 'named',
+        version: runLess('artifact-b'),
+        candidates: []
+      });
+      heldDelivered = true;
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/outputs/*`,
+    async (route) => {
+      if (route.request().method() !== 'DELETE') {
+        await route.fallback();
+        return;
+      }
+      const id =
+        new URL(route.request().url()).pathname.split('/').at(-1) ?? '';
+      removed.push(id);
+      listed = listed.filter((item) => item.id !== id);
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ deleted: true })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  const note = page.getByTestId('export-audio-version');
+  const marks = page.getByTestId('export-audio-candidate');
+  await expect(marks).toHaveCount(2, { timeout: 20_000 });
+  page.on('dialog', (dialog) => dialog.accept());
+  await page
+    .getByRole('button', { name: /^Remove assembly / })
+    .first()
+    .click();
+  await expect.poll(() => removed).toEqual(['artifact-a']);
+  await page.getByRole('button', { name: /^Remove export / }).click();
+  await expect(page.getByText('Export removed.')).toBeVisible();
+  releaseHeld();
+  await expect.poll(() => heldDelivered).toBe(true);
+  await expect(note).toContainText('This export will use');
+  await expect(marks).toHaveCount(0);
+});
+
 test('soundtrack mix preview uses the selected version and current unsaved controls', async ({
   page
 }) => {

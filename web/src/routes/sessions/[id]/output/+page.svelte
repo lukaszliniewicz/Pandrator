@@ -96,6 +96,9 @@
   let deleting = $state<Record<string, boolean>>({});
   let copiedPath = $state('');
   let loadRevision = 0;
+  // Version reads only: a load or an assembly removal starts one, and only
+  // the latest may set exportAudio. Removing an export starts none.
+  let exportAudioRevision = 0;
   let jobProgressRevision = 0;
   const jobProgressRevisions = new Map<string, number>();
   const outputContext = $derived(
@@ -243,6 +246,7 @@
   }
   async function load() {
     const revision = ++loadRevision;
+    const audioRevision = ++exportAudioRevision;
     const progressRevision = jobProgressRevision;
     const [
       artifactPayload,
@@ -262,7 +266,7 @@
       generationApi.exportAudio(sessionId).catch(() => null)
     ]);
     if (revision !== loadRevision) return;
-    exportAudio = exportAudioPayload;
+    if (audioRevision === exportAudioRevision) exportAudio = exportAudioPayload;
     artifacts = artifactPayload.items
       .filter(
         (item) =>
@@ -483,17 +487,18 @@
     try {
       await sessionApi.removeOutput(sessionId, artifact.id);
       // A refresh started before removal may still contain the deleted output.
-      const revision = ++loadRevision;
+      loadRevision += 1;
       artifacts = artifacts.filter((item) => item.id !== artifact.id);
       if (preview?.id === artifact.id) preview = null;
       message = assembly ? 'Assembly removed.' : 'Export removed.';
       // Removing an assembly can settle which version an export uses. A
-      // later removal or refresh supersedes this read.
+      // later assembly removal or load supersedes this read.
       if (assembly) {
+        const audioRevision = ++exportAudioRevision;
         const described = await generationApi
           .exportAudio(sessionId)
           .catch(() => null);
-        if (revision === loadRevision) exportAudio = described;
+        if (audioRevision === exportAudioRevision) exportAudio = described;
       }
     } catch (caught) {
       error = errorMessage(caught);
