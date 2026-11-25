@@ -12,7 +12,11 @@ from sqlalchemy import func, select
 
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
-from pandrator.web.export_audio_version import describe_export_audio
+from pandrator.web.export_audio_version import (
+    MESSAGE_CANDIDATE_LIMIT,
+    ambiguous_versions_message,
+    describe_export_audio,
+)
 from pandrator.web.export_contract import build_export_contract
 from pandrator.web.models import (
     Artifact,
@@ -500,7 +504,8 @@ class ExportInputResolutionTests(unittest.TestCase):
                 self.assertEqual(revisions[1], version["plan_revision_id"])
                 self.assertEqual(2, version["plan_revision_number"])
                 self.assertTrue(version["active_revision"])
-                self.assertTrue(version["assembled_at"].startswith("2026-11-21T10:09:00"))
+                # Stored times come back naive from SQLite; the field says UTC.
+                self.assertEqual("2026-11-21T10:09:00+00:00", version["assembled_at"])
                 result = self.handlers.export(
                     self.unpinned_payload(), mock.Mock(), threading.Event()
                 )
@@ -566,6 +571,26 @@ class ExportInputResolutionTests(unittest.TestCase):
                 combined = str(description) + message
                 self.assertNotIn(".wav", combined)
                 self.assertNotIn(str(self.paths.sessions), combined)
+
+    def test_refusal_lists_the_newest_candidates_and_counts_the_rest(self):
+        candidates = [
+            {
+                "generation_run_id": f"run-{index}",
+                "run_sequence_number": index,
+                "assembled_at": f"2026-11-21T10:{index:02d}:00+00:00",
+                "plan_revision_number": 1,
+            }
+            for index in range(MESSAGE_CANDIDATE_LIMIT + 2, 0, -1)
+        ]
+        message = ambiguous_versions_message(candidates)
+        for item in candidates[:MESSAGE_CANDIDATE_LIMIT]:
+            self.assertIn(f"({item['generation_run_id']})", message)
+        for item in candidates[MESSAGE_CANDIDATE_LIMIT:]:
+            self.assertNotIn(f"({item['generation_run_id']})", message)
+        self.assertTrue(message.endswith(
+            "; and 2 more, which the export plan and the Output page list."
+        ))
+        self.assertNotIn("more", ambiguous_versions_message(candidates[:2]))
 
     def test_export_audio_reports_no_assembly(self):
         self.new_audiobook_session("Empty")

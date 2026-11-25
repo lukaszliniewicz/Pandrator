@@ -23,7 +23,7 @@ from .artifact_selection import canonical_stage_key
 from .auth import Principal
 from .credentials import contains_inline_secret, is_sensitive_field
 from .database import Database
-from .export_audio_version import describe_export_audio
+from .export_audio_version import active_plan_assemblies, describe_export_audio
 from .export_contract import (
     export_requires_generation_assembly,
     export_uses_generated_audio,
@@ -1279,9 +1279,7 @@ class WorkflowExecutionPlanService:
                         "plan_revision_number": revision_number,
                         "assembly_id": assembly.id if assembly is not None else None,
                         "assembled_at": (
-                            assembly.created_at.isoformat()
-                            if assembly is not None
-                            else None
+                            _iso(assembly.created_at) if assembly is not None else None
                         ),
                     },
                 }
@@ -1300,11 +1298,31 @@ class WorkflowExecutionPlanService:
     ) -> OutputAssembly | None:
         """The assembly an export that names no run would use, if it is one."""
 
-        description = describe_export_audio(db_session, session_id)
-        version = description["version"]
-        if description["status"] != "named" or version is None or not version["assembly_id"]:
+        candidates = active_plan_assemblies(
+            db_session,
+            session_id,
+            tuple(
+                db_session.scalars(
+                    select(Artifact).where(
+                        Artifact.session_id == session_id,
+                        Artifact.role == "assembled_audio",
+                        Artifact.state == "current",
+                    )
+                )
+            ),
+        )
+        if len(candidates) != 1:
             return None
-        return db_session.get(OutputAssembly, version["assembly_id"])
+        return db_session.scalar(
+            select(OutputAssembly)
+            .where(
+                OutputAssembly.session_id == session_id,
+                OutputAssembly.artifact_id == candidates[0].id,
+                OutputAssembly.status == "completed",
+            )
+            .order_by(OutputAssembly.created_at.desc())
+            .limit(1)
+        )
 
     def _export_tail_projection(
         self,
@@ -1836,6 +1854,26 @@ class WorkflowExecutionPlanService:
             if speech_timing is not None
             else ""
         )
+        named_version = (
+            export_audio.get("version")
+            if export_audio is not None and export_audio.get("status") == "named"
+            else None
+        )
+        named_artifact_id = (
+            str(named_version.get("artifact_id") or "")
+            if isinstance(named_version, dict)
+            else ""
+        )
+        if named_artifact_id:
+            # Bind the export to the version the plan names, also when the
+            # timing figures could not be read. Figures measured on another
+            # assembly (one replaced between the two reads) are dropped.
+            if (
+                reviewed_assembly_artifact_id
+                and reviewed_assembly_artifact_id != named_artifact_id
+            ):
+                speech_timing = None
+            reviewed_assembly_artifact_id = named_artifact_id
         disclosures = self._provider_disclosures(resolved)
         external = [item for item in disclosures if self._is_external(item)]
         resource_services = [

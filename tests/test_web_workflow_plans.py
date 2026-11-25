@@ -1953,6 +1953,34 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                 self.assertEqual(409, response.status_code, response.get_json())
                 self.assertEqual("plan_stale", response.get_json()["error"]["code"])
 
+    def test_a_no_run_export_plan_binds_the_named_version_without_timing(self):
+        """The version the plan names is the one bound, figures or not."""
+
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        session_id, _source_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        self._assembly_for_plan(session_id, output)
+        artifact_id, _assembly_id = self._current_takes_assembly(session_id)
+        with patch.object(
+            WorkflowExecutionPlanService, "_export_speech_timing", return_value=None
+        ):
+            plan = self._plan(
+                session_id,
+                target_stage="export",
+                overrides={"output": output},
+                continuation=False,
+            )
+        self.assertEqual("named", plan["export_audio"]["status"])
+        self.assertEqual(artifact_id, plan["export_audio"]["version"]["artifact_id"])
+        with self.extension["database"].session() as db_session:
+            stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            self.assertEqual(
+                artifact_id,
+                stored.plan_json["_execution"]["payload"]["expected_assembly_artifact_id"],
+            )
+
     def test_export_plan_with_a_run_names_the_run_and_its_assembly(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
             workflow_kind="voiceover",

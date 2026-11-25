@@ -12,6 +12,7 @@ description without an import cycle.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -29,6 +30,17 @@ AMBIGUOUS_VERSIONS_SENTENCE = (
     "Multiple assembled audio versions are available. Select a completed "
     "audio version and export again."
 )
+# The refusal lists this many candidates and counts the rest; the export plan's
+# ``export_audio`` lists them all.
+MESSAGE_CANDIDATE_LIMIT = 10
+
+
+def utc_iso(moment: datetime) -> str:
+    """A stored time as aware UTC; SQLite hands back naive UTC values."""
+
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC).isoformat()
+    return moment.astimezone(UTC).isoformat()
 
 
 def describe_export_audio(db_session: Session, session_id: str) -> dict[str, Any]:
@@ -162,14 +174,15 @@ def describe_assemblies(
             GenerationPlan.session_id == session_id
         )
     )
-    described: list[dict[str, Any]] = []
+    described: list[tuple[datetime, dict[str, Any]]] = []
     for artifact in artifact_list:
         assembly = assemblies.get(artifact.id)
         run = runs.get(str(assembly.generation_run_id or "")) if assembly else None
         revision_id = stored_revisions.get(artifact.id) or None
         counted_id = counted_revisions.get(artifact.id)
         moment = assembly.created_at if assembly is not None else artifact.created_at
-        described.append({
+        aware = moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
+        described.append((aware, {
             "assembly_id": assembly.id if assembly is not None else None,
             "artifact_id": artifact.id,
             "generation_run_id": run.id if run is not None else None,
@@ -179,24 +192,32 @@ def describe_assemblies(
             "active_revision": bool(
                 counted_id and active_revision_id and counted_id == active_revision_id
             ),
-            "assembled_at": moment.isoformat(),
-        })
-    described.sort(key=lambda item: (item["assembled_at"], item["artifact_id"]), reverse=True)
-    return described
+            "assembled_at": utc_iso(moment),
+        }))
+    described.sort(key=lambda item: (item[0], item[1]["artifact_id"]), reverse=True)
+    return [item for _, item in described]
 
 
 def ambiguous_versions_message(candidates: Sequence[Mapping[str, Any]]) -> str:
     """The refusal for an export that cannot tell which assembly to use.
 
     The first sentence is the one callers already match on; the candidates,
-    newest first, follow so a caller can pass ``generation_run_id``.
+    newest first, follow so a caller can pass ``generation_run_id``. Past
+    ``MESSAGE_CANDIDATE_LIMIT`` the rest are counted, not listed.
     """
 
     if not candidates:
         return AMBIGUOUS_VERSIONS_SENTENCE
-    return f"{AMBIGUOUS_VERSIONS_SENTENCE} Candidates, newest first: " + "; ".join(
-        _candidate_line(item) for item in candidates
-    ) + "."
+    listed = candidates[:MESSAGE_CANDIDATE_LIMIT]
+    message = f"{AMBIGUOUS_VERSIONS_SENTENCE} Candidates, newest first: " + "; ".join(
+        _candidate_line(item) for item in listed
+    )
+    remaining = len(candidates) - len(listed)
+    if remaining:
+        message += (
+            f"; and {remaining} more, which the export plan and the Output page list"
+        )
+    return message + "."
 
 
 def _candidate_line(item: Mapping[str, Any]) -> str:
