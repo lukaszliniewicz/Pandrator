@@ -253,8 +253,7 @@
       runPayload,
       sessionPayload,
       settingsPayload,
-      jobPayload,
-      exportAudioPayload
+      jobPayload
     ] = await Promise.all([
       artifactApi.list({ sessionId, limit: 300, outputOnly: true }),
       generationApi.runs(sessionId),
@@ -262,11 +261,16 @@
       sessionApi.settings(sessionId, 'output'),
       jobApi.exports(sessionId),
       // Naming the version is a hint: a failed read shows nothing and never
-      // blocks the page or the export.
-      generationApi.exportAudio(sessionId).catch(() => null)
+      // blocks the page or the export. It is published as soon as it
+      // answers, so a failed sibling read cannot hold back a newer version.
+      generationApi
+        .exportAudio(sessionId)
+        .catch(() => null)
+        .then((described) => {
+          if (audioRevision === exportAudioRevision) exportAudio = described;
+        })
     ]);
     if (revision !== loadRevision) return;
-    if (audioRevision === exportAudioRevision) exportAudio = exportAudioPayload;
     artifacts = artifactPayload.items
       .filter(
         (item) =>
