@@ -2031,10 +2031,26 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                         )
 
     def test_export_plan_drops_figures_when_no_single_version_is_named(self):
-        """An assembly added or removed between the reads leaves no figures."""
+        """An assembly added or removed between the reads leaves no figures or binding."""
 
         output = {"export_mode": "media", "audio_mode": "mixed"}
-        for status in ("ambiguous", "none"):
+        # The third: the measured assembly was removed and the read names
+        # other audio that has no assembly record.
+        without_assembly = {
+            "assembly_id": None,
+            "artifact_id": "artifact-without-assembly",
+            "generation_run_id": None,
+            "run_sequence_number": None,
+            "plan_revision_id": None,
+            "plan_revision_number": None,
+            "active_revision": False,
+            "assembled_at": "2026-11-21T10:09:00+00:00",
+        }
+        for status, version in (
+            ("ambiguous", None),
+            ("none", None),
+            ("named", without_assembly),
+        ):
             with self.subTest(status=status):
                 session_id, _source_id, _asset_id = self._ready_session(
                     workflow_kind="voiceover",
@@ -2042,7 +2058,7 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                 )
                 self._assembly_for_plan(session_id, output)
                 self._current_takes_assembly(session_id)
-                described = {"status": status, "version": None, "candidates": []}
+                described = {"status": status, "version": version, "candidates": []}
                 with patch.object(
                     WorkflowExecutionPlanService,
                     "_export_audio_version",
@@ -2056,6 +2072,12 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                     )
                 self.assertEqual(status, plan["export_audio"]["status"])
                 self.assertIsNone(plan.get("speech_timing"))
+                with self.extension["database"].session() as db_session:
+                    stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+                    self.assertNotIn(
+                        "expected_assembly_artifact_id",
+                        stored.plan_json["_execution"]["payload"],
+                    )
 
     def test_a_no_run_export_of_audio_without_an_assembly_record_is_not_bound(self):
         """Legacy assembled audio with no assembly row still exports."""

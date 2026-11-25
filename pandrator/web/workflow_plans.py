@@ -1878,13 +1878,15 @@ class WorkflowExecutionPlanService:
                 speech_timing = None
             reviewed_assembly_artifact_id = named_artifact_id
         elif export_audio is not None and export_audio.get("status") in {
+            "named",
             "ambiguous",
             "none",
         }:
-            # The version read found no single version (an assembly was added
-            # or removed after the figures were measured): they describe none
-            # of what the plan lists.
+            # The version read found no single version with an assembly (one
+            # was added or removed after the figures were measured): the
+            # figures and their binding describe none of what the plan lists.
             speech_timing = None
+            reviewed_assembly_artifact_id = ""
         chosen_run = (
             export_audio.get("chosen_run")
             if export_audio is not None and export_audio.get("status") == "chosen_run"
