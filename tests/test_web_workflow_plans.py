@@ -2030,6 +2030,75 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
                             ],
                         )
 
+    def test_export_plan_drops_figures_when_no_single_version_is_named(self):
+        """An assembly added or removed between the reads leaves no figures."""
+
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        for status in ("ambiguous", "none"):
+            with self.subTest(status=status):
+                session_id, _source_id, _asset_id = self._ready_session(
+                    workflow_kind="voiceover",
+                    suffix="mp4",
+                )
+                self._assembly_for_plan(session_id, output)
+                self._current_takes_assembly(session_id)
+                described = {"status": status, "version": None, "candidates": []}
+                with patch.object(
+                    WorkflowExecutionPlanService,
+                    "_export_audio_version",
+                    return_value=described,
+                ):
+                    plan = self._plan(
+                        session_id,
+                        target_stage="export",
+                        overrides={"output": output},
+                        continuation=False,
+                    )
+                self.assertEqual(status, plan["export_audio"]["status"])
+                self.assertIsNone(plan.get("speech_timing"))
+
+    def test_a_no_run_export_of_audio_without_an_assembly_record_is_not_bound(self):
+        """Legacy assembled audio with no assembly row still exports."""
+
+        output = {"export_mode": "media", "audio_mode": "mixed"}
+        session_id, _source_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        database = self.extension["database"]
+        with database.session() as db_session:
+            ownership = resolve_artifact_ownership(db_session, session_id=session_id)
+            artifact = Artifact(
+                session_id=session_id,
+                workspace_id=ownership.workspace_id,
+                project_id=ownership.project_id,
+                kind="audio",
+                role="assembled_audio",
+                relative_path=f"legacy-{session_id}.wav",
+                content_hash=hashlib.sha256(f"legacy{session_id}".encode()).hexdigest(),
+                state="current",
+            )
+            db_session.add(artifact)
+            db_session.flush()
+            artifact_id = artifact.id
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={"output": output},
+            continuation=False,
+        )
+        self.assertEqual("named", plan["export_audio"]["status"])
+        self.assertEqual(artifact_id, plan["export_audio"]["version"]["artifact_id"])
+        self.assertIsNone(plan["export_audio"]["version"]["assembly_id"])
+        with database.session() as db_session:
+            stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
+            self.assertNotIn(
+                "expected_assembly_artifact_id",
+                stored.plan_json["_execution"]["payload"],
+            )
+        response = self._execute(plan, key="legacy-assembled-audio")
+        self.assertEqual(202, response.status_code, response.get_json())
+
     def test_export_plan_with_a_run_names_the_run_and_its_assembly(self):
         session_id, _artifact_id, _asset_id = self._ready_session(
             workflow_kind="voiceover",

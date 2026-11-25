@@ -1859,9 +1859,12 @@ class WorkflowExecutionPlanService:
             if export_audio is not None and export_audio.get("status") == "named"
             else None
         )
+        # Only a version with a completed assembly can be bound: execution
+        # checks the binding against that assembly, and audio without one
+        # keeps the export's own single-artifact selection.
         named_artifact_id = (
             str(named_version.get("artifact_id") or "")
-            if isinstance(named_version, dict)
+            if isinstance(named_version, dict) and named_version.get("assembly_id")
             else ""
         )
         if named_artifact_id:
@@ -1874,6 +1877,14 @@ class WorkflowExecutionPlanService:
             ):
                 speech_timing = None
             reviewed_assembly_artifact_id = named_artifact_id
+        elif export_audio is not None and export_audio.get("status") in {
+            "ambiguous",
+            "none",
+        }:
+            # The version read found no single version (an assembly was added
+            # or removed after the figures were measured): they describe none
+            # of what the plan lists.
+            speech_timing = None
         chosen_run = (
             export_audio.get("chosen_run")
             if export_audio is not None and export_audio.get("status") == "chosen_run"
