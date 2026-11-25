@@ -797,6 +797,130 @@ test('run-less candidates are marked in the assemblies list and removing one ren
   await expect(marks).toHaveCount(0);
 });
 
+test('a version read held from an earlier removal does not replace a later one', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'audiobook');
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [] })
+      })
+  );
+  const times: Record<string, string> = {
+    'artifact-a': '2026-11-21T10:09:00',
+    'artifact-b': '2026-11-21T09:00:00',
+    'artifact-c': '2026-11-20T08:00:00'
+  };
+  let listed = Object.entries(times).map(([id, createdAt]) => ({
+    id,
+    session_id: session.id,
+    kind: 'audio',
+    role: 'assembled_audio',
+    state: 'current',
+    relative_path: `sessions/${session.id}/${id}.wav`,
+    mime_type: 'audio/wav',
+    size_bytes: 1024,
+    created_at: createdAt
+  }));
+  await page.route('**/api/v1/artifacts?**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('session_id') !== session.id) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: listed })
+    });
+  });
+  const runLess = (artifactId: string) => ({
+    assembly_id: `assembly-${artifactId}`,
+    artifact_id: artifactId,
+    generation_run_id: null,
+    run_sequence_number: null,
+    plan_revision_id: 'revision-two',
+    plan_revision_number: 2,
+    active_revision: true,
+    assembled_at: times[artifactId]
+  });
+  const ambiguous = (...ids: string[]) => ({
+    status: 'ambiguous',
+    version: null,
+    candidates: ids.map(runLess)
+  });
+  const removed: string[] = [];
+  let releaseHeld = () => {};
+  const held = new Promise<void>((resolve) => {
+    releaseHeld = resolve;
+  });
+  let heldDelivered = false;
+  await page.route(
+    `**/api/v1/sessions/${session.id}/export-audio`,
+    async (route) => {
+      const reply = (body: unknown) =>
+        route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify(body)
+        });
+      if (removed.length === 0) {
+        await reply(ambiguous('artifact-a', 'artifact-b', 'artifact-c'));
+      } else if (removed.length === 1) {
+        // The read after the first removal answers last, with what was
+        // true before the second removal.
+        await held;
+        await reply(ambiguous('artifact-b', 'artifact-c'));
+        heldDelivered = true;
+      } else {
+        await reply({
+          status: 'named',
+          version: runLess('artifact-c'),
+          candidates: []
+        });
+        releaseHeld();
+      }
+    }
+  );
+  await page.route(
+    `**/api/v1/sessions/${session.id}/outputs/*`,
+    async (route) => {
+      if (route.request().method() !== 'DELETE') {
+        await route.fallback();
+        return;
+      }
+      const id =
+        new URL(route.request().url()).pathname.split('/').at(-1) ?? '';
+      removed.push(id);
+      listed = listed.filter((item) => item.id !== id);
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ deleted: true })
+      });
+    }
+  );
+
+  await page.goto(`/sessions/${session.id}/output`);
+  const note = page.getByTestId('export-audio-version');
+  const marks = page.getByTestId('export-audio-candidate');
+  await expect(marks).toHaveCount(3, { timeout: 20_000 });
+  page.on('dialog', (dialog) => dialog.accept());
+  const removeButtons = page.getByRole('button', { name: /^Remove assembly / });
+  // Newest first: artifact-a, then artifact-b once artifact-a's row is gone.
+  await removeButtons.first().click();
+  await expect.poll(() => removed).toEqual(['artifact-a']);
+  await expect(removeButtons).toHaveCount(2);
+  await removeButtons.first().click();
+  await expect.poll(() => removed).toEqual(['artifact-a', 'artifact-b']);
+  await expect(note).toContainText('This export will use');
+  await expect.poll(() => heldDelivered).toBe(true);
+  // The earlier read's answer arrived last and is ignored.
+  await expect(note).toContainText('This export will use');
+  await expect(marks).toHaveCount(0);
+});
+
 test('soundtrack mix preview uses the selected version and current unsaved controls', async ({
   page
 }) => {

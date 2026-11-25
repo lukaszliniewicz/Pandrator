@@ -1874,6 +1874,18 @@ class WorkflowExecutionPlanService:
             ):
                 speech_timing = None
             reviewed_assembly_artifact_id = named_artifact_id
+        chosen_run = (
+            export_audio.get("chosen_run")
+            if export_audio is not None and export_audio.get("status") == "chosen_run"
+            else None
+        )
+        if isinstance(chosen_run, dict) and speech_timing is not None:
+            # Two reads of the chosen run's assembly: drop figures measured on
+            # another one than the plan names (one assembled between them).
+            if str(chosen_run.get("assembly_id") or "") != str(
+                speech_timing.get("assembly_id") or ""
+            ):
+                speech_timing = None
         disclosures = self._provider_disclosures(resolved)
         external = [item for item in disclosures if self._is_external(item)]
         resource_services = [

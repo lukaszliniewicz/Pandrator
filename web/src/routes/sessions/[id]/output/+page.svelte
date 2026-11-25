@@ -483,15 +483,18 @@
     try {
       await sessionApi.removeOutput(sessionId, artifact.id);
       // A refresh started before removal may still contain the deleted output.
-      loadRevision += 1;
+      const revision = ++loadRevision;
       artifacts = artifacts.filter((item) => item.id !== artifact.id);
       if (preview?.id === artifact.id) preview = null;
       message = assembly ? 'Assembly removed.' : 'Export removed.';
-      // Removing an assembly can settle which version an export uses.
-      if (assembly)
-        exportAudio = await generationApi
+      // Removing an assembly can settle which version an export uses. A
+      // later removal or refresh supersedes this read.
+      if (assembly) {
+        const described = await generationApi
           .exportAudio(sessionId)
           .catch(() => null);
+        if (revision === loadRevision) exportAudio = described;
+      }
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
